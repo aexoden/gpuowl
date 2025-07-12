@@ -585,34 +585,54 @@ static std::string makeLogStr(u32 E, std::string status, int k, u64 res,
 }
 
 static void doLog(int E, int k, u32 timeCheck, u64 res, bool checkOK,
-                  Stats &stats, u32 nIters) {
-  log("%s (check %.2fs)\n",
-      makeLogStr(E, checkOK ? "OK" : "EE", k, res, stats.reset(), nIters)
-          .c_str(),
-      timeCheck * .001f);
-  stats.reset();
-}
+                  Stats &stats, u32 nIters, u32 shift) {
+  std::string resLabel = (shift > 0) ? " (shifted)" : "";
+  std::string logStr =
+      makeLogStr(E, checkOK ? "OK" : "EE", k, res, stats.reset(), nIters);
 
-static void doSmallLog(int E, int k, u64 res, Stats &stats, u32 nIters) {
-  log("%s\n", makeLogStr(E, "", k, res, stats.reset(), nIters).c_str());
-  stats.reset();
-}
-
-static void doSmallLogWithShift(int E, int k, u64 shiftedRes, u64 unshiftedRes, u32 cumulativeShift, Stats &stats, u32 nIters) {
-  StatsInfo info = stats.reset();
-  std::string baseLogStr = makeLogStr(E, "", k, unshiftedRes, info, nIters);
-  
-  // Find where the residue starts (after the last space)
-  size_t resPos = baseLogStr.find_last_of(' ');
-  if (resPos != std::string::npos) {
-    std::string prefix = baseLogStr.substr(0, resPos + 1); // Include the space
-    log("%s%016llx (unshifted), %016llx (shifted, cumulative shift %u)\n", 
-        prefix.c_str(), unshiftedRes, shiftedRes, cumulativeShift);
-  } else {
-    // Fallback if parsing fails
-    log("%s; unshifted: %016llx, shifted: %016llx (cumulative shift %u)\n", 
-        baseLogStr.c_str(), unshiftedRes, shiftedRes, cumulativeShift);
+  size_t resPos = logStr.find_last_of(' ');
+  if (resPos != std::string::npos && shift > 0) {
+    logStr.insert(resPos, resLabel);
   }
+
+  log("%s (check %.2fs)\n", logStr.c_str(), timeCheck * .001f);
+  stats.reset();
+}
+
+static void doLogWithBothResidues(int E, int k, u32 timeCheck, u64 shiftedRes,
+                                  u64 unshiftedRes, bool checkOK, Stats &stats,
+                                  u32 nIters, u32 cumulativeShift) {
+  std::string logStr = makeLogStr(E, checkOK ? "OK" : "EE", k, unshiftedRes,
+                                  stats.reset(), nIters);
+
+  size_t resPos = logStr.find_last_of(' ');
+  if (resPos != std::string::npos) {
+    std::string prefix = logStr.substr(0, resPos + 1); // Include the space
+    log("%s%016llx (unshifted), %016llx (shifted, shift %u) (check %.2fs)\n",
+        prefix.c_str(), unshiftedRes, shiftedRes, cumulativeShift,
+        timeCheck * .001f);
+  } else {
+    log("%s; unshifted: %016llx, shifted: %016llx (shift %u) (check %.2fs)\n",
+        logStr.c_str(), unshiftedRes, shiftedRes, cumulativeShift,
+        timeCheck * .001f);
+  }
+
+  stats.reset();
+}
+
+static void doSmallLog(int E, int k, u64 res, Stats &stats, u32 nIters,
+                       u32 shift) {
+  std::string resLabel = (shift > 0) ? " (shifted)" : "";
+  std::string logStr = makeLogStr(E, "", k, res, stats.reset(), nIters);
+
+  // Insert the shift label before the residue
+  size_t resPos = logStr.find_last_of(' ');
+  if (resPos != std::string::npos && shift > 0) {
+    logStr.insert(resPos, resLabel);
+  }
+
+  log("%s\n", logStr.c_str());
+  stats.reset();
 }
 
 static std::vector<u32> bitNeg(const std::vector<u32> &v) {
@@ -659,8 +679,11 @@ PRPState Gpu::loadPRP(u32 E, u32 iniB1, u32 iniBlockSize, i64 userShift) {
   bool ok = (res64 == loaded.res64);
   updateCheck();
   if (!ok) {
-    log("%u EE loaded: %d, B1 %u, blockSize %d, %016llx (expected %016llx)\n",
-        E, loaded.k, loaded.B1, loaded.blockSize, res64, loaded.res64);
+    std::string resLabel = (loaded.shift > 0) ? " (shifted)" : "";
+    log("%u EE loaded: %d, B1 %u, blockSize %d, %016llx%s (expected "
+        "%016llx%s)\n",
+        E, loaded.k, loaded.B1, loaded.blockSize, res64, resLabel.c_str(),
+        loaded.res64, resLabel.c_str());
     throw "error on load";
   }
 
@@ -904,16 +927,7 @@ PRPResult Gpu::isPrimePRP(u32 E, const Args &args, u32 B1, u32 B2) {
     if (!doCheck) {
       this->updateCheck();
       if (k % 10000 == 0) {
-        if (shift > 0) {
-          u64 shiftedRes = dataResidue();
-          auto currentData = this->roundtripData();
-          u32 cumulativeShift = computeCumulativeShift(shift, k, E);
-          auto unshiftedData = removeShift(currentData, cumulativeShift, E);
-          u64 unshiftedRes = residue(unshiftedData);
-          doSmallLogWithShift(E, k, shiftedRes, unshiftedRes, cumulativeShift, stats, nTotalIters);
-        } else {
-          doSmallLog(E, k, dataResidue(), stats, nTotalIters);
-        }
+        doSmallLog(E, k, dataResidue(), stats, nTotalIters, shift);
         if (args.timeKernels) {
           this->logTimeKernels();
         }
@@ -929,7 +943,17 @@ PRPResult Gpu::isPrimePRP(u32 E, const Args &args, u32 B1, u32 B2) {
 
     // the check time (above) is accounted separately, not added to iteration
     // time.
-    doLog(E, k, timer.deltaMillis(), res64, ok, stats, nTotalIters);
+    if (shift > 0) {
+      // For shifted runs, show both residues at check time
+      auto currentData = this->roundtripData();
+      u32 cumulativeShift = computeCumulativeShift(shift, k, E);
+      auto unshiftedData = removeShift(currentData, cumulativeShift, E);
+      u64 unshiftedRes = residue(unshiftedData);
+      doLogWithBothResidues(E, k, timer.deltaMillis(), res64, unshiftedRes, ok,
+                            stats, nTotalIters, cumulativeShift);
+    } else {
+      doLog(E, k, timer.deltaMillis(), res64, ok, stats, nTotalIters, 0);
+    }
 
     if (ok) {
       if (k < kEnd) {
@@ -945,8 +969,8 @@ PRPResult Gpu::isPrimePRP(u32 E, const Args &args, u32 B1, u32 B2) {
         state.gcdAcc = gcdAcc;
         state.save(E);
       }
-      if (shift == 0 && k % 1'000'000 < checkStep && nGcdAcc && !gcd->isOngoing() &&
-          !doStop) {
+      if (shift == 0 && k % 1'000'000 < checkStep && nGcdAcc &&
+          !gcd->isOngoing() && !doStop) {
         gcd->start(E, gcdAcc, 0);
         nGcdAcc = 0;
       }
