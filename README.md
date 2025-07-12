@@ -7,6 +7,14 @@ gpuOwl implements the PRP test with a powerful self-validating algorithm that
 protects agains errors. gpuOwl uses FFT transforms of size 8M and 16M, and is
 best used with Mersenne exponents in the vicinity of 150M and 300M.
 
+## WARNING
+
+This is a modified version of gpuOwl solely intended for verifying type 0 PRP
+tests on the GIMPS server. At the time of writing, there are 28 such tests. The
+parallel P-1 functionality is currently broken, and will not find expected
+factors. This is probably unimportant for the stated goal, as no factors should
+be found for any of the 28 exponents.
+
 ## Files used by gpuOwl
 
 - worktodo.txt : contains exponents to test, one entry per line
