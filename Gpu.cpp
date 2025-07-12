@@ -598,6 +598,23 @@ static void doSmallLog(int E, int k, u64 res, Stats &stats, u32 nIters) {
   stats.reset();
 }
 
+static void doSmallLogWithShift(int E, int k, u64 shiftedRes, u64 unshiftedRes, u32 cumulativeShift, Stats &stats, u32 nIters) {
+  StatsInfo info = stats.reset();
+  std::string baseLogStr = makeLogStr(E, "", k, unshiftedRes, info, nIters);
+  
+  // Find where the residue starts (after the last space)
+  size_t resPos = baseLogStr.find_last_of(' ');
+  if (resPos != std::string::npos) {
+    std::string prefix = baseLogStr.substr(0, resPos + 1); // Include the space
+    log("%s%016llx (unshifted), %016llx (shifted, cumulative shift %u)\n", 
+        prefix.c_str(), unshiftedRes, shiftedRes, cumulativeShift);
+  } else {
+    // Fallback if parsing fails
+    log("%s; unshifted: %016llx, shifted: %016llx (cumulative shift %u)\n", 
+        baseLogStr.c_str(), unshiftedRes, shiftedRes, cumulativeShift);
+  }
+}
+
 static std::vector<u32> bitNeg(const std::vector<u32> &v) {
   std::vector<u32> ret;
   ret.reserve(v.size());
@@ -887,7 +904,16 @@ PRPResult Gpu::isPrimePRP(u32 E, const Args &args, u32 B1, u32 B2) {
     if (!doCheck) {
       this->updateCheck();
       if (k % 10000 == 0) {
-        doSmallLog(E, k, dataResidue(), stats, nTotalIters);
+        if (shift > 0) {
+          u64 shiftedRes = dataResidue();
+          auto currentData = this->roundtripData();
+          u32 cumulativeShift = computeCumulativeShift(shift, k, E);
+          auto unshiftedData = removeShift(currentData, cumulativeShift, E);
+          u64 unshiftedRes = residue(unshiftedData);
+          doSmallLogWithShift(E, k, shiftedRes, unshiftedRes, cumulativeShift, stats, nTotalIters);
+        } else {
+          doSmallLog(E, k, dataResidue(), stats, nTotalIters);
+        }
         if (args.timeKernels) {
           this->logTimeKernels();
         }
