@@ -48,4 +48,4 @@ void initLog(const char *);
 #define VERSION BASE_VERSION
 #endif
 
-#define PROGRAM "gpuowl"
+#define PROGRAM "gpuowl-5-shift"
