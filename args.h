@@ -22,11 +22,12 @@ public:
   int tfDelta;
   bool enableTF;
   bool usePrecompiled;
+  i64 shift;
 
   Args()
       : device(-1), timeKernels(false), listFFT(false), carry(CARRY_AUTO),
         blockSize(400), fftSize(0), tfDelta(0), enableTF(false),
-        usePrecompiled(false) {}
+        usePrecompiled(false), shift(-1) {}
 
   // return false to stop.
   bool parse(int argc, char **argv);

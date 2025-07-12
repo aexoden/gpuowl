@@ -618,15 +618,23 @@ static bool equalNeg(std::vector<u32> a, const std::vector<u32> &b) {
   return a == c;
 }
 
-PRPState Gpu::loadPRP(u32 E, u32 iniB1, u32 iniBlockSize) {
-  auto loaded = PRPState::load(E, iniB1, iniBlockSize);
+PRPState Gpu::loadPRP(u32 E, u32 iniB1, u32 iniBlockSize, i64 userShift) {
+  auto initialShift = getOrGenerateShift(userShift, E);
+  auto loaded = PRPState::load(E, iniB1, iniBlockSize, initialShift);
   if (loaded.stage == 0) {
+
     doStage0(loaded.k, loaded.B1, loaded.blockSize, std::move(loaded.base),
-             std::move(loaded.basePower));
-    loaded = PRPState::load(E, iniB1, iniBlockSize);
+             std::move(loaded.basePower), initialShift);
+    loaded = PRPState::load(E, iniB1, iniBlockSize, initialShift);
   }
 
   assert(loaded.stage == 1);
+
+  std::vector<u32> unshiftedBase = loaded.base;
+
+  if (loaded.shift > 0) {
+    unshiftedBase = removeShift(loaded.base, loaded.shift, E);
+  }
 
   writeState(loaded.check, loaded.base, loaded.gcdAcc, loaded.blockSize);
 
@@ -691,7 +699,7 @@ static std::pair<std::vector<bool>, u32> kselect(u32 E, u32 blockSize, u32 B1,
 }
 
 void Gpu::doStage0(u32 k, u32 B1, u32 blockSize, std::vector<u32> &&base,
-                   std::vector<bool> &&basePower) {
+                   std::vector<bool> &&basePower, u32 shift) {
   writeData(base);
   u32 kEnd = basePower.size();
   assert(k < kEnd);
@@ -720,14 +728,31 @@ void Gpu::doStage0(u32 k, u32 B1, u32 blockSize, std::vector<u32> &&base,
           makeLogStr(E, "P-1", k, res64, stats.reset(), basePower.size())
               .c_str());
       stats.reset();
-      PRPState{k, B1, blockSize, res64, 0, basePower, data}.save(E);
+      PRPState state;
+      state.k = k;
+      state.B1 = B1;
+      state.blockSize = blockSize;
+      state.res64 = res64;
+      state.stage = 0;
+      state.shift = 0;
+      state.basePower = basePower;
+      state.check = data;
+      state.save(E);
     }
 
     if (doStop) {
       throw "stop requested";
     }
   }
-  PRPState{}.initStage1(B1, blockSize, readData()).save(E);
+
+  auto stage1_base = readData();
+
+  if (shift > 0) {
+    log("Applying shift %u to base\n", shift);
+    stage1_base = applyShift(stage1_base, shift, E);
+  }
+
+  PRPState{}.initStage1(B1, blockSize, stage1_base, shift).save(E);
 }
 
 PRPResult Gpu::isPrimePRP(u32 E, const Args &args, u32 B1, u32 B2) {
@@ -740,12 +765,13 @@ PRPResult Gpu::isPrimePRP(u32 E, const Args &args, u32 B1, u32 B2) {
   // log("PRP M(%d), FFT %dK, %.2f bits/word, B1 %u, B2 %u\n", E, N/1024, E /
   // float(N), B1, B2);
 
-  PRPState loaded = loadPRP(E, B1, args.blockSize);
+  PRPState loaded = loadPRP(E, B1, args.blockSize, args.shift);
 
   u32 k = loaded.k;
   u32 blockSize = loaded.blockSize;
   assert(blockSize > 0 && 10000 % blockSize == 0);
 
+  u32 shift = loaded.shift;
   std::vector<u32> base = loaded.base;
 
   const u32 kEnd =
@@ -774,18 +800,43 @@ PRPResult Gpu::isPrimePRP(u32 E, const Args &args, u32 B1, u32 B2) {
   int nGcdAcc = (B1 > 0);
   u64 finalRes64 = 0;
   u32 nTotalIters = ((kEnd - 1) / blockSize + 1) * blockSize;
+
+  // Store original unshifted base for final comparison
+  std::vector<u32> originalBase;
+  if (B1 == 0) {
+    // For pure PRP, original base is 3
+    u32 nWords = (E - 1) / 32 + 1;
+    originalBase.resize(nWords);
+    originalBase[0] = 3;
+    for (u32 i = 1; i < nWords; ++i) {
+      originalBase[i] = 0;
+    }
+  } else {
+    // For PRP/P-1, remove shift from current base to get original
+    originalBase = removeShift(base, shift, E);
+  }
+
   while (true) {
     assert(k % blockSize == 0);
     u32 nAcc = 0;
     if (k < kEnd && k + blockSize >= kEnd) {
       nAcc = dataLoopAcc(k, kEnd, kset);
       auto words = this->roundtripData();
-      finalRes64 = residue(words);
-      isPrime =
-          (words == base) || equalNeg(words, base); // words == bitNeg(base));
 
-      log("%s %8d / %d, %016llx (base %016llx)\n", isPrime ? "PP" : "CC", kEnd,
-          E, finalRes64, residue(base));
+      // Remove shift from final result for comparison
+      // After kEnd iterations, the cumulative shift is shift * 2^kEnd mod E
+      u32 cumulativeShift = computeCumulativeShift(shift, kEnd, E);
+      auto unshiftedWords = removeShift(words, cumulativeShift, E);
+
+      finalRes64 = residue(unshiftedWords);
+      isPrime = (unshiftedWords == originalBase) ||
+                equalNeg(unshiftedWords, originalBase);
+
+      u64 shiftedRes64 = residue(words);
+      log("%s %8d / %d, %016llx (unshifted), %016llx (shifted, cumulative "
+          "shift %u), base %016llx\n",
+          isPrime ? "PP" : "CC", kEnd, E, finalRes64, shiftedRes64,
+          cumulativeShift, residue(originalBase));
 
       int itersLeft = blockSize - (kEnd - k);
       if (itersLeft > 0) {
@@ -803,7 +854,8 @@ PRPResult Gpu::isPrimePRP(u32 E, const Args &args, u32 B1, u32 B2) {
       std::string factor = gcd->get();
       if (!factor.empty()) {
         // log("GCD: %s\n", factor.c_str());
-        return PRPResult{factor, false, 0, residue(base), effectiveB2};
+        return PRPResult{factor,      false, 0, residue(originalBase),
+                         effectiveB2, shift};
       }
     }
 
@@ -841,9 +893,17 @@ PRPResult Gpu::isPrimePRP(u32 E, const Args &args, u32 B1, u32 B2) {
 
     if (ok) {
       if (k < kEnd) {
-        PRPState{k,     B1,   blockSize, res64, 1, std::vector<bool>(),
-                 check, base, gcdAcc}
-            .save(E);
+        PRPState state;
+        state.k = k;
+        state.B1 = B1;
+        state.blockSize = blockSize;
+        state.res64 = res64;
+        state.stage = 1;
+        state.shift = shift;
+        state.check = check;
+        state.base = base;
+        state.gcdAcc = gcdAcc;
+        state.save(E);
       }
       if (k % 1'000'000 < checkStep && nGcdAcc && !gcd->isOngoing() &&
           !doStop) {
@@ -851,7 +911,8 @@ PRPResult Gpu::isPrimePRP(u32 E, const Args &args, u32 B1, u32 B2) {
         nGcdAcc = 0;
       }
       if (isPrime || k >= kEnd) {
-        return PRPResult{"", isPrime, finalRes64, residue(base), effectiveB2};
+        return PRPResult{
+            "", isPrime, finalRes64, residue(originalBase), effectiveB2, shift};
       }
       nSeqErrors = 0;
     } else {
@@ -860,11 +921,12 @@ PRPResult Gpu::isPrimePRP(u32 E, const Args &args, u32 B1, u32 B2) {
         throw "too many errors";
       }
 
-      auto loaded = loadPRP(E, B1, blockSize);
+      auto loaded = loadPRP(E, B1, blockSize, args.shift);
       k = loaded.k;
       assert(blockSize == loaded.blockSize);
       assert(base == loaded.base);
       assert(B1 == loaded.B1);
+      shift = loaded.shift;
       nGcdAcc = (B1 > 0);
     }
     if (args.timeKernels) {

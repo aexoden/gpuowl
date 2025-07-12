@@ -23,6 +23,7 @@ Command line options:
 -carry long|short  : force carry type. Short carry may be faster, but requires high bits/word.
 -list fft          : display a list of available FFT configurations.
 -tf <bit-offset>   : enable auto trial factoring before PRP. Pass 0 to bit-offset for default TF depth.
+-shift <count>     : specify shift count for PRP tests. If omitted, a random shift is used.
 -device <N>        : select a specific device:
 )");
 
@@ -56,6 +57,17 @@ Command line options:
         enableTF = true;
       } else {
         log("-tf expects <bit-offset>\n");
+        return false;
+      }
+    } else if (!strcmp(arg, "-shift")) {
+      if (i < argc - 1) {
+        shift = atoi(argv[++i]);
+        if (shift < -1) {
+          log("-shift expects <count> >= -1, got %lld\n", shift);
+          return false;
+        }
+      } else {
+        log("-shift expects <count>\n");
         return false;
       }
     } else if (!strcmp(arg, "-dump")) {

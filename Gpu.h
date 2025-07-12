@@ -82,9 +82,9 @@ class Gpu {
 
   std::vector<u32> writeBase(const std::vector<u32> &v);
 
-  PRPState loadPRP(u32 E, u32 iniB1, u32 iniBlockSize);
+  PRPState loadPRP(u32 E, u32 iniB1, u32 iniBlockSize, i64 userShift);
   void doStage0(u32 k, u32 B1, u32 blockSize, std::vector<u32> &&base,
-                std::vector<bool> &&basePower);
+                std::vector<bool> &&basePower, u32 shift);
 
 public:
   static std::unique_ptr<Gpu> make(u32 E, const Args &args);

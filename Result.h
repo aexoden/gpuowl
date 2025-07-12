@@ -15,6 +15,7 @@ struct PRPResult {
   u64 res64;
   u64 baseRes64;
   u32 B2;
+  u32 shift;
 
   bool write(const Args &args, const Task &task, u32 fftSize);
 };

@@ -51,6 +51,12 @@ static std::string resStr(u64 res64) {
   return buf;
 }
 
+static std::string shiftStr(u32 shift) {
+  char buf[64];
+  snprintf(buf, sizeof(buf), ", \"shift-count\":\"%u\"", shift);
+  return buf;
+}
+
 bool PRPResult::write(const Args &args, const Task &task, u32 fftSize) {
   u32 B1 = task.B1;
 
@@ -64,12 +70,13 @@ bool PRPResult::write(const Args &args, const Task &task, u32 fftSize) {
   std::string status = isPrime ? "P" : (hasFactor ? "F" : "C");
   std::string fftLength =
       std::string(", \"fft-length\":") + std::to_string(fftSize);
+  std::string shiftCount = shiftStr(shift);
 
   char buf[256];
   if (B1 == 0) {
     assert(task.B2 == 0);
     assert(baseRes64 == 3);
-    std::string str = resStr(res64) + ", \"residue-type\":4";
+    std::string str = resStr(res64) + ", \"residue-type\":4" + shiftCount;
     return writeResult(fftLength + str, task.exponent, "PRP-3", status,
                        task.AID, args.user, args.cpu);
   }
@@ -84,8 +91,9 @@ bool PRPResult::write(const Args &args, const Task &task, u32 fftSize) {
 
   snprintf(
       buf, sizeof(buf),
-      "%s%s, \"b2\":\"%u\", \"base\":{\"b1\":\"%u\", \"bias\":{\"2\":19}%s}",
-      factorStr(factor).c_str(), r1.c_str(), B2, B1, r2.c_str());
+      "%s%s, \"b2\":\"%u\", \"base\":{\"b1\":\"%u\", \"bias\":{\"2\":19}%s}%s",
+      factorStr(factor).c_str(), r1.c_str(), B2, B1, r2.c_str(),
+      shiftCount.c_str());
   return writeResult(fftLength + buf, E, "PRP,P-1", status, task.AID, args.user,
                      args.cpu);
 }
