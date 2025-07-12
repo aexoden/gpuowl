@@ -2,29 +2,34 @@
 
 #include "GCD.h"
 
-#include <gmp.h>
 #include <cassert>
+#include <gmp.h>
 
 static std::string doGCD(u32 exp, const std::vector<u32> &bits, u32 sub = 0) {
   mpz_t b;
   mpz_init(b);
-  mpz_import(b, bits.size(), -1 /*order: LSWord first*/, sizeof(u32), 0 /*endianess: native*/, 0 /*nails*/, bits.data());
-  if (sub) { mpz_sub_ui(b, b, sub); }
+  mpz_import(b, bits.size(), -1 /*order: LSWord first*/, sizeof(u32),
+             0 /*endianess: native*/, 0 /*nails*/, bits.data());
+  if (sub) {
+    mpz_sub_ui(b, b, sub);
+  }
   assert(mpz_sizeinbase(b, 2) <= exp);
   assert(mpz_cmp_ui(b, 0)); // b != 0.
-  
+
   mpz_t m;
   // m := 2^exp - 1.
   mpz_init_set_ui(m, 1);
   mpz_mul_2exp(m, m, exp);
   mpz_sub_ui(m, m, 1);
   assert(mpz_sizeinbase(m, 2) == exp);
-    
+
   mpz_gcd(m, m, b);
-    
+
   mpz_clear(b);
 
-  if (mpz_cmp_ui(m, 1) == 0) { return ""; }
+  if (mpz_cmp_ui(m, 1) == 0) {
+    return "";
+  }
 
   char *buf = mpz_get_str(nullptr, 10, m);
   std::string ret = buf;
@@ -44,6 +49,7 @@ void GCD::start(u32 E, const std::vector<u32> &bits, u32 sub) {
 
 std::string GCD::get() {
   std::string s = gcdFuture.get();
-  log("%u GCD %s (%.2fs)\n", E, s.empty() ? "no factor" : s.c_str(), timer.deltaMillis() * 0.001);
+  log("%u GCD %s (%.2fs)\n", E, s.empty() ? "no factor" : s.c_str(),
+      timer.deltaMillis() * 0.001);
   return s;
 }

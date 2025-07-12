@@ -1,35 +1,43 @@
 // GpuOwl Mersenne primality tester; Copyright (C) 2017-2018 Mihai Preda.
 
-#include "args.h"
-#include "Task.h"
 #include "Result.h"
-#include "worktodo.h"
+#include "Task.h"
+#include "args.h"
 #include "common.h"
+#include "worktodo.h"
 
 extern std::string globalCpuName;
 
-int main(int argc, char **argv) {  
+int main(int argc, char **argv) {
   initLog("gpuowl.log");
   log("%s %s\n", PROGRAM, VERSION);
-  
+
   Args args;
-  if (!args.parse(argc, argv)) { return -1; }
-  if (!args.cpu.empty()) { globalCpuName = args.cpu; }
+  if (!args.parse(argc, argv)) {
+    return -1;
+  }
+  if (!args.cpu.empty()) {
+    globalCpuName = args.cpu;
+  }
 
   {
     std::string cmdLine;
-    for (int i = 1; i < argc; ++i) { cmdLine += std::string(argv[i]) + " "; }
+    for (int i = 1; i < argc; ++i) {
+      cmdLine += std::string(argv[i]) + " ";
+    }
     log("%s\n", cmdLine.c_str());
   }
-    
+
   try {
     while (Task task = Worktodo::getTask()) {
-      if (!task.execute(args)) { break; }
+      if (!task.execute(args)) {
+        break;
+      }
       Worktodo::deleteTask(task);
     }
   } catch (const char *mes) {
     log("Exiting because \"%s\"\n", mes);
   }
-  
+
   log("Bye\n");
 }

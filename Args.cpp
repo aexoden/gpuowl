@@ -2,9 +2,9 @@
 
 #include "args.h"
 
-#include <vector>
-#include <cstring>
 #include <cassert>
+#include <cstring>
+#include <vector>
 
 std::vector<std::string> getDevices();
 
@@ -29,7 +29,7 @@ Command line options:
       std::vector<std::string> devices = getDevices();
       for (int i = 0; i < int(devices.size()); ++i) {
         printf(" %d : %s\n", i, devices[i].c_str());
-      }      
+      }
       return false;
     } else if (!strcmp(arg, "-list")) {
       if (i < argc - 1 && !strcmp(argv[++i], "fft")) {
@@ -37,13 +37,15 @@ Command line options:
       } else {
         log("-list expects \"fft\"\n");
         return false;
-      }              
+      }
     } else if (!strcmp(arg, "-precompiled")) {
       usePrecompiled = true;
     } else if (!strcmp(arg, "-fft")) {
       if (i < argc - 1) {
         std::string s = argv[++i];
-        fftSize = atoi(s.c_str()) * ((s.back() == 'K') ? 1024 : ((s.back() == 'M') ? 1024 * 1024 : 1));
+        fftSize =
+            atoi(s.c_str()) *
+            ((s.back() == 'K') ? 1024 : ((s.back() == 'M') ? 1024 * 1024 : 1));
       } else {
         log("-fft expects <size>\n");
         return false;
@@ -84,7 +86,7 @@ Command line options:
         log("-cl expects options string to pass to CL compiler\n");
         return false;
       }
-    } else if(!strcmp(arg, "-time")) {
+    } else if (!strcmp(arg, "-time")) {
       timeKernels = true;
     } else if (!strcmp(arg, "-carry")) {
       if (i < argc - 1) {
@@ -115,8 +117,8 @@ Command line options:
         /*
         int nDevices = getNumberOfDevices();
         if (device < 0 || device >= nDevices) {
-          log("invalid -device %d (must be between [0, %d]\n", device, nDevices - 1);
-          return false;
+          log("invalid -device %d (must be between [0, %d]\n", device, nDevices
+        - 1); return false;
         }
         */
       } else {
@@ -128,6 +130,6 @@ Command line options:
       return false;
     }
   }
-  
+
   return true;
 }

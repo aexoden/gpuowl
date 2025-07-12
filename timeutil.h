@@ -14,10 +14,10 @@ class Timer {
     auto save = prev;
     return (prev = high_resolution_clock::now()) - save;
   }
-  
+
 public:
-  Timer() : prev(high_resolution_clock::now()) { }
-  
+  Timer() : prev(high_resolution_clock::now()) {}
+
   long deltaMicros() { return duration_cast<microseconds>(delta()).count(); }
   int deltaMillis() { return duration_cast<milliseconds>(delta()).count(); }
 };

@@ -6,11 +6,14 @@
 #include <memory>
 
 namespace std {
-  template<> struct default_delete<FILE> {
-    void operator()(FILE *f) { if (f != nullptr) { fclose(f); } }
-  };
-}
-
+template <> struct default_delete<FILE> {
+  void operator()(FILE *f) {
+    if (f != nullptr) {
+      fclose(f);
+    }
+  }
+};
+} // namespace std
 
 std::unique_ptr<FILE> openRead(const std::string &name, bool logError = false);
 std::unique_ptr<FILE> openWrite(const std::string &name);

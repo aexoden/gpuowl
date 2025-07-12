@@ -4,8 +4,6 @@
 
 #include "common.h"
 
-#include <vector>
-
 struct StatsInfo {
   u32 nSq;
   u32 nMul;

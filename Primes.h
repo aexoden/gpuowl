@@ -23,7 +23,9 @@ public:
 
   Range from(u32 p) {
     auto it = primes.cbegin(), end = primes.cend();
-    while (it < end && *it < p) { ++it; }
+    while (it < end && *it < p) {
+      ++it;
+    }
     return {it, end};
   }
 
@@ -31,6 +33,7 @@ public:
 
   std::vector<u32> divisors(u32 x);
 
-  // Multiplicative order of 2 modulo p. Equivalent PARI-GP: z(p) = znorder(Mod(2, p)).
+  // Multiplicative order of 2 modulo p. Equivalent PARI-GP: z(p) =
+  // znorder(Mod(2, p)).
   u32 zn2(u32 p);
 };

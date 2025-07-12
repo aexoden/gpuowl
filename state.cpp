@@ -7,9 +7,13 @@
 
 static u32 step(u32 N, u32 E) { return N - (E % N); }
 static u32 extra(u32 N, u32 E, u32 k) { return u64(step(N, E)) * k % N; }
-static bool isBigWord(u32 N, u32 E, u32 k) { return extra(N, E, k) + step(N, E) < N; }
+static bool isBigWord(u32 N, u32 E, u32 k) {
+  return extra(N, E, k) + step(N, E) < N;
+}
 static u32 bitlen(u32 N, u32 E, u32 k) { return E / N + isBigWord(N, E, k); }
-static int lowBits(int u, int bits) { return (u << (32 - bits)) >> (32 - bits); }
+static int lowBits(int u, int bits) {
+  return (u << (32 - bits)) >> (32 - bits);
+}
 
 static u32 unbalance(int w, int nBits, int *carry) {
   assert(*carry == 0 || *carry == -1);
@@ -77,7 +81,7 @@ struct BitBucket {
     bits += (u64(b) << size);
     size += 32;
   }
-  
+
   int popSigned(int n) {
     assert(size >= n);
     int b = lowBits(bits, n);
@@ -94,11 +98,14 @@ std::vector<int> expandBits(const std::vector<u32> &compactBits, int N, int E) {
   std::vector<int> out(N);
   int *data = out.data();
   BitBucket bucket;
-  
+
   auto it = compactBits.cbegin(), itEnd = compactBits.cend();
   for (int p = 0; p < N; ++p) {
-    int len = bitlen(N, E, p);    
-    if (bucket.size < len) { assert(it != itEnd); bucket.put32(*it++); }
+    int len = bitlen(N, E, p);
+    if (bucket.size < len) {
+      assert(it != itEnd);
+      bucket.put32(*it++);
+    }
     data[p] = bucket.popSigned(len);
   }
   assert(it == itEnd);
@@ -110,15 +117,20 @@ std::vector<int> expandBits(const std::vector<u32> &compactBits, int N, int E) {
 u64 residueFromRaw(u32 E, u32 N, const std::vector<int> &words) {
   assert(words.size() == 128);
   int carry = 0;
-  for (int i = 0; i < 64; ++i) { carry = (words[i] + carry < 0) ? -1 : 0; }
-  
+  for (int i = 0; i < 64; ++i) {
+    carry = (words[i] + carry < 0) ? -1 : 0;
+  }
+
   u64 res = 0;
   int k = 0, hasBits = 0;
-  for (auto p = words.begin() + 64, end = words.end(); p < end && hasBits < 64; ++p, ++k) {
+  for (auto p = words.begin() + 64, end = words.end(); p < end && hasBits < 64;
+       ++p, ++k) {
     u32 len = bitlen(N, E, k);
     int w = *p + carry;
     carry = (w < 0) ? -1 : 0;
-    if (w < 0) { w += (1 << len); }
+    if (w < 0) {
+      w += (1 << len);
+    }
     assert(w >= 0 && w < (1 << len));
     res |= u64(w) << hasBits;
     hasBits += len;
@@ -126,7 +138,8 @@ u64 residueFromRaw(u32 E, u32 N, const std::vector<int> &words) {
   return res;
 }
 
-std::pair<std::vector<double>, std::vector<double>> genWeights(int E, int W, int H) {
+std::pair<std::vector<double>, std::vector<double>> genWeights(int E, int W,
+                                                               int H) {
   int N = 2 * W * H;
 
   std::vector<double> aTab, iTab;
@@ -134,17 +147,17 @@ std::pair<std::vector<double>, std::vector<double>> genWeights(int E, int W, int
   iTab.reserve(N);
 
   int baseBits = E / N;
-  auto iN = 1 / (long double) N;
+  auto iN = 1 / (long double)N;
 
   for (int line = 0; line < H; ++line) {
     for (int col = 0; col < W; ++col) {
       for (int rep = 0; rep < 2; ++rep) {
         int k = (line + col * H) * 2 + rep;
-        int bits  = bitlen(N, E, k);
+        int bits = bitlen(N, E, k);
         assert(bits == baseBits || bits == baseBits + 1);
         auto a = exp2l(extra(N, E, k) * iN);
         auto ia = 1 / (4 * N * a);
-        aTab.push_back((bits == baseBits) ? a  : -a);
+        aTab.push_back((bits == baseBits) ? a : -a);
         iTab.push_back((bits == baseBits) ? ia : -ia);
       }
     }

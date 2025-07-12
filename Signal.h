@@ -4,11 +4,11 @@
 
 class Signal {
   bool isOwner;
-  
+
 public:
   Signal();
   ~Signal();
-  
+
   bool stopRequested();
   void release();
 };

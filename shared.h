@@ -9,5 +9,9 @@ typedef ulong u64;
 #include "common.h"
 #endif
 
-inline u32 bitposToWord(u32 E, u32 N, u32 offset) { return offset * ((u64) N) / E; }
-inline u32 wordToBitpos(u32 E, u32 N, u32 word) { return (word * ((u64) E) + (N - 1)) / N; }
+inline u32 bitposToWord(u32 E, u32 N, u32 offset) {
+  return offset * ((u64)N) / E;
+}
+inline u32 wordToBitpos(u32 E, u32 N, u32 word) {
+  return (word * ((u64)E) + (N - 1)) / N;
+}

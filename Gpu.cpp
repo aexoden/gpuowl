@@ -2,19 +2,19 @@
 
 #include "Gpu.h"
 
-#include "checkpoint.h"
-#include "Stats.h"
-#include "state.h"
-#include "timeutil.h"
-#include "args.h"
 #include "GCD.h"
 #include "Primes.h"
 #include "Result.h"
 #include "Signal.h"
+#include "Stats.h"
+#include "args.h"
+#include "checkpoint.h"
+#include "state.h"
+#include "timeutil.h"
 
-#include <cmath>
-#include <cassert>
 #include <algorithm>
+#include <cassert>
+#include <cmath>
 
 #ifndef M_PIl
 #define M_PIl 3.141592653589793238462643383279502884L
@@ -30,7 +30,7 @@ static_assert(sizeof(double2) == 16, "size double2");
 
 // Returns the primitive root of unity of order N, to the power k.
 static double2 root1(u32 N, u32 k) {
-  long double angle = - TAU / N * k;
+  long double angle = -TAU / N * k;
   return double2{double(cosl(angle)), double(sinl(angle))};
 }
 
@@ -47,91 +47,82 @@ static cl_mem genSmallTrig(cl_context context, int size, int radix) {
   auto *tab = new double2[size]();
   auto *p = tab + radix;
   int w = 0;
-  for (w = radix; w < size; w *= radix) { p = smallTrigBlock(w, std::min(radix, size / w), p); }
+  for (w = radix; w < size; w *= radix) {
+    p = smallTrigBlock(w, std::min(radix, size / w), p);
+  }
   assert(p - tab == size);
   cl_mem buf = makeBuf(context, BUF_CONST, sizeof(double2) * size, tab);
   delete[] tab;
   return buf;
 }
 
-static void setupWeights(cl_context context, Buffer &bufA, Buffer &bufI, int W, int H, int E) {
+static void setupWeights(cl_context context, Buffer &bufA, Buffer &bufI, int W,
+                         int H, int E) {
   int N = 2 * W * H;
   auto weights = genWeights(E, W, H);
-  bufA.reset(makeBuf(context, BUF_CONST, sizeof(double) * N, weights.first.data()));
-  bufI.reset(makeBuf(context, BUF_CONST, sizeof(double) * N, weights.second.data()));
+  bufA.reset(
+      makeBuf(context, BUF_CONST, sizeof(double) * N, weights.first.data()));
+  bufI.reset(
+      makeBuf(context, BUF_CONST, sizeof(double) * N, weights.second.data()));
 }
 
 Gpu::~Gpu() {}
 
 Gpu::Gpu(u32 E, u32 W, u32 BIG_H, u32 SMALL_H, int nW, int nH,
          cl_program program, cl_device_id device, cl_context context,
-         bool timeKernels, bool useLongCarry) :
-  E(E),
-  N(W * BIG_H * 2),
-  hN(N / 2),
-  nW(nW),
-  nH(nH),
-  bufSize(N * sizeof(double)),
-  useLongCarry(useLongCarry),
-  useMiddle(BIG_H != SMALL_H),
-  gcd(std::make_unique<GCD>()),
-  queue(makeQueue(device, context)),    
+         bool timeKernels, bool useLongCarry)
+    : E(E), N(W * BIG_H * 2), hN(N / 2), nW(nW), nH(nH),
+      bufSize(N * sizeof(double)), useLongCarry(useLongCarry),
+      useMiddle(BIG_H != SMALL_H), gcd(std::make_unique<GCD>()),
+      queue(makeQueue(device, context)),
 
-#define LOAD(name, workGroups) name(program, queue.get(), device, workGroups, #name, timeKernels)
-  LOAD(carryFused, BIG_H + 1),
-  LOAD(carryFusedMul, BIG_H + 1),
-  LOAD(fftP, BIG_H),
-  LOAD(fftW, BIG_H),
-  LOAD(fftH, (hN / SMALL_H)),
-  LOAD(fftMiddleIn,  hN / (256 * (BIG_H / SMALL_H))),
-  LOAD(fftMiddleOut, hN / (256 * (BIG_H / SMALL_H))),
-  LOAD(carryA,   nW * (BIG_H/16)),
-  LOAD(carryM,   nW * (BIG_H/16)),
-  LOAD(carryB,   nW * (BIG_H/16)),
-  LOAD(transposeW,   (W/64) * (BIG_H/64)),
-  LOAD(transposeH,   (W/64) * (BIG_H/64)),
-  LOAD(transposeIn,  (W/64) * (BIG_H/64)),
-  LOAD(transposeOut, (W/64) * (BIG_H/64)),
-  LOAD(square,   hN / SMALL_H),
-  LOAD(multiply, hN / SMALL_H),
-  LOAD(multiplySub, hN / SMALL_H),
-  LOAD(tailFused, (hN / SMALL_H) / 2),
-  LOAD(readResidue, 1),
-  LOAD(isNotZero, 256),
-  LOAD(isEqual, 256),
+#define LOAD(name, workGroups)                                                 \
+  name(program, queue.get(), device, workGroups, #name, timeKernels)
+      LOAD(carryFused, BIG_H + 1), LOAD(carryFusedMul, BIG_H + 1),
+      LOAD(fftP, BIG_H), LOAD(fftW, BIG_H), LOAD(fftH, (hN / SMALL_H)),
+      LOAD(fftMiddleIn, hN / (256 * (BIG_H / SMALL_H))),
+      LOAD(fftMiddleOut, hN / (256 * (BIG_H / SMALL_H))),
+      LOAD(carryA, nW * (BIG_H / 16)), LOAD(carryM, nW * (BIG_H / 16)),
+      LOAD(carryB, nW * (BIG_H / 16)),
+      LOAD(transposeW, (W / 64) * (BIG_H / 64)),
+      LOAD(transposeH, (W / 64) * (BIG_H / 64)),
+      LOAD(transposeIn, (W / 64) * (BIG_H / 64)),
+      LOAD(transposeOut, (W / 64) * (BIG_H / 64)), LOAD(square, hN / SMALL_H),
+      LOAD(multiply, hN / SMALL_H), LOAD(multiplySub, hN / SMALL_H),
+      LOAD(tailFused, (hN / SMALL_H) / 2), LOAD(readResidue, 1),
+      LOAD(isNotZero, 256), LOAD(isEqual, 256),
 #undef LOAD
 
-  bufData( makeBuf(context, CL_MEM_READ_WRITE, N * sizeof(int))),
-  bufCheck(makeBuf(context, CL_MEM_READ_WRITE, N * sizeof(int))),
-  bufAux(  makeBuf(context, CL_MEM_READ_WRITE, N * sizeof(int))),
-  bufBase( makeBuf(context, CL_MEM_READ_WRITE, N * sizeof(int))),
-  bufAcc(  makeBuf(context, CL_MEM_READ_WRITE, N * sizeof(int))),
-  
-  bufTrigW(genSmallTrig(context, W, nW)),
-  bufTrigH(genSmallTrig(context, SMALL_H, nH)),
-  buf1{makeBuf(    context, BUF_RW, bufSize)},
-  buf2{makeBuf(    context, BUF_RW, bufSize)},
-  buf3{makeBuf(    context, BUF_RW, bufSize)},
-  bufCarry{makeBuf(context, BUF_RW, bufSize / 2)},
-  bufReady{makeBuf(context, BUF_RW, BIG_H * sizeof(int))},
-  bufSmallOut(makeBuf(context, CL_MEM_READ_WRITE, 256 * sizeof(int))),
-  bufBaseDown(makeBuf(context, BUF_RW, bufSize))
-{    
+      bufData(makeBuf(context, CL_MEM_READ_WRITE, N * sizeof(int))),
+      bufCheck(makeBuf(context, CL_MEM_READ_WRITE, N * sizeof(int))),
+      bufAux(makeBuf(context, CL_MEM_READ_WRITE, N * sizeof(int))),
+      bufBase(makeBuf(context, CL_MEM_READ_WRITE, N * sizeof(int))),
+      bufAcc(makeBuf(context, CL_MEM_READ_WRITE, N * sizeof(int))),
+
+      bufTrigW(genSmallTrig(context, W, nW)),
+      bufTrigH(genSmallTrig(context, SMALL_H, nH)),
+      buf1{makeBuf(context, BUF_RW, bufSize)},
+      buf2{makeBuf(context, BUF_RW, bufSize)},
+      buf3{makeBuf(context, BUF_RW, bufSize)},
+      bufCarry{makeBuf(context, BUF_RW, bufSize / 2)},
+      bufReady{makeBuf(context, BUF_RW, BIG_H * sizeof(int))},
+      bufSmallOut(makeBuf(context, CL_MEM_READ_WRITE, 256 * sizeof(int))),
+      bufBaseDown(makeBuf(context, BUF_RW, bufSize)) {
   setupWeights(context, bufA, bufI, W, BIG_H, E);
 
   carryFused.setFixedArgs(3, bufA, bufI, bufTrigW);
   carryFusedMul.setFixedArgs(3, bufA, bufI, bufTrigW);
-    
+
   fftP.setFixedArgs(2, bufA, bufTrigW);
   fftW.setFixedArgs(1, bufTrigW);
   fftH.setFixedArgs(1, bufTrigH);
-    
+
   carryA.setFixedArgs(3, bufI);
   carryM.setFixedArgs(3, bufI);
   tailFused.setFixedArgs(1, bufTrigH);
-    
+
   queue.zero(bufReady, BIG_H * sizeof(int));
-  queue.zero(bufAcc,   N * sizeof(int));
+  queue.zero(bufAcc, N * sizeof(int));
   queue.write(bufAcc, std::vector<u32>{1});
 }
 
@@ -152,13 +143,14 @@ void logTimeKernels(std::initializer_list<Kernel *> kerns) {
     total += info.totalTime;
   }
 
-  // std::sort(infos.begin(), infos.end(), [](const Info &a, const Info &b) { return a.stats.sum >= b.stats.sum; });
+  // std::sort(infos.begin(), infos.end(), [](const Info &a, const Info &b) {
+  // return a.stats.sum >= b.stats.sum; });
 
   for (Info info : infos) {
     float percent = 100 / total * info.totalTime;
     if (true || percent >= .1f) {
-      log("%4.1f%% %-14s : %6.0f us/call x %5d calls\n",
-          percent, info.name.c_str(), info.avgTime, info.n);
+      log("%4.1f%% %-14s : %6.0f us/call x %5d calls\n", percent,
+          info.name.c_str(), info.avgTime, info.n);
     }
   }
   log("\n");
@@ -169,17 +161,20 @@ struct FftConfig {
   u32 fftSize;
   u32 maxExp;
 
-  static u32 getMaxExp(u32 fftSize) { return fftSize * (17.77 + 0.33 * (24 - log2(fftSize))); }
-  
-  FftConfig(u32 width, u32 height, u32 middle) :
-    width(width),
-    height(height),
-    middle(middle),
-    fftSize(width * height * middle * 2),
-    // 17.88 + 0.36 * (24 - log2(n)); Update after feedback on 86700001, FFT 4608 (18.37b/w) being insufficient.
-    maxExp(getMaxExp(fftSize)) {
-    assert(width == 64  || width == 256 || width  == 512 || width == 1024 || width == 2048 || width == 4096);
-    assert(height == 64 || height == 256 || height == 512 || height == 1024 || height == 2048);
+  static u32 getMaxExp(u32 fftSize) {
+    return fftSize * (17.77 + 0.33 * (24 - log2(fftSize)));
+  }
+
+  FftConfig(u32 width, u32 height, u32 middle)
+      : width(width), height(height), middle(middle),
+        fftSize(width * height * middle * 2),
+        // 17.88 + 0.36 * (24 - log2(n)); Update after feedback on 86700001, FFT
+        // 4608 (18.37b/w) being insufficient.
+        maxExp(getMaxExp(fftSize)) {
+    assert(width == 64 || width == 256 || width == 512 || width == 1024 ||
+           width == 2048 || width == 4096);
+    assert(height == 64 || height == 256 || height == 512 || height == 1024 ||
+           height == 2048);
     assert(middle == 1 || middle == 3 || middle == 5 || middle == 9);
   }
 };
@@ -193,39 +188,54 @@ static std::vector<FftConfig> genConfigs() {
       }
     }
   }
-  std::sort(configs.begin(), configs.end(), [](const FftConfig &a, const FftConfig &b) {
-      if (a.fftSize != b.fftSize) { return (a.fftSize < b.fftSize); }
-      assert(a.width != b.width);
-      if (a.width == 1024) { return true; }
-      if (b.width == 1024) { return false; }
-      return (a.width < b.width);
-    });
+  std::sort(configs.begin(), configs.end(),
+            [](const FftConfig &a, const FftConfig &b) {
+              if (a.fftSize != b.fftSize) {
+                return (a.fftSize < b.fftSize);
+              }
+              assert(a.width != b.width);
+              if (a.width == 1024) {
+                return true;
+              }
+              if (b.width == 1024) {
+                return false;
+              }
+              return (a.width < b.width);
+            });
   return configs;
 }
 
-static FftConfig getFftConfig(const std::vector<FftConfig> &configs, u32 E, int argsFftSize) {
+static FftConfig getFftConfig(const std::vector<FftConfig> &configs, u32 E,
+                              int argsFftSize) {
   int i = 0;
   int n = int(configs.size());
   if (argsFftSize < 10) { // fft delta or not specified.
-    while (i < n - 1 && configs[i].maxExp < E) { ++i; }      
+    while (i < n - 1 && configs[i].maxExp < E) {
+      ++i;
+    }
     i = std::max(0, std::min(i + argsFftSize, n - 1));
   } else { // user-specified fft size.
-    while (i < n - 1 && u32(argsFftSize) > configs[i].fftSize) { ++i; }      
+    while (i < n - 1 && u32(argsFftSize) > configs[i].fftSize) {
+      ++i;
+    }
   }
   return configs[i];
 }
 
 std::vector<int> Gpu::readSmall(Buffer &buf, u32 start) {
   readResidue(buf, bufSmallOut, start);
-  return queue.read<int>(bufSmallOut, 128);                    
+  return queue.read<int>(bufSmallOut, 128);
 }
 
 static std::string numberK(u32 n) {
-  return (n % (1024 * 1024) == 0) ? std::to_string(n / (1024 * 1024)) + "M" : (n % 1024 == 0) ? std::to_string(n / 1024) + "K" : std::to_string(n);
+  return (n % (1024 * 1024) == 0) ? std::to_string(n / (1024 * 1024)) + "M"
+         : (n % 1024 == 0)        ? std::to_string(n / 1024) + "K"
+                                  : std::to_string(n);
 }
 
 static std::string configName(u32 width, u32 height, u32 middle) {
-  return numberK(width) + '-' + numberK(height) + ((middle != 1) ? "-"s + numberK(middle) : ""s);
+  return numberK(width) + '-' + numberK(height) +
+         ((middle != 1) ? "-"s + numberK(middle) : ""s);
 }
 
 std::unique_ptr<Gpu> Gpu::make(u32 E, const Args &args) {
@@ -236,10 +246,9 @@ std::unique_ptr<Gpu> Gpu::make(u32 E, const Args &args) {
     for (auto c : configs) {
       if (c.fftSize != activeSize) {
         if (!variants.empty()) {
-          log("FFT %5s [%6.2fM - %7.2fM] %s\n",
-              numberK(activeSize).c_str(),
-              activeSize * 1.5 / 1'000'000, FftConfig::getMaxExp(activeSize) / 1'000'000.0,
-              variants.c_str());
+          log("FFT %5s [%6.2fM - %7.2fM] %s\n", numberK(activeSize).c_str(),
+              activeSize * 1.5 / 1'000'000,
+              FftConfig::getMaxExp(activeSize) / 1'000'000.0, variants.c_str());
           variants.clear();
         }
       }
@@ -247,28 +256,30 @@ std::unique_ptr<Gpu> Gpu::make(u32 E, const Args &args) {
       variants += " "s + configName(c.width, c.height, c.middle);
     }
     if (!variants.empty()) {
-      log("FFT %5s [%6.2fM - %7.2fM] %s\n",
-          numberK(activeSize).c_str(),
-          activeSize * 1.5 / 1'000'000, FftConfig::getMaxExp(activeSize) / 1'000'000.0,
-          variants.c_str());
+      log("FFT %5s [%6.2fM - %7.2fM] %s\n", numberK(activeSize).c_str(),
+          activeSize * 1.5 / 1'000'000,
+          FftConfig::getMaxExp(activeSize) / 1'000'000.0, variants.c_str());
     }
   }
-        
+
   FftConfig config = getFftConfig(configs, E, args.fftSize);
-  int WIDTH        = config.width;
+  int WIDTH = config.width;
   int SMALL_HEIGHT = config.height;
-  int MIDDLE       = config.middle;
+  int MIDDLE = config.middle;
   int N = WIDTH * SMALL_HEIGHT * MIDDLE * 2;
 
-  std::string configName = (N % (1024 * 1024)) ? std::to_string(N / 1024) + "K" : std::to_string(N / (1024 * 1024)) + "M";
+  std::string configName = (N % (1024 * 1024))
+                               ? std::to_string(N / 1024) + "K"
+                               : std::to_string(N / (1024 * 1024)) + "M";
 
   int nW = (WIDTH == 1024 || WIDTH == 256) ? 4 : 8;
   int nH = (SMALL_HEIGHT == 1024 || SMALL_HEIGHT == 256) ? 4 : 8;
 
   float bitsPerWord = E / float(N);
-  std::string strMiddle = (MIDDLE == 1) ? "" : (std::string(", Middle ") + std::to_string(MIDDLE));
-  log("%u FFT %dK: Width %dx%d, Height %dx%d%s; %.2f bits/word\n",
-      E, N / 1024, WIDTH / nW, nW, SMALL_HEIGHT / nH, nH, strMiddle.c_str(), bitsPerWord);
+  std::string strMiddle =
+      (MIDDLE == 1) ? "" : (std::string(", Middle ") + std::to_string(MIDDLE));
+  log("%u FFT %dK: Width %dx%d, Height %dx%d%s; %.2f bits/word\n", E, N / 1024,
+      WIDTH / nW, nW, SMALL_HEIGHT / nH, nH, strMiddle.c_str(), bitsPerWord);
 
   if (bitsPerWord > 20) {
     log("FFT size too small for exponent (%.2f bits/word).\n", bitsPerWord);
@@ -279,37 +290,47 @@ std::unique_ptr<Gpu> Gpu::make(u32 E, const Args &args) {
     log("FFT size too large for exponent (%.2f bits/word).\n", bitsPerWord);
     throw "FFT size too large";
   }
-    
-  bool useLongCarry = (bitsPerWord < 14.5f)
-    || (args.carry == Args::CARRY_LONG)
-    || (args.carry == Args::CARRY_AUTO && WIDTH >= 2048);
-  
+
+  bool useLongCarry = (bitsPerWord < 14.5f) ||
+                      (args.carry == Args::CARRY_LONG) ||
+                      (args.carry == Args::CARRY_AUTO && WIDTH >= 2048);
+
   log("using %s carry kernels\n", useLongCarry ? "long" : "short");
 
   std::string clArgs = args.clArgs;
-  if (!args.dump.empty()) { clArgs += " -save-temps=" + args.dump + "/" + configName; }
+  if (!args.dump.empty()) {
+    clArgs += " -save-temps=" + args.dump + "/" + configName;
+  }
 
   bool timeKernels = args.timeKernels;
-    
+
   cl_device_id device = getDevice(args.device);
-  if (!device) { throw "No OpenCL device"; }
+  if (!device) {
+    throw "No OpenCL device";
+  }
 
   log("%s\n", getLongInfo(device).c_str());
   // if (args.cpu.empty()) { args.cpu = getShortInfo(device); }
 
   Context context(createContext(device));
   Holder<cl_program> program(compile(device, context.get(), "gpuowl", clArgs,
-                                     {{"EXP", E}, {"WIDTH", WIDTH}, {"SMALL_HEIGHT", SMALL_HEIGHT}, {"MIDDLE", MIDDLE}},
+                                     {{"EXP", E},
+                                      {"WIDTH", WIDTH},
+                                      {"SMALL_HEIGHT", SMALL_HEIGHT},
+                                      {"MIDDLE", MIDDLE}},
                                      args.usePrecompiled));
-  if (!program) { throw "OpenCL compilation"; }
+  if (!program) {
+    throw "OpenCL compilation";
+  }
 
-  return std::make_unique<Gpu>(E, WIDTH, SMALL_HEIGHT * MIDDLE, SMALL_HEIGHT, nW, nH,
-                          program.get(), device, context.get(), timeKernels, useLongCarry);
+  return std::make_unique<Gpu>(E, WIDTH, SMALL_HEIGHT * MIDDLE, SMALL_HEIGHT,
+                               nW, nH, program.get(), device, context.get(),
+                               timeKernels, useLongCarry);
 }
 
-std::vector<u32> Gpu::readData()  { return compactBits(readOut(bufData),  E); }
+std::vector<u32> Gpu::readData() { return compactBits(readOut(bufData), E); }
 std::vector<u32> Gpu::readCheck() { return compactBits(readOut(bufCheck), E); }
-std::vector<u32> Gpu::readAcc()   { return compactBits(readOut(bufAcc), E); }
+std::vector<u32> Gpu::readAcc() { return compactBits(readOut(bufAcc), E); }
 
 std::vector<u32> Gpu::writeData(const std::vector<u32> &v) {
   writeIn(v, bufData);
@@ -325,25 +346,27 @@ std::vector<u32> Gpu::writeCheck(const std::vector<u32> &v) {
 void Gpu::modMul(Buffer &in, Buffer &io) {
   fftP(in, buf1);
   tW(buf1, buf3);
-    
+
   fftP(io, buf1);
   tW(buf1, buf2);
-    
+
   fftH(buf2);
   fftH(buf3);
   multiply(buf2, buf3);
   fftH(buf2);
 
-  tH(buf2, buf1);    
+  tH(buf2, buf1);
 
   fftW(buf1);
   carryA(buf1, io, bufCarry);
   carryB(io, bufCarry);
 };
 
-void Gpu::writeState(const std::vector<u32> &check, const std::vector<u32> &base, const std::vector<u32> &acc, u32 blockSize) {
+void Gpu::writeState(const std::vector<u32> &check,
+                     const std::vector<u32> &base, const std::vector<u32> &acc,
+                     u32 blockSize) {
   assert(blockSize > 0);
-    
+
   writeCheck(check);
   queue.copy<int>(bufCheck, bufData, N);
   queue.copy<int>(bufCheck, bufBase, N);
@@ -357,13 +380,13 @@ void Gpu::writeState(const std::vector<u32> &check, const std::vector<u32> &base
 
   assert((n & (n - 1)) == 0);
   assert(blockSize % n == 0);
-    
+
   blockSize /= n;
   for (u32 i = 0; i < blockSize - 1; ++i) {
     dataLoopMul(std::vector<bool>(n));
     modMul(bufBase, bufData);
   }
-    
+
   writeBase(base);
   modMul(bufBase, bufData);
 
@@ -371,7 +394,7 @@ void Gpu::writeState(const std::vector<u32> &check, const std::vector<u32> &base
 }
 
 void Gpu::updateCheck() { modMul(bufData, bufCheck); }
-  
+
 bool Gpu::doCheck(int blockSize) {
   queue.copy<int>(bufCheck, bufAux, N);
   modSqLoopMul(bufAux, std::vector<bool>(blockSize));
@@ -382,7 +405,9 @@ bool Gpu::doCheck(int blockSize) {
 
 static u32 countOnBits(const std::vector<bool> &bits) {
   u32 n = 0;
-  for (bool b : bits) { n += b; }
+  for (bool b : bits) {
+    n += b;
+  }
   return n;
 }
 
@@ -407,19 +432,25 @@ u32 Gpu::dataLoopAcc(u32 kBegin, u32 kEnd, const std::vector<bool> &kset) {
 */
 
 void Gpu::logTimeKernels() {
-  ::logTimeKernels({&carryFused, &carryFusedMul, &fftP, &fftW, &fftH, &fftMiddleIn, &fftMiddleOut,
-        &carryA, &carryM, &carryB,
-        &transposeW, &transposeH, &transposeIn, &transposeOut,
-        &square, &multiply, &multiplySub, &tailFused, &readResidue, &isNotZero, &isEqual});
+  ::logTimeKernels({&carryFused,  &carryFusedMul, &fftP,         &fftW,
+                    &fftH,        &fftMiddleIn,   &fftMiddleOut, &carryA,
+                    &carryM,      &carryB,        &transposeW,   &transposeH,
+                    &transposeIn, &transposeOut,  &square,       &multiply,
+                    &multiplySub, &tailFused,     &readResidue,  &isNotZero,
+                    &isEqual});
 }
 
 void Gpu::tW(Buffer &in, Buffer &out) {
   transposeW(in, out);
-  if (useMiddle) { fftMiddleIn(out); }
+  if (useMiddle) {
+    fftMiddleIn(out);
+  }
 }
 
 void Gpu::tH(Buffer &in, Buffer &out) {
-  if (useMiddle) { fftMiddleOut(in); }
+  if (useMiddle) {
+    fftMiddleOut(in);
+  }
   transposeH(in, out);
 }
 
@@ -430,13 +461,15 @@ std::vector<u32> Gpu::writeBase(const std::vector<u32> &v) {
   fftH(bufBaseDown);
   return v;
 }
-  
+
 std::vector<int> Gpu::readOut(Buffer &buf) {
   transposeOut(buf, bufAux);
   return queue.read<int>(bufAux, N);
 }
 
-void Gpu::writeIn(const std::vector<u32> &words, Buffer &buf) { writeIn(expandBits(words, N, E), buf); }
+void Gpu::writeIn(const std::vector<u32> &words, Buffer &buf) {
+  writeIn(expandBits(words, N, E), buf);
+}
 
 void Gpu::writeIn(const std::vector<int> &words, Buffer &buf) {
   queue.write(bufAux, words);
@@ -446,9 +479,11 @@ void Gpu::writeIn(const std::vector<int> &words, Buffer &buf) {
 void Gpu::modSqLoopMul(Buffer &io, const std::vector<bool> &muls) {
   assert(!muls.empty());
   bool dataIsOut = true;
-        
+
   for (auto it = muls.begin(), end = muls.end(); it < end; ++it) {
-    if (dataIsOut) { fftP(io, buf1); }
+    if (dataIsOut) {
+      fftP(io, buf1);
+    }
     tW(buf1, buf2);
     tailFused(buf2);
     tH(buf2, buf1);
@@ -459,7 +494,8 @@ void Gpu::modSqLoopMul(Buffer &io, const std::vector<bool> &muls) {
       *it ? carryM(buf1, io, bufCarry) : carryA(buf1, io, bufCarry);
       carryB(io, bufCarry);
     } else {
-      *it ? carryFusedMul(buf1, bufCarry, bufReady) : carryFused(buf1, bufCarry, bufReady);
+      *it ? carryFusedMul(buf1, bufCarry, bufReady)
+          : carryFused(buf1, bufCarry, bufReady);
     }
   }
 }
@@ -469,19 +505,23 @@ void Gpu::exitKerns(Buffer &buf, Buffer &bufWords) {
   carryA(buf, bufWords, bufCarry);
   carryB(bufWords, bufCarry);
 }
-  
+
 void Gpu::modSqLoopAcc(Buffer &io, const std::vector<bool> &accs) {
   assert(!accs.empty());
   bool dataIsOut = true;
-  bool accIsOut  = true;
-    
+  bool accIsOut = true;
+
   for (auto it = accs.begin(), end = accs.end(); it < end; ++it) {
-    if (dataIsOut) { fftP(io, buf1); }
+    if (dataIsOut) {
+      fftP(io, buf1);
+    }
     tW(buf1, buf2);
-    
+
     if (*it) {
       fftH(buf2);
-      if (accIsOut) { fftP(bufAcc, buf3); }
+      if (accIsOut) {
+        fftP(bufAcc, buf3);
+      }
       tW(buf3, buf1);
       fftH(buf1);
       multiplySub(buf1, buf2, bufBaseDown);
@@ -490,7 +530,8 @@ void Gpu::modSqLoopAcc(Buffer &io, const std::vector<bool> &accs) {
       square(buf2);
       fftH(buf2);
 
-      accIsOut = useLongCarry || !any_of(next(it), end, [](bool on) {return on; });
+      accIsOut =
+          useLongCarry || !any_of(next(it), end, [](bool on) { return on; });
       if (accIsOut) {
         exitKerns(buf3, bufAcc);
       } else {
@@ -499,7 +540,7 @@ void Gpu::modSqLoopAcc(Buffer &io, const std::vector<bool> &accs) {
     } else {
       tailFused(buf2);
     }
-      
+
     tH(buf2, buf1);
 
     dataIsOut = useLongCarry || it == prev(end);
@@ -518,32 +559,36 @@ bool Gpu::equalNotZero(Buffer &buf1, Buffer &buf2) {
   isEqual(sizeBytes, buf1, buf2, bufSmallOut);
   return queue.read<int>(bufSmallOut, 1)[0];
 }
-  
+
 u64 Gpu::bufResidue(Buffer &buf) {
-  u32 earlyStart = N/2 - 32;
+  u32 earlyStart = N / 2 - 32;
   std::vector<int> readBuf = readSmall(buf, earlyStart);
   return residueFromRaw(E, N, readBuf);
 }
 
-static std::string makeLogStr(u32 E, std::string status, int k, u64 res, const StatsInfo &info, u32 nIters) {
+static std::string makeLogStr(u32 E, std::string status, int k, u64 res,
+                              const StatsInfo &info, u32 nIters) {
   int etaMins = (nIters - k) * info.msPerIt * (1 / 60000.f) + .5f;
-  int days  = etaMins / (24 * 60);
+  int days = etaMins / (24 * 60);
   int hours = etaMins / 60 % 24;
-  int mins  = etaMins % 60;
+  int mins = etaMins % 60;
 
   char buf[256];
   std::string ghzStr;
-  
-  snprintf(buf, sizeof(buf), "%u %2s %8d %5.2f%%; %.2f ms/sq, %4u MULs;%s ETA %dd %02d:%02d; %016llx",
-           E, status.c_str(), k, k / float(nIters) * 100,
-           info.msPerSq, info.nMul,
-           ghzStr.c_str(), days, hours, mins, res);
+
+  snprintf(
+      buf, sizeof(buf),
+      "%u %2s %8d %5.2f%%; %.2f ms/sq, %4u MULs;%s ETA %dd %02d:%02d; %016llx",
+      E, status.c_str(), k, k / float(nIters) * 100, info.msPerSq, info.nMul,
+      ghzStr.c_str(), days, hours, mins, res);
   return buf;
 }
 
-static void doLog(int E, int k, u32 timeCheck, u64 res, bool checkOK, Stats &stats, u32 nIters) {
-  log("%s (check %.2fs)\n",      
-      makeLogStr(E, checkOK ? "OK" : "EE", k, res, stats.reset(), nIters).c_str(),
+static void doLog(int E, int k, u32 timeCheck, u64 res, bool checkOK,
+                  Stats &stats, u32 nIters) {
+  log("%s (check %.2fs)\n",
+      makeLogStr(E, checkOK ? "OK" : "EE", k, res, stats.reset(), nIters)
+          .c_str(),
       timeCheck * .001f);
   stats.reset();
 }
@@ -556,13 +601,15 @@ static void doSmallLog(int E, int k, u64 res, Stats &stats, u32 nIters) {
 static std::vector<u32> bitNeg(const std::vector<u32> &v) {
   std::vector<u32> ret;
   ret.reserve(v.size());
-  for (auto x : v) { ret.push_back(~x); }
+  for (auto x : v) {
+    ret.push_back(~x);
+  }
   return ret;
 }
 
 // Checks whether a == bitNeg(b) ignoring the last word.
-// (this is because the last word is often only partially filled with bits of exponent E)
-// 'a' passed by value intentional.
+// (this is because the last word is often only partially filled with bits of
+// exponent E) 'a' passed by value intentional.
 static bool equalNeg(std::vector<u32> a, const std::vector<u32> &b) {
   assert(!a.empty() && !b.empty());
   auto c = bitNeg(b);
@@ -574,12 +621,13 @@ static bool equalNeg(std::vector<u32> a, const std::vector<u32> &b) {
 PRPState Gpu::loadPRP(u32 E, u32 iniB1, u32 iniBlockSize) {
   auto loaded = PRPState::load(E, iniB1, iniBlockSize);
   if (loaded.stage == 0) {
-    doStage0(loaded.k, loaded.B1, loaded.blockSize, std::move(loaded.base), std::move(loaded.basePower));
+    doStage0(loaded.k, loaded.B1, loaded.blockSize, std::move(loaded.base),
+             std::move(loaded.basePower));
     loaded = PRPState::load(E, iniB1, iniBlockSize);
   }
 
   assert(loaded.stage == 1);
-  
+
   writeState(loaded.check, loaded.base, loaded.gcdAcc, loaded.blockSize);
 
   u64 res64 = dataResidue();
@@ -599,11 +647,14 @@ PRPState Gpu::loadPRP(u32 E, u32 iniB1, u32 iniBlockSize) {
   return loaded;
 }
 
-static std::pair<std::vector<bool>, u32> kselect(u32 E, u32 blockSize, u32 B1, u32 B2) {
+static std::pair<std::vector<bool>, u32> kselect(u32 E, u32 blockSize, u32 B1,
+                                                 u32 B2) {
   u32 lastIteration = ((E - 2) / blockSize + 1) * blockSize;
-  
-  if (!B1) { return make_pair(std::vector<bool>(lastIteration + 1), 0); }
-  
+
+  if (!B1) {
+    return make_pair(std::vector<bool>(lastIteration + 1), 0);
+  }
+
   // log("Starting P-1 selection: exp %u, B1 %u, B2 %u\n", E, B1, B2);
   Timer timer;
 
@@ -612,7 +663,7 @@ static std::pair<std::vector<bool>, u32> kselect(u32 E, u32 blockSize, u32 B1, u
   std::vector<bool> on(lastIteration + 1);
 
   u32 reportB2 = 0;
-  
+
   for (u32 p : primes.from(B1)) {
     u32 z = primes.zn2(p);
     if (z <= lastIteration) {
@@ -628,15 +679,19 @@ static std::pair<std::vector<bool>, u32> kselect(u32 E, u32 blockSize, u32 B1, u
       reportB2 = p - 1;
     }
   }
-  if (reportB2 == 0) { reportB2 = B2; }
-  
-  on[1] = true; // special-case to allow testing P-1 first-stage early, as: base^2 - 1 = (base - 1) * (base + 1)
-  log("%u B1=%u B2=%u (effective B2=%u) selected %u P-1 points in %.2fs\n",
-      E, B1, B2, reportB2, countOnBits(on), timer.deltaMillis() * (1.0 / 1000));
+  if (reportB2 == 0) {
+    reportB2 = B2;
+  }
+
+  on[1] = true; // special-case to allow testing P-1 first-stage early, as:
+                // base^2 - 1 = (base - 1) * (base + 1)
+  log("%u B1=%u B2=%u (effective B2=%u) selected %u P-1 points in %.2fs\n", E,
+      B1, B2, reportB2, countOnBits(on), timer.deltaMillis() * (1.0 / 1000));
   return make_pair(on, reportB2);
 }
 
-void Gpu::doStage0(u32 k, u32 B1, u32 blockSize, std::vector<u32> &&base, std::vector<bool> &&basePower) {
+void Gpu::doStage0(u32 k, u32 B1, u32 blockSize, std::vector<u32> &&base,
+                   std::vector<bool> &&basePower) {
   writeData(base);
   u32 kEnd = basePower.size();
   assert(k < kEnd);
@@ -646,7 +701,8 @@ void Gpu::doStage0(u32 k, u32 B1, u32 blockSize, std::vector<u32> &&base, std::v
   Signal signal;
   while (k < kEnd) {
     u32 nIts = std::min(u32(kEnd - k), blockSize);
-    dataLoopMul(std::vector<bool>(basePower.begin() + k, basePower.begin() + (k + nIts)));
+    dataLoopMul(std::vector<bool>(basePower.begin() + k,
+                                  basePower.begin() + (k + nIts)));
     queue.finish();
     stats.add(timer.deltaMillis(), nIts, 0);
     k += nIts;
@@ -658,14 +714,18 @@ void Gpu::doStage0(u32 k, u32 B1, u32 blockSize, std::vector<u32> &&base, std::v
     }
 
     if (k % 10000 == 0 || doStop) {
-      auto data = readData();      
+      auto data = readData();
       u64 res64 = residue(data);
-      log("%s\n", makeLogStr(E, "P-1", k, res64, stats.reset(), basePower.size()).c_str());
+      log("%s\n",
+          makeLogStr(E, "P-1", k, res64, stats.reset(), basePower.size())
+              .c_str());
       stats.reset();
       PRPState{k, B1, blockSize, res64, 0, basePower, data}.save(E);
     }
 
-    if (doStop) { throw "stop requested"; }
+    if (doStop) {
+      throw "stop requested";
+    }
   }
   PRPState{}.initStage1(B1, blockSize, readData()).save(E);
 }
@@ -677,31 +737,35 @@ PRPResult Gpu::isPrimePRP(u32 E, const Args &args, u32 B1, u32 B2) {
   if (B1 != 0 && B2 == 0) {
     B2 = E * 1.1; // by default test a some primes above E as well.
   }
-  // log("PRP M(%d), FFT %dK, %.2f bits/word, B1 %u, B2 %u\n", E, N/1024, E / float(N), B1, B2);
+  // log("PRP M(%d), FFT %dK, %.2f bits/word, B1 %u, B2 %u\n", E, N/1024, E /
+  // float(N), B1, B2);
 
   PRPState loaded = loadPRP(E, B1, args.blockSize);
 
   u32 k = loaded.k;
   u32 blockSize = loaded.blockSize;
   assert(blockSize > 0 && 10000 % blockSize == 0);
-  
+
   std::vector<u32> base = loaded.base;
-  
-  const u32 kEnd = E - 1; // Type-4 per http://www.mersenneforum.org/showpost.php?p=468378&postcount=209
+
+  const u32 kEnd =
+      E - 1; // Type-4 per
+             // http://www.mersenneforum.org/showpost.php?p=468378&postcount=209
   assert(k < kEnd);
 
   auto kselectRet = kselect(E, blockSize, B1, B2);
   std::vector<bool> kset = kselectRet.first;
   u32 effectiveB2 = kselectRet.second;
-  
+
   const u32 checkStep = blockSize * blockSize;
-  
+
   u32 startK = k;
-  
+
   Signal signal;
   Stats stats;
 
-  // Number of sequential errors (with no success in between). If this ever gets high enough, stop.
+  // Number of sequential errors (with no success in between). If this ever gets
+  // high enough, stop.
   int nSeqErrors = 0;
 
   bool isPrime = false;
@@ -717,12 +781,16 @@ PRPResult Gpu::isPrimePRP(u32 E, const Args &args, u32 B1, u32 B2) {
       nAcc = dataLoopAcc(k, kEnd, kset);
       auto words = this->roundtripData();
       finalRes64 = residue(words);
-      isPrime = (words == base) || equalNeg(words, base); // words == bitNeg(base));
+      isPrime =
+          (words == base) || equalNeg(words, base); // words == bitNeg(base));
 
-      log("%s %8d / %d, %016llx (base %016llx)\n", isPrime ? "PP" : "CC", kEnd, E, finalRes64, residue(base));
-      
+      log("%s %8d / %d, %016llx (base %016llx)\n", isPrime ? "PP" : "CC", kEnd,
+          E, finalRes64, residue(base));
+
       int itersLeft = blockSize - (kEnd - k);
-      if (itersLeft > 0) { nAcc += dataLoopAcc(kEnd, kEnd + itersLeft, kset); }
+      if (itersLeft > 0) {
+        nAcc += dataLoopAcc(kEnd, kEnd + itersLeft, kset);
+      }
     } else {
       nAcc = dataLoopAcc(k, k + blockSize, kset);
     }
@@ -738,7 +806,7 @@ PRPResult Gpu::isPrimePRP(u32 E, const Args &args, u32 B1, u32 B2) {
         return PRPResult{factor, false, 0, residue(base), effectiveB2};
       }
     }
-        
+
     stats.add(timer.deltaMillis(), blockSize, nAcc);
     bool doStop = signal.stopRequested();
     if (doStop) {
@@ -746,13 +814,17 @@ PRPResult Gpu::isPrimePRP(u32 E, const Args &args, u32 B1, u32 B2) {
       signal.release();
     }
 
-    bool doCheck = (k % checkStep == 0) || (k >= kEnd && k < kEnd + blockSize) || doStop || (k - startK == 2 * blockSize);
-    
+    bool doCheck = (k % checkStep == 0) ||
+                   (k >= kEnd && k < kEnd + blockSize) || doStop ||
+                   (k - startK == 2 * blockSize);
+
     if (!doCheck) {
       this->updateCheck();
       if (k % 10000 == 0) {
         doSmallLog(E, k, dataResidue(), stats, nTotalIters);
-        if (args.timeKernels) { this->logTimeKernels(); }
+        if (args.timeKernels) {
+          this->logTimeKernels();
+        }
       }
       continue;
     }
@@ -763,23 +835,31 @@ PRPResult Gpu::isPrimePRP(u32 E, const Args &args, u32 B1, u32 B2) {
     u64 res64 = dataResidue();
     std::vector<u32> gcdAcc = B1 ? readAcc() : std::vector<u32>();
 
-    // the check time (above) is accounted separately, not added to iteration time.
+    // the check time (above) is accounted separately, not added to iteration
+    // time.
     doLog(E, k, timer.deltaMillis(), res64, ok, stats, nTotalIters);
-    
+
     if (ok) {
-      if (k < kEnd) { PRPState{k, B1, blockSize, res64, 1, std::vector<bool>(), check, base, gcdAcc}.save(E); }
-      if (k % 1'000'000 < checkStep && nGcdAcc && !gcd->isOngoing() && !doStop) {
+      if (k < kEnd) {
+        PRPState{k,     B1,   blockSize, res64, 1, std::vector<bool>(),
+                 check, base, gcdAcc}
+            .save(E);
+      }
+      if (k % 1'000'000 < checkStep && nGcdAcc && !gcd->isOngoing() &&
+          !doStop) {
         gcd->start(E, gcdAcc, 0);
         nGcdAcc = 0;
       }
-      if (isPrime || k >= kEnd) { return PRPResult{"", isPrime, finalRes64, residue(base), effectiveB2}; }
-      nSeqErrors = 0;      
+      if (isPrime || k >= kEnd) {
+        return PRPResult{"", isPrime, finalRes64, residue(base), effectiveB2};
+      }
+      nSeqErrors = 0;
     } else {
       if (++nSeqErrors > 2) {
         log("%d sequential errors, will stop.\n", nSeqErrors);
         throw "too many errors";
       }
-      
+
       auto loaded = loadPRP(E, B1, blockSize);
       k = loaded.k;
       assert(blockSize == loaded.blockSize);
@@ -787,7 +867,11 @@ PRPResult Gpu::isPrimePRP(u32 E, const Args &args, u32 B1, u32 B2) {
       assert(B1 == loaded.B1);
       nGcdAcc = (B1 > 0);
     }
-    if (args.timeKernels) { this->logTimeKernels(); }
-    if (doStop) { throw "stop requested"; }
+    if (args.timeKernels) {
+      this->logTimeKernels();
+    }
+    if (doStop) {
+      throw "stop requested";
+    }
   }
 }

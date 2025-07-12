@@ -4,8 +4,8 @@
 
 #include "common.h"
 
-#include <vector>
 #include <string>
+#include <vector>
 
 u64 residue(const std::vector<u32> &words);
 
@@ -14,16 +14,17 @@ class PRPState {
   static constexpr const char *HEADER_v7 = "OWL PRP 7 %u %u %u %u %016llx\n";
 
   // Exponent, iteration, B1, block-size, res64, stage, nBitsBase
-  static constexpr const char *HEADER_v8 = "OWL PRP 8 %u %u %u %u %016llx %u %u\n";
+  static constexpr const char *HEADER_v8 =
+      "OWL PRP 8 %u %u %u %u %016llx %u %u\n";
 
   static constexpr const char *SUFFIX = "";
-  
+
   // bool loadV7(u32 E, u32 B1, u32 iniBlockSize);
   void loadInt(u32 E, u32 B1, u32 iniBlockSize);
   bool saveImpl(u32 E, const std::string &name);
   std::string durableName();
-  
-public:  
+
+public:
   u32 k;
   u32 B1;
   u32 blockSize;
@@ -31,7 +32,7 @@ public:
   u32 stage;
 
   std::vector<bool> basePower; // Stage-0 P-1 powerSmooth(B1).
-  
+
   std::vector<u32> check;
   std::vector<u32> base;
   std::vector<u32> gcdAcc;
@@ -41,8 +42,9 @@ public:
     prp.loadInt(E, B1, iniBlockSize);
     return prp;
   }
-  
+
   void save(u32 E);
 
-  PRPState initStage1(u32 iniB1, u32 iniBlockSize, const std::vector<u32> &iniBase);
+  PRPState initStage1(u32 iniB1, u32 iniBlockSize,
+                      const std::vector<u32> &iniBase);
 };
