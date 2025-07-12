@@ -4,7 +4,6 @@
 
 #include <cmath>
 #include <cassert>
-#include <numeric>
 
 void Stats::add(double millis, u32 sq, u32 mul) {
   time += millis;

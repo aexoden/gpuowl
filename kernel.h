@@ -13,7 +13,7 @@ class Kernel {
   Holder<cl_kernel> kernel;
   cl_queue queue;
   int workGroups;
-  string name;
+  std::string name;
   bool doTime;
   int groupSize;
   Stats stats;
@@ -56,7 +56,7 @@ public:
     }
   }
   
-  string getName() { return name; }
+  std::string getName() { return name; }
 
   StatsInfo resetStats() { return stats.reset(); }
 };

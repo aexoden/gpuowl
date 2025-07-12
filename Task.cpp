@@ -2,14 +2,13 @@
 
 #include "Gpu.h"
 #include "Result.h"
-#include "checkpoint.h"
 #include "args.h"
 
 #include <cstdio>
 #include <cmath>
 
-vector<string> getDevices() {
-  vector<string> ret;
+std::vector<std::string> getDevices() {
+  std::vector<std::string> ret;
   for (auto id : getDeviceIDs(false)) { ret.push_back(getLongInfo(id)); }
   return ret;
 }

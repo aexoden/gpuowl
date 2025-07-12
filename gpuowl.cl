@@ -11,10 +11,6 @@
 #pragma OPENCL EXTENSION cl_khr_fp64 : enable
 #endif
 
-// Common type names C++ - OpenCL.
-typedef uint u32;
-typedef ulong u64;
-
 #include "shared.h"
 
 // Expected defines: EXP the exponent.

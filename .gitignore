@@ -9,3 +9,5 @@ results.old
 tmp/
 tmp?/
 cuda/
+.vscode/
+.cache/

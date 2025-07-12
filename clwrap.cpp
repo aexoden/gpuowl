@@ -23,11 +23,11 @@ bool check(int err, const char *mes) {
 #define CHECK(what) assert(check(what));
 #define CHECK2(what, mes) assert(check(what, mes));
 
-vector<cl_device_id> getDeviceIDs(bool onlyGPU) {
+std::vector<cl_device_id> getDeviceIDs(bool onlyGPU) {
   cl_platform_id platforms[16];
   int nPlatforms = 0;
   CHECK(clGetPlatformIDs(16, platforms, (unsigned *) &nPlatforms));
-  vector<cl_device_id> ret;
+  std::vector<cl_device_id> ret;
   cl_device_id devices[64];
   for (int i = 0; i < nPlatforms; ++i) {
     unsigned n = 0;
@@ -57,7 +57,7 @@ bool getInfoMaybe(cl_device_id id, int what, size_t bufSize, void *buf) {
   return clGetDeviceInfo(id, what, bufSize, buf, NULL) == CL_SUCCESS;
 }
 
-static string getTopology(cl_device_id id) {
+static std::string getTopology(cl_device_id id) {
   char topology[64];
   cl_device_topology_amd top;
   if (!getInfoMaybe(id, CL_DEVICE_TOPOLOGY_AMD, sizeof(top), &top)) { return ""; }
@@ -66,18 +66,18 @@ static string getTopology(cl_device_id id) {
   return topology;
 }
 
-static string getBoardName(cl_device_id id) {
+static std::string getBoardName(cl_device_id id) {
   char boardName[64];
   return getInfoMaybe(id, CL_DEVICE_BOARD_NAME_AMD, sizeof(boardName), boardName) ? boardName : "";
 }
 
-string getHwName(cl_device_id id) {
+std::string getHwName(cl_device_id id) {
   char name[64];
   getInfo(id, CL_DEVICE_NAME, sizeof(name), name);
   return name;
 }
 
-static string getFreq(cl_device_id device) {
+static std::string getFreq(cl_device_id device) {
   unsigned computeUnits, frequency;
   getInfo(device, CL_DEVICE_MAX_COMPUTE_UNITS, sizeof(computeUnits), &computeUnits);
   getInfo(device, CL_DEVICE_MAX_CLOCK_FREQUENCY, sizeof(frequency), &frequency);
@@ -87,8 +87,8 @@ static string getFreq(cl_device_id device) {
   return info;
 }
 
-string getShortInfo(cl_device_id device) { return getHwName(device) + "-" + getFreq(device) + "-" + getTopology(device); }
-string getLongInfo(cl_device_id device) { return getShortInfo(device) + " " + getBoardName(device); }
+std::string getShortInfo(cl_device_id device) { return getHwName(device) + "-" + getFreq(device) + "-" + getTopology(device); }
+std::string getLongInfo(cl_device_id device) { return getShortInfo(device) + " " + getBoardName(device); }
 
 cl_context createContext(cl_device_id device) {
   int err;
@@ -103,7 +103,7 @@ void release(cl_mem buf)         { CHECK(clReleaseMemObject(buf)); }
 void release(cl_queue queue)     { CHECK(clReleaseCommandQueue(queue)); }
 void release(cl_kernel k)        { CHECK(clReleaseKernel(k)); }
 
-bool dumpBinary(cl_program program, const string &fileName) {
+bool dumpBinary(cl_program program, const std::string &fileName) {
   if (auto fo = openWrite(fileName)) {
     size_t size;
     CHECK(clGetProgramInfo(program, CL_PROGRAM_BINARY_SIZES, sizeof(size), &size, NULL));
@@ -116,8 +116,8 @@ bool dumpBinary(cl_program program, const string &fileName) {
   return false;
 }
 
-static string readFile(const string &name) {
-  string ret;
+static std::string readFile(const std::string &name) {
+  std::string ret;
   if (auto fi = openRead(name)) {
     char buf[1024];
     while (true) {
@@ -129,8 +129,8 @@ static string readFile(const string &name) {
   return ret;
 }
 
-static cl_program loadBinary(cl_device_id device, cl_context context, const string &binFile) {
-  string binary = readFile(binFile);
+static cl_program loadBinary(cl_device_id device, cl_context context, const std::string &binFile) {
+  std::string binary = readFile(binFile);
   cl_program program = 0;
   if (!binary.empty()) {  
     cl_device_id devices[] = {device};
@@ -148,8 +148,8 @@ static cl_program loadBinary(cl_device_id device, cl_context context, const stri
   return program;
 }
 
-static cl_program loadSource(cl_context context, const string &name) {
-  string stub = string("#include \"") + name + ".cl\"\n";
+static cl_program loadSource(cl_context context, const std::string &name) {
+  std::string stub = std::string("#include \"") + name + ".cl\"\n";
   
   const char *ptr = stub.c_str();
   size_t size = stub.size();
@@ -159,7 +159,7 @@ static cl_program loadSource(cl_context context, const string &name) {
   return program;  
 }
 
-static bool build(cl_program program, cl_device_id device, const string &args) {
+static bool build(cl_program program, cl_device_id device, const std::string &args) {
   Timer timer;
   int err = clBuildProgram(program, 1, &device, args.c_str(), NULL, NULL);
   bool ok = (err == CL_SUCCESS);
@@ -168,7 +168,7 @@ static bool build(cl_program program, cl_device_id device, const string &args) {
   size_t logSize;
   clGetProgramBuildInfo(program, device, CL_PROGRAM_BUILD_LOG, 0, nullptr, &logSize);
   if (logSize > 1) {
-    std::unique_ptr<char> buf(new char[logSize + 1]);
+    std::unique_ptr<char[]> buf(new char[logSize + 1]);
     clGetProgramBuildInfo(program, device, CL_PROGRAM_BUILD_LOG, logSize, buf.get(), &logSize);
     buf.get()[logSize] = 0;
     log("%s\n", buf.get());
@@ -177,19 +177,19 @@ static bool build(cl_program program, cl_device_id device, const string &args) {
   return ok;
 }
 
-cl_program compile(cl_device_id device, cl_context context, const string &name, const string &extraArgs,
-                   const vector<pair<string, unsigned>> &defines, bool usePrecompiled) {
-  string strDefines;
-  string config;
+cl_program compile(cl_device_id device, cl_context context, const std::string &name, const std::string &extraArgs,
+                   const std::vector<std::pair<std::string, unsigned>> &defines, bool usePrecompiled) {
+  std::string strDefines;
+  std::string config;
   for (auto d : defines) {
-    strDefines = strDefines + "-D" + d.first + "=" + to_string(d.second) + "u ";
-    config = config + "_" + to_string(d.second);
+    strDefines = strDefines + "-D" + d.first + "=" + std::to_string(d.second) + "u ";
+    config = config + "_" + std::to_string(d.second);
   }
-  string args = strDefines + extraArgs + " " + "-I. -cl-fast-relaxed-math -cl-std=CL2.0 ";
+  std::string args = strDefines + extraArgs + " " + "-I. -cl-fast-relaxed-math -cl-std=CL2.0 ";
 
   cl_program program = 0;
 
-  string binFile = string("precompiled/") + getHwName(device) + "_" + name + config + ".so";
+  std::string binFile = std::string("precompiled/") + getHwName(device) + "_" + name + config + ".so";
   if (usePrecompiled && (program = loadBinary(device, context, binFile))) {
     if (build(program, device, args)) {
       return program;
@@ -242,7 +242,7 @@ cl_queue makeQueue(cl_device_id d, cl_context c) {
 void flush( cl_queue q) { CHECK(clFlush(q)); }
 void finish(cl_queue q) { CHECK(clFinish(q)); }
 
-void run(cl_queue queue, cl_kernel kernel, size_t groupSize, size_t workSize, const string &name) {
+void run(cl_queue queue, cl_kernel kernel, size_t groupSize, size_t workSize, const std::string &name) {
   CHECK2(clEnqueueNDRangeKernel(queue, kernel, 1, NULL, &workSize, &groupSize, 0, NULL, NULL), name.c_str());
 }
 

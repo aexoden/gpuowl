@@ -1,0 +1,257 @@
+[
+  {
+    "arguments": [
+      "/usr/bin/g++",
+      "-c",
+      "-std=c++17",
+      "-O2",
+      "-DREV=\"a5a02bb-mod\"",
+      "-Wall",
+      "-pthread",
+      "-o",
+      "openowl",
+      "Worktodo.cpp"
+    ],
+    "directory": "/home/jason/Projects/gpuowl",
+    "file": "/home/jason/Projects/gpuowl/Worktodo.cpp",
+    "output": "/home/jason/Projects/gpuowl/openowl"
+  },
+  {
+    "arguments": [
+      "/usr/bin/g++",
+      "-c",
+      "-std=c++17",
+      "-O2",
+      "-DREV=\"a5a02bb-mod\"",
+      "-Wall",
+      "-pthread",
+      "-o",
+      "openowl",
+      "Result.cpp"
+    ],
+    "directory": "/home/jason/Projects/gpuowl",
+    "file": "/home/jason/Projects/gpuowl/Result.cpp",
+    "output": "/home/jason/Projects/gpuowl/openowl"
+  },
+  {
+    "arguments": [
+      "/usr/bin/g++",
+      "-c",
+      "-std=c++17",
+      "-O2",
+      "-DREV=\"a5a02bb-mod\"",
+      "-Wall",
+      "-pthread",
+      "-o",
+      "openowl",
+      "common.cpp"
+    ],
+    "directory": "/home/jason/Projects/gpuowl",
+    "file": "/home/jason/Projects/gpuowl/common.cpp",
+    "output": "/home/jason/Projects/gpuowl/openowl"
+  },
+  {
+    "arguments": [
+      "/usr/bin/g++",
+      "-c",
+      "-std=c++17",
+      "-O2",
+      "-DREV=\"a5a02bb-mod\"",
+      "-Wall",
+      "-pthread",
+      "-o",
+      "openowl",
+      "gpuowl.cpp"
+    ],
+    "directory": "/home/jason/Projects/gpuowl",
+    "file": "/home/jason/Projects/gpuowl/gpuowl.cpp",
+    "output": "/home/jason/Projects/gpuowl/openowl"
+  },
+  {
+    "arguments": [
+      "/usr/bin/g++",
+      "-c",
+      "-std=c++17",
+      "-O2",
+      "-DREV=\"a5a02bb-mod\"",
+      "-Wall",
+      "-pthread",
+      "-o",
+      "openowl",
+      "Gpu.cpp"
+    ],
+    "directory": "/home/jason/Projects/gpuowl",
+    "file": "/home/jason/Projects/gpuowl/Gpu.cpp",
+    "output": "/home/jason/Projects/gpuowl/openowl"
+  },
+  {
+    "arguments": [
+      "/usr/bin/g++",
+      "-c",
+      "-std=c++17",
+      "-O2",
+      "-DREV=\"a5a02bb-mod\"",
+      "-Wall",
+      "-pthread",
+      "-o",
+      "openowl",
+      "clwrap.cpp"
+    ],
+    "directory": "/home/jason/Projects/gpuowl",
+    "file": "/home/jason/Projects/gpuowl/clwrap.cpp",
+    "output": "/home/jason/Projects/gpuowl/openowl"
+  },
+  {
+    "arguments": [
+      "/usr/bin/g++",
+      "-c",
+      "-std=c++17",
+      "-O2",
+      "-DREV=\"a5a02bb-mod\"",
+      "-Wall",
+      "-pthread",
+      "-o",
+      "openowl",
+      "Task.cpp"
+    ],
+    "directory": "/home/jason/Projects/gpuowl",
+    "file": "/home/jason/Projects/gpuowl/Task.cpp",
+    "output": "/home/jason/Projects/gpuowl/openowl"
+  },
+  {
+    "arguments": [
+      "/usr/bin/g++",
+      "-c",
+      "-std=c++17",
+      "-O2",
+      "-DREV=\"a5a02bb-mod\"",
+      "-Wall",
+      "-pthread",
+      "-o",
+      "openowl",
+      "checkpoint.cpp"
+    ],
+    "directory": "/home/jason/Projects/gpuowl",
+    "file": "/home/jason/Projects/gpuowl/checkpoint.cpp",
+    "output": "/home/jason/Projects/gpuowl/openowl"
+  },
+  {
+    "arguments": [
+      "/usr/bin/g++",
+      "-c",
+      "-std=c++17",
+      "-O2",
+      "-DREV=\"a5a02bb-mod\"",
+      "-Wall",
+      "-pthread",
+      "-o",
+      "openowl",
+      "timeutil.cpp"
+    ],
+    "directory": "/home/jason/Projects/gpuowl",
+    "file": "/home/jason/Projects/gpuowl/timeutil.cpp",
+    "output": "/home/jason/Projects/gpuowl/openowl"
+  },
+  {
+    "arguments": [
+      "/usr/bin/g++",
+      "-c",
+      "-std=c++17",
+      "-O2",
+      "-DREV=\"a5a02bb-mod\"",
+      "-Wall",
+      "-pthread",
+      "-o",
+      "openowl",
+      "Args.cpp"
+    ],
+    "directory": "/home/jason/Projects/gpuowl",
+    "file": "/home/jason/Projects/gpuowl/Args.cpp",
+    "output": "/home/jason/Projects/gpuowl/openowl"
+  },
+  {
+    "arguments": [
+      "/usr/bin/g++",
+      "-c",
+      "-std=c++17",
+      "-O2",
+      "-DREV=\"a5a02bb-mod\"",
+      "-Wall",
+      "-pthread",
+      "-o",
+      "openowl",
+      "GCD.cpp"
+    ],
+    "directory": "/home/jason/Projects/gpuowl",
+    "file": "/home/jason/Projects/gpuowl/GCD.cpp",
+    "output": "/home/jason/Projects/gpuowl/openowl"
+  },
+  {
+    "arguments": [
+      "/usr/bin/g++",
+      "-c",
+      "-std=c++17",
+      "-O2",
+      "-DREV=\"a5a02bb-mod\"",
+      "-Wall",
+      "-pthread",
+      "-o",
+      "openowl",
+      "Primes.cpp"
+    ],
+    "directory": "/home/jason/Projects/gpuowl",
+    "file": "/home/jason/Projects/gpuowl/Primes.cpp",
+    "output": "/home/jason/Projects/gpuowl/openowl"
+  },
+  {
+    "arguments": [
+      "/usr/bin/g++",
+      "-c",
+      "-std=c++17",
+      "-O2",
+      "-DREV=\"a5a02bb-mod\"",
+      "-Wall",
+      "-pthread",
+      "-o",
+      "openowl",
+      "Stats.cpp"
+    ],
+    "directory": "/home/jason/Projects/gpuowl",
+    "file": "/home/jason/Projects/gpuowl/Stats.cpp",
+    "output": "/home/jason/Projects/gpuowl/openowl"
+  },
+  {
+    "arguments": [
+      "/usr/bin/g++",
+      "-c",
+      "-std=c++17",
+      "-O2",
+      "-DREV=\"a5a02bb-mod\"",
+      "-Wall",
+      "-pthread",
+      "-o",
+      "openowl",
+      "state.cpp"
+    ],
+    "directory": "/home/jason/Projects/gpuowl",
+    "file": "/home/jason/Projects/gpuowl/state.cpp",
+    "output": "/home/jason/Projects/gpuowl/openowl"
+  },
+  {
+    "arguments": [
+      "/usr/bin/g++",
+      "-c",
+      "-std=c++17",
+      "-O2",
+      "-DREV=\"a5a02bb-mod\"",
+      "-Wall",
+      "-pthread",
+      "-o",
+      "openowl",
+      "Signal.cpp"
+    ],
+    "directory": "/home/jason/Projects/gpuowl",
+    "file": "/home/jason/Projects/gpuowl/Signal.cpp",
+    "output": "/home/jason/Projects/gpuowl/openowl"
+  }
+]

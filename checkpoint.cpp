@@ -7,35 +7,37 @@
 #include <cmath>
 #include <gmp.h>
 
-// Residue from compacted words.
-u64 residue(const vector<u32> &words) { return (u64(words[1]) << 32) | words[0]; }
+using namespace std::string_literals;
 
-static std::string fileName(int E, const string &suffix) { return std::to_string(E) + suffix + ".owl"; }
+// Residue from compacted words.
+u64 residue(const std::vector<u32> &words) { return (u64(words[1]) << 32) | words[0]; }
+
+static std::string fileName(int E, const std::string &suffix) { return std::to_string(E) + suffix + ".owl"; }
 
 void PRPState::save(u32 E) {
-  string tempFile = fileName(E, "-temp"s + SUFFIX);
+  std::string tempFile = fileName(E, "-temp"s + SUFFIX);
   if (!saveImpl(E, tempFile)) {
     throw "can't save";
   }
   
-  string prevFile = fileName(E, "-prev"s + SUFFIX);
+  std::string prevFile = fileName(E, "-prev"s + SUFFIX);
   remove(prevFile.c_str());
   
-  string saveFile = fileName(E, SUFFIX);
+  std::string saveFile = fileName(E, SUFFIX);
   rename(saveFile.c_str(), prevFile.c_str());
   rename(tempFile.c_str(), saveFile.c_str());
   
-  string persist = durableName();
+  std::string persist = durableName();
   if (!persist.empty() && !saveImpl(E, fileName(E, persist + SUFFIX))) {
     throw "can't save";
   }
 }
 
-static bool write(FILE *fo, const vector<u32> &v) {
+static bool write(FILE *fo, const std::vector<u32> &v) {
   return fwrite(v.data(), v.size() * sizeof(u32), 1, fo);
 }
 
-static bool read(FILE *fi, u32 nWords, vector<u32> *v) {
+static bool read(FILE *fi, u32 nWords, std::vector<u32> *v) {
   v->resize(nWords);
   return fread(v->data(), nWords * sizeof(u32), 1, fi);
 }
@@ -61,25 +63,25 @@ static void powerSmooth(mpz_t a, u32 exp, u32 B1, u32 B2 = 0) {
 }
 
 // "Rev" means: most significant bit first (at index 0).
-static vector<bool> powerSmoothBitsRev(u32 exp, u32 B1) {
+static std::vector<bool> powerSmoothBitsRev(u32 exp, u32 B1) {
   mpz_t a;
   mpz_init(a);
   powerSmooth(a, exp, B1);
   int nBits = mpz_sizeinbase(a, 2);
-  vector<bool> bits;
+  std::vector<bool> bits;
   for (int i = nBits - 1; i >= 0; --i) { bits.push_back(mpz_tstbit(a, i)); }
   assert(int(bits.size()) == nBits);
   mpz_clear(a);
   return bits;
 }
 
-static vector<u32> makeVect(u32 size, u32 elem0) {
-  vector<u32> v(size);
+static std::vector<u32> makeVect(u32 size, u32 elem0) {
+  std::vector<u32> v(size);
   v[0] = elem0;
   return v;
 }
 
-PRPState PRPState::initStage1(u32 iniB1, u32 iniBlockSize, const vector<u32> &iniBase) {
+PRPState PRPState::initStage1(u32 iniB1, u32 iniBlockSize, const std::vector<u32> &iniBase) {
   stage = 1;
   k = 0;
   B1 = iniB1;
@@ -93,7 +95,7 @@ PRPState PRPState::initStage1(u32 iniB1, u32 iniBlockSize, const vector<u32> &in
 
 void PRPState::loadInt(u32 E, u32 wantB1, u32 iniBlockSize) {
   u32 nWords = (E - 1) / 32 + 1;
-  string name = fileName(E, SUFFIX);  
+  std::string name = fileName(E, SUFFIX);  
   auto fi{openRead(name)};
   if (!fi) {
     log("%s not found, starting from the beginning.\n", name.c_str());
@@ -168,7 +170,7 @@ void PRPState::loadInt(u32 E, u32 wantB1, u32 iniBlockSize) {
       name.c_str(), k, B1, blockSize, res64, stage, nBaseBits);
 }
 
-bool PRPState::saveImpl(u32 E, const string &name) {
+bool PRPState::saveImpl(u32 E, const std::string &name) {
   u32 nWords = (E - 1) / 32 + 1;
   assert(check.size() == nWords);
 
@@ -180,8 +182,8 @@ bool PRPState::saveImpl(u32 E, const string &name) {
     && (B1 == 0 || stage == 0 || (write(fo.get(), base) && write(fo.get(), gcdAcc)));
 }
 
-string PRPState::durableName() {
+std::string PRPState::durableName() {
   if (k == 0 && B1 != 0) { return ".0"; }
-  if (k && (k % 20'000'000 == 0)) { return "."s + to_string(k/1'000'000)+"M"; }
+  if (k && (k % 20'000'000 == 0)) { return "."s + std::to_string(k/1'000'000)+"M"; }
   return "";
 }

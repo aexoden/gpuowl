@@ -5,7 +5,7 @@
 #include <gmp.h>
 #include <cassert>
 
-static string doGCD(u32 exp, const vector<u32> &bits, u32 sub = 0) {
+static std::string doGCD(u32 exp, const std::vector<u32> &bits, u32 sub = 0) {
   mpz_t b;
   mpz_init(b);
   mpz_import(b, bits.size(), -1 /*order: LSWord first*/, sizeof(u32), 0 /*endianess: native*/, 0 /*nails*/, bits.data());
@@ -27,23 +27,23 @@ static string doGCD(u32 exp, const vector<u32> &bits, u32 sub = 0) {
   if (mpz_cmp_ui(m, 1) == 0) { return ""; }
 
   char *buf = mpz_get_str(nullptr, 10, m);
-  string ret = buf;
+  std::string ret = buf;
   free(buf);
 
   mpz_clear(m);
   return ret;
 }
 
-void GCD::start(u32 E, const vector<u32> &bits, u32 sub) {
+void GCD::start(u32 E, const std::vector<u32> &bits, u32 sub) {
   bool on = isOngoing();
   assert(!on);
   timer.deltaMillis();
   this->E = E;
-  gcdFuture = async(launch::async, doGCD, E, bits, sub);
+  gcdFuture = async(std::launch::async, doGCD, E, bits, sub);
 }
 
-string GCD::get() {
-  string s = gcdFuture.get();
+std::string GCD::get() {
+  std::string s = gcdFuture.get();
   log("%u GCD %s (%.2fs)\n", E, s.empty() ? "no factor" : s.c_str(), timer.deltaMillis() * 0.001);
   return s;
 }

@@ -1,13 +1,12 @@
 // GpuOwL, a Mersenne primality tester. Copyright (C) 2017-2018 Mihai Preda.
 
 #include "args.h"
-#include "file.h"
 
 #include <vector>
 #include <cstring>
 #include <cassert>
 
-vector<string> getDevices();
+std::vector<std::string> getDevices();
 
 bool Args::parse(int argc, char **argv) {
   for (int i = 1; i < argc; ++i) {
@@ -27,7 +26,7 @@ Command line options:
 -device <N>        : select a specific device:
 )");
 
-      vector<string> devices = getDevices();
+      std::vector<std::string> devices = getDevices();
       for (int i = 0; i < int(devices.size()); ++i) {
         printf(" %d : %s\n", i, devices[i].c_str());
       }      
@@ -43,7 +42,7 @@ Command line options:
       usePrecompiled = true;
     } else if (!strcmp(arg, "-fft")) {
       if (i < argc - 1) {
-        string s = argv[++i];
+        std::string s = argv[++i];
         fftSize = atoi(s.c_str()) * ((s.back() == 'K') ? 1024 : ((s.back() == 'M') ? 1024 * 1024 : 1));
       } else {
         log("-fft expects <size>\n");

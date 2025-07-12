@@ -36,18 +36,18 @@ const unsigned BUF_RW    = CL_MEM_READ_WRITE | CL_MEM_HOST_NO_ACCESS;
 bool check(int err, const char *mes = nullptr);
 #define CHECK(what) assert(check(what));
 
-vector<cl_device_id> getDeviceIDs(bool onlyGPU);
-string getHwName(cl_device_id id);
-string getShortInfo(cl_device_id device);
-string getLongInfo(cl_device_id device);
+std::vector<cl_device_id> getDeviceIDs(bool onlyGPU);
+std::string getHwName(cl_device_id id);
+std::string getShortInfo(cl_device_id device);
+std::string getLongInfo(cl_device_id device);
 cl_context createContext(cl_device_id device);
 void release(cl_context context);
 void release(cl_program program);
 void release(cl_mem buf);
 void release(cl_queue queue);
 void release(cl_kernel k);
-cl_program compile(cl_device_id device, cl_context context, const string &name, const string &extraArgs,
-                   const vector<pair<string, unsigned>> &defines, bool usePrecompiled);
+cl_program compile(cl_device_id device, cl_context context, const std::string &name, const std::string &extraArgs,
+                   const std::vector<std::pair<std::string, unsigned>> &defines, bool usePrecompiled);
 cl_kernel makeKernel(cl_program program, const char *name);
 
 template<typename T>
@@ -61,7 +61,7 @@ cl_queue makeQueue(cl_device_id d, cl_context c);
 void flush( cl_queue q);
 void finish(cl_queue q);
 
-void run(cl_queue queue, cl_kernel kernel, size_t groupSize, size_t workSize, const string &name);
+void run(cl_queue queue, cl_kernel kernel, size_t groupSize, size_t workSize, const std::string &name);
 void read(cl_queue queue, bool blocking, cl_mem buf, size_t size, void *data, size_t start = 0);
 void read(cl_queue queue, bool blocking, Buffer &buf, size_t size, void *data, size_t start = 0);
 void write(cl_queue queue, bool blocking, cl_mem buf, size_t size, const void *data, size_t start = 0);
@@ -77,13 +77,13 @@ class Queue {
 public:
   explicit Queue(cl_queue queue) : queue(queue) {}
 
-  template<typename T> vector<T> read(Buffer &buf, size_t nItems) {
-    vector<T> ret(nItems);
+  template<typename T> std::vector<T> read(Buffer &buf, size_t nItems) {
+    std::vector<T> ret(nItems);
     ::read(queue.get(), true, buf, nItems * sizeof(T), ret.data());
     return ret;
   }
 
-  template<typename T> void write(Buffer &buf, const vector<T> &vect) {
+  template<typename T> void write(Buffer &buf, const std::vector<T> &vect) {
     ::write(queue.get(), true, buf, vect.size() * sizeof(T), vect.data());
   }
 
@@ -91,7 +91,7 @@ public:
     ::copyBuf(queue.get(), src, dst, nItems * sizeof(T));
   }
   
-  void run(cl_kernel kernel, size_t groupSize, size_t workSize, const string &name) {
+  void run(cl_kernel kernel, size_t groupSize, size_t workSize, const std::string &name) {
     ::run(queue.get(), kernel, groupSize, workSize, name);
   }
 

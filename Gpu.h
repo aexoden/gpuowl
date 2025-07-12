@@ -23,7 +23,7 @@ class Gpu {
   bool useLongCarry;
   bool useMiddle;
 
-  unique_ptr<GCD> gcd;
+  std::unique_ptr<GCD> gcd;
   
   Queue queue;
   
@@ -59,10 +59,10 @@ class Gpu {
   Buffer bufSmallOut;
   Buffer bufBaseDown;
 
-  vector<u32> computeBase(u32 E, u32 B1);
-  pair<vector<u32>, vector<u32>> seedPRP(u32 E, u32 B1);
+  std::vector<u32> computeBase(u32 E, u32 B1);
+  std::pair<std::vector<u32>, std::vector<u32>> seedPRP(u32 E, u32 B1);
   
-  vector<int> readSmall(Buffer &buf, u32 start);
+  std::vector<int> readSmall(Buffer &buf, u32 start);
 
   void tW(Buffer &in, Buffer &out);
   void tH(Buffer &in, Buffer &out);
@@ -70,24 +70,24 @@ class Gpu {
   
   void copyFromTo(Buffer &from, Buffer &to);
   
-  vector<int> readOut(Buffer &buf);
-  void writeIn(const vector<u32> &words, Buffer &buf);
-  void writeIn(const vector<int> &words, Buffer &buf);
+  std::vector<int> readOut(Buffer &buf);
+  void writeIn(const std::vector<u32> &words, Buffer &buf);
+  void writeIn(const std::vector<int> &words, Buffer &buf);
   
-  void modSqLoopMul(Buffer &io, const vector<bool> &muls);
-  void modSqLoopAcc(Buffer &io, const vector<bool> &muls);
+  void modSqLoopMul(Buffer &io, const std::vector<bool> &muls);
+  void modSqLoopAcc(Buffer &io, const std::vector<bool> &muls);
   
   void modMul(Buffer &in, Buffer &io);
   bool equalNotZero(Buffer &bufCheck, Buffer &bufAux);
   u64 bufResidue(Buffer &buf);
   
-  vector<u32> writeBase(const vector<u32> &v);
+  std::vector<u32> writeBase(const std::vector<u32> &v);
 
   PRPState loadPRP(u32 E, u32 iniB1, u32 iniBlockSize);
-  void doStage0(u32 k, u32 B1, u32 blockSize, vector<u32> &&base, vector<bool> &&basePower);
+  void doStage0(u32 k, u32 B1, u32 blockSize, std::vector<u32> &&base, std::vector<bool> &&basePower);
   
 public:
-  static unique_ptr<Gpu> make(u32 E, const Args &args);
+  static std::unique_ptr<Gpu> make(u32 E, const Args &args);
   
   Gpu(u32 E, u32 W, u32 BIG_H, u32 SMALL_H, int nW, int nH,
       cl_program program, cl_device_id device, cl_context context,
@@ -95,13 +95,13 @@ public:
 
   ~Gpu();
   
-  void writeState(const vector<u32> &check, const vector<u32> &base, const vector<u32> &gcdAcc, u32 blockSize);
+  void writeState(const std::vector<u32> &check, const std::vector<u32> &base, const std::vector<u32> &gcdAcc, u32 blockSize);
   
-  vector<u32> roundtripData()  { return writeData(readData()); }
-  vector<u32> roundtripCheck() { return writeCheck(readCheck()); }
+  std::vector<u32> roundtripData()  { return writeData(readData()); }
+  std::vector<u32> roundtripCheck() { return writeCheck(readCheck()); }
 
-  vector<u32> writeData(const vector<u32> &v);
-  vector<u32> writeCheck(const vector<u32> &v);
+  std::vector<u32> writeData(const std::vector<u32> &v);
+  std::vector<u32> writeCheck(const std::vector<u32> &v);
   
   u64 dataResidue()  { return bufResidue(bufData); }
   u64 checkResidue() { return bufResidue(bufCheck); }
@@ -109,17 +109,17 @@ public:
   bool doCheck(int blockSize);
   void updateCheck();
 
-  void dataLoopMul(const vector<bool> &muls) { modSqLoopMul(bufData, muls); }
-  void dataLoopAcc(const vector<bool> &accs) { modSqLoopAcc(bufData, accs); }
-  u32 dataLoopAcc(u32 begin, u32 end, const vector<bool> &kset);
+  void dataLoopMul(const std::vector<bool> &muls) { modSqLoopMul(bufData, muls); }
+  void dataLoopAcc(const std::vector<bool> &accs) { modSqLoopAcc(bufData, accs); }
+  u32 dataLoopAcc(u32 begin, u32 end, const std::vector<bool> &kset);
   
   void finish();
 
   void logTimeKernels();
 
-  vector<u32> readCheck();
-  vector<u32> readData();
-  vector<u32> readAcc();
+  std::vector<u32> readCheck();
+  std::vector<u32> readData();
+  std::vector<u32> readAcc();
 
   PRPResult isPrimePRP(u32 E, const Args &args, u32 B1, u32 B2);
   u32 getFFTSize() { return N; }

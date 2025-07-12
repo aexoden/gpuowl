@@ -41,34 +41,34 @@ Primes::Primes(u32 limit) :
   // fprintf(stderr, "Generated %lu primes: [%u, %u]\n", primes.size(), primes.front(), primes.back());
 }
 
-vector<pair<u32, u32>> Primes::factors(u32 x) {
-  vector<pair<u32, u32>> ret;
+std::vector<std::pair<u32, u32>> Primes::factors(u32 x) {
+  std::vector<std::pair<u32, u32>> ret;
   if (x <= 1) { return ret; }
   
-  if (isPrime(x)) { ret.push_back(make_pair(x, 1u)); return ret; }
+  if (isPrime(x)) { ret.push_back(std::make_pair(x, 1u)); return ret; }
   
   if (int n = order<2>(x)) {
-    ret.push_back(make_pair(2, n));
-    if (isPrime(x)) { ret.push_back(make_pair(x, 1u)); return ret; }
+    ret.push_back(std::make_pair(2, n));
+    if (isPrime(x)) { ret.push_back(std::make_pair(x, 1u)); return ret; }
     if (x == 1) { return ret; }
   }
   
   if (int n = order<3>(x)) {
-    ret.push_back(make_pair(3, n));
-    if (isPrime(x)) { ret.push_back(make_pair(x, 1u)); return ret; }
+    ret.push_back(std::make_pair(3, n));
+    if (isPrime(x)) { ret.push_back(std::make_pair(x, 1u)); return ret; }
     if (x == 1) { return ret; }
   }
   
   if (int n = order<5>(x)) {
-    ret.push_back(make_pair(5, n));
-    if (isPrime(x)) { ret.push_back(make_pair(x, 1u)); return ret; }
+    ret.push_back(std::make_pair(5, n));
+    if (isPrime(x)) { ret.push_back(std::make_pair(x, 1u)); return ret; }
     if (x == 1) { return ret; }
   }
   
   for (auto p : from(7)) {
     if (int n = order(x, p)) {
-      ret.push_back(make_pair(p, n));
-      if (isPrime(x)) { ret.push_back(make_pair(x, 1u)); return ret; }
+      ret.push_back(std::make_pair(p, n));
+      if (isPrime(x)) { ret.push_back(std::make_pair(x, 1u)); return ret; }
       if (x == 1) { return ret; }
     }
   }
@@ -77,11 +77,11 @@ vector<pair<u32, u32>> Primes::factors(u32 x) {
   return ret;
 }
 
-vector<u32> Primes::divisors(u32 x) {
+std::vector<u32> Primes::divisors(u32 x) {
   auto f = factors(x);
   int nf = f.size();
-  vector<u32> divs;
-  vector<u32> count(nf);
+  std::vector<u32> divs;
+  std::vector<u32> count(nf);
   while (true) {
     int i = 0;
     while (i < nf && count[i] == f[i].second) {

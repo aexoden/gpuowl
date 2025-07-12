@@ -11,7 +11,7 @@
 #include <cassert>
 #include <string>
 
-static bool writeResult(const string &part, u32 E, const char *workType, const string &status,
+static bool writeResult(const std::string &part, u32 E, const char *workType, const std::string &status,
                         const std::string &AID, const std::string &user, const std::string &cpu) {
   std::string uid;
   if (!user.empty()) { uid += ", \"user\":\"" + user + '"'; }
@@ -31,9 +31,9 @@ static bool writeResult(const string &part, u32 E, const char *workType, const s
   return true;
 }
 
-static string factorStr(const string &factor) { return factor.empty() ? "" : (", \"factors\":[\"" + factor + "\"]"); }
+static std::string factorStr(const std::string &factor) { return factor.empty() ? "" : (", \"factors\":[\"" + factor + "\"]"); }
 
-static string resStr(u64 res64) {
+static std::string resStr(u64 res64) {
   char buf[64];
   snprintf(buf, sizeof(buf), ", \"res64\":\"%016llx\"", res64);
   return buf;
@@ -49,19 +49,19 @@ bool PRPResult::write(const Args &args, const Task &task, u32 fftSize) {
     assert(B1 != 0);
   }
 
-  string status = isPrime ? "P" : (hasFactor ? "F" : "C");
-  string fftLength = string(", \"fft-length\":") + to_string(fftSize);
+  std::string status = isPrime ? "P" : (hasFactor ? "F" : "C");
+  std::string fftLength = std::string(", \"fft-length\":") + std::to_string(fftSize);
   
   char buf[256];
   if (B1 == 0) {
     assert(task.B2 == 0);
     assert(baseRes64 == 3);
-    string str = resStr(res64) + ", \"residue-type\":4";
+    std::string str = resStr(res64) + ", \"residue-type\":4";
     return writeResult(fftLength + str, task.exponent, "PRP-3", status, task.AID, args.user, args.cpu);
   }
   
-  string r1 = hasFactor ? "" : resStr(res64);
-  string r2 = resStr(baseRes64);
+  std::string r1 = hasFactor ? "" : resStr(res64);
+  std::string r2 = resStr(baseRes64);
 
   // When B1!=0: B2==0 means "use default B2", which is ==Exponent.
   // If B2!=0, the reported B2 won't be larger then the Exponent in any case.

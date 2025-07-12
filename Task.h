@@ -15,8 +15,8 @@ struct Task {
 
   Kind kind;
   u32 exponent;
-  string AID;  
-  string line; // the verbatim worktodo line, used in deleteTask().
+  std::string AID;  
+  std::string line; // the verbatim worktodo line, used in deleteTask().
 
   // PRP,P-1
   u32 B1;

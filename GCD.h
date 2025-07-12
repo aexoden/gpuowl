@@ -9,14 +9,14 @@
 #include <vector>
 
 class GCD {
-  future<string> gcdFuture;
+  std::future<std::string> gcdFuture;
   Timer timer;
   u32 E;
   
 public:
-  void start(u32 E, const vector<u32> &bits, u32 sub);
+  void start(u32 E, const std::vector<u32> &bits, u32 sub);
   bool isOngoing() { return gcdFuture.valid(); }
-  bool isReady() { return isOngoing() && gcdFuture.wait_for(chrono::steady_clock::duration::zero()) == future_status::ready; }      
-  string get();
+  bool isReady() { return isOngoing() && gcdFuture.wait_for(std::chrono::steady_clock::duration::zero()) == std::future_status::ready; }      
+  std::string get();
   void wait() { gcdFuture.wait(); }
 };

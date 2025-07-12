@@ -1,10 +1,8 @@
 // Copyright 2017 Mihai Preda.
 
 #include "state.h"
-#include "shared.h"
 
 #include <cassert>
-#include <memory>
 #include <cmath>
 
 static u32 step(u32 N, u32 E) { return N - (E % N); }
@@ -25,7 +23,7 @@ static u32 unbalance(int w, int nBits, int *carry) {
   return w;
 }
 
-std::vector<u32> compactBits(const vector<int> &dataVect, int E) {
+std::vector<u32> compactBits(const std::vector<int> &dataVect, int E) {
   std::vector<u32> out;
   out.reserve((E - 1) / 32 + 1);
 
@@ -90,7 +88,7 @@ struct BitBucket {
   }
 };
 
-vector<int> expandBits(const vector<u32> &compactBits, int N, int E) {
+std::vector<int> expandBits(const std::vector<u32> &compactBits, int N, int E) {
   assert(E % 32 != 0);
 
   std::vector<int> out(N);
@@ -109,7 +107,7 @@ vector<int> expandBits(const vector<u32> &compactBits, int N, int E) {
   return out;
 }
 
-u64 residueFromRaw(u32 E, u32 N, const vector<int> &words) {
+u64 residueFromRaw(u32 E, u32 N, const std::vector<int> &words) {
   assert(words.size() == 128);
   int carry = 0;
   for (int i = 0; i < 64; ++i) { carry = (words[i] + carry < 0) ? -1 : 0; }
@@ -128,10 +126,10 @@ u64 residueFromRaw(u32 E, u32 N, const vector<int> &words) {
   return res;
 }
 
-pair<vector<double>, vector<double>> genWeights(int E, int W, int H) {
+std::pair<std::vector<double>, std::vector<double>> genWeights(int E, int W, int H) {
   int N = 2 * W * H;
 
-  vector<double> aTab, iTab;
+  std::vector<double> aTab, iTab;
   aTab.reserve(N);
   iTab.reserve(N);
 

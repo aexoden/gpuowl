@@ -19,8 +19,6 @@ void log(const char *fmt, ...);
 
 void initLog(const char *);
 
-using namespace std; // std::string, std::pair, std::vector, std::unique_ptr;
-
 #define BASE_VERSION "5.0"
 // Reason for version change:
 // 5.0 : dropped TF; dropped old checkpoint load.

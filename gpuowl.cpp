@@ -6,7 +6,7 @@
 #include "worktodo.h"
 #include "common.h"
 
-extern string globalCpuName;
+extern std::string globalCpuName;
 
 int main(int argc, char **argv) {  
   initLog("gpuowl.log");
@@ -17,8 +17,8 @@ int main(int argc, char **argv) {
   if (!args.cpu.empty()) { globalCpuName = args.cpu; }
 
   {
-    string cmdLine;
-    for (int i = 1; i < argc; ++i) { cmdLine += string(argv[i]) + " "; }
+    std::string cmdLine;
+    for (int i = 1; i < argc; ++i) { cmdLine += std::string(argv[i]) + " "; }
     log("%s\n", cmdLine.c_str());
   }
     

@@ -10,7 +10,7 @@ class Task;
 class Args;
 
 struct PRPResult {
-  string factor;
+  std::string factor;
   bool isPrime;
   u64 res64;
   u64 baseRes64;

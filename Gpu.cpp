@@ -22,7 +22,9 @@
 
 #define TAU (2 * M_PIl)
 
-using double2 = pair<double, double>;
+using namespace std::string_literals;
+
+using double2 = std::pair<double, double>;
 
 static_assert(sizeof(double2) == 16, "size double2");
 
@@ -72,7 +74,7 @@ Gpu::Gpu(u32 E, u32 W, u32 BIG_H, u32 SMALL_H, int nW, int nH,
   bufSize(N * sizeof(double)),
   useLongCarry(useLongCarry),
   useMiddle(BIG_H != SMALL_H),
-  gcd(make_unique<GCD>()),
+  gcd(std::make_unique<GCD>()),
   queue(makeQueue(device, context)),    
 
 #define LOAD(name, workGroups) name(program, queue.get(), device, workGroups, #name, timeKernels)
@@ -130,7 +132,7 @@ Gpu::Gpu(u32 E, u32 W, u32 BIG_H, u32 SMALL_H, int nW, int nH,
     
   queue.zero(bufReady, BIG_H * sizeof(int));
   queue.zero(bufAcc,   N * sizeof(int));
-  queue.write(bufAcc, vector<u32>{1});
+  queue.write(bufAcc, std::vector<u32>{1});
 }
 
 void logTimeKernels(std::initializer_list<Kernel *> kerns) {
@@ -142,7 +144,7 @@ void logTimeKernels(std::initializer_list<Kernel *> kerns) {
   };
 
   double total = 0;
-  vector<Info> infos;
+  std::vector<Info> infos;
   for (Kernel *k : kerns) {
     StatsInfo s = k->resetStats();
     Info info{k->getName(), s.msPerSq * s.nSq, s.msPerSq, s.nSq};
@@ -182,8 +184,8 @@ struct FftConfig {
   }
 };
 
-static vector<FftConfig> genConfigs() {
-  vector<FftConfig> configs;
+static std::vector<FftConfig> genConfigs() {
+  std::vector<FftConfig> configs;
   for (u32 width : {64, 256, 512, 1024, 2048, 4096}) {
     for (u32 height : {64, 256, 512, 1024, 2048}) {
       for (u32 middle : {1, 3, 5, 9}) {
@@ -201,35 +203,35 @@ static vector<FftConfig> genConfigs() {
   return configs;
 }
 
-static FftConfig getFftConfig(const vector<FftConfig> &configs, u32 E, int argsFftSize) {
+static FftConfig getFftConfig(const std::vector<FftConfig> &configs, u32 E, int argsFftSize) {
   int i = 0;
   int n = int(configs.size());
   if (argsFftSize < 10) { // fft delta or not specified.
     while (i < n - 1 && configs[i].maxExp < E) { ++i; }      
-    i = max(0, min(i + argsFftSize, n - 1));
+    i = std::max(0, std::min(i + argsFftSize, n - 1));
   } else { // user-specified fft size.
     while (i < n - 1 && u32(argsFftSize) > configs[i].fftSize) { ++i; }      
   }
   return configs[i];
 }
 
-vector<int> Gpu::readSmall(Buffer &buf, u32 start) {
+std::vector<int> Gpu::readSmall(Buffer &buf, u32 start) {
   readResidue(buf, bufSmallOut, start);
   return queue.read<int>(bufSmallOut, 128);                    
 }
 
-static string numberK(u32 n) {
-  return (n % (1024 * 1024) == 0) ? to_string(n / (1024 * 1024)) + "M" : (n % 1024 == 0) ? to_string(n / 1024) + "K" : to_string(n);
+static std::string numberK(u32 n) {
+  return (n % (1024 * 1024) == 0) ? std::to_string(n / (1024 * 1024)) + "M" : (n % 1024 == 0) ? std::to_string(n / 1024) + "K" : std::to_string(n);
 }
 
-static string configName(u32 width, u32 height, u32 middle) {
+static std::string configName(u32 width, u32 height, u32 middle) {
   return numberK(width) + '-' + numberK(height) + ((middle != 1) ? "-"s + numberK(middle) : ""s);
 }
 
-unique_ptr<Gpu> Gpu::make(u32 E, const Args &args) {
-  vector<FftConfig> configs = genConfigs();
+std::unique_ptr<Gpu> Gpu::make(u32 E, const Args &args) {
+  std::vector<FftConfig> configs = genConfigs();
   if (args.listFFT) {
-    string variants;
+    std::string variants;
     u32 activeSize = 0;
     for (auto c : configs) {
       if (c.fftSize != activeSize) {
@@ -258,13 +260,13 @@ unique_ptr<Gpu> Gpu::make(u32 E, const Args &args) {
   int MIDDLE       = config.middle;
   int N = WIDTH * SMALL_HEIGHT * MIDDLE * 2;
 
-  string configName = (N % (1024 * 1024)) ? std::to_string(N / 1024) + "K" : std::to_string(N / (1024 * 1024)) + "M";
+  std::string configName = (N % (1024 * 1024)) ? std::to_string(N / 1024) + "K" : std::to_string(N / (1024 * 1024)) + "M";
 
   int nW = (WIDTH == 1024 || WIDTH == 256) ? 4 : 8;
   int nH = (SMALL_HEIGHT == 1024 || SMALL_HEIGHT == 256) ? 4 : 8;
 
   float bitsPerWord = E / float(N);
-  string strMiddle = (MIDDLE == 1) ? "" : (string(", Middle ") + std::to_string(MIDDLE));
+  std::string strMiddle = (MIDDLE == 1) ? "" : (std::string(", Middle ") + std::to_string(MIDDLE));
   log("%u FFT %dK: Width %dx%d, Height %dx%d%s; %.2f bits/word\n",
       E, N / 1024, WIDTH / nW, nW, SMALL_HEIGHT / nH, nH, strMiddle.c_str(), bitsPerWord);
 
@@ -284,7 +286,7 @@ unique_ptr<Gpu> Gpu::make(u32 E, const Args &args) {
   
   log("using %s carry kernels\n", useLongCarry ? "long" : "short");
 
-  string clArgs = args.clArgs;
+  std::string clArgs = args.clArgs;
   if (!args.dump.empty()) { clArgs += " -save-temps=" + args.dump + "/" + configName; }
 
   bool timeKernels = args.timeKernels;
@@ -301,20 +303,20 @@ unique_ptr<Gpu> Gpu::make(u32 E, const Args &args) {
                                      args.usePrecompiled));
   if (!program) { throw "OpenCL compilation"; }
 
-  return make_unique<Gpu>(E, WIDTH, SMALL_HEIGHT * MIDDLE, SMALL_HEIGHT, nW, nH,
+  return std::make_unique<Gpu>(E, WIDTH, SMALL_HEIGHT * MIDDLE, SMALL_HEIGHT, nW, nH,
                           program.get(), device, context.get(), timeKernels, useLongCarry);
 }
 
-vector<u32> Gpu::readData()  { return compactBits(readOut(bufData),  E); }
-vector<u32> Gpu::readCheck() { return compactBits(readOut(bufCheck), E); }
-vector<u32> Gpu::readAcc()   { return compactBits(readOut(bufAcc), E); }
+std::vector<u32> Gpu::readData()  { return compactBits(readOut(bufData),  E); }
+std::vector<u32> Gpu::readCheck() { return compactBits(readOut(bufCheck), E); }
+std::vector<u32> Gpu::readAcc()   { return compactBits(readOut(bufAcc), E); }
 
-vector<u32> Gpu::writeData(const vector<u32> &v) {
+std::vector<u32> Gpu::writeData(const std::vector<u32> &v) {
   writeIn(v, bufData);
   return v;
 }
 
-vector<u32> Gpu::writeCheck(const vector<u32> &v) {
+std::vector<u32> Gpu::writeCheck(const std::vector<u32> &v) {
   writeIn(v, bufCheck);
   return v;
 }
@@ -339,7 +341,7 @@ void Gpu::modMul(Buffer &in, Buffer &io) {
   carryB(io, bufCarry);
 };
 
-void Gpu::writeState(const vector<u32> &check, const vector<u32> &base, const vector<u32> &acc, u32 blockSize) {
+void Gpu::writeState(const std::vector<u32> &check, const std::vector<u32> &base, const std::vector<u32> &acc, u32 blockSize) {
   assert(blockSize > 0);
     
   writeCheck(check);
@@ -348,7 +350,7 @@ void Gpu::writeState(const vector<u32> &check, const vector<u32> &base, const ve
 
   u32 n = 0;
   for (n = 1; blockSize % (2 * n) == 0; n *= 2) {
-    dataLoopMul(vector<bool>(n));
+    dataLoopMul(std::vector<bool>(n));
     modMul(bufBase, bufData);
     queue.copy<int>(bufData, bufBase, N);
   }
@@ -358,7 +360,7 @@ void Gpu::writeState(const vector<u32> &check, const vector<u32> &base, const ve
     
   blockSize /= n;
   for (u32 i = 0; i < blockSize - 1; ++i) {
-    dataLoopMul(vector<bool>(n));
+    dataLoopMul(std::vector<bool>(n));
     modMul(bufBase, bufData);
   }
     
@@ -372,21 +374,21 @@ void Gpu::updateCheck() { modMul(bufData, bufCheck); }
   
 bool Gpu::doCheck(int blockSize) {
   queue.copy<int>(bufCheck, bufAux, N);
-  modSqLoopMul(bufAux, vector<bool>(blockSize));
+  modSqLoopMul(bufAux, std::vector<bool>(blockSize));
   modMul(bufBase, bufAux);
   updateCheck();
   return equalNotZero(bufCheck, bufAux);
 }
 
-static u32 countOnBits(const vector<bool> &bits) {
+static u32 countOnBits(const std::vector<bool> &bits) {
   u32 n = 0;
   for (bool b : bits) { n += b; }
   return n;
 }
 
-u32 Gpu::dataLoopAcc(u32 kBegin, u32 kEnd, const vector<bool> &kset) {
+u32 Gpu::dataLoopAcc(u32 kBegin, u32 kEnd, const std::vector<bool> &kset) {
   assert(kEnd > kBegin);
-  vector<bool> accs(kset.begin() + kBegin, kset.begin() + kEnd);
+  std::vector<bool> accs(kset.begin() + kBegin, kset.begin() + kEnd);
   dataLoopAcc(accs);
   return countOnBits(accs);
 }
@@ -421,7 +423,7 @@ void Gpu::tH(Buffer &in, Buffer &out) {
   transposeH(in, out);
 }
 
-vector<u32> Gpu::writeBase(const vector<u32> &v) {
+std::vector<u32> Gpu::writeBase(const std::vector<u32> &v) {
   writeIn(v, bufBase);
   fftP(bufBase, buf1);
   tW(buf1, bufBaseDown);
@@ -429,19 +431,19 @@ vector<u32> Gpu::writeBase(const vector<u32> &v) {
   return v;
 }
   
-vector<int> Gpu::readOut(Buffer &buf) {
+std::vector<int> Gpu::readOut(Buffer &buf) {
   transposeOut(buf, bufAux);
   return queue.read<int>(bufAux, N);
 }
 
-void Gpu::writeIn(const vector<u32> &words, Buffer &buf) { writeIn(expandBits(words, N, E), buf); }
+void Gpu::writeIn(const std::vector<u32> &words, Buffer &buf) { writeIn(expandBits(words, N, E), buf); }
 
-void Gpu::writeIn(const vector<int> &words, Buffer &buf) {
+void Gpu::writeIn(const std::vector<int> &words, Buffer &buf) {
   queue.write(bufAux, words);
   transposeIn(bufAux, buf);
 }
 
-void Gpu::modSqLoopMul(Buffer &io, const vector<bool> &muls) {
+void Gpu::modSqLoopMul(Buffer &io, const std::vector<bool> &muls) {
   assert(!muls.empty());
   bool dataIsOut = true;
         
@@ -468,7 +470,7 @@ void Gpu::exitKerns(Buffer &buf, Buffer &bufWords) {
   carryB(bufWords, bufCarry);
 }
   
-void Gpu::modSqLoopAcc(Buffer &io, const vector<bool> &accs) {
+void Gpu::modSqLoopAcc(Buffer &io, const std::vector<bool> &accs) {
   assert(!accs.empty());
   bool dataIsOut = true;
   bool accIsOut  = true;
@@ -519,18 +521,18 @@ bool Gpu::equalNotZero(Buffer &buf1, Buffer &buf2) {
   
 u64 Gpu::bufResidue(Buffer &buf) {
   u32 earlyStart = N/2 - 32;
-  vector<int> readBuf = readSmall(buf, earlyStart);
+  std::vector<int> readBuf = readSmall(buf, earlyStart);
   return residueFromRaw(E, N, readBuf);
 }
 
-static string makeLogStr(u32 E, string status, int k, u64 res, const StatsInfo &info, u32 nIters) {
+static std::string makeLogStr(u32 E, std::string status, int k, u64 res, const StatsInfo &info, u32 nIters) {
   int etaMins = (nIters - k) * info.msPerIt * (1 / 60000.f) + .5f;
   int days  = etaMins / (24 * 60);
   int hours = etaMins / 60 % 24;
   int mins  = etaMins % 60;
 
   char buf[256];
-  string ghzStr;
+  std::string ghzStr;
   
   snprintf(buf, sizeof(buf), "%u %2s %8d %5.2f%%; %.2f ms/sq, %4u MULs;%s ETA %dd %02d:%02d; %016llx",
            E, status.c_str(), k, k / float(nIters) * 100,
@@ -551,8 +553,8 @@ static void doSmallLog(int E, int k, u64 res, Stats &stats, u32 nIters) {
   stats.reset();
 }
 
-static vector<u32> bitNeg(const vector<u32> &v) {
-  vector<u32> ret;
+static std::vector<u32> bitNeg(const std::vector<u32> &v) {
+  std::vector<u32> ret;
   ret.reserve(v.size());
   for (auto x : v) { ret.push_back(~x); }
   return ret;
@@ -561,7 +563,7 @@ static vector<u32> bitNeg(const vector<u32> &v) {
 // Checks whether a == bitNeg(b) ignoring the last word.
 // (this is because the last word is often only partially filled with bits of exponent E)
 // 'a' passed by value intentional.
-static bool equalNeg(vector<u32> a, const vector<u32> &b) {
+static bool equalNeg(std::vector<u32> a, const std::vector<u32> &b) {
   assert(!a.empty() && !b.empty());
   auto c = bitNeg(b);
   a.pop_back();
@@ -572,7 +574,7 @@ static bool equalNeg(vector<u32> a, const vector<u32> &b) {
 PRPState Gpu::loadPRP(u32 E, u32 iniB1, u32 iniBlockSize) {
   auto loaded = PRPState::load(E, iniB1, iniBlockSize);
   if (loaded.stage == 0) {
-    doStage0(loaded.k, loaded.B1, loaded.blockSize, move(loaded.base), move(loaded.basePower));
+    doStage0(loaded.k, loaded.B1, loaded.blockSize, std::move(loaded.base), std::move(loaded.basePower));
     loaded = PRPState::load(E, iniB1, iniBlockSize);
   }
 
@@ -597,17 +599,17 @@ PRPState Gpu::loadPRP(u32 E, u32 iniB1, u32 iniBlockSize) {
   return loaded;
 }
 
-static pair<vector<bool>, u32> kselect(u32 E, u32 blockSize, u32 B1, u32 B2) {
+static std::pair<std::vector<bool>, u32> kselect(u32 E, u32 blockSize, u32 B1, u32 B2) {
   u32 lastIteration = ((E - 2) / blockSize + 1) * blockSize;
   
-  if (!B1) { return make_pair(vector<bool>(lastIteration + 1), 0); }
+  if (!B1) { return make_pair(std::vector<bool>(lastIteration + 1), 0); }
   
   // log("Starting P-1 selection: exp %u, B1 %u, B2 %u\n", E, B1, B2);
   Timer timer;
 
   Primes primes(B2 + 1);
-  vector<bool> covered(lastIteration + 1);
-  vector<bool> on(lastIteration + 1);
+  std::vector<bool> covered(lastIteration + 1);
+  std::vector<bool> on(lastIteration + 1);
 
   u32 reportB2 = 0;
   
@@ -634,7 +636,7 @@ static pair<vector<bool>, u32> kselect(u32 E, u32 blockSize, u32 B1, u32 B2) {
   return make_pair(on, reportB2);
 }
 
-void Gpu::doStage0(u32 k, u32 B1, u32 blockSize, vector<u32> &&base, vector<bool> &&basePower) {
+void Gpu::doStage0(u32 k, u32 B1, u32 blockSize, std::vector<u32> &&base, std::vector<bool> &&basePower) {
   writeData(base);
   u32 kEnd = basePower.size();
   assert(k < kEnd);
@@ -643,8 +645,8 @@ void Gpu::doStage0(u32 k, u32 B1, u32 blockSize, vector<u32> &&base, vector<bool
   Timer timer;
   Signal signal;
   while (k < kEnd) {
-    u32 nIts = min(u32(kEnd - k), blockSize);
-    dataLoopMul(vector<bool>(basePower.begin() + k, basePower.begin() + (k + nIts)));
+    u32 nIts = std::min(u32(kEnd - k), blockSize);
+    dataLoopMul(std::vector<bool>(basePower.begin() + k, basePower.begin() + (k + nIts)));
     queue.finish();
     stats.add(timer.deltaMillis(), nIts, 0);
     k += nIts;
@@ -683,13 +685,13 @@ PRPResult Gpu::isPrimePRP(u32 E, const Args &args, u32 B1, u32 B2) {
   u32 blockSize = loaded.blockSize;
   assert(blockSize > 0 && 10000 % blockSize == 0);
   
-  vector<u32> base = loaded.base;
+  std::vector<u32> base = loaded.base;
   
   const u32 kEnd = E - 1; // Type-4 per http://www.mersenneforum.org/showpost.php?p=468378&postcount=209
   assert(k < kEnd);
 
   auto kselectRet = kselect(E, blockSize, B1, B2);
-  vector<bool> kset = kselectRet.first;
+  std::vector<bool> kset = kselectRet.first;
   u32 effectiveB2 = kselectRet.second;
   
   const u32 checkStep = blockSize * blockSize;
@@ -730,7 +732,7 @@ PRPResult Gpu::isPrimePRP(u32 E, const Args &args, u32 B1, u32 B2) {
     queue.finish();
 
     if (gcd->isReady()) {
-      string factor = gcd->get();
+      std::string factor = gcd->get();
       if (!factor.empty()) {
         // log("GCD: %s\n", factor.c_str());
         return PRPResult{factor, false, 0, residue(base), effectiveB2};
@@ -755,17 +757,17 @@ PRPResult Gpu::isPrimePRP(u32 E, const Args &args, u32 B1, u32 B2) {
       continue;
     }
 
-    vector<u32> check = this->roundtripCheck();
+    std::vector<u32> check = this->roundtripCheck();
     bool ok = this->doCheck(blockSize);
 
     u64 res64 = dataResidue();
-    vector<u32> gcdAcc = B1 ? readAcc() : vector<u32>();
+    std::vector<u32> gcdAcc = B1 ? readAcc() : std::vector<u32>();
 
     // the check time (above) is accounted separately, not added to iteration time.
     doLog(E, k, timer.deltaMillis(), res64, ok, stats, nTotalIters);
     
     if (ok) {
-      if (k < kEnd) { PRPState{k, B1, blockSize, res64, 1, vector<bool>(), check, base, gcdAcc}.save(E); }
+      if (k < kEnd) { PRPState{k, B1, blockSize, res64, 1, std::vector<bool>(), check, base, gcdAcc}.save(E); }
       if (k % 1'000'000 < checkStep && nGcdAcc && !gcd->isOngoing() && !doStop) {
         gcd->start(E, gcdAcc, 0);
         nGcdAcc = 0;

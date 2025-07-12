@@ -7,7 +7,7 @@
 #include <vector>
 #include <string>
 
-u64 residue(const vector<u32> &words);
+u64 residue(const std::vector<u32> &words);
 
 class PRPState {
   // Exponent, iteration, B1, block-size, res64.
@@ -20,8 +20,8 @@ class PRPState {
   
   // bool loadV7(u32 E, u32 B1, u32 iniBlockSize);
   void loadInt(u32 E, u32 B1, u32 iniBlockSize);
-  bool saveImpl(u32 E, const string &name);
-  string durableName();
+  bool saveImpl(u32 E, const std::string &name);
+  std::string durableName();
   
 public:  
   u32 k;
@@ -30,11 +30,11 @@ public:
   u64 res64;
   u32 stage;
 
-  vector<bool> basePower; // Stage-0 P-1 powerSmooth(B1).
+  std::vector<bool> basePower; // Stage-0 P-1 powerSmooth(B1).
   
-  vector<u32> check;
-  vector<u32> base;
-  vector<u32> gcdAcc;
+  std::vector<u32> check;
+  std::vector<u32> base;
+  std::vector<u32> gcdAcc;
 
   static PRPState load(u32 E, u32 B1, u32 iniBlockSize) {
     PRPState prp;
@@ -44,5 +44,5 @@ public:
   
   void save(u32 E);
 
-  PRPState initStage1(u32 iniB1, u32 iniBlockSize, const vector<u32> &iniBase);
+  PRPState initStage1(u32 iniB1, u32 iniBlockSize, const std::vector<u32> &iniBase);
 };
