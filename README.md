@@ -11,9 +11,9 @@ best used with Mersenne exponents in the vicinity of 150M and 300M.
 
 This is a modified version of gpuOwl solely intended for verifying type 0 PRP
 tests on the GIMPS server. At the time of writing, there are 28 such tests. The
-parallel P-1 functionality is currently broken, and will not find expected
-factors. This is probably unimportant for the stated goal, as no factors should
-be found for any of the 28 exponents.
+parallel P-1 functionality is disabled when a non-zero shift is used. However,
+the base is correctly calculated to ensure the final residue matches a zero-shift
+run with the same B1 value.
 
 ## Files used by gpuOwl
 

@@ -656,11 +656,20 @@ PRPState Gpu::loadPRP(u32 E, u32 iniB1, u32 iniBlockSize, i64 userShift) {
 }
 
 static std::pair<std::vector<bool>, u32> kselect(u32 E, u32 blockSize, u32 B1,
-                                                 u32 B2) {
+                                                 u32 B2, u32 shift) {
   u32 lastIteration = ((E - 2) / blockSize + 1) * blockSize;
 
   if (!B1) {
     return make_pair(std::vector<bool>(lastIteration + 1), 0);
+  }
+
+  // If shift is non-zero, disable P-1 accumulation due to incompatibility
+  if (shift > 0) {
+    log("%u P-1 accumulation disabled due to non-zero shift (%u) - B1=%u B2=%u "
+        "specified but no P-1 accumulation will be performed\n",
+        E, shift, B1, B2);
+    u32 effectiveB2 = (B2 == 0) ? E : B2; // Use default B2 logic for reporting
+    return make_pair(std::vector<bool>(lastIteration + 1, false), effectiveB2);
   }
 
   // log("Starting P-1 selection: exp %u, B1 %u, B2 %u\n", E, B1, B2);
@@ -779,7 +788,7 @@ PRPResult Gpu::isPrimePRP(u32 E, const Args &args, u32 B1, u32 B2) {
              // http://www.mersenneforum.org/showpost.php?p=468378&postcount=209
   assert(k < kEnd);
 
-  auto kselectRet = kselect(E, blockSize, B1, B2);
+  auto kselectRet = kselect(E, blockSize, B1, B2, shift);
   std::vector<bool> kset = kselectRet.first;
   u32 effectiveB2 = kselectRet.second;
 
@@ -797,7 +806,7 @@ PRPResult Gpu::isPrimePRP(u32 E, const Args &args, u32 B1, u32 B2) {
   bool isPrime = false;
   Timer timer;
 
-  int nGcdAcc = (B1 > 0);
+  int nGcdAcc = (B1 > 0 && shift == 0) ? 1 : 0;
   u64 finalRes64 = 0;
   u32 nTotalIters = ((kEnd - 1) / blockSize + 1) * blockSize;
 
@@ -833,10 +842,15 @@ PRPResult Gpu::isPrimePRP(u32 E, const Args &args, u32 B1, u32 B2) {
                 equalNeg(unshiftedWords, originalBase);
 
       u64 shiftedRes64 = residue(words);
-      log("%s %8d / %d, %016llx (unshifted), %016llx (shifted, cumulative "
-          "shift %u), base %016llx\n",
-          isPrime ? "PP" : "CC", kEnd, E, finalRes64, shiftedRes64,
-          cumulativeShift, residue(originalBase));
+      if (shift > 0) {
+        log("%s %8d / %d, %016llx (unshifted), %016llx (shifted, cumulative "
+            "shift %u), base %016llx\n",
+            isPrime ? "PP" : "CC", kEnd, E, finalRes64, shiftedRes64,
+            cumulativeShift, residue(originalBase));
+      } else {
+        log("%s %8d / %d, %016llx, base %016llx\n", isPrime ? "PP" : "CC", kEnd,
+            E, finalRes64, residue(originalBase));
+      }
 
       int itersLeft = blockSize - (kEnd - k);
       if (itersLeft > 0) {
@@ -850,7 +864,7 @@ PRPResult Gpu::isPrimePRP(u32 E, const Args &args, u32 B1, u32 B2) {
 
     queue.finish();
 
-    if (gcd->isReady()) {
+    if (shift == 0 && gcd->isReady()) {
       std::string factor = gcd->get();
       if (!factor.empty()) {
         // log("GCD: %s\n", factor.c_str());
@@ -905,7 +919,7 @@ PRPResult Gpu::isPrimePRP(u32 E, const Args &args, u32 B1, u32 B2) {
         state.gcdAcc = gcdAcc;
         state.save(E);
       }
-      if (k % 1'000'000 < checkStep && nGcdAcc && !gcd->isOngoing() &&
+      if (shift == 0 && k % 1'000'000 < checkStep && nGcdAcc && !gcd->isOngoing() &&
           !doStop) {
         gcd->start(E, gcdAcc, 0);
         nGcdAcc = 0;
@@ -927,7 +941,7 @@ PRPResult Gpu::isPrimePRP(u32 E, const Args &args, u32 B1, u32 B2) {
       assert(base == loaded.base);
       assert(B1 == loaded.B1);
       shift = loaded.shift;
-      nGcdAcc = (B1 > 0);
+      nGcdAcc = (B1 > 0 && shift == 0) ? 1 : 0;
     }
     if (args.timeKernels) {
       this->logTimeKernels();
