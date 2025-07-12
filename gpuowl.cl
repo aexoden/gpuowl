@@ -1095,7 +1095,8 @@ void pairSq(uint N, T2 *u, T2 *v, T2 base, bool special) {
 }
 
 KERNEL(G_H) tailFused(P(T2) io, Trig smallTrig) {
-  local T lds[SMALL_HEIGHT];
+  local T2 rawLds[(SMALL_HEIGHT+1)/2];
+  local T *lds = (local T *)rawLds;  
   T2 u[NH], v[NH];
 
   uint W = SMALL_HEIGHT;
