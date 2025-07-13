@@ -19,7 +19,7 @@ void log(const char *fmt, ...);
 
 void initLog(const char *);
 
-#define BASE_VERSION "5.0"
+#define BASE_VERSION "5.0-shift"
 // Reason for version change:
 // 5.0 : dropped TF; dropped old checkpoint load.
 // 4.7 : parsing B1 & B2 bounds for PRP-1 in worktodo.txt
@@ -49,4 +49,4 @@ void initLog(const char *);
 #define VERSION BASE_VERSION
 #endif
 
-#define PROGRAM "gpuowl-5-shift"
+#define PROGRAM "gpuowl"
