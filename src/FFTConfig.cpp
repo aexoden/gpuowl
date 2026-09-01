@@ -86,9 +86,8 @@ vector<FFTShape> FFTShape::allShapes(u32 sizeFrom, u32 sizeTo) {
   for (enum FFT_TYPES const type : {FFT64, FFT6431, FFT3161, FFT3261, FFT61, FFT323161}) {
     for (u32 const width : {256, 512, 1024, 4096}) {
       for (u32 const height : {256, 512, 1024}) {
-        if (width == 256 && height == 1024) { continue; } // Skip because we prefer width >= height
         for (u32 const middle : {2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16}) {
-          if (type != FFT64 && (middle & (middle - 1))) continue;   // Reject non-power-of-two NTTs
+          if (type != FFT64 && type != FFT32 && (middle & (middle - 1))) continue;  // Reject non-power-of-two NTTs
           u32 const sz = width * height * middle * 2;
           if (sizeFrom <= sz && sz <= sizeTo) {
             configs.emplace_back(type, width, middle, height);
@@ -192,17 +191,15 @@ bool FFTShape::needsLargeCarry(u64 E) const {
 // Return TRUE for "favored" shapes.  That is, those that are most likely to be useful.  To save time in generating bpw data, only these favored
 // shapes have their bpw data pre-computed.  Bpw for non-favored shapes is guessed from the bpw data we do have.  Also. -tune will normally only
 // time favored shapes.  These are the rules for deciding favored shapes:
-//      WIDTH >= HEIGHT
 //      WIDTH=4K:  HEIGHT>=512, MIDDLE>=9       (2*8 combos)
 //      WIDTH=1K:  MIDDLE>=5                    (3*12 combos)
 //      WIDTH=512: MIDDLE>=4                    (2*13 combos)
 //      WIDTH=256: MIDDLE>=1                    (16 combos)
 bool FFTShape::isFavoredShape() const {
-  return width >= height &&
-        ((width == 4096 && height >= 512 && middle >= 9) ||
-         (width == 1024 && middle >= 5) ||
-         (width == 512 && middle >= 4) ||
-         (width == 256 && middle >= 1));
+  return ((width == 4096 && height >= 512 && middle >= 9) ||
+          (width == 1024 && middle >= 5) ||
+          (width == 512 && middle >= 4) ||
+          (width == 256 && middle >= 1));
 }
 
 FFTConfig::FFTConfig(const string& spec) {

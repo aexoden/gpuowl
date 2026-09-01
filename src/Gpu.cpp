@@ -620,7 +620,7 @@ string Gpu::numCudaRegisters([[maybe_unused]] enum WHICH_KERNEL which_kernel) {
       use_override = "REGCF3231";
       break;
     case FFT6431:
-      regs = -1;
+      regs = nW == 8 ? -1 : -1;         // Tested on TitanV, NW=8, CUDA 13.0.  NW=4 not tested.
       use_override = "REGCF6431";
       break;
     case FFT31:

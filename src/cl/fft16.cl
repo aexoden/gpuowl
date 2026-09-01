@@ -2,33 +2,53 @@
 
 #if FFT_FP64
 
-#if 0
+#if 1
 
 #if 1
 
 #include "fft4.cl"
 
-// 24 FMA (of which 16 MUL) + 136 ADD
+// 56 FMA + 96 ADD
 void OVERLOAD fft16(T2 *u) {
   double
       C1 = 0.92387953251128674, // cos(tau/16)
-      S1 = 0.38268343236508978; // sin(tau/16)
+      S1 = 0.38268343236508978, // sin(tau/16)
+      S1_over_C1 = 0.4142135623730950488017,
+      C1_over_S1 = 2.4142135623730950488017;
 
   for (int i = 0; i < 4; ++i) { fft4by(u, i, 4, 16); }
 
-  u[5]  = cmul(u[ 5],  U2(C1, S1));
-  u[7]  = cmul(u[ 7],  U2(S1, C1));
-  u[13] = cmul(u[13],  U2(S1, C1));
-  u[15] = cmul(u[15], -U2(C1, S1));
+  X2(u[0], u[2]);
+  X2_mul_t4(u[1], u[3]);
+  X2(u[0], u[1]);
+  X2(u[2], u[3]);
+  SWAP(u[1], u[2]);
 
-  u[6]  = mul_t8(u[6]);
-  u[9]  = mul_t8(u[9]);
-  u[11] = mul_3t8(u[11]);
-  u[14] = mul_3t8(u[14]);
+  u[9]  = mul_t8_delayed(u[9]);              // delays a mul by M_SQRT1_2
+  u[11] = mul_t8_delayed(u[11]);             // delays a mul by i*M_SQRT1_2 (a negation cheaper than mul_3t8_delayed)
+  X2t4(u[8], u[10]);
+  X2t4_mul_t4(u[9], u[11]);
+  X2ad(u[8], u[9], M_SQRT1_2);
+  X2ad(u[10], u[11], M_SQRT1_2);
+  SWAP(u[9], u[10]);
 
-  u[10] = mul_t4(u[10]);
+  u[5]  = partial_cmul(u[5], S1_over_C1);    // delays a mul by C1
+  u[6]  = mul_t8_delayed(u[6]);              // delays a mul by M_SQRT1_2
+  u[7]  = partial_cmul(u[7], C1_over_S1);    // delays a mul by S1
+  X2ad(u[4], u[6], M_SQRT1_2);
+  X2ad_mul_t4(u[5], u[7], S1_over_C1);       // mul by S1/C1, now both are delaying a mul by C1
+  X2ad(u[4], u[5], C1);                      // apply delayed mul by C1
+  X2ad(u[6], u[7], C1);                      // apply delayed mul by C1
+  SWAP(u[5], u[6]);
 
-  for (int i = 0; i < 4; ++i) { fft4by(u, 4 * i, 1, 16); }
+  u[13] = partial_cmul(u[13], C1_over_S1);   // delays a mul by S1
+  u[14] = mul_t8_delayed(u[14]);             // delays a mul by i*M_SQRT1_2 (a negation cheaper than mul_3t8_delayed)
+  u[15] = partial_cmul(u[15], S1_over_C1);   // delays a mul by -C1
+  X2t4ad(u[12], u[14], M_SQRT1_2);
+  X2ad_mul_t4(u[13], u[15], -C1_over_S1);    // mul by -C1/S1, now both are delaying a mul by S1
+  X2ad(u[12], u[13], S1);                    // apply delayed mul by S1
+  X2ad(u[14], u[15], S1);                    // apply delayed mul by S1
+  SWAP(u[13], u[14]);
 
   SWAP(u[1], u[4]);
   SWAP(u[2], u[8]);
@@ -36,8 +56,6 @@ void OVERLOAD fft16(T2 *u) {
   SWAP(u[6], u[9]);
   SWAP(u[7], u[13]);
   SWAP(u[11], u[14]);
-
-  // for (int i = 0; i < 4; ++i) { fft4by(u, i, 4, 16); }
 }
 
 #else
@@ -207,6 +225,8 @@ void OVERLOAD fft16(F2 *u) {
 void OVERLOAD fft16(GF31 *u) {
   const Z31 C1 = 1556715293;
   const Z31 S1 = 978592373;
+  const Z31 negC1 = M31 - C1;
+  const Z31 negS1 = M31 - S1;
 
   X2(u[0], u[8]);
   X2(u[1], u[9]);
@@ -217,10 +237,10 @@ void OVERLOAD fft16(GF31 *u) {
   X2_mul_3t8(u[6], u[14]);
   X2(u[7], u[15]);
 
-  u[ 9] = cmul(u[ 9], U2( C1, S1)); // 1t16
-  u[11] = cmul(u[11], U2( S1, C1)); // 3t16
-  u[13] = cmul(u[13], U2(neg(S1), C1)); // 5t16		//GWBUG - check if optimizer is eliminating the neg (or better yet perhaps tweak follow up code to expect a negative)
-  u[15] = cmul(u[15], U2(neg(C1), S1)); // 7t16
+  u[ 9] = cmul_const(u[ 9], U2( C1, S1)); // 1t16
+  u[11] = cmul_const(u[11], U2( S1, C1)); // 3t16
+  u[13] = cmul_const(u[13], U2(negS1, C1)); // 5t16
+  u[15] = cmul_const(u[15], U2(negC1, S1)); // 7t16
 
   fft8Core(u);
   fft8Core(u + 8);
@@ -247,9 +267,6 @@ void OVERLOAD fft16(GF31 *u) {
 #include "fft8.cl"
 
 void OVERLOAD fft16(GF61 *u) {
-  const Z61 C1 = 22027337052962166ULL;
-  const Z61 S1 = 1693317751237720973ULL;
-
   X2(u[0], u[8]);
   X2(u[1], u[9]);
   X2_mul_t8(u[2], u[10]);
@@ -259,10 +276,10 @@ void OVERLOAD fft16(GF61 *u) {
   X2_mul_3t8(u[6], u[14]);
   X2(u[7], u[15]);
 
-  u[ 9] = cmul(u[ 9], U2( C1, S1)); // 1t16
-  u[11] = cmul(u[11], U2( S1, C1)); // 3t16
-  u[13] = cmul(u[13], U2(neg(S1), C1)); // 5t16		//GWBUG - check if optimizer is eliminating the neg (or better yet perhaps tweak follow up code to expect a negative)
-  u[15] = cmul(u[15], U2(neg(C1), S1)); // 7t16
+  u[9] = mul_t16(u[9]);
+  u[11] = mul_3t16(u[11]);
+  u[13] = mul_5t16(u[13]);
+  u[15] = mul_7t16(u[15]);
 
   fft8Core(u);
   fft8Core(u + 8);

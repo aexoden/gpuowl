@@ -143,10 +143,26 @@ static vector<double2> genSmallTrigFP64(u32 size, u32 radix) {
   u32 const WG = size / radix;
   vector<double2> tab;
 
-// old fft_WIDTH and fft_HEIGHT
-  for (u32 line = 1; line < radix; ++line) {
-    for (u32 col = 0; col < WG; ++col) {
-      tab.push_back(radix / line >= 8 ? root1Fancy(size, col * line) : root1(size, col * line));
+  // New SIZE=256, RADIX=8 which is really mixed radix-4 and radix-8.  This is for a 4 * 8 * 8 implementation.
+  if (size == 256 && radix == 8) {
+    for (u32 line = 1; line < radix/2; ++line) {
+      for (u32 col = 0; col < WG*2; ++col) {
+        tab.push_back(0 && radix / line >= 8 ? root1Fancy(size, col * line) : root1(size, col * line));
+      }
+    }
+    for (u32 line = 1; line < radix; ++line) {
+      for (u32 col = 0; col < WG; col += 4) {
+        tab.push_back(0 && radix / line >= 8 ? root1Fancy(size, col * line) : root1(size, col * line));
+      }
+    }
+  }
+
+  // original fft_WIDTH and fft_HEIGHT
+  else {
+    for (u32 line = 1; line < radix; ++line) {
+      for (u32 col = 0; col < WG; ++col) {
+        tab.push_back(radix / line >= 8 ? root1Fancy(size, col * line) : root1(size, col * line));
+      }
     }
   }
   tab.resize(size);
@@ -397,10 +413,26 @@ static vector<float2> genSmallTrigFP32(u32 size, u32 radix) {
   u32 const WG = size / radix;
   vector<float2> tab;
 
-// old fft_WIDTH and fft_HEIGHT
-  for (u32 line = 1; line < radix; ++line) {
-    for (u32 col = 0; col < WG; ++col) {
-      tab.push_back(radix / line >= 8 ? root1FancyFP32(size, col * line) : root1FP32(size, col * line));
+  // New SIZE=256, RADIX=8 which is really mixed radix-4 and radix-8.  This is for a 4 * 8 * 8 implementation.
+  if (size == 256 && radix == 8) {
+    for (u32 line = 1; line < radix/2; ++line) {
+      for (u32 col = 0; col < WG*2; ++col) {
+        tab.push_back(0 && radix / line >= 8 ? root1FancyFP32(size, col * line) : root1FP32(size, col * line));
+      }
+    }
+    for (u32 line = 1; line < radix; ++line) {
+      for (u32 col = 0; col < WG; col += 4) {
+        tab.push_back(0 && radix / line >= 8 ? root1FancyFP32(size, col * line) : root1FP32(size, col * line));
+      }
+    }
+  }
+
+  // original fft_WIDTH and fft_HEIGHT
+  else {
+    for (u32 line = 1; line < radix; ++line) {
+      for (u32 col = 0; col < WG; ++col) {
+        tab.push_back(radix / line >= 8 ? root1FancyFP32(size, col * line) : root1FP32(size, col * line));
+      }
     }
   }
   tab.resize(size);
@@ -627,13 +659,31 @@ uint2 root1GF31(u32 N, u32 k) {
 static vector<uint2> genSmallTrigGF31(u32 size, u32 radix) {
   u32 const WG = size / radix;
   vector<uint2> tab;
-
   GF31 const root1size = GF31::root_one(size);
-  for (u32 line = 1; line < radix; ++line) {
-    for (u32 col = 0; col < WG; ++col) {
-      tab.push_back(root1GF31(root1size, col * line));
+
+  // New SIZE=256, RADIX=8 which is really mixed radix-4 and radix-8.  This is for a 4 * 8 * 8 implementation.
+  if (size == 256 && radix == 8) {
+    for (u32 line = 1; line < radix/2; ++line) {
+      for (u32 col = 0; col < WG*2; ++col) {
+        tab.push_back(root1GF31(root1size, col * line));
+      }
+    }
+    for (u32 line = 1; line < radix; ++line) {
+      for (u32 col = 0; col < WG; col += 4) {
+        tab.push_back(root1GF31(root1size, col * line));
+      }
     }
   }
+
+  // Standard roots
+  else {
+    for (u32 line = 1; line < radix; ++line) {
+      for (u32 col = 0; col < WG; ++col) {
+        tab.push_back(root1GF31(root1size, col * line));
+      }
+    }
+  }
+
   tab.resize(size);
   return tab;
 }
@@ -789,13 +839,31 @@ ulong2 root1GF61(u32 N, u32 k) {
 static vector<ulong2> genSmallTrigGF61(u32 size, u32 radix) {
   u32 const WG = size / radix;
   vector<ulong2> tab;
-
   GF61 const root1size = GF61::root_one(size);
-  for (u32 line = 1; line < radix; ++line) {
-    for (u32 col = 0; col < WG; ++col) {
-      tab.push_back(root1GF61(root1size, col * line));
+
+  // New SIZE=256, RADIX=8 which is really mixed radix-4 and radix-8.  This is for a 4 * 8 * 8 implementation.
+  if (size == 256 && radix == 8) {
+    for (u32 line = 1; line < radix/2; ++line) {
+      for (u32 col = 0; col < WG*2; ++col) {
+        tab.push_back(root1GF61(root1size, col * line));
+      }
+    }
+    for (u32 line = 1; line < radix; ++line) {
+      for (u32 col = 0; col < WG; col += 4) {
+        tab.push_back(root1GF61(root1size, col * line));
+      }
     }
   }
+
+  // Standard roots
+  else {
+    for (u32 line = 1; line < radix; ++line) {
+      for (u32 col = 0; col < WG; ++col) {
+        tab.push_back(root1GF61(root1size, col * line));
+      }
+    }
+  }
+
   tab.resize(size);
   return tab;
 }
