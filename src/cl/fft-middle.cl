@@ -33,14 +33,12 @@
 #include "fft16.cl"
 #endif
 
-#if !defined(MM_CHAIN) && !defined(MM2_CHAIN) && FFT_VARIANT_M == 0
-#define MM_CHAIN 0
-#define MM2_CHAIN 0
+#if !defined(MM_CHAIN)
+#define MM_CHAIN (FFT_VARIANT_M == 0 ? 0 : 1)
 #endif
 
-#if !defined(MM_CHAIN) && !defined(MM2_CHAIN) && FFT_VARIANT_M == 1
-#define MM_CHAIN 1
-#define MM2_CHAIN 2
+#if !defined(MM2_CHAIN)
+#define MM2_CHAIN (FFT_VARIANT_M == 0 ? 0 : 2)
 #endif
 
 // Apply the twiddles needed after fft_MIDDLE and before fft_HEIGHT in forward FFT.
