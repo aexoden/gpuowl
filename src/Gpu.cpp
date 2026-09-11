@@ -1080,10 +1080,10 @@ void Gpu::replay() {
       if (cache_group == 3 && !fft.NTT_GF61) continue;
 
       // To better balance the load on the two command queues, put a 64-bit data type in one queue and two 32-bit data types in the other queue.
-      Queue *q;
-      if (cache_group == 1) q = &queue;
+      // The main queue is the choice for both cache group 1 and the fallback for any cache group added later.
+      Queue *q = &queue;
       if (cache_group == 2) q = (fft.shape.fft_type == FFT323161 || fft.shape.fft_type == FFT3161) ? &queue : &auxQueues[0];
-      if (cache_group == 3) q = &auxQueues[0];
+      else if (cache_group == 3) q = &auxQueues[0];
 
       // Iterate over the recorded kernels.  Execute each.
       int arg = 0;
