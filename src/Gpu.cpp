@@ -1970,14 +1970,14 @@ void Gpu::square(Buffer<Word>& out, Buffer<Word>& in, enum LEAD_TYPE leadIn, enu
   assert(!(doMul3 && doLL));
 
   // Use CUDA graphs for some common squarings
-  // NOTE: assumes that if doLL is set, it will always be set
   bool graph_recording = false;
   Graph *graph = NULL;
   if (use_graphs && (&out == &bufData || &out == &bufAux) && &in == &out && leadIn == LEAD_WIDTH && leadOut == LEAD_WIDTH && !doMul3) {
-    // We have one graph for ROE and one for no-ROE and one for bufData and one for bufAux
+    // We have one graph for ROE and one for no-ROE, one for bufData and one for bufAux, and one for
+    // LL and one for PRP (LL runs a different carry kernel)
     bool roe = (roePos < wantROE);
     bool srcData = (&out == &bufData);
-    graph = &graph_square[2 * roe + srcData];
+    graph = &graph_square[4 * doLL + 2 * roe + srcData];
     // Execute an already recorded graph
     if (graph->isRecorded()) {
       graph->launch(&queue);
