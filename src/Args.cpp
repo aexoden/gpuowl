@@ -5,6 +5,7 @@
 #include "clwrap.h"
 #include "gpuid.h"
 #include "Proof.h"
+#include "version.h"
 
 #include <vector>
 #include <string>
@@ -284,10 +285,12 @@ void Args::parse(const string& line) {
     // log("key '%s'\n", key.c_str());
     if (key == "-h" || key == "--help") {
       printHelp();
-      throw "help";
+      printedAndDone = true;
+      return;
     } if (key == "-version") {
-      // log("PRPLL %s\n", VERSION);
-      throw "version";
+      log("PRPLL %s\n", VERSION);
+      printedAndDone = true;
+      return;
     } if (key == "-info") {
       if (s.empty()) {
         log("-info expects an FFT spec, e.g. -info 1K:13:256\n");
@@ -301,7 +304,8 @@ void Args::parse(const string& line) {
           log("%12s | %.2f | %5.1f\n", fft.spec().c_str(), fft.maxBpw(), fft.maxExp() / 1'000'000.0);
         }
       }
-      throw "info";
+      printedAndDone = true;
+      return;
     } if (key == "-od") {
       double od = stod(s);
       fftOverdrive = 1 + od / 1000;

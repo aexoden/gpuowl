@@ -35,6 +35,8 @@ public:
   [[nodiscard]] bool hasFlag(const string& key) const;
 
   bool silent;
+  bool printedAndDone{};
+
   string user;
   string dump;
   string dir;
