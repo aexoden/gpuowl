@@ -21,6 +21,14 @@
 #include <utility>
 // #include <format> from GCC-13 onwards
 
+namespace {
+
+constexpr int EXIT_OK = 0;
+constexpr int EXIT_FAILED = 1;
+constexpr int EXIT_USAGE = 2;
+
+} // namespace
+
 static void gpuWorker(GpuCommon shared, i32 instance) {
   // LogContext context{(instance ? shared.args->tailDir() : ""s) + to_string(instance) + ' '};
   // log("Starting worker %d\n", instance);
@@ -62,34 +70,49 @@ int main(int argc, char **argv) {
   setenv("ROC_SIGNAL_POOL_SIZE", "32", 0);
 #endif
 
-  int const exitCode = 0;
+  int exitCode = EXIT_OK;
+  Args args;
 
   try {
     string const mainLine = Args::mergeArgs(argc, argv);
     {
-      Args args{true};
-      args.parse(mainLine);
-      if (!args.dir.empty()) {
-        fs::current_path(args.dir);
+      Args first{true};
+      first.parse(mainLine);
+
+      // "-h", "-version" and "-info" are handled by the first Args instance.
+      if (first.printedAndDone) { return EXIT_OK; }
+      if (!first.dir.empty()) {
+        fs::current_path(first.dir);
       }
     }
 
     fs::path poolDir;
     {
-      Args args{true};
-      args.readConfig("config.txt");
-      args.parse(mainLine);
-      poolDir = args.masterDir;
+      Args second{true};
+      second.readConfig("config.txt");
+      second.parse(mainLine);
+      poolDir = second.masterDir;
     }
 
     initLog("gpuowl-0.log");
     log("PRPLL %s starting\n", VERSION);
 
-    Args args;
-
     if (!poolDir.empty()) { args.readConfig(poolDir / "config.txt"); }
     args.readConfig("config.txt");
     args.parse(mainLine);
+  } catch (const char *mes) {
+    log("Exiting because \"%s\"\n", mes);
+    return EXIT_USAGE;
+  } catch (const string& mes) {
+    log("Exiting because \"%s\"\n", mes.c_str());
+    return EXIT_USAGE;
+  } catch (const std::exception& e) {
+    log("Exiting because an argument value could not be read (%s)\n", e.what());
+    return EXIT_USAGE;
+  }
+
+  try {
+    // Opens the device, so it's done in the run try block.
     args.setDefaults();
 
     if (args.maxAlloc) { AllocTrac::setMaxAlloc(args.maxAlloc); }
@@ -129,10 +152,15 @@ int main(int argc, char **argv) {
     }
   } catch (const char *mes) {
     log("Exiting because \"%s\"\n", mes);
+    exitCode = EXIT_FAILED;
   } catch (const string& mes) {
     log("Exiting because \"%s\"\n", mes.c_str());
+    exitCode = EXIT_FAILED;
+  } catch (const std::exception& e) {
+    log("Exiting because %s: %s\n", typeName(e), e.what());
+    exitCode = EXIT_FAILED;
   }
 
   log("Bye\n");
-  return exitCode; // not used yet.
+  return exitCode;
 }
