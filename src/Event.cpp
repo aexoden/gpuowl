@@ -14,8 +14,12 @@ Event::Event(EventHolder&& e, TimeInfo* tInfo) :
 }
 
 Event::~Event() {
-  [[maybe_unused]] bool const done = isComplete();
-  assert(done);
+  try {
+    [[maybe_unused]] bool const done = isComplete();
+    assert(done);
+  } catch (...) {
+    // Suppress any exceptions in the destructor
+  }
 }
 
 bool Event::isComplete() {

@@ -36,6 +36,48 @@ static void ensureContextCurrent() {
   }
 }
 
+// A fault inside a kernel is not reported by the launch that started it. The error will only
+// surface at the next synchronization. These errors are also considered "sticky" and will
+// prevent any productive use of CUDA in the current process. The only remedy is to restart
+// the program. This function checks if a given CUDA error is considered "sticky".
+static bool isStickyError(CUresult r) {
+  switch (r) {
+    case CUDA_ERROR_ILLEGAL_ADDRESS:
+    case CUDA_ERROR_MISALIGNED_ADDRESS:
+    case CUDA_ERROR_INVALID_ADDRESS_SPACE:
+    case CUDA_ERROR_INVALID_PC:
+    case CUDA_ERROR_ILLEGAL_INSTRUCTION:
+    case CUDA_ERROR_HARDWARE_STACK_ERROR:
+    case CUDA_ERROR_LAUNCH_FAILED:
+    case CUDA_ERROR_LAUNCH_TIMEOUT:
+    case CUDA_ERROR_ECC_UNCORRECTABLE:
+    case CUDA_ERROR_CONTEXT_IS_DESTROYED:
+      return true;
+    default:
+      return false;
+  }
+}
+
+// Maps a synchronization failure to an OpenCL error code. The mapping is lossy, so the real
+// CUDA error is named on the way through.
+static int cudaSyncFail(CUresult r, const char* what) {
+  if (r == CUDA_SUCCESS) { return CL_SUCCESS; }
+
+  const char* name = nullptr;
+  cuGetErrorName(r, &name);
+
+  if (isStickyError(r)) {
+    fprintf(stderr, "\nCUDA context lost in %s: %s (%d).\n"
+            "The context is now unusable and every CUDA operation will fail."
+            "PRPLL must be restarted.\n\n", what, name ? name : "?", (int) r);
+    return CL_DEVICE_NOT_AVAILABLE;
+  }
+
+  fprintf(stderr, "CUDA error in %s: %s (%d)\n", what, name ? name : "?", (int) r);
+  if (r == CUDA_ERROR_OUT_OF_MEMORY) { return CL_MEM_OBJECT_ALLOCATION_FAILURE; }
+  return CL_OUT_OF_RESOURCES;
+}
+
 // Reference-count CUmodules so they get unloaded once nothing uses them.
 //
 // In OpenCL, clCreateKernel retains the program, so the underlying code object
@@ -889,8 +931,8 @@ int clFlush(cl_command_queue  /*q*/) {
 }
 
 int clFinish(cl_command_queue q) {
-  if (q) cuStreamSynchronize(q->stream);
-  return CL_SUCCESS;
+  if (!q) { return CL_SUCCESS; }
+  return cudaSyncFail(cuStreamSynchronize(q->stream), "clFinish");
 }
 
 // ---- Events ----
@@ -903,7 +945,8 @@ int clReleaseEvent(cl_event ev) {
 int clWaitForEvents(unsigned n, const cl_event* events) {
   for (unsigned i = 0; i < n; i++) {
     if (events[i] && events[i]->end) {
-      cuEventSynchronize(events[i]->end);
+      int const err = cudaSyncFail(cuEventSynchronize(events[i]->end), "clWaitForEvents");
+      if (err != CL_SUCCESS) { return err; }
     }
   }
   return CL_SUCCESS;
