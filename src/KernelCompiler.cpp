@@ -84,7 +84,9 @@ Program KernelCompiler::compile(const string& fileName, const string& extraArgs)
   
   Program p2{clLinkProgram(context, 1, &deviceId, linkArgs.c_str(),
                            1, (cl_program *) &p1, nullptr, nullptr, &err)};
-  if (string const mes = getBuildLog(p1.get(), deviceId); !mes.empty()) { log("%s\n", mes.c_str()); }
+  if (err != CL_SUCCESS || verbose) {
+    if (string const mes = getBuildLog(p2 ? p2.get() : p1.get(), deviceId); !mes.empty()) { log("%s\n", mes.c_str()); }
+  }
   if (err != CL_SUCCESS) {
     log("Linking '%s' error %s (args %s)\n", fileName.c_str(), errMes(err).c_str(), linkArgs.c_str());
   }
