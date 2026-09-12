@@ -55,9 +55,43 @@ static void logCudaError(const char* what, CUresult r) {
   log("%s failed: %s (%d)\n", what, errName ? errName : "?", (int)r);
 }
 
+// A fault inside a kernel is not reported by the launch that started it. The error will only
+// surface at the next synchronization. These errors are also considered "sticky" and will
+// prevent any productive use of CUDA in the current process. The only remedy is to restart
+// the program. This function checks if a given CUDA error is considered "sticky".
+static bool isStickyError(CUresult r) {
+  switch (r) {
+    case CUDA_ERROR_ILLEGAL_ADDRESS:
+    case CUDA_ERROR_MISALIGNED_ADDRESS:
+    case CUDA_ERROR_INVALID_ADDRESS_SPACE:
+    case CUDA_ERROR_INVALID_PC:
+    case CUDA_ERROR_ILLEGAL_INSTRUCTION:
+    case CUDA_ERROR_HARDWARE_STACK_ERROR:
+    case CUDA_ERROR_LAUNCH_FAILED:
+    case CUDA_ERROR_LAUNCH_TIMEOUT:
+    case CUDA_ERROR_ECC_UNCORRECTABLE:
+    case CUDA_ERROR_CONTEXT_IS_DESTROYED:
+      return true;
+    default:
+      return false;
+  }
+}
+
+// The mapping onto an OpenCL error is lossy, so the real CUDA error is named on the way through.
 static int clResult(const char* what, CUresult r) {
   if (r == CUDA_SUCCESS) { return CL_SUCCESS; }
+
+  if (isStickyError(r)) {
+    const char* name = nullptr;
+    cuGetErrorName(r, &name);
+    log("\nCUDA context lost in %s: %s (%d).\n"
+        "The context is now unusable and every CUDA operation will fail. PRPLL must be restarted.\n\n",
+        what, name ? name : "?", (int) r);
+    return CL_DEVICE_NOT_AVAILABLE;
+  }
+
   logCudaError(what, r);
+  if (r == CUDA_ERROR_OUT_OF_MEMORY) { return CL_MEM_OBJECT_ALLOCATION_FAILURE; }
   return CL_OUT_OF_RESOURCES;
 }
 
