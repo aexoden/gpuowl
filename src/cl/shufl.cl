@@ -86,7 +86,7 @@ void OVERLOAD shufl(local T2_GF61 *lds2, T2_GF61 *u, u32 f, u32 r, u32 numWG, u3
     // Pad 4 values after every row to eliminate bank conflicts.
     if (f == 4 && r == 4 && RADIX == 4) {
       bar(WG);
-      for (u32 i = 0; i < RADIX; ++i) { lds[lowMe / 4 * (WG + 4) + i * 4 + (lowMe & 3)] = u[i]; }
+      for (u32 i = 0; i < RADIX; ++i) { lds[((lowMe / 4) & 3) * (WG + 4) + (lowMe / 16) * 16 + i * 4 + (lowMe & 3)] = u[i]; }
       bar(WG);
       if (WG == 64) for (u32 i = 0; i < RADIX; ++i) { u[i] = lds[i * 16                     +  (lowMe / 16)      * (WG + 4) + (lowMe & 15)]; }
       else          for (u32 i = 0; i < RADIX; ++i) { u[i] = lds[i * 64 + (lowMe / 64) * 16 + ((lowMe / 16) & 3) * (WG + 4) + (lowMe & 15)]; }
@@ -116,7 +116,7 @@ void OVERLOAD shufl(local T2_GF61 *lds2, T2_GF61 *u, u32 f, u32 r, u32 numWG, u3
     if (f == 8 && r == 8 && RADIX == 8) {
       for (u32 i = 0; i < RADIX; ++i) { lds[i * WG + lowMe] = u[i]; }
       bar(WG);
-      for (u32 i = 0; i < RADIX; ++i) { u[i] = lds[lowMe / 8 * 64 + i * 8 + (lowMe & 7)]; }
+      for (u32 i = 0; i < RADIX; ++i) { u[i] = lds[((lowMe / 8) & 7) * WG + i * (WG / 8) + (lowMe / 64) * 8 + (lowMe & 7)]; }
       return;
     }
 
@@ -586,7 +586,7 @@ void OVERLOAD shufl(local F2_GF31 *lds2, F2_GF31 *u, u32 f, u32 r, u32 numWG, u3
       else          for (u32 i = 0; i < RADIX; ++i) { lds[((lowMe / 8) & 7) * (WG + 8) + (lowMe / 64) * 64 + i * 8 + (lowMe & 7)] = u[i]; }
       bar(WG);
       if (WG == 64) for (u32 i = 0; i < RADIX; ++i) { u[i] = lds[i * (WG + 8) + lowMe]; }
-      else          for (u32 i = 0; i < RADIX; ++i) { u[i] = lds[i * 64 + lowMe / 64 * (WG + 8) + (lowMe & 63)]; }
+      else          for (u32 i = 0; i < RADIX; ++i) { u[i] = lds[((i * (WG / 64) + lowMe / 64) & 7) * (WG + 8) + (i * (WG / 64) + lowMe / 64) / 8 * 64 + (lowMe & 63)]; }
       return;
     }
 
@@ -715,12 +715,12 @@ void OVERLOAD shufl(local F2_GF31 *lds2, F2_GF31 *u, u32 f, u32 r, u32 numWG, u3
       for (u32 i = 0; i < RADIX; ++i) { lds[((lowMe / 4) & 7) * (WG + 1) + (lowMe / 32) * 32 + (lowMe & 3) * 8 + i] = u[i].x; }
       bar(WG);
       if (WG == 64) for (u32 i = 0; i < RADIX; ++i) { u[i].x = lds[(i / 4) * 32 + (i & 3) * (2 * (WG + 1)) +  (lowMe / 32)      * (WG + 1) + (lowMe & 31)]; }
-      else          for (u32 i = 0; i < RADIX; ++i) { u[i].x = lds[i * 64 + (lowMe / 256) * 32             + ((lowMe / 32) & 7) * (WG + 1) + (lowMe & 31)]; }
+      else          for (u32 i = 0; i < RADIX; ++i) { u[i].x = lds[((i * (WG / 32) + lowMe / 32) & 7) * (WG + 1) + (i * (WG / 32) + lowMe / 32) / 8 * 32 + (lowMe & 31)]; }
       bar(WG);
       for (u32 i = 0; i < RADIX; ++i) { lds[((lowMe / 4) & 7) * (WG + 1) + (lowMe / 32) * 32 + (lowMe & 3) * 8 + i] = u[i].y; }
       bar(WG);
       if (WG == 64) for (u32 i = 0; i < RADIX; ++i) { u[i].y = lds[(i / 4) * 32 + (i & 3) * (2 * (WG + 1)) +  (lowMe / 32)      * (WG + 1) + (lowMe & 31)]; }
-      else          for (u32 i = 0; i < RADIX; ++i) { u[i].y = lds[i * 64 + (lowMe / 256) * 32             + ((lowMe / 32) & 7) * (WG + 1) + (lowMe & 31)]; }
+      else          for (u32 i = 0; i < RADIX; ++i) { u[i].y = lds[((i * (WG / 32) + lowMe / 32) & 7) * (WG + 1) + (i * (WG / 32) + lowMe / 32) / 8 * 32 + (lowMe & 31)]; }
       return;
     }
 
@@ -734,13 +734,13 @@ void OVERLOAD shufl(local F2_GF31 *lds2, F2_GF31 *u, u32 f, u32 r, u32 numWG, u3
       else          for (u32 i = 0; i < RADIX; ++i) { lds[((lowMe / 8) & 7) * (WG + 8) + (lowMe / 64) * 64 + i * 8 + (lowMe & 7)] = u[i].x; }
       bar(WG);
       if (WG == 64) for (u32 i = 0; i < RADIX; ++i) { u[i].x = lds[i * (WG + 8) + lowMe]; }
-      else          for (u32 i = 0; i < RADIX; ++i) { u[i].x = lds[i * 64 + lowMe / 64 * (WG + 8) + (lowMe & 63)]; }
+      else          for (u32 i = 0; i < RADIX; ++i) { u[i].x = lds[((i * (WG / 64) + lowMe / 64) & 7) * (WG + 8) + (i * (WG / 64) + lowMe / 64) / 8 * 64 + (lowMe & 63)]; }
       bar(WG);
       if (WG == 64) for (u32 i = 0; i < RADIX; ++i) { lds[ (lowMe / 8)      * (WG + 8)                     + i * 8 + (lowMe & 7)] = u[i].y; }
       else          for (u32 i = 0; i < RADIX; ++i) { lds[((lowMe / 8) & 7) * (WG + 8) + (lowMe / 64) * 64 + i * 8 + (lowMe & 7)] = u[i].y; }
       bar(WG);
       if (WG == 64) for (u32 i = 0; i < RADIX; ++i) { u[i].y = lds[i * (WG + 8) + lowMe]; }
-      else          for (u32 i = 0; i < RADIX; ++i) { u[i].y = lds[i * 64 + lowMe / 64 * (WG + 8) + (lowMe & 63)]; }
+      else          for (u32 i = 0; i < RADIX; ++i) { u[i].y = lds[((i * (WG / 64) + lowMe / 64) & 7) * (WG + 8) + (i * (WG / 64) + lowMe / 64) / 8 * 64 + (lowMe & 63)]; }
       return;
     }
 
