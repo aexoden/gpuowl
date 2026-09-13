@@ -1060,9 +1060,24 @@ int clGetDeviceInfo(cl_device_id dev, cl_device_info info, size_t size, void* va
     if (value && size >= 1) memcpy(value, empty, 1);
     break;
   }
-  case CL_DEVICE_BOARD_NAME_AMD:
-  case CL_DEVICE_PCIE_ID_AMD:
   case CL_DEVICE_TOPOLOGY_AMD: {
+    // Not an AMD device, but the caller is asking which PCIe slot this is.
+    int bus = -1, slot = -1;
+    if (cuDeviceGetAttribute(&bus, CU_DEVICE_ATTRIBUTE_PCI_BUS_ID, dev->dev) != CUDA_SUCCESS
+        || cuDeviceGetAttribute(&slot, CU_DEVICE_ATTRIBUTE_PCI_DEVICE_ID, dev->dev) != CUDA_SUCCESS) {
+      return CL_INVALID_VALUE;
+    }
+    cl_device_topology_amd top{};
+    top.raw.type = 1;                   // CL_DEVICE_TOPOLOGY_TYPE_PCIE_AMD
+    top.pcie.bus = char(bus);
+    top.pcie.device = char(slot);
+    top.pcie.function = 0;
+    if (sizeRet) *sizeRet = sizeof(top);
+    if (value && size >= sizeof(top)) memcpy(value, &top, sizeof(top));
+    break;
+  }
+  case CL_DEVICE_BOARD_NAME_AMD:
+  case CL_DEVICE_PCIE_ID_AMD: {
     // AMD-specific queries — return failure
     return CL_INVALID_VALUE;
   }
