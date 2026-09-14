@@ -209,17 +209,17 @@ class KernelTest(unittest.TestCase):
     def test_real_kernel_passes(self) -> None:
         report = csi.run_checks(self.sources)
         self.assertEqual(report.failures, ())
-        self.assertEqual((report.special_checked, report.plain_checked), (196, 308))
+        self.assertEqual((report.special_checked, report.plain_checked, report.cross_checked), (196, 308, 36))
 
     def test_wrong_read_in_the_x_pass(self) -> None:
         # T_Z61 LDSPAD f == 8 && r == 8, WG != 64 read of .x; the .y pass is untouched.
         anchor = "u[i].x = lds[i * (WG / 64) * 8 + (lowMe / 64) * 8 + ((lowMe / 8) & 7) * (WG + 8) + (lowMe & 7)]"
-        report = self.planted(Mutation(anchor, anchor.replace("(lowMe & 7)]", "((lowMe + 1) & 7)]")))
+        report = self.planted(Mutation(anchor, anchor.replace("(lowMe & 7)]", "((lowMe + 1) & 7)]"), copies=2))
         self.assertCaught(report, "lane values differ")
 
     def test_wrong_read_in_the_y_pass(self) -> None:
         anchor = "u[i].y = lds[i * (WG / 64) * 8 + (lowMe / 64) * 8 + ((lowMe / 8) & 7) * (WG + 8) + (lowMe & 7)]"
-        report = self.planted(Mutation(anchor, anchor.replace("(lowMe & 7)]", "((lowMe + 1) & 7)]")))
+        report = self.planted(Mutation(anchor, anchor.replace("(lowMe & 7)]", "((lowMe + 1) & 7)]"), copies=2))
         self.assertCaught(report, "lane values differ")
 
     def test_read_into_the_wrong_component(self) -> None:
@@ -300,10 +300,11 @@ class KernelTest(unittest.TestCase):
 
     def test_dead_else_branch_does_not_hide_a_special_case(self) -> None:
         # The T2_GF61 16-byte LDSPAD cases move into a dead #else, so they no longer shadow the LDSSWIZ case that has a
-        # bad write planted in it.
+        # bad write planted in it.  The anchor carries its newline so that it names the six section guards and not the
+        # "#if LDSPAD && RADIX == 4 && ..." build guard at the top of the file.
         swiz = "lds[(lowMe * 8 + i) ^ (lowMe & 7)] = u[i];"
         report = self.planted(
-            Mutation("#if LDSPAD", "#if 1\n#else", copies=6),
+            Mutation("#if LDSPAD\n", "#if 1\n#else\n", copies=6),
             Mutation(swiz, "lds[((lowMe * 8 + i) ^ (lowMe & 7)) + WG * RADIX] = u[i];"),
         )
         self.assertCaught(report, "outside the")
@@ -327,8 +328,8 @@ class KernelTest(unittest.TestCase):
             f"lds[i * WG + lowMe + {shift}]",
         )
         report = self.planted(
-            Mutation("#if LDSPAD", "#if 0", copies=6),
-            Mutation("#if LDSSWIZ", "#if VARIANT == 2", copies=3),
+            Mutation("#if LDSPAD\n", "#if 0\n", copies=6),
+            Mutation("#if LDSSWIZ\n", "#if VARIANT == 2\n", copies=3),
             Mutation(plain, shifted, copies=2),
         )
         self.assertCaught(report, "outside the")
@@ -355,10 +356,56 @@ class KernelTest(unittest.TestCase):
         self.assertCaught(report, "outside the")
 
     def test_plain_only_arm_outside_the_block(self) -> None:
-        # T2_GF61 SHUFL_BYTES == 4 shufl, which has no special cases (shufl_and_fft2 has the same line).
+        # T2_GF61 SHUFL_BYTES == 4 shufl, which has no special cases.
         anchor = "tmp.x = lds[i * WG + lowMe]"
-        report = self.planted(Mutation(anchor, "tmp.x = lds[i * WG + lowMe + 1]", copies=2))
+        report = self.planted(Mutation(anchor, "tmp.x = lds[i * WG + lowMe + 1]"))
         self.assertCaught(report, "outside the")
+
+    def test_arm_that_butterflies_the_wrong_pair(self) -> None:
+        # The T2_GF61 shufl_and_fft2 4-byte arm has no special case to check it, so only the other arms disagree.
+        anchor = "lo2[i], lds[4 * WG + i * (WG / 2) + lowMe % (WG / 2)]"
+        report = self.planted(Mutation(anchor, anchor.replace("4 * WG", "2 * WG"), copies=2))
+        self.assertCaught(report, "differ from the arm above it")
+
+    def test_arm_that_loses_its_butterfly(self) -> None:
+        # The bug this arm carried before: the shufl happens, the fft2 its callers expect does not. The two stash
+        # loops are one text, so the .x/.y pass claims the first of them before the .z/.w pass takes what is left.
+        stash = (
+            "for (u32 i = 0; i < RADIX; ++i) { lo1[i] = lds[i * (WG / 2) + lowMe % (WG / 2)];"
+            " lo2[i] = lds[4 * WG + i * (WG / 2) + lowMe % (WG / 2)]; }"
+        )
+
+        def join(component: str) -> str:
+            return (
+                "for (u32 i = 0; i < RADIX; ++i) {\n"
+                "      T_Z61 val1 = as_T_Z61((int2) (lo1[i], lds[         i * (WG / 2) + lowMe % (WG / 2)]));\n"
+                "      T_Z61 val2 = as_T_Z61((int2) (lo2[i], lds[4 * WG + i * (WG / 2) + lowMe % (WG / 2)]));\n"
+                f"      if (lowMe < WG / 2) u[i].{component} = addq(val1, val2);\n"
+                f"      else u[i].{component} = subq(val1, val2);\n"
+                "    }"
+            )
+
+        def plain(component: str) -> str:
+            return (
+                f"for (u32 i = 0; i < RADIX; ++i) {{ int4 tmp = as_int4(u[i]); tmp.{component} = lds[i * WG + lowMe];"
+                " u[i] = as_T2_GF61(tmp); }"
+            )
+
+        report = self.planted(
+            Mutation("int lo1[RADIX], lo2[RADIX];", ""),
+            Mutation(stash, plain("x"), copies=2),
+            Mutation(join("x"), plain("y")),
+            Mutation(stash, plain("z")),
+            Mutation(join("y"), plain("w")),
+        )
+        self.assertCaught(report, "differ from the arm above it")
+
+    def test_join_from_an_undeclared_stash_is_an_error(self) -> None:
+        self.assertUnreadable(Mutation("int lo1[RADIX], lo2[RADIX];", "int lo1[RADIX], lo3[RADIX];"))
+
+    def test_join_of_one_stash_with_itself_is_an_error(self) -> None:
+        anchor = "T_Z61 val2 = as_T_Z61((int2) (lo2[i]"
+        self.assertUnreadable(Mutation(anchor, anchor.replace("lo2[i]", "lo1[i]"), copies=2))
 
     def test_unreadable_loop_is_an_error(self) -> None:
         anchor = "for (u32 i = 0; i < RADIX; ++i) { lds[(lowMe * 8 + i) ^ (lowMe & 7)] = u[i]; }"
