@@ -209,7 +209,7 @@ class KernelTest(unittest.TestCase):
     def test_real_kernel_passes(self) -> None:
         report = csi.run_checks(self.sources)
         self.assertEqual(report.failures, ())
-        self.assertEqual((report.special_checked, report.plain_checked, report.cross_checked), (196, 308, 36))
+        self.assertEqual((report.special_checked, report.plain_checked, report.cross_checked), (175, 245, 30))
 
     def test_wrong_read_in_the_x_pass(self) -> None:
         # T_Z61 LDSPAD f == 8 && r == 8, WG != 64 read of .x; the .y pass is untouched.

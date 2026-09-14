@@ -709,6 +709,32 @@ void OVERLOAD fft_common(local T2 *lds, T2 *u, Trig trig, T2 w, u32 numWG, u32 l
 #endif
 #endif
 
+// WG=128, RADIX=8 is a mixed-radix case: WG*RADIX = 1024 is not a power of RADIX, so the generic loop below would do
+// four radix-8 stages (an FFT of length 4096) on 1024 points. Mirror the 8 * 8 * 2 * 8 decomposition used by the
+// non-variant-0 code at "WG == 128 && RADIX == 8" below, replacing each tabMul with the equivalent broadcast +
+// chainMul. bcast(w, f) reproduces trig[me & ~(f-1)], which is exactly what tabMul(trig, u, f, lowMe) loads.
+
+#if WG == 128 && RADIX == 8
+
+  fft8(u);
+  chainMul(u, w);  // bcast(w, 1) is the identity
+  shufl(lds, u, 1, numWG, lowMe);
+
+  fft8(u);
+  w = bcast(w, 8);
+  chainMul(u, w);
+  shufl_and_fft2(lds, u, 8, numWG, lowMe);
+
+  if (lowMe < WG / 2) fft8_16a(u); else fft8_16b(u);
+
+#else
+
+// The loop below does one fft_RADIX per iteration plus a final one, so it only computes a correct WG*RADIX-point FFT
+// when WG is a power of RADIX. Given WG * RADIX <= 1024 that leaves these cases.
+#if (RADIX == 8 && WG != 8 && WG != 64) || (RADIX == 4 && WG != 4 && WG != 16 && WG != 64 && WG != 256)
+#error VARIANT == 0 generic loop requires WG to be a power of RADIX
+#endif
+
   for (u32 s = 1; s < WG; s *= RADIX) {
     fft_RADIX(u);
     w = bcast(w, s);
@@ -716,6 +742,8 @@ void OVERLOAD fft_common(local T2 *lds, T2 *u, Trig trig, T2 w, u32 numWG, u32 l
     shufl(lds, u, s, numWG, lowMe);
   }
   fft_RADIX(u);
+
+#endif
 
 // Variant 2 uses more FMA instructions than the original FFT code.
 // The tabMul after fft8 only does a partial complex multiply, saving a mul-by-cosine for the next fft8 using FMA instructions.
