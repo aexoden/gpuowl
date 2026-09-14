@@ -8,13 +8,14 @@ element, checking that:
   2. No two writes target the same slot, and every read targets a written slot.
   3. Each lane ends with the same value in every component of u as in the plain implementation.
   4. A bar(WG) separates every run of LDS writes from the reads around it.
+  5. Every SHUFL_BYTES arm of one function leaves each lane the same value as the arm before it.
 
 The plain implementations also undergo checks 1, 2 and 4, including arms without optimized paths. Expressions,
 allocation rules, and supported parameter combinations are read from the source; unreadable or unrecognized source is an
 error, never a silent skip. No GPU is required.
 
 The reference is the plain implementation in the same SHUFL_BYTES arm; incorrect permutations shared with that
-implementation are not detected. Cross-arm equivalence is not checked.
+implementation are not detected. An error common to every arm of a function is not detected.
 
 Exit status: 0 if all checks pass, 1 if a check fails, 2 if the source cannot be read.
 """
@@ -626,7 +627,7 @@ class LdsBytes:
 #
 # Only special cases may be inside an #if within an arm.
 
-LoopKind = Literal["write", "read", "butterfly"]
+LoopKind = Literal["write", "read", "butterfly", "stash", "join"]
 
 
 class WgGuard(NamedTuple):
@@ -645,8 +646,10 @@ class Loop:
 
     A write loop stores one component of u[i] at its slot. A read loop loads one component of u[i] from its slot. A
     butterfly loop loads two slots and adds them in the lower half of the lanes and subtracts them in the upper half, as
-    shufl_and_fft2 does. The component is "" for all of u[i], "x" for u[i].x, and "int4.x" for as_int4(u[i]).x. `barred`
-    says whether a bar(WG) comes between this loop and the loop before it.
+    shufl_and_fft2 does. A stash loop loads two slots into the two named arrays, and the join loop after it loads the
+    other half of each of those values and butterflies the two rejoined values.The component is "" for all of u[i], "x"
+    for u[i].x, and "int4.x" for as_int4(u[i]).x. `barred` says whether a bar(WG) comes between this loop and the loop
+    before it. `names` are the stash arrays a stash loop fills or a join loop reads, left to right.
     """
 
     kind: LoopKind
@@ -655,6 +658,7 @@ class Loop:
     guard: WgGuard | None
     barred: bool
     line: int
+    names: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, eq=False)
@@ -720,6 +724,7 @@ _LDS_BASE: Final = re.compile(
 _DIRECTIVE_LINE: Final = re.compile(r"#[ \t]*(\w*)[^\n]*")
 _BAR: Final = re.compile(r"bar\s*\(\s*WG\s*\)\s*;")
 _DECLARATION: Final = re.compile(r"local\s+\w+\s*\*\s*\w+\s*;")
+_STASH_DECLARATION: Final = re.compile(r"int\s+(\w+)\s*\[\s*RADIX\s*\]\s*,\s*(\w+)\s*\[\s*RADIX\s*\]\s*;")
 _IF: Final = re.compile(r"if\s*\(")
 _ELSE_LOOP: Final = re.compile(r"else\s+(?=for\b)")
 _WG_CONDITION: Final = re.compile(r"\s*WG\s*==\s*(\d+)\s*")
@@ -734,6 +739,11 @@ _INT4_READ_BODY: Final = re.compile(r"int4 tmp=as_int4\(u\[i\]\);tmp\.([xyzw])=@
 _BUTTERFLY_BODY: Final = re.compile(
     r"(\w+) val1=@0;\1 val2=@1;if\(lowMe<WG/2\)u\[i\](?:\.([xyzw]))?=addq\(val1,val2\);"
     r"else u\[i\](?:\.\2)?=subq\(val1,val2\);",
+)
+_STASH_BODY: Final = re.compile(r"(\w+)\[i\]=@0;(\w+)\[i\]=@1;")
+_JOIN_BUTTERFLY_BODY: Final = re.compile(
+    r"(\w+) val1=as_\1\(\(int2\)\((\w+)\[i\],@0\)\);\1 val2=as_\1\(\(int2\)\((\w+)\[i\],@1\)\);"
+    r"if\(lowMe<WG/2\)u\[i\](?:\.([xyzw]))?=addq\(val1,val2\);else u\[i\](?:\.\4)?=subq\(val1,val2\);",
 )
 
 
@@ -849,6 +859,7 @@ class _ArmContext:
     value_type: str
     element_type: str
     frames: tuple[tuple[Condition, ...], ...]
+    stashes: set[str] = field(default_factory=set[str])
 
 
 def _parse_arm(text: str, function: str, value_type: str, arm: re.Match[str], end: int, serves: tuple[int, ...]) -> Arm:
@@ -865,10 +876,25 @@ def _parse_arm(text: str, function: str, value_type: str, arm: re.Match[str], en
     context = _ArmContext(text, value_type, base.group(1), tuple(preprocessor_frames(text, arm.start())))
     plain, blocks = _parse_items(context, base.end(), end - 1, in_special=False)
 
-    components = {loop.component for loop in (*plain, *(loop for block in blocks for loop in block.loops))}
+    loops = (*plain, *(loop for block in blocks for loop in block.loops))
+
+    # Neither a stash nor a join loop says how this arm splits a value across slots.
+    components = {loop.component for loop in loops if loop.kind not in ("stash", "join")}
     if len(families := sorted({_family(component) for component in components})) > 1:
         msg = f"shufl.cl:{line}: the arm mixes {' and '.join(families)}"
         raise SourceError(msg)
+
+    for loop in loops:
+        if loop.kind != "join":
+            continue
+
+        if families != ["as_int4(u[i])"]:
+            msg = f"shufl.cl:{loop.line}: a join rebuilds a value the arm does not write as as_int4(u[i]) halves"
+            raise SourceError(msg)
+
+        if loop.component not in _HALVES:
+            msg = f"shufl.cl:{loop.line}: a join writes u[i].{loop.component}, not one of {sorted(_HALVES)}"
+            raise SourceError(msg)
 
     return Arm(function, value_type, base.group(1), serves, line, tuple(blocks), tuple(plain))
 
@@ -918,6 +944,12 @@ def _parse_items(
 
         if m := _DECLARATION.match(text, position, end):
             top_level(where)
+            position = m.end()
+            continue
+
+        if m := _STASH_DECLARATION.match(text, position, end):
+            top_level(where)
+            context.stashes.update(m.groups())
             position = m.end()
             continue
 
@@ -1004,8 +1036,34 @@ def _parse_loop(context: _ArmContext, start: int, end: int, guard: WgGuard | Non
     body = _condensed("".join(pieces))
     line = line_of(text, start)
 
-    def loop(kind: LoopKind, component: str) -> Loop:
-        return Loop(kind, tuple(slots), component, guard, barred, line)
+    def loop(kind: LoopKind, component: str, names: tuple[str, ...] = ()) -> Loop:
+        return Loop(kind, tuple(slots), component, guard, barred, line, names)
+
+    def stash_names(*names: str) -> tuple[str, ...]:
+        if unknown := sorted(set(names) - context.stashes):
+            msg = f"{where}: {unknown} is not an 'int name[RADIX], name[RADIX];' declared in this arm"
+            raise SourceError(msg)
+
+        if len(set(names)) != len(names):
+            msg = f"{where}: both halves of the loop use the stash {names[0]}"
+            raise SourceError(msg)
+
+        return names
+
+    if m := _STASH_BODY.fullmatch(body):
+        return loop("stash", "", stash_names(m.group(1), m.group(2)))
+
+    if m := _JOIN_BUTTERFLY_BODY.fullmatch(body):
+        joined = m.group(1)
+
+        # Two slots make one value, so the type the halves are joined into must be twice as wide as a slot.
+        if ELEMENT_BYTES.get(joined, 0) != 2 * ELEMENT_BYTES[context.element_type]:
+            msg = (
+                f"{where}: {joined} is not a type twice the width of the {context.element_type} slots it is joined from"
+            )
+            raise SourceError(msg)
+
+        return loop("join", m.group(4) or "", stash_names(m.group(2), m.group(3)))
 
     if m := _WRITE_BODY.fullmatch(body):
         return loop("write", f"int4.{m.group(2)}" if m.group(2) else m.group(1) or "")
@@ -1074,7 +1132,17 @@ class Butterfly(NamedTuple):
         return f"{self.operation}q({_show(self.left)}, {_show(self.right)})"
 
 
-LaneValue = ValueId | Butterfly | None
+class Join(NamedTuple):
+    """One value rebuilt from the two halves that crossed LDS in separate passes."""
+
+    low: LaneValue
+    high: LaneValue
+
+    def __str__(self) -> str:
+        return f"join({_show(self.low)}, {_show(self.high)})"
+
+
+LaneValue = ValueId | Butterfly | Join | None
 
 
 def _show(value: LaneValue) -> str:
@@ -1119,6 +1187,7 @@ def replay(phases: Sequence[Phase], shape: Shape, call: CallSite) -> Trace:
     }
     indices, lanes, half = range(shape.radix), range(shape.wg), shape.wg // 2
     values: dict[ValueId, LaneValue] = {}
+    stashed: dict[tuple[str, int, int], LaneValue] = {}
     slots: list[int] = []
     lowest: Access | None = None
     highest: Access | None = None
@@ -1176,8 +1245,19 @@ def replay(phases: Sequence[Phase], shape: Shape, call: CallSite) -> Trace:
                         loaded.append(memory.get(access.slot))
 
                     place = ValueId(i, lane, loop.component)
-                    if loop.kind == "butterfly":
-                        values[place] = Butterfly("add" if lane < half else "sub", loaded[0], loaded[1])
+                    operation: Literal["add", "sub"] = "add" if lane < half else "sub"
+
+                    if loop.kind == "stash":
+                        for name, value in zip(loop.names, loaded, strict=True):
+                            stashed[name, i, lane] = value
+                    elif loop.kind == "join":
+                        halves = [
+                            Join(stashed.get((name, i, lane)), value)
+                            for name, value in zip(loop.names, loaded, strict=True)
+                        ]
+                        values[place] = Butterfly(operation, halves[0], halves[1])
+                    elif loop.kind == "butterfly":
+                        values[place] = Butterfly(operation, loaded[0], loaded[1])
                     else:
                         values[place] = loaded[0]
 
@@ -1245,6 +1325,99 @@ def value_problem(plain: Trace, special: Trace) -> str | None:
     )
 
 
+#
+# Cross-Arm Equivalence
+#
+
+# The as_int4 components the two halves of each whole component are written as.
+_HALVES: Final = {"x": ("int4.x", "int4.y"), "y": ("int4.z", "int4.w")}
+
+
+def _canonical(value: LaneValue, component: str) -> LaneValue:
+    """Rewrite a lane value as an expression over whole components of the values shufl was called with."""
+    if value is None:
+        return None
+
+    if isinstance(value, ValueId):
+        return ValueId(value.i, value.lane, component) if not value.component else value
+
+    if isinstance(value, Butterfly):
+        return Butterfly(value.operation, _canonical(value.left, component), _canonical(value.right, component))
+
+    return _joined(value.low, value.high, component)
+
+
+def _joined(low: LaneValue, high: LaneValue, component: str) -> LaneValue:
+    if (
+        isinstance(low, ValueId)
+        and isinstance(high, ValueId)
+        and (low.i, low.lane) == (high.i, high.lane)
+        and (low.component, high.component) == _HALVES[component]
+    ):
+        return ValueId(low.i, low.lane, component)
+
+    return Join(_canonical(low, component), _canonical(high, component))
+
+
+def canonical_values(trace: Trace, shape: Shape) -> dict[ValueId, LaneValue]:
+    """Compute the canonical lane values for a given trace and shape."""
+    canonical: dict[ValueId, LaneValue] = {}
+
+    for i, lane, component in itertools.product(range(shape.radix), range(shape.wg), ("x", "y")):
+        place = ValueId(i, lane, component)
+        whole = trace.values.get(ValueId(i, lane, ""))
+        direct = trace.values.get(place)
+        low, high = (trace.values.get(ValueId(i, lane, half)) for half in _HALVES[component])
+
+        if whole is not None:
+            canonical[place] = _canonical(whole, component)
+        elif direct is not None:
+            canonical[place] = _canonical(direct, component)
+        elif low is not None or high is not None:
+            canonical[place] = _joined(low, high, component)
+        else:
+            canonical[place] = place
+
+    return canonical
+
+
+def cross_arm_problem(reference: Mapping[ValueId, LaneValue], arm: Mapping[ValueId, LaneValue]) -> str | None:
+    """Check whether two arms of one function leave any lane a different value."""
+    wrong = sorted(place for place in reference if reference[place] != arm[place])
+
+    if not wrong:
+        return None
+
+    place = wrong[0]
+
+    return (
+        f"{len(wrong)} of {len(reference)} lane values differ from the arm above it, e.g. "
+        f"{place} gets {_show(arm[place])}, should get {_show(reference[place])}"
+    )
+
+
+def check_cross_arms(arms: Sequence[Arm], sites: Mapping[Shape, set[CallSite]], tally: _Tally) -> None:
+    """Check every arm of each shufl function against the arm above it, at every shape and call."""
+    by_function: dict[tuple[str, str], list[Arm]] = {}
+
+    for arm in arms:
+        by_function.setdefault((arm.function, arm.value_type), []).append(arm)
+
+    for group in by_function.values():
+        for reference, arm in itertools.pairwise(group):
+            for shape, calls in sorted(sites.items()):
+                for call in sorted(call for call in calls if call.function == arm.function):
+                    tally.cross_checked += 1
+                    values = [
+                        canonical_values(replay(group_phases(for_wg(each.plain, shape.wg)), shape, call), shape)
+                        for each in (reference, arm)
+                    ]
+
+                    if problem := cross_arm_problem(values[0], values[1]):
+                        where = f"{arm} | {shape} f={call.f} r={call.r} | against the {reference}"
+                        tally.failures.append(Failure(where, (problem,)))
+
+
 @dataclass(frozen=True)
 class Failure:
     where: str
@@ -1256,6 +1429,7 @@ class Report:
     shapes: tuple[Shape, ...]
     special_checked: int
     plain_checked: int
+    cross_checked: int
     failures: tuple[Failure, ...]
     unreachable: tuple[tuple[Arm, SpecialBlock], ...]
 
@@ -1271,6 +1445,7 @@ class _Tally:
     failures: list[Failure] = field(default_factory=list[Failure])
     special_checked: int = 0
     plain_checked: int = 0
+    cross_checked: int = 0
     reached: set[SpecialBlock] = field(default_factory=set[SpecialBlock])
 
 
@@ -1297,9 +1472,17 @@ def run_checks(sources: Sources) -> Report:
             for call in calls:
                 _check_call(arm, shape, call, plain_loops=plain_loops, lds_bytes=lds_bytes, tally=tally)
 
+    check_cross_arms(arms, sites, tally)
     unreachable = tuple((arm, block) for arm in arms for block in arm.blocks if block not in tally.reached)
 
-    return Report(tuple(shapes), tally.special_checked, tally.plain_checked, tuple(tally.failures), unreachable)
+    return Report(
+        tuple(shapes),
+        tally.special_checked,
+        tally.plain_checked,
+        tally.cross_checked,
+        tuple(tally.failures),
+        unreachable,
+    )
 
 
 def _check_call(
@@ -1408,7 +1591,8 @@ def print_report(report: Report) -> None:
     if report.ok:
         print(
             f"{PROG}: OK -- {report.special_checked} (path, shape) combinations replayed, all match the plain shufl and"
-            f" stay inside LDS; {report.plain_checked} more run the plain shufl and stay inside LDS",
+            f" stay inside LDS; {report.plain_checked} more run the plain shufl and stay inside LDS;"
+            f" {report.cross_checked} arm-against-arm comparisons agree",
         )
         return
 

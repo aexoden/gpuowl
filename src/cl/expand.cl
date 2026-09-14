@@ -10,24 +10,28 @@
 #define T2_GF61 T2
 #define T2_F2_GF31_GF61 T2
 #define as_T2_GF61 as_double2
+#define as_T_Z61 as_double
 #include INCLUDE_FILE
 #undef T_Z61
 #undef T2_GF61
 #undef T2_F2_GF31_GF61
 #undef as_T2_GF61
-#endif 
+#undef as_T_Z61
+#endif
 
 #if NTT_GF61
 #define T_Z61 Z61
 #define T2_GF61 GF61
 #define T2_F2_GF31_GF61 GF61
 #define as_T2_GF61 as_ulong2
+#define as_T_Z61 as_ulong
 #include INCLUDE_FILE
 #undef T_Z61
 #undef T2_GF61
 #undef T2_F2_GF31_GF61
 #undef as_T2_GF61
-#endif 
+#undef as_T_Z61
+#endif
 
 #if FFT_FP32
 #define F_Z31 F
