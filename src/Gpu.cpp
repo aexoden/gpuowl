@@ -865,9 +865,9 @@ Gpu::Gpu(GpuCommon s, FFTConfig fft, u64 E, const vector<KeyVal>& extraConf, boo
 
 #undef K
 
-  bufTrigH{shared.bufCache->smallTrigCombo(shared.args, fft, WIDTH, fft.shape.middle, SMALL_H, nH, tail_single_wide)},
-  bufTrigM{shared.bufCache->middleTrig(shared.args, fft, SMALL_H, BIG_H / SMALL_H, WIDTH)},
-  bufTrigW{shared.bufCache->smallTrig(shared.args, fft, WIDTH, nW, fft.shape.middle, SMALL_H, nH, tail_single_wide)},
+  bufTrigH{shared.bufCache->smallTrigCombo(&args, fft, WIDTH, fft.shape.middle, SMALL_H, nH, tail_single_wide)},
+  bufTrigM{shared.bufCache->middleTrig(&args, fft, SMALL_H, BIG_H / SMALL_H, WIDTH)},
+  bufTrigW{shared.bufCache->smallTrig(&args, fft, WIDTH, nW, fft.shape.middle, SMALL_H, nH, tail_single_wide)},
 
   weights{genWeights(fft, E, WIDTH, BIG_H, nW, isNvidiaGpu(shared.context->deviceId()))},
   bufConstWeights{shared.context, std::move(weights.weightsConstIF)},
