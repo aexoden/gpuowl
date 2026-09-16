@@ -88,7 +88,7 @@ class Gpu {
   Background* background;
 
 public:
-  Args& args;
+  Args args;
 
 private:
   std::unique_ptr<Saver<PRPState>> saver;
