@@ -36,6 +36,7 @@
     <ClCompile Include=".\src\log.cpp" />
     <ClCompile Include=".\src\main.cpp" />
     <ClCompile Include=".\src\md5.cpp" />
+    <ClCompile Include=".\src\OptionSpace.cpp" />
     <ClCompile Include=".\src\Primes.cpp" />
     <ClCompile Include=".\src\Profile.cpp" />
     <ClCompile Include=".\src\Proof.cpp" />

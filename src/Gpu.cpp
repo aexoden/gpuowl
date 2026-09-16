@@ -16,6 +16,7 @@
 #include "TrigBufCache.h"
 #include "fs.h"
 #include "Sha3Hash.h"
+#include "OptionSpace.h"
 
 #include <algorithm>
 #include <limits>
@@ -261,8 +262,8 @@ string clDefines(Args& args, cl_device_id id, FFTConfig fft, const vector<KeyVal
   wmul = 2;                                             // Default is carryFused processes two lines at a time
   pad_size = isAmdGpu(id) ? 256 : 0;                    // Default is 256 bytes for AMD, 0 for others
 
-  // Validate -use options.  Keys that act only in the CUDA build are listed here rather than in the list below, so that the
-  // OpenCL build can say that they do nothing instead of silently ignoring them.
+  // Validate -use options against the option table (OptionSpace.cpp).  Keys that act only in the CUDA build are listed here
+  // too, so that the OpenCL build can say that they do nothing instead of silently ignoring them.
   initializer_list<string> const cudaOnlyKeys = {
                               "GRAPHS",
                               "L1CUDA",
@@ -271,42 +272,7 @@ string clDefines(Args& args, cl_device_id id, FFTConfig fft, const vector<KeyVal
                               "PDL"                     // CUDA, sm_90+: programmatic dependent launch
                             };
   for (const auto& [k, v] : config) {
-    bool const isCudaOnly = isInList(k, cudaOnlyKeys);
-    bool const isValid = isCudaOnly || isInList(k, {
-                              "FAST_BARRIER",
-                              "STATS",
-                              "IN_SIZEX",
-                              "IN_WG",
-                              "OUT_SIZEX",
-                              "OUT_WG",
-                              "UNROLL_H",
-                              "UNROLL_W",
-                              "ZEROHACK_H",
-                              "ZEROHACK_W",
-                              "NO_ASM",
-                              "DEBUG",
-                              "CARRY64",
-                              "BIGLIT",                 // Deprecated
-                              "NONTEMPORAL",            // Deprecated
-                              "INPLACE",
-                              "PAD",
-                              "MIDDLE_IN_LDS_TRANSPOSE",
-                              "MIDDLE_OUT_LDS_TRANSPOSE",
-                              "TAIL_KERNELS",
-                              "TAIL_TRIGS",
-                              "TAIL_TRIGS31",
-                              "TAIL_TRIGS32",
-                              "TAIL_TRIGS61",
-                              "TABMUL_CHAIN",
-                              "TABMUL_CHAIN31",
-                              "TABMUL_CHAIN32",
-                              "TABMUL_CHAIN61",
-                              "MODM31",
-                              "LOADS","STORES",
-                              "NOREG",                  // CUDA - experimental
-                              "WMUL",
-                              "MULTI_Q"
-                            });
+    [[maybe_unused]] bool const isCudaOnly = isInList(k, cudaOnlyKeys);
     if (k == "TRY_LDS_CARVEOUT") {
       // Not a -use key: the CUDA build reads it from the environment (clwrap_cuda.cpp)
 #if CUDA_BACKEND
@@ -314,7 +280,7 @@ string clDefines(Args& args, cl_device_id id, FFTConfig fft, const vector<KeyVal
 #else
       log("Warning: TRY_LDS_CARVEOUT is not a -use key; it is an environment variable of the CUDA build, and has no effect in this OpenCL build\n");
 #endif
-    } else if (!isValid) {
+    } else if (!tune::isKnownKey(k)) {
       log("Warning: unrecognized -use key '%s'\n", k.c_str());
     }
 #if !CUDA_BACKEND
