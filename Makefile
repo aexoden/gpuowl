@@ -98,7 +98,7 @@ $(BIN)/prpll-amd: ${OBJS}
 	$(CXX) $(LDFLAGS) $(CXXFLAGS) -o $@ ${OBJS} $(LIBPATH) -lamdocl64 -L/opt/rocm/lib
 
 # GPU-free unit tests (tests/).
-TESTSRCS = test_main.cpp test_OptionSpace.cpp
+TESTSRCS = test_main.cpp test_Gpu.cpp test_OptionSpace.cpp
 TESTOBJS = $(TESTSRCS:%.cpp=$(BIN)/tests/%.o)
 
 .PHONY: check

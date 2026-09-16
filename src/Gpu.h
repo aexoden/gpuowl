@@ -93,7 +93,7 @@ class Gpu {
   std::atomic<bool> proofSaveFailed{false};
 
 public:
-  Args& args;
+  Args args;
 
 private:
   std::unique_ptr<Saver<PRPState>> saver;
