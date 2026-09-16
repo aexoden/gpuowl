@@ -69,7 +69,7 @@ static void getInfo_(cl_device_id id, int what, size_t bufSize, void *buf, strin
 
 string getBdfFromDevice(cl_device_id id) {
   char topology[64] = {0};
-  cl_device_topology_amd top;
+  cl_device_topology_amd top{};
   try {
     GET_INFO(id, CL_DEVICE_TOPOLOGY_AMD, top);
     snprintf(topology, sizeof(topology), "%02x:%02x.%x",
