@@ -62,6 +62,14 @@ static bool isCleanExit(const char *reason) {
   return !strcmp(reason, "stop requested") || !strcmp(reason, "help") || !strcmp(reason, "version");
 }
 
+namespace {
+
+constexpr int EXIT_OK = 0;
+constexpr int EXIT_FAILED = 1;
+constexpr int EXIT_USAGE = 2;
+
+} // namespace
+
 int main(int argc, char **argv) {
 //!MSVC version support
 #ifdef _MSC_VER
@@ -80,10 +88,12 @@ int main(int argc, char **argv) {
 #endif
 
   // 0 for a normal end — the queue ran dry, a stop was requested, -h or
-  // -version — and 1 for an exception nobody else classified (a kernel that
-  // would not compile, a missing device, a bad argument), so a supervisor
-  // can tell "out of work" from "cannot run" without parsing the log.
-  int exitCode = 0;
+  // -version; 2 for an argument that could not be read or accepted; and 1 for
+  // everything else (a kernel that would not compile, a missing device, a lost
+  // context), so a supervisor can tell "out of work" from "fix your command
+  // line" from "cannot run" without parsing the log.
+  int exitCode = EXIT_OK;
+  bool parsing = true;
 
   try {
     string const mainLine = Args::mergeArgs(argc, argv);
@@ -111,6 +121,8 @@ int main(int argc, char **argv) {
     if (!poolDir.empty()) { args.readConfig(poolDir / "config.txt"); }
     args.readConfig("config.txt");
     args.parse(mainLine);
+    parsing = false;
+
     args.setDefaults();
 
     if (args.maxAlloc) { AllocTrac::setMaxAlloc(args.maxAlloc); }
@@ -150,16 +162,16 @@ int main(int argc, char **argv) {
     }
   } catch (const char *mes) {
     log("Exiting because \"%s\"\n", mes);
-    exitCode = isCleanExit(mes) ? 0 : 1;
+    exitCode = isCleanExit(mes) ? EXIT_OK : (parsing ? EXIT_USAGE : EXIT_FAILED);
   } catch (const string& mes) {
     log("Exiting because \"%s\"\n", mes.c_str());
-    exitCode = isCleanExit(mes.c_str()) ? 0 : 1;
+    exitCode = isCleanExit(mes.c_str()) ? EXIT_OK : (parsing ? EXIT_USAGE : EXIT_FAILED);
   } catch (const std::exception& e) {
     log("Exiting because of exception %s: %s\n", typeName(e), e.what());
-    exitCode = 1;
+    exitCode = parsing ? EXIT_USAGE : EXIT_FAILED;
   }
 
-  if (workerFailed && exitCode == 0) { exitCode = 1; }
+  if (workerFailed && exitCode == EXIT_OK) { exitCode = EXIT_FAILED; }
 
   log("Bye\n");
   return exitCode;
