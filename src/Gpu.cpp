@@ -16,6 +16,7 @@
 #include "TrigBufCache.h"
 #include "fs.h"
 #include "Sha3Hash.h"
+#include "OptionSpace.h"
 
 #include <algorithm>
 #include <limits>
@@ -228,11 +229,6 @@ string toDefine(const T& vect) {
   return s;
 }
 
-constexpr bool isInList(const string& s, initializer_list<string> list) {
-  for (const string& e : list) { if (e == s) { return true; }}
-  return false;
-}
-
 // Capacity of the ROE and carry statistics sample buffers; passed to the kernels as STATS_SIZE so they stop recording when full.
 enum {
 ROE_SIZE = 100000,
@@ -261,47 +257,9 @@ string clDefines(Args& args, cl_device_id id, FFTConfig fft, const vector<KeyVal
   wmul = 2;                                             // Default is carryFused processes two lines at a time
   pad_size = isAmdGpu(id) ? 256 : 0;                    // Default is 256 bytes for AMD, 0 for others
 
-  // Validate -use options
+  // Validate -use options against the option table (OptionSpace.cpp)
   for (const auto& [k, v] : config) {
-    bool const isValid = isInList(k, {
-                              "FAST_BARRIER",
-                              "STATS",
-                              "IN_SIZEX",
-                              "IN_WG",
-                              "OUT_SIZEX",
-                              "OUT_WG",
-                              "UNROLL_H",
-                              "UNROLL_W",
-                              "ZEROHACK_H",
-                              "ZEROHACK_W",
-                              "NO_ASM",
-                              "DEBUG",
-                              "CARRY64",
-                              "BIGLIT",                 // Deprecated
-                              "NONTEMPORAL",            // Deprecated
-                              "INPLACE",
-                              "PAD",
-                              "MIDDLE_IN_LDS_TRANSPOSE",
-                              "MIDDLE_OUT_LDS_TRANSPOSE",
-                              "TAIL_KERNELS",
-                              "TAIL_TRIGS",
-                              "TAIL_TRIGS31",
-                              "TAIL_TRIGS32",
-                              "TAIL_TRIGS61",
-                              "TABMUL_CHAIN",
-                              "TABMUL_CHAIN31",
-                              "TABMUL_CHAIN32",
-                              "TABMUL_CHAIN61",
-                              "MODM31",
-                              "LOADS","STORES",
-                              "NOREG",                  // CUDA - experimental
-                              "WMUL",
-                              "MULTI_Q",
-                              "GRAPHS",
-                              "L1CUDA",
-                              "PDL"                     // CUDA, sm_90+: programmatic dependent launch
-                            });
-    if (!isValid) {
+    if (!tune::isKnownKey(k)) {
       log("Warning: unrecognized -use key '%s'\n", k.c_str());
     }
 

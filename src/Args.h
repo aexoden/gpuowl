@@ -50,6 +50,8 @@ public:
   bool doZtune{};
   bool carryTune{};
   bool logROE{};
+  bool dumpOptions{};
+  string optionsFft = "512:15:512";
 
   std::map<std::string, std::string> flags;
   std::map<std::string, vector<KeyVal>> perFftConfig;

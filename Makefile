@@ -68,7 +68,7 @@ CXXFLAGS = -O3 -flto -DNDEBUG $(COMMON_FLAGS)
 
 endif
 
-SRCS1 = fs.cpp Trig.cpp TuneEntry.cpp Primes.cpp tune.cpp CycleFile.cpp TrigBufCache.cpp Event.cpp Queue.cpp TimeInfo.cpp Profile.cpp bundle.cpp Saver.cpp KernelCompiler.cpp Kernel.cpp gpuid.cpp File.cpp Proof.cpp log.cpp Worktodo.cpp common.cpp main.cpp Gpu.cpp clwrap.cpp Task.cpp timeutil.cpp Args.cpp state.cpp Signal.cpp FFTConfig.cpp AllocTrac.cpp sha3.cpp md5.cpp version.cpp
+SRCS1 = fs.cpp Trig.cpp TuneEntry.cpp Primes.cpp tune.cpp CycleFile.cpp TrigBufCache.cpp Event.cpp Queue.cpp TimeInfo.cpp Profile.cpp bundle.cpp Saver.cpp KernelCompiler.cpp Kernel.cpp gpuid.cpp File.cpp Proof.cpp log.cpp Worktodo.cpp common.cpp main.cpp Gpu.cpp clwrap.cpp Task.cpp timeutil.cpp Args.cpp state.cpp Signal.cpp FFTConfig.cpp AllocTrac.cpp sha3.cpp md5.cpp version.cpp OptionSpace.cpp
 
 SRCS2 = test.cpp
 
@@ -96,6 +96,22 @@ $(BIN)/prpll: ${OBJS}
 # Instead of linking with libOpenCL, link with libamdocl64
 $(BIN)/prpll-amd: ${OBJS}
 	$(CXX) $(LDFLAGS) $(CXXFLAGS) -o $@ ${OBJS} $(LIBPATH) -lamdocl64 -L/opt/rocm/lib
+
+# GPU-free unit tests (tests/).
+TESTSRCS = test_main.cpp test_OptionSpace.cpp
+TESTOBJS = $(TESTSRCS:%.cpp=$(BIN)/tests/%.o)
+
+.PHONY: check
+check: $(BIN)/prpll-test
+	$(BIN)/prpll-test
+
+$(BIN)/prpll-test: $(filter-out $(BIN)/main.o,$(OBJS)) $(TESTOBJS)
+	$(CXX) $(LDFLAGS) $(CXXFLAGS) -o $@ $^ $(LIBPATH) $(OPENCL_LIBS)
+
+$(BIN)/tests/%.o : tests/%.cpp $(DEPDIR)/%.d
+	@mkdir -p $(BIN)/tests
+	$(COMPILE.cc) -Isrc $(OUTPUT_OPTION) $<
+	$(POSTCOMPILE)
 
 clean:
 	rm -rf build-debug build-release build-cuda
@@ -132,4 +148,5 @@ src/version.inc: FORCE
 FORCE:
 
 include $(wildcard $(patsubst %,$(DEPDIR)/%.d,$(basename $(SRCS1))))
+include $(wildcard $(patsubst %,$(DEPDIR)/%.d,$(basename $(TESTSRCS))))
 # include $(wildcard $(patsubst %,$(DEPDIR)/%.d,$(basename $(SRCS2))))
