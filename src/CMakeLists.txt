@@ -19,6 +19,7 @@ add_executable(prpll
   CycleFile.cpp
   tune.cpp
   TuneEntry.cpp
+  OptionSpace.cpp
   fs.cpp
   version.inc
   )

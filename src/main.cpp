@@ -15,6 +15,7 @@
 #include "GpuCommon.h"
 #include "Gpu.h"
 #include "tune.h"
+#include "OptionSpace.h"
 
 #include <cstring>
 #include <filesystem>
@@ -127,7 +128,9 @@ int main(int argc, char **argv) {
     shared.bufCache = &bufCache;
     shared.background = &background;
 
-    if (args.doCtune || args.doTune || args.doZtune || args.carryTune) {
+    if (args.dumpOptions) {
+      if (tune::dumpOptionSpace(tune::detectEnv(context, args), FFTConfig{args.optionsFft})) { exitCode = EXIT_FAILED; }
+    } else if (args.doCtune || args.doTune || args.doZtune || args.carryTune) {
       Tune tune{shared};
 
       if (args.doCtune) {
