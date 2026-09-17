@@ -20,6 +20,7 @@ add_executable(prpll
   tune.cpp
   TuneEntry.cpp
   OptionSpace.cpp
+  UseResolve.cpp
   fs.cpp
   version.inc
   )

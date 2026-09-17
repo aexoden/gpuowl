@@ -235,21 +235,11 @@ ROE_SIZE = 100000,
 CARRY_SIZE = 100000
 };
 
-string clDefines(Args& args, cl_device_id id, FFTConfig fft, const vector<KeyVal>& extraConf, u64 E, bool doLog,
+string clDefines(Args& args, cl_device_id id, FFTConfig fft, tune::TestKind kind, const vector<KeyVal>& extraConf, u64 E, bool doLog,
                  bool &tail_single_wide, bool &tail_single_kernel, u32 &in_place, u32 &pad_size, u32 &wmul) {
-  map<string, string> config;
-
-  // Highest priority is the requested "extra" conf
-  config.insert(extraConf.begin(), extraConf.end());
-
-  // Next, args config
-  config.insert(args.flags.begin(), args.flags.end());
-
-  // Lowest priority: the per-FFT config if any
-  if (auto it = args.perFftConfig.find(fft.shape.spec()); it != args.perFftConfig.end()) {
-    // log("Found %s\n", fft.shape.spec().c_str());
-    config.insert(it->second.begin(), it->second.end());
-  }
+  // Resolve this FFT's options
+  tune::resolveInto(args, fft, kind, extraConf);
+  map<string, string>& config = args.flags;
 
   // Default value for -use options that must also be parsed in C++ code
   tail_single_wide = false, tail_single_kernel = true;         // Default tailSquare is double-wide in one kernel
@@ -316,17 +306,14 @@ string clDefines(Args& args, cl_device_id id, FFTConfig fft, const vector<KeyVal
     u32 multi_q = args.value("MULTI_Q", 0);
     if (l2_striping && !in_place) {
       config["L2_STRIPING"] = to_string(0);
-      args.flags["L2_STRIPING"] = to_string(0);
       log("L2_STRIPING is only allowed if INPLACE=1.  Changing to L2_STRIPING=0.\n");
     }
     else if (multi_q == 0 && l2_striping > fft.shape.width/64) {
       config["L2_STRIPING"] = to_string(fft.shape.width/64);
-      args.flags["L2_STRIPING"] = to_string(fft.shape.width/64);
       log("Max L2_STRIPING when MULTI_Q=0 exceeded.  Changing to L2_STRIPING=%u.\n", fft.shape.width/64);
     }
     else if (multi_q > 0 && l2_striping > fft.shape.width/128) {
       config["L2_STRIPING"] = to_string(fft.shape.width/128);
-      args.flags["L2_STRIPING"] = to_string(fft.shape.width/128);
       log("Max L2_STRIPING when MULTI_Q=1 exceeded.  Changing to L2_STRIPING=%u.\n", fft.shape.width/128);
     }
 
@@ -341,7 +328,6 @@ string clDefines(Args& args, cl_device_id id, FFTConfig fft, const vector<KeyVal
       while (valid && (fft.shape.width / 16) % (groupsNeeded * valid)) { --valid; }
       if (valid != l2_striping) {
         config["L2_STRIPING"] = to_string(valid);
-        args.flags["L2_STRIPING"] = to_string(valid);
         log("L2_STRIPING must divide WIDTH/%u.  Changing to L2_STRIPING=%u.\n", 16 * groupsNeeded, valid);
       }
     }
@@ -573,8 +559,9 @@ string formatSecsPerIter(float secsPerIter) {
 
 // --------
 
-unique_ptr<Gpu> Gpu::make(u64 E, GpuCommon shared, FFTConfig fftConfig, const vector<KeyVal>& extraConf, bool logFftSize) {
-  return make_unique<Gpu>(shared, fftConfig, E, extraConf, logFftSize);
+unique_ptr<Gpu> Gpu::make(u64 E, GpuCommon shared, FFTConfig fftConfig, const vector<KeyVal>& extraConf, bool logFftSize,
+                          tune::TestKind kind) {
+  return make_unique<Gpu>(shared, fftConfig, E, extraConf, logFftSize, kind);
 }
 
 Gpu::~Gpu() {
@@ -773,7 +760,7 @@ string Gpu::kernelDefines(enum WHICH_KERNEL_TYPE which_kernel) {
 }
 
 
-Gpu::Gpu(GpuCommon s, FFTConfig fft, u64 E, const vector<KeyVal>& extraConf, bool logFftSize) :
+Gpu::Gpu(GpuCommon s, FFTConfig fft, u64 E, const vector<KeyVal>& extraConf, bool logFftSize, tune::TestKind kind) :
   shared(s),
   background{shared.background},
   args{*shared.args},
@@ -789,7 +776,7 @@ Gpu::Gpu(GpuCommon s, FFTConfig fft, u64 E, const vector<KeyVal>& extraConf, boo
   useLongCarry{args.carry == CARRY_64},
   queue{*shared.context, args.profile},
       
-  compiler{args, shared.context, clDefines(args, shared.context->deviceId(), fft, extraConf, E, logFftSize, tail_single_wide, tail_single_kernel, in_place, pad_size, wmul)},
+  compiler{args, shared.context, clDefines(args, shared.context->deviceId(), fft, kind, extraConf, E, logFftSize, tail_single_wide, tail_single_kernel, in_place, pad_size, wmul)},
 
 #define K(name, ...) name(#name, &compiler, profile.make(#name), &queue, __VA_ARGS__)
 

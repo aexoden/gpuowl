@@ -14,6 +14,7 @@
 #include "Profile.h"
 #include "GpuCommon.h"
 #include "FFTConfig.h"
+#include "UseResolve.h"
 
 #include <numbers>
 #include <vector>
@@ -302,8 +303,9 @@ private:
   void selftestTrig();
 
 public:
-  Gpu(GpuCommon shared, FFTConfig fft, u64 E, const vector<KeyVal>& extraConf, bool logFftSize);
-  static unique_ptr<Gpu> make(u64 E, GpuCommon shared, FFTConfig fft, const vector<KeyVal>& extraConf = {}, bool logFftSize = true);
+  Gpu(GpuCommon shared, FFTConfig fft, u64 E, const vector<KeyVal>& extraConf, bool logFftSize, tune::TestKind kind);
+  static unique_ptr<Gpu> make(u64 E, GpuCommon shared, FFTConfig fft, const vector<KeyVal>& extraConf = {},
+                              bool logFftSize = true, tune::TestKind kind = tune::TestKind::PRP);
 
   ~Gpu();
 
