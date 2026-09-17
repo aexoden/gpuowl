@@ -5,6 +5,7 @@
 #include "common.h"
 #include "log.h"
 #include "TuneEntry.h"
+#include "FFTVariants.h"
 
 #include <cmath>
 #include <cassert>
@@ -281,18 +282,22 @@ FFTConfig::FFTConfig(const string& spec) {
   }
 }
 
-FFTConfig::FFTConfig(FFTShape shape, u32 variant, enum CARRY_KIND carry) :
-  shape{shape},
-  variant{variant},
-  carry{carry}
-{
-  // Checked at runtime, not only asserted: an out-of-range digit indexes past bpw[] in maxBpw() and selects kernel
-  // variants that do not exist (the shipped tune.txt predates this encoding and has such rows).
+// Checked at runtime, not only asserted: an out-of-range digit indexes past bpw[] in maxBpw() and selects kernel
+// variants that do not exist (the shipped tune.txt predates this encoding and has such rows).  Rejecting it here, in
+// the initializer of the first member that depends on it, keeps it out of the folding below and out of maxBpw().
+static u32 checkedVariant(const FFTShape& shape, u32 variant) {
   if (variant_W(variant) >= N_VARIANT_W || variant_M(variant) >= N_VARIANT_M || variant_H(variant) >= N_VARIANT_H) {
     log("Invalid FFT variant %u for %s (digits must be < %u%u%u)\n", variant, shape.spec().c_str(), N_VARIANT_W, N_VARIANT_M, N_VARIANT_H);
     throw "Invalid FFT variant";
   }
+  return tune::canonicalVariant(shape, variant);
+}
 
+FFTConfig::FFTConfig(FFTShape shape, u32 variant, enum CARRY_KIND carry) :
+  shape{shape},
+  variant{checkedVariant(shape, variant)},
+  carry{tune::canonicalCarry(shape, variant, carry)}
+{
   if      (shape.fft_type == FFT64)     FFT_FP64 = true, FFT_FP32 = false, NTT_GF31 = false, NTT_GF61 = false, WordSize = 4;
   else if (shape.fft_type == FFT3161)   FFT_FP64 = false, FFT_FP32 = false, NTT_GF31 = true, NTT_GF61 = true, WordSize = 8;
   else if (shape.fft_type == FFT3261)   FFT_FP64 = false, FFT_FP32 = true, NTT_GF31 = false, NTT_GF61 = true, WordSize = 8;
@@ -324,8 +329,11 @@ float FFTConfig::maxBpw() const {
     float const b2 = shape.bpw[variant_M(variant) * 3 + variant_H(variant)];
     b = (b1 + b2) / 2.0f;
   }
-  // Only some FFTs support both 32 and 64 bit carries.
-  return (carry == CARRY_32 && (shape.fft_type == FFT64 || shape.fft_type == FFT3231)) ? std::min(shape.carry32BPW(), b) : b;
+  // A pinned 32-bit carry caps the single-arithmetic FFTs, whose carryFused takes its carry type from CARRY64, and
+  // FFT3231, whose carries are always 32-bit.
+  bool const carry32Caps = shape.fft_type == FFT64 || shape.fft_type == FFT3231 || shape.fft_type == FFT61 ||
+                           shape.fft_type == FFT31 || shape.fft_type == FFT32;
+  return (carry == CARRY_32 && carry32Caps) ? std::min(shape.carry32BPW(), b) : b;
 }
 
 FFTConfig FFTConfig::bestFit(const Args& args, u64 E, const string& spec) {

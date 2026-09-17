@@ -5,6 +5,7 @@
 
 #include "test.h"
 
+#include "FFTVariants.h"
 #include "OptionSpace.h"
 
 #include <algorithm>
@@ -149,8 +150,8 @@ TEST(inert_middle_chains) {
   CHECK(inert(e, "2:512:4:512:202", "MM2_CHAIN"));      // FP32 reads it too
 
   CHECK(inert(e, "256:2:256:101", "MM_CHAIN"));         // MIDDLE == 2
-  CHECK(applicable(e, "256:3:256:101", {}, "MM_CHAIN"));
-  CHECK(applicable(e, "2:512:4:512:202", {}, "MM_CHAIN"));   // FP32 as well as FP64
+  CHECK(applicable(e, "512:15:512:101", {}, "MM_CHAIN"));
+  CHECK(applicable(e, "2:512:8:512:202", {}, "MM_CHAIN"));   // FP32 as well as FP64
   CHECK(!applicable(e, "3:512:4:512:202", {}, "MM_CHAIN"));  // no float part
 
   CHECK(inert(e, "3:256:2:256:202", "MIDDLE_CHAIN"));
@@ -161,6 +162,48 @@ TEST(inert_middle_chains) {
   CHECK_EQ(defaultOf(e, "512:15:512:101", {}, "MM_CHAIN"), 0);
   CHECK_EQ(defaultOf(e, "512:15:512:111", {}, "MM_CHAIN"), 1);
   CHECK_EQ(defaultOf(e, "512:15:512:111", {}, "MM2_CHAIN"), 2);
+}
+
+// The middle digit only defaults the chains, so each effective (MM_CHAIN, MM2_CHAIN) pair is offered under exactly one
+// middle digit: digit 1 keeps its own defaults, digit 0 offers the rest.
+TEST(middle_digit_partitions_chains) {
+  Env const e = nvidia();
+  const Option& mm = *findOption("MM_CHAIN");
+  const Option& mm2 = *findOption("MM2_CHAIN");
+
+  struct Row {
+    const char* shape;
+    size_t pairs;
+  };
+  for (const Row& row : {Row{"512:15:512", 6}, Row{"256:4:256", 2}, Row{"256:2:256", 1}, Row{"2:512:8:512", 6},
+                         Row{"51:512:8:512", 6}, Row{"4:512:4:512", 2}}) {
+    FFTShape const shape{row.shape};
+    std::map<string, u32> digitOfPair;
+
+    for (u32 variant : allVariants(shape)) {
+      if (variant_W(variant) != 2 || variant_H(variant) != 2) { continue; }
+      FFTConfig const fft{shape, variant, CARRY_AUTO};
+
+      for (int a : mm.valuesFor(e, fft, {})) {
+        UseConfig const d{{"MM_CHAIN", to_string(a)}};
+        for (int b : mm2.valuesFor(e, fft, d)) {
+          string const pair = (mm.isInert(e, fft, d) ? string("-") : to_string(a)) + "," +
+            (mm2.isInert(e, fft, d) ? string("-") : to_string(b));
+          auto const [it, fresh] = digitOfPair.emplace(pair, variant_M(variant));
+          if (!fresh && it->second != variant_M(variant)) {
+            testing::fail(__FILE__, __LINE__,
+                          string(row.shape) + ": chains " + pair + " offered under both middle digits");
+          }
+        }
+      }
+    }
+    CHECK_EQ(digitOfPair.size(), row.pairs);
+  }
+
+  CHECK_EQ(valuesOf(e, "512:15:512:212", {}, "MM_CHAIN"), string("1"));
+  CHECK_EQ(valuesOf(e, "512:15:512:202", {{"MM_CHAIN", "1"}}, "MM2_CHAIN"), string("0,1"));
+  CHECK_EQ(valuesOf(e, "256:4:256:202", {}, "MM_CHAIN"), string("0"));
+  CHECK(!applicable(e, "256:4:256:212", {}, "MM_CHAIN"));
 }
 
 TEST(inert_unroll) {

@@ -21,6 +21,7 @@ add_executable(prpll
   TuneEntry.cpp
   OptionSpace.cpp
   UseResolve.cpp
+  FFTVariants.cpp
   fs.cpp
   version.inc
   )

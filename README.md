@@ -1,5 +1,11 @@
 [![Actions Status](https://github.com/preda/gpuowl/actions/workflows/ci.yml/badge.svg?branch=master)](https://github.com/preda/gpuowl/actions/workflows/ci.yml)
 
+## Branch Note
+
+This branch is an primarily an experimental tuning method. A significant portion of the code has been written by Claude
+Opus 5. I have done my best to review the code and rewrite it when necessary, but it's nonetheless entirely possible
+that bugs or other flaws may have slipped through. Use at your own risk.
+
 ## Must read papers
 
 ### Multiplication by FFT
