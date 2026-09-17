@@ -244,7 +244,7 @@ void Task::execute(GpuCommon shared, u32 instance) {
 
   FFTConfig const fft = FFTConfig::bestFit(*shared.args, exponent, shared.args->fftSpec);
 
-  auto gpu = Gpu::make(exponent, shared, fft);
+  auto gpu = Gpu::make(exponent, shared, fft, {}, true, kind == LL ? tune::TestKind::LL : tune::TestKind::PRP);
 
   if (kind == VERIFY) {
     Proof const proof{Proof::load(verifyPath)};

@@ -52,6 +52,7 @@
     <ClCompile Include=".\src\TrigBufCache.cpp" />
     <ClCompile Include=".\src\tune.cpp" />
     <ClCompile Include=".\src\TuneEntry.cpp" />
+    <ClCompile Include=".\src\UseResolve.cpp" />
     <ClCompile Include=".\src\version.cpp" />
     <ClCompile Include=".\src\Worktodo.cpp" />
     <ClCompile Include=".\src\cuda\clwrap_cuda.cpp">
