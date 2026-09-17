@@ -25,6 +25,7 @@
     <ClCompile Include=".\src\clwrap.cpp" />
     <ClCompile Include=".\src\common.cpp" />
     <ClCompile Include=".\src\CycleFile.cpp" />
+    <ClCompile Include=".\src\Eligibility.cpp" />
     <ClCompile Include=".\src\Event.cpp" />
     <ClCompile Include=".\src\FFTConfig.cpp" />
     <ClCompile Include=".\src\FFTVariants.cpp" />
