@@ -27,6 +27,7 @@
     <ClCompile Include=".\src\CycleFile.cpp" />
     <ClCompile Include=".\src\Event.cpp" />
     <ClCompile Include=".\src\FFTConfig.cpp" />
+    <ClCompile Include=".\src\FFTVariants.cpp" />
     <ClCompile Include=".\src\File.cpp" />
     <ClCompile Include=".\src\fs.cpp" />
     <ClCompile Include=".\src\Gpu.cpp" />

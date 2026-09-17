@@ -3,6 +3,7 @@
 #include "UseResolve.h"
 
 #include "Args.h"
+#include "FFTVariants.h"
 #include "log.h"
 
 #include <algorithm>
@@ -140,6 +141,14 @@ FFTSelector FFTSelector::parse(std::string_view text) {
     sel.carry = next[4] == "0" ? CARRY_32 : CARRY_64;
   }
 
+  // FFTConfig names its variant and carry canonically, so a selector specifying the same kernels differently must fold
+  // the same way or it would silently match nothing.
+  if (sel.variant) {
+    FFTShape const shape{*sel.type, sel.width, sel.middle, sel.height};
+    if (sel.carry) { sel.carry = canonicalCarry(shape, *sel.variant, *sel.carry); }
+    sel.variant = canonicalVariant(shape, *sel.variant);
+  }
+
   return sel;
 }
 
@@ -166,7 +175,7 @@ std::string FFTSelector::spec() const {
     add(std::to_string(variant_W(*variant)) + std::to_string(variant_M(*variant)) +
         std::to_string(variant_H(*variant)));
   }
-  if (carry) { add(*carry == CARRY_32 ? "0" : "1"); }
+  if (carry && *carry != CARRY_AUTO) { add(*carry == CARRY_32 ? "0" : "1"); }
 
   return s;
 }

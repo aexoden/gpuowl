@@ -29,7 +29,7 @@ enum class TestKind : std::uint8_t { PRP, LL };
 //   0                   every FFT of type 0 (FP64)
 //   512:15:512          one FP64 shape, any variant and carry
 //   1:512:8:512:202     one shape of type 1 and one variant
-//   512:15:512:101:0    one shape and variant whose spec pins the carry (0 = 32-bit, 1 = 64-bit); never an FFT with an
+//   256:2:256:101:0     one shape and variant whose spec pins the carry (0 = 32-bit, 1 = 64-bit); never an FFT with an
 //                       automatic carry, whatever width it ends up using at its exponent
 //   prp:1K:8:256        the same forms, restricted to one test kind
 struct FFTSelector {
