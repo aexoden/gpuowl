@@ -15,6 +15,7 @@
 #include INCLUDE_FILE
 #undef T_Z61
 #undef T2_GF61
+#undef T_F_Z31_Z61
 #undef T2_F2_GF31_GF61
 #undef as_T2_GF61
 #undef as_T_Z61
@@ -30,6 +31,7 @@
 #include INCLUDE_FILE
 #undef T_Z61
 #undef T2_GF61
+#undef T_F_Z31_Z61
 #undef T2_F2_GF31_GF61
 #undef as_T2_GF61
 #undef as_T_Z61
@@ -43,6 +45,7 @@
 #include INCLUDE_FILE
 #undef F_Z31
 #undef F2_GF31
+#undef T_F_Z31_Z61
 #undef T2_F2_GF31_GF61
 #endif 
 
@@ -54,6 +57,7 @@
 #include INCLUDE_FILE
 #undef F_Z31
 #undef F2_GF31
+#undef T_F_Z31_Z61
 #undef T2_F2_GF31_GF61
 #endif 
 
