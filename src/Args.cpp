@@ -85,7 +85,7 @@ void Args::readConfig(const fs::path& path) {
   if (File file = File::openRead(path)) {
     for (string line : file) {
       line = rstripNewline(line);
-      parse(line);
+      parse(line, true);
     }
   }
 }
@@ -127,6 +127,14 @@ It is also possible to manually add exponents by adding lines of the form "PRP=1
 
 The configuration options listed below can be passed on the command line or can be put in a file
 named "config.txt" in the prpll run directory.
+
+The "config.txt" file also supports per-FFT configuration lines of the form "! <fft-selector> <key=value,...>". The
+selector is an FFT spec cut short after any part, optionally prefixed by prp: or ll:
+   ! 1                  every FFT of type 1        ! 512:15:512:101     one shape and variant
+   ! 512:15:512         one FP64 shape             ! ll:512:15:512      that shape, LL tests only
+A kind-qualified line beats an unqualified one, then the more specific selector wins, then last line read. A '!' line
+takes precedence over a plain -use line in config.txt, but -use on the command line still applies. A selector ending in
+a carry (:0 or :1) matches only an FFT whose spec pins that carry, such as the FP64 entries in tune.txt.
 
 
 -h                 : print general help, list of FFTs, list of devices
@@ -266,20 +274,12 @@ Device selection : use one of -uid <UID>, -pci <BDF>, -device <N>, see the list 
   }
 }
 
-void Args::parse(const string& line) {
+void Args::parse(const string& line, bool fromConfigFile) {
   if (line.empty() || line[0] == '#') { return; }
 
   if (line[0] == '!') {
     // conditional defines predicated on a FFT
-    char fftBuf[32];
-    char configBuf[256];
-    if (sscanf(line.c_str(), "! %31s %255s", fftBuf, configBuf) != 2) {   // otherwise the buffers are uninitialised
-      log("config line ignored (expected \"! <fft> <use-flags>\"): \"%s\"\n", line.c_str());
-      return;
-    }
-    string const fft = fftBuf;
-    string const config = configBuf;
-    perFftConfig[fft] = splitUses(config);
+    perFftConfig.push_back(tune::parseUseLine(line));
     return;
   }
 
@@ -426,6 +426,7 @@ void Args::parse(const string& line) {
           log("warning: -use %s=%s overrides %s=%s\n", key.c_str(), val.c_str(), it->first.c_str(), it->second.c_str());
         }
         flags[key] = val;
+        if (!fromConfigFile) { cliKeys.insert(key); }
       }
     } else if (key == "-unsafeMath") {
       safeMath = false;

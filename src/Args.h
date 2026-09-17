@@ -4,9 +4,11 @@
 
 #include "common.h"
 #include "FFTConfig.h"
+#include "UseResolve.h"
 
 #include <string>
 #include <map>
+#include <set>
 #include <filesystem>
 
 namespace fs = std::filesystem;
@@ -24,7 +26,7 @@ public:
 
   explicit Args(bool silent = false) : silent{silent} {}
 
-  void parse(const string& line);
+  void parse(const string& line, bool fromConfigFile = false);
   void setDefaults();
   [[nodiscard]] bool uses(const std::string& key) const { return flags.contains(key); }
   [[nodiscard]] int value(const std::string& key, int valNotFound = -1) const;
@@ -54,7 +56,8 @@ public:
   string optionsFft = "512:15:512";
 
   std::map<std::string, std::string> flags;
-  std::map<std::string, vector<KeyVal>> perFftConfig;
+  std::set<std::string> cliKeys;
+  std::vector<tune::UseLine> perFftConfig;
 
   int device = 0;
 
