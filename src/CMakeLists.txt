@@ -22,6 +22,7 @@ add_executable(prpll
   OptionSpace.cpp
   UseResolve.cpp
   FFTVariants.cpp
+  Eligibility.cpp
   fs.cpp
   version.inc
   )
