@@ -5,6 +5,7 @@
 #include "Args.h"
 #include "clwrap.h"
 #include "Context.h"
+#include "FFTVariants.h"
 #include "log.h"
 
 #include <algorithm>
@@ -125,6 +126,17 @@ u32 tabMulChainTouches(const Env&, const FFTConfig& f, const UseConfig&) {
   if (fp64PassReadsTabMulChain(f.shape.height, variant_H(f.variant))) { touches |= KG_HEIGHT | KG_TAIL; }
   return touches;
 }
+
+//
+// Middle Chains
+//
+
+bool middleDigitPinsChains(const FFTConfig& f) { return variant_M(f.variant) == 1; }
+
+int mmChainDefault(const FFTConfig& f) { return middleDigitPinsChains(f) ? 1 : 0; }
+int mm2ChainDefault(const FFTConfig& f) { return middleDigitPinsChains(f) ? 2 : 0; }
+
+bool mm2ChainInert(const FFTConfig& f) { return f.shape.middle < 5; }
 
 //
 // CUDA Registers
@@ -273,28 +285,36 @@ vector<Option> buildTable() {
                .values = {0, 1},
                .defaultValue = 1});
 
-  t.push_back(
-    {.key = "MM_CHAIN",
-     .group = Group::Middle,
-     .touches = KG_MIDDLE_IN | KG_MIDDLE_OUT,
-     .accuracyImpact = AccuracyImpact::Suspected,
-     .applies = hasFloat,
-     .values = {0, 1},
-     .defaultFn = [](const Env&, const FFTConfig& f, const UseConfig&) { return variant_M(f.variant) == 0 ? 0 : 1; },
-     // Both arms reduce to the shared WADD(1, w) plus a zero-iteration loop.
-     .inert = [](const Env&, const FFTConfig& f, const UseConfig&) { return f.shape.middle == 2; },
-     .inertWhen = "MIDDLE == 2"});
-  t.push_back(
-    {.key = "MM2_CHAIN",
-     .group = Group::Middle,
-     .touches = KG_MIDDLE_IN | KG_MIDDLE_OUT,
-     .accuracyImpact = AccuracyImpact::Suspected,
-     .applies = hasFloat,
-     .values = {0, 1, 2},
-     .defaultFn = [](const Env&, const FFTConfig& f, const UseConfig&) { return variant_M(f.variant) == 0 ? 0 : 2; },
-     // Every branch sits in middleMul2's "MIDDLE >= SHARP_MIDDLE" arm.
-     .inert = [](const Env&, const FFTConfig& f, const UseConfig&) { return f.shape.middle < 5; },
-     .inertWhen = "MIDDLE < 5"});
+  t.push_back({.key = "MM_CHAIN",
+               .group = Group::Middle,
+               .touches = KG_MIDDLE_IN | KG_MIDDLE_OUT,
+               .accuracyImpact = AccuracyImpact::Suspected,
+               .applies = hasFloat,
+               .valuesFn =
+                 [](const Env&, const FFTConfig& f, const UseConfig&) {
+                   // With MM2_CHAIN inert, MM_CHAIN=1 is middle digit 1's pair.
+                   if (middleDigitPinsChains(f)) { return vector<int>{1}; }
+                   return mm2ChainInert(f) ? vector<int>{0} : vector<int>{0, 1};
+                 },
+               .defaultFn = [](const Env&, const FFTConfig& f, const UseConfig&) { return mmChainDefault(f); },
+               // Both arms reduce to the shared WADD(1, w) plus a zero-iteration loop.
+               .inert = [](const Env&, const FFTConfig& f, const UseConfig&) { return f.shape.middle == 2; },
+               .inertWhen = "MIDDLE == 2"});
+  t.push_back({.key = "MM2_CHAIN",
+               .group = Group::Middle,
+               .touches = KG_MIDDLE_IN | KG_MIDDLE_OUT,
+               .accuracyImpact = AccuracyImpact::Suspected,
+               .dependsOn = {"MM_CHAIN"},
+               .applies = hasFloat,
+               .valuesFn =
+                 [](const Env&, const FFTConfig& f, const UseConfig& d) {
+                   if (middleDigitPinsChains(f)) { return vector<int>{2}; }
+                   return useValue(d, "MM_CHAIN", mmChainDefault(f)) == 1 ? vector<int>{0, 1} : vector<int>{0, 1, 2};
+                 },
+               .defaultFn = [](const Env&, const FFTConfig& f, const UseConfig&) { return mm2ChainDefault(f); },
+               // Every branch sits in middleMul2's "MIDDLE >= SHARP_MIDDLE" arm.
+               .inert = [](const Env&, const FFTConfig& f, const UseConfig&) { return mm2ChainInert(f); },
+               .inertWhen = "MIDDLE < 5"});
   t.push_back({.key = "MIDDLE_CHAIN",
                .group = Group::Middle,
                .touches = KG_MIDDLE_IN | KG_MIDDLE_OUT,
@@ -1060,6 +1080,8 @@ u32 selfCheck() {
       if (o.compound && o.defaultValue != 0) { fail(o.key + ": a compound default must be 0, every class at mode 0"); }
     }
   }
+
+  problems += variantSelfCheck();
 
   // Resolve the table at every point of the matrix.
   for (const MatrixPoint& p : selfCheckMatrix()) {

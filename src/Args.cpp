@@ -1,6 +1,7 @@
 // Copyright (C) Mihai Preda
 
 #include "Args.h"
+#include "FFTVariants.h"
 #include "File.h"
 #include "clwrap.h"
 #include "gpuid.h"
@@ -133,8 +134,10 @@ selector is an FFT spec cut short after any part, optionally prefixed by prp: or
    ! 1                  every FFT of type 1        ! 512:15:512:101     one shape and variant
    ! 512:15:512         one FP64 shape             ! ll:512:15:512      that shape, LL tests only
 A kind-qualified line beats an unqualified one, then the more specific selector wins, then last line read. A '!' line
-takes precedence over a plain -use line in config.txt, but -use on the command line still applies. A selector ending in
-a carry (:0 or :1) matches only an FFT whose spec pins that carry, such as the FP64 entries in tune.txt.
+takes precedence over a plain -use line in config.txt, but -use on the command line still applies. Variant and carry
+settings that compile the same kernels name a single FFT (1K:8:256:101 is 1K:8:256:201). A selector ending in a carry
+(:0 or :1) matches only an FFT whose spec pins that carry, such as an FP64 entry in tune.txt whose 32-bit carry limits
+its reach.
 
 
 -h                 : print general help, list of FFTs, list of devices
@@ -306,8 +309,7 @@ void Args::parse(const string& line, bool fromConfigFile) {
       }
       log(" FFT              | BPW   | Max exp (M)\n");
       for (const FFTShape& shape : FFTShape::multiSpec(s)) {
-        for (u32 variant = 0; variant <= LAST_VARIANT; variant = next_variant (variant)) {
-          if (variant != LAST_VARIANT && shape.fft_type != FFT64) continue;
+        for (u32 const variant : tune::allVariants(shape)) {
           FFTConfig const fft{shape, variant, CARRY_AUTO};
           log("%12s | %.2f | %5.1f\n", fft.spec().c_str(), fft.maxBpw(), fft.maxExp() / 1'000'000.0);
         }
