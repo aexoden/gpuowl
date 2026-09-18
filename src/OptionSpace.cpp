@@ -67,8 +67,13 @@ bool hasGF61(const Env&, const FFTConfig& f, const UseConfig&) { return f.NTT_GF
 bool hasFloat(const Env&, const FFTConfig& f, const UseConfig&) { return f.FFT_FP64 || f.FFT_FP32; }
 bool hasNtt(const Env&, const FFTConfig& f, const UseConfig&) { return f.NTT_GF31 || f.NTT_GF61; }
 
+// base.cl defaults INPLACE to 1 on nVidia and 0 everywhere else, and clDefines() matches, so an undecided INPLACE
+// means different applicability on different GPUs.
+int inplaceDefault(const Env& e) { return e.isNvidia ? 1 : 0; }
+bool inplaceOn(const Env& e, const UseConfig& d) { return useValue(d, "INPLACE", inplaceDefault(e)) != 0; }
+
 // The middle-buffer geometry is compiled only under "#if !INPLACE".
-bool inplaceOff(const Env&, const FFTConfig&, const UseConfig& d) { return useValue(d, "INPLACE", 0) == 0; }
+bool inplaceOff(const Env& e, const FFTConfig&, const UseConfig& d) { return !inplaceOn(e, d); }
 
 u32 numDataTypes(const FFTConfig& f) {
   return ((f.FFT_FP64 || f.FFT_FP32) ? 1u : 0u) + (f.NTT_GF31 ? 1u : 0u) + (f.NTT_GF61 ? 1u : 0u);
@@ -216,14 +221,14 @@ vector<Option> buildTable() {
                .touches = KG_GLOBAL,
                .structural = true,
                .values = {0, 1},
-               .defaultValue = 0});
+               .defaultFn = [](const Env& e, const FFTConfig&, const UseConfig&) { return inplaceDefault(e); }});
 
   t.push_back({.key = "L2_STRIPING",
                .group = Group::Placement,
                .touches = KG_GLOBAL,
                .dependsOn = {"INPLACE", "MULTI_Q"},
-               .applies = [](const Env&, const FFTConfig& f,
-                             const UseConfig& d) { return useValue(d, "INPLACE", 0) != 0 && maxStriping(f, d) >= 1; },
+               .applies = [](const Env& e, const FFTConfig& f,
+                             const UseConfig& d) { return inplaceOn(e, d) && maxStriping(f, d) >= 1; },
                .valuesFn =
                  [](const Env&, const FFTConfig& f, const UseConfig& d) {
                    vector<int> v{0};
