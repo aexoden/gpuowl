@@ -1,6 +1,7 @@
 // Copyright (C) Mihai Preda
 
 #pragma once
+// IWYU pragma: always_keep
 
 #include <string>
 
