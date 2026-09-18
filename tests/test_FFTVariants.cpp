@@ -124,7 +124,7 @@ std::string variants(const std::vector<u32>& vs) {
   return s;
 }
 
-} // namespace
+}  // namespace
 
 TEST(kernel_facts_are_found) {
   // Guards the parsers above: were they to find nothing, every key would collapse and the main test would prove little.

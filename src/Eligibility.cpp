@@ -30,7 +30,7 @@ template<typename Pred> u64 lowerBoundary(u64 lo, u64 hi, Pred pred) {
 // A 64-bit carry because the exponent asks for one, rather than because the spec pins one.
 bool needsCarry64(const FFTConfig& fft, u64 E) { return fft.carry == CARRY_AUTO && fft.shape.needsLargeCarry(E); }
 
-} // namespace
+}  // namespace
 
 std::string Regime::label() const { return string{longCarry ? "long" : "short"} + (carry64 ? "64" : "32"); }
 
@@ -100,4 +100,4 @@ Interval interval(const FFTConfig& fft, u64 E, u64 reach) {
 
 Interval interval(const FFTConfig& fft, u64 E) { return interval(fft, E, maxExp(fft)); }
 
-} // namespace tune
+}  // namespace tune

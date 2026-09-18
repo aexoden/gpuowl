@@ -48,7 +48,7 @@ std::string joined(const std::vector<std::string>& keys) {
   return s;
 }
 
-} // namespace
+}  // namespace
 
 TEST(selector_parse) {
   struct Row {

@@ -74,13 +74,13 @@ enum class AccuracyImpact { None, Suspected, Yes };
 
 // The kernels an option affects, as a bit mask.
 enum KernelGroup : u32 {
-  KG_WIDTH = 1u << 0, // fftW, fftP, carryFused
-  KG_HEIGHT = 1u << 1, // fftHin, tailSquare/tailMul
-  KG_MIDDLE_IN = 1u << 2, // fftMiddleIn
-  KG_MIDDLE_OUT = 1u << 3, // fftMiddleOut
-  KG_TAIL = 1u << 4, // tailSquare, tailMul
-  KG_CARRY = 1u << 5, // carryFused, carryA, carryB
-  KG_GLOBAL = 1u << 6, // every kernel, or not separable
+  KG_WIDTH = 1u << 0,       // fftW, fftP, carryFused
+  KG_HEIGHT = 1u << 1,      // fftHin, tailSquare/tailMul
+  KG_MIDDLE_IN = 1u << 2,   // fftMiddleIn
+  KG_MIDDLE_OUT = 1u << 3,  // fftMiddleOut
+  KG_TAIL = 1u << 4,        // tailSquare, tailMul
+  KG_CARRY = 1u << 5,       // carryFused, carryA, carryB
+  KG_GLOBAL = 1u << 6,      // every kernel, or not separable
 };
 
 // Which kernel groups a Gpu kernel belongs to; 0 for anything that is not part of an iteration.
@@ -201,10 +201,10 @@ struct ClusterGraph {
 // LOADS and STORES pack one access mode per class of memory traffic into their decimal digits.
 struct AccessClass {
   string name;
-  u32 digit; // 0 = ones, 1 = tens, ...
-  vector<int> loadModes{}; // empty: no load side
-  vector<int> storeModes{}; // empty: no store side
-  vector<pair<int, int>> pairs{}; // non-empty: load and store are chosen together, as these pairs
+  u32 digit;                       // 0 = ones, 1 = tens, ...
+  vector<int> loadModes{};         // empty: no load side
+  vector<int> storeModes{};        // empty: no store side
+  vector<pair<int, int>> pairs{};  // non-empty: load and store are chosen together, as these pairs
 };
 
 [[nodiscard]] const vector<AccessClass>& accessClasses();
@@ -237,4 +237,4 @@ struct MatrixPoint {
 
 u32 dumpOptionSpace(const Env& env, const FFTConfig& fft);
 
-} // namespace tune
+}  // namespace tune
