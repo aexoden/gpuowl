@@ -260,12 +260,19 @@ TEST(inert_tabmul_chain) {
 TEST(placement_and_queue_gates) {
   Env const e = nvidia();
   UseConfig const inplace{{"INPLACE", "1"}};
+  UseConfig const notInplace{{"INPLACE", "0"}};
+  // INPLACE defaults to 1 on nVidia and 0 elsewhere, so which half of the Placement group is live depends on the
+  // vendor until INPLACE is decided.
   for (const char* key :
        {"IN_WG", "IN_SIZEX", "OUT_WG", "OUT_SIZEX", "PAD", "MIDDLE_IN_LDS_TRANSPOSE", "MIDDLE_OUT_LDS_TRANSPOSE"}) {
-    CHECK(applicable(e, "512:15:512:101", {}, key));
+    CHECK(applicable(e, "512:15:512:101", notInplace, key));
     CHECK(!applicable(e, "512:15:512:101", inplace, key));
+    CHECK(!applicable(e, "512:15:512:101", {}, key));
+    CHECK(applicable(amd(), "512:15:512:101", {}, key));
   }
-  CHECK(!applicable(e, "512:15:512:101", {}, "L2_STRIPING"));
+  CHECK(applicable(e, "512:15:512:101", {}, "L2_STRIPING"));
+  CHECK(!applicable(amd(), "512:15:512:101", {}, "L2_STRIPING"));
+  CHECK(!applicable(e, "512:15:512:101", notInplace, "L2_STRIPING"));
   CHECK_EQ(valuesOf(e, "512:15:512:101", inplace, "L2_STRIPING"), string("0,1,2,4,8"));
   CHECK_EQ(valuesOf(e, "512:15:512:101", {{"INPLACE", "1"}, {"MULTI_Q", "1"}}, "L2_STRIPING"), string("0,1,2,4"));
   CHECK_EQ(valuesOf(e, "256:4:256:101", {{"INPLACE", "1"}, {"MULTI_Q", "1"}}, "L2_STRIPING"), string("0,1,2"));
@@ -282,7 +289,8 @@ TEST(placement_and_queue_gates) {
   CHECK_EQ(defaultOf(amd(), "512:15:512:101", {}, "OLD_FENCE"), 0);
   CHECK_EQ(defaultOf(e, "512:15:512:101", {}, "OLD_FENCE"), 1);
   CHECK_EQ(defaultOf(amd(), "512:15:512:101", {}, "PAD"), 256);
-  CHECK_EQ(defaultOf(e, "512:15:512:101", {}, "INPLACE"), 0);
+  CHECK_EQ(defaultOf(e, "512:15:512:101", {}, "INPLACE"), 1);
+  CHECK_EQ(defaultOf(amd(), "512:15:512:101", {}, "INPLACE"), 0);
 }
 
 TEST(arith_and_cuda_gates) {
