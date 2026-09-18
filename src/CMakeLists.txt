@@ -23,6 +23,8 @@ add_executable(prpll
   UseResolve.cpp
   FFTVariants.cpp
   Eligibility.cpp
+  TuneDB.cpp
+  Selection.cpp
   fs.cpp
   version.inc
   )
