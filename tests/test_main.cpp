@@ -19,14 +19,14 @@ std::vector<Case>& registry() {
 namespace {
 int failures = 0;
 const char* current = "";
-} // namespace
+}  // namespace
 
 void fail(const char* file, int line, const std::string& what) {
   ++failures;
   fprintf(stderr, "%s:%d: in %s: %s\n", file, line, current, what.c_str());
 }
 
-} // namespace testing
+}  // namespace testing
 
 int main(int argc, char** argv) {
   const char* const filter = argc > 1 ? argv[1] : "";
