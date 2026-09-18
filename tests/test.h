@@ -25,7 +25,7 @@ struct Registrar {
 
 void fail(const char* file, int line, const std::string& what);
 
-} // namespace testing
+}  // namespace testing
 
 #define TEST(name)                                                                                                     \
   static void test_##name();                                                                                           \

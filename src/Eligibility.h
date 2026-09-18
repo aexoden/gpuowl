@@ -17,7 +17,7 @@ namespace tune {
 
 // Exponent-dependent switches in Gpu that change what runs.
 struct Regime {
-    // The carry is expanded into carryA/carryB rather than fused into the width pass. Forced below 10 bits per word.
+  // The carry is expanded into carryA/carryB rather than fused into the width pass. Forced below 10 bits per word.
   bool longCarry = false;
 
   // The kernels are compiled with -DCARRY64, a 64-bit carry. Used either if the exponent needs one or if the spec pins
@@ -65,4 +65,4 @@ struct Interval {
 // [lo, hi] raised to minExp(fft) and cut at every regime change, in ascending order.
 [[nodiscard]] std::vector<Interval> intervals(const FFTConfig& fft, u64 lo, u64 hi);
 
-} // namespace tune
+}  // namespace tune
