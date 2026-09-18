@@ -27,6 +27,7 @@ static_assert(sizeof(Program) == sizeof(cl_program));
 // * -fno-bin-llvmir
 // * various: -fno-bin-source -fno-bin-amdil
 
+#ifndef CUDA_BACKEND
 // Does the device's compiler accept this -cl-std?  Compiles an empty kernel with just that option.
 static bool acceptsClStd(cl_context context, cl_device_id deviceId, const string& clStd) {
   Program probe = loadSource(context, "kernel void probe() {}\n");
@@ -34,6 +35,7 @@ static bool acceptsClStd(cl_context context, cl_device_id deviceId, const string
   string const opts = "-cl-std=" + clStd;
   return clCompileProgram(probe.get(), 1, &deviceId, opts.c_str(), 0, nullptr, nullptr, nullptr, nullptr) == CL_SUCCESS;
 }
+#endif
 
 KernelCompiler::KernelCompiler(const Args& args, const Context* context, const string& clArgs) :
   cacheDir{args.cacheDir.string()},
