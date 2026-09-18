@@ -66,9 +66,15 @@ void applyLines(const std::vector<UseLine>& lines, const FFTConfig& fft, TestKin
   }
 }
 
-} // namespace
+}  // namespace
 
 const char* toString(TestKind kind) { return kind == TestKind::LL ? "ll" : "prp"; }
+
+std::optional<TestKind> parseTestKind(std::string_view text) {
+  if (text == "prp") { return TestKind::PRP; }
+  if (text == "ll") { return TestKind::LL; }
+  return {};
+}
 
 FFTSelector FFTSelector::parse(std::string_view text) {
   FFTSelector sel;
@@ -292,4 +298,4 @@ std::string describe(const Takeover& takeover) {
   return s;
 }
 
-} // namespace tune
+}  // namespace tune
