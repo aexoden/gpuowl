@@ -44,6 +44,7 @@
     <ClCompile Include=".\src\Proof.cpp" />
     <ClCompile Include=".\src\Queue.cpp" />
     <ClCompile Include=".\src\Saver.cpp" />
+    <ClCompile Include=".\src\Selection.cpp" />
     <ClCompile Include=".\src\sha3.cpp" />
     <ClCompile Include=".\src\Signal.cpp" />
     <ClCompile Include=".\src\state.cpp" />
@@ -53,6 +54,7 @@
     <ClCompile Include=".\src\Trig.cpp" />
     <ClCompile Include=".\src\TrigBufCache.cpp" />
     <ClCompile Include=".\src\tune.cpp" />
+    <ClCompile Include=".\src\TuneDB.cpp" />
     <ClCompile Include=".\src\TuneEntry.cpp" />
     <ClCompile Include=".\src\UseResolve.cpp" />
     <ClCompile Include=".\src\version.cpp" />

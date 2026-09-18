@@ -23,6 +23,7 @@ namespace tune {
 enum class TestKind : std::uint8_t { PRP, LL };
 
 [[nodiscard]] const char* toString(TestKind kind);
+[[nodiscard]] std::optional<TestKind> parseTestKind(std::string_view text);
 
 // The left-hand side of a '!' config line: an optional test kind followed by an FFT spec truncated after any part.
 //   ll                  every LL test
@@ -95,4 +96,4 @@ struct Takeover {
 
 [[nodiscard]] std::string describe(const Takeover& takeover);
 
-} // namespace tune
+}  // namespace tune
