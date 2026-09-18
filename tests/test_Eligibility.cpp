@@ -27,7 +27,7 @@ FFTConfig cfg(const FFTShape& shape, CARRY_KIND carry = CARRY_AUTO) {
   return FFTConfig{shape, defaultVariant(shape), carry};
 }
 
-} // namespace
+}  // namespace
 
 TEST(regime_labels_round_trip) {
   std::set<std::string> labels;

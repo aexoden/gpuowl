@@ -66,7 +66,7 @@ string graphOf(const Env& env, const string& spec, const UseConfig& decided) {
   return describe(clusterGraph(env, FFTConfig{spec}, decided));
 }
 
-} // namespace
+}  // namespace
 
 TEST(self_check_is_clean) { CHECK_EQ(selfCheck(), 0u); }
 
@@ -143,13 +143,13 @@ TEST(known_keys) {
 
 TEST(inert_middle_chains) {
   Env const e = nvidia();
-  CHECK(inert(e, "256:4:256:101", "MM2_CHAIN"));        // MIDDLE < 5
+  CHECK(inert(e, "256:4:256:101", "MM2_CHAIN"));  // MIDDLE < 5
   CHECK(!inert(e, "512:5:512:101", "MM2_CHAIN"));
   CHECK(applicable(e, "512:5:512:101", {}, "MM2_CHAIN"));
   CHECK(!applicable(e, "256:4:256:101", {}, "MM2_CHAIN"));
-  CHECK(inert(e, "2:512:4:512:202", "MM2_CHAIN"));      // FP32 reads it too
+  CHECK(inert(e, "2:512:4:512:202", "MM2_CHAIN"));  // FP32 reads it too
 
-  CHECK(inert(e, "256:2:256:101", "MM_CHAIN"));         // MIDDLE == 2
+  CHECK(inert(e, "256:2:256:101", "MM_CHAIN"));  // MIDDLE == 2
   CHECK(applicable(e, "512:15:512:101", {}, "MM_CHAIN"));
   CHECK(applicable(e, "2:512:8:512:202", {}, "MM_CHAIN"));   // FP32 as well as FP64
   CHECK(!applicable(e, "3:512:4:512:202", {}, "MM_CHAIN"));  // no float part
@@ -210,14 +210,14 @@ TEST(inert_unroll) {
   Env const e = nvidia();
   CHECK(applicable(e, "512:15:512:101", {}, "UNROLL_W"));
   CHECK(applicable(e, "512:15:512:101", {}, "UNROLL_H"));
-  CHECK(inert(e, "512:15:512:202", "UNROLL_W"));          // FFT64 digit 2 is specialised
-  CHECK(inert(e, "512:15:512:001", "UNROLL_W"));          // FFT64 digit 0 has its own loop
+  CHECK(inert(e, "512:15:512:202", "UNROLL_W"));  // FFT64 digit 2 is specialised
+  CHECK(inert(e, "512:15:512:001", "UNROLL_W"));  // FFT64 digit 0 has its own loop
   CHECK(!inert(e, "512:15:512:001", "UNROLL_H"));
-  CHECK(inert(e, "1K:8:1K:101", "UNROLL_W"));             // WG = 128 bodies bypass the loop
+  CHECK(inert(e, "1K:8:1K:101", "UNROLL_W"));  // WG = 128 bodies bypass the loop
   CHECK(inert(e, "1K:8:1K:101", "UNROLL_H"));
   CHECK(!inert(e, "1K:8:512:101", "UNROLL_H"));
-  CHECK(!inert(e, "51:512:8:512:202", "UNROLL_W"));       // FP64 + GF31: the GF31 loop reads it
-  CHECK(!inert(e, "2:512:4:512:202", "UNROLL_W"));        // FP32's generic loop reads it
+  CHECK(!inert(e, "51:512:8:512:202", "UNROLL_W"));  // FP64 + GF31: the GF31 loop reads it
+  CHECK(!inert(e, "2:512:4:512:202", "UNROLL_W"));   // FP32's generic loop reads it
   CHECK(inert(e, "3:1K:8:1K:202", "UNROLL_W"));
   CHECK(!findOption("UNROLL_W")->appliesTo(nvidia(806, true), FFTConfig{"512:15:512:101"}, {}));  // NVRTC ignores it
 
@@ -244,12 +244,12 @@ TEST(inert_tabmul_chain) {
   auto touches = [&](const string& spec) { return findOption("TABMUL_CHAIN")->touchesFor(e, FFTConfig{spec}, {}); };
   CHECK(applicable(e, "512:15:512:101", {}, "TABMUL_CHAIN"));
   CHECK_EQ(touches("512:15:512:101"), u32(KG_WIDTH | KG_HEIGHT | KG_TAIL));
-  CHECK(inert(e, "512:15:512:212", "TABMUL_CHAIN"));      // partial_tabMul8 at WG = 64
+  CHECK(inert(e, "512:15:512:212", "TABMUL_CHAIN"));  // partial_tabMul8 at WG = 64
   CHECK(!applicable(e, "512:15:512:212", {}, "TABMUL_CHAIN"));
   CHECK(inert(e, "256:4:256:202", "TABMUL_CHAIN"));
   CHECK(inert(e, "4K:12:512:212", "TABMUL_CHAIN"));
-  CHECK(inert(amd(), "512:15:512:002", "TABMUL_CHAIN"));   // digit 0 broadcasts
-  CHECK(!inert(e, "1K:8:1K:212", "TABMUL_CHAIN"));         // the WG = 128 body calls tabMul
+  CHECK(inert(amd(), "512:15:512:002", "TABMUL_CHAIN"));  // digit 0 broadcasts
+  CHECK(!inert(e, "1K:8:1K:212", "TABMUL_CHAIN"));        // the WG = 128 body calls tabMul
   CHECK_EQ(touches("512:8:1K:212"), u32(KG_HEIGHT | KG_TAIL));
   CHECK_EQ(touches("512:15:512:102"), u32(KG_WIDTH));
   // The other types have no variant-2 bodies that skip tabMul.
@@ -270,10 +270,10 @@ TEST(placement_and_queue_gates) {
   CHECK_EQ(valuesOf(e, "512:15:512:101", {{"INPLACE", "1"}, {"MULTI_Q", "1"}}, "L2_STRIPING"), string("0,1,2,4"));
   CHECK_EQ(valuesOf(e, "256:4:256:101", {{"INPLACE", "1"}, {"MULTI_Q", "1"}}, "L2_STRIPING"), string("0,1,2"));
 
-  CHECK(!applicable(e, "512:15:512:101", {}, "MULTI_Q"));        // one data type
-  CHECK(applicable(e, "1:512:4:512:202", {}, "MULTI_Q"));        // GF31 + GF61
-  CHECK(applicable(e, "51:512:8:512:202", {}, "MULTI_Q"));       // FP64 + GF31
-  CHECK(applicable(e, "2:512:4:512:202", {}, "MULTI_Q"));        // FP32 + GF61 is two as well
+  CHECK(!applicable(e, "512:15:512:101", {}, "MULTI_Q"));   // one data type
+  CHECK(applicable(e, "1:512:4:512:202", {}, "MULTI_Q"));   // GF31 + GF61
+  CHECK(applicable(e, "51:512:8:512:202", {}, "MULTI_Q"));  // FP64 + GF31
+  CHECK(applicable(e, "2:512:4:512:202", {}, "MULTI_Q"));   // FP32 + GF61 is two as well
 
   CHECK(applicable(e, "512:15:512:101", {}, "FAST_BARRIER"));
   CHECK(!applicable(nvidia(806, true), "512:15:512:101", {}, "FAST_BARRIER"));
@@ -345,7 +345,7 @@ TEST(lds_budget) {
   CHECK(applicable(e, "1K:8:1K:101", {{"SHUFL_BYTES_W", "16"}, {"WMUL", "1"}}, "LDSPAD_W"));
   CHECK(!applicable(e, "1K:8:1K:101", {{"SHUFL_BYTES_W", "16"}, {"WMUL", "1"}}, "LDSSWIZ_W"));
   CHECK(applicable(e, "1K:8:1K:101", {{"SHUFL_BYTES_W", "16"}, {"WMUL", "1"}, {"LDSPAD_W", "0"}}, "LDSSWIZ_W"));
-  CHECK(applicable(e, "4K:12:512:101", {}, "LDSSWIZ_W"));   // 4K * 8 * 1 fills it too
+  CHECK(applicable(e, "4K:12:512:101", {}, "LDSSWIZ_W"));  // 4K * 8 * 1 fills it too
   CHECK(!applicable(e, "512:15:512:101", {{"SHUFL_BYTES_W", "4"}, {"LDSPAD_W", "0"}}, "LDSSWIZ_W"));
 
   CHECK(applicable(e, "512:15:512:101", {}, "LDSPAD_H"));
@@ -426,21 +426,21 @@ TEST(cluster_picture_check_catches_departures) {
   CHECK_EQ(describe(good), string("top{Placement Memory Queues} {Middle} {Tail Width Height}"));
   CHECK_EQ(clusterPictureMismatch(good), string(""));
 
-  ClusterGraph widthAlone = good;      // allowed: Width on its own
+  ClusterGraph widthAlone = good;  // allowed: Width on its own
   widthAlone.clusters[1] = {Group::Tail, Group::Height};
   widthAlone.clusters.push_back({Group::Width});
   CHECK_EQ(clusterPictureMismatch(widthAlone), string(""));
 
-  ClusterGraph merged = good;          // Memory merged into a cluster
+  ClusterGraph merged = good;  // Memory merged into a cluster
   merged.clusters[1].push_back(Group::Memory);
   CHECK(!clusterPictureMismatch(merged).empty());
 
-  ClusterGraph split = good;           // Height split from Tail
+  ClusterGraph split = good;  // Height split from Tail
   split.clusters[1] = {Group::Tail, Group::Width};
   split.clusters.push_back({Group::Height});
   CHECK(!clusterPictureMismatch(split).empty());
 
-  ClusterGraph blob = good;            // the middle kernels joined to another pass
+  ClusterGraph blob = good;  // the middle kernels joined to another pass
   blob.clusters = {{Group::Middle, Group::Tail, Group::Height}, {Group::Width}};
   CHECK(!clusterPictureMismatch(blob).empty());
 
@@ -449,18 +449,18 @@ TEST(cluster_picture_check_catches_departures) {
   middleOnTop.clusters.erase(middleOnTop.clusters.begin());
   CHECK(!clusterPictureMismatch(middleOnTop).empty());
 
-  ClusterGraph queuesAway = widthAlone;   // OLD_FENCE's Queues in a cluster without the width pass
+  ClusterGraph queuesAway = widthAlone;  // OLD_FENCE's Queues in a cluster without the width pass
   queuesAway.touches[Group::Queues] = KG_CARRY;
   queuesAway.topTier = {Group::Placement, Group::Memory};
   queuesAway.clusters[1].insert(queuesAway.clusters[1].begin(), Group::Queues);
   CHECK(!clusterPictureMismatch(queuesAway).empty());
 
-  ClusterGraph queues = good;          // Queues in a cluster while it touches global
+  ClusterGraph queues = good;  // Queues in a cluster while it touches global
   queues.topTier = {Group::Placement, Group::Memory};
   queues.clusters[1].insert(queues.clusters[1].begin(), Group::Queues);
   CHECK(!clusterPictureMismatch(queues).empty());
 
-  ClusterGraph wide = good;            // more than MAX_PERMUTE groups
+  ClusterGraph wide = good;  // more than MAX_PERMUTE groups
   wide.touches[Group::Queues] = KG_CARRY;
   wide.topTier = {Group::Placement, Group::Memory};
   wide.clusters[1] = {Group::Queues, Group::Tail, Group::Width, Group::Height, Group::Height};

@@ -58,4 +58,4 @@ struct FFTParts {
 // Checks the folding rules over every shape FFTShape::allShapes() produces. Returns the number of failed checks.
 [[nodiscard]] u32 variantSelfCheck();
 
-} // namespace tune
+}  // namespace tune

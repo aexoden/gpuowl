@@ -36,7 +36,7 @@ string where(const FFTShape& shape, u32 variant) {
     std::to_string(variant_H(variant));
 }
 
-} // namespace
+}  // namespace
 
 FFTParts fftParts(enum FFT_TYPES type) {
   switch (type) {
@@ -173,4 +173,4 @@ u32 variantSelfCheck() {
   return problems;
 }
 
-} // namespace tune
+}  // namespace tune

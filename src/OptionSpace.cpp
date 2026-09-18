@@ -609,13 +609,13 @@ vector<Option> buildTable() {
 
   // Recognized but never searched keys.
   for (const char* key : {
-         "STATS", "DEBUG", "NO_ASM", "CARRY64", "ROUNDOFF_LIMIT", // Debugging and correctness options
-         "SHOULD_BE_FASTER", "ENABLE_BETTER_ONEPAIRSQ", "TEST_KERNEL", // Upstream A/B options
-         "TRY_SHL30", "TRY_SHL31", "TRY_SQRT2", // GF61 experiments, correctness unverified
-         "WAVEFRONT", // Set too high, bar() skips needed barriers
-         "USE_REGISTER_BARSYNC", // Picks barsync()'s body, reached only through LDSMUL > 1
-         "LDSMUL_W", "LDSMUL_H", // Shared LDS: slower where tried upstream, and unsafe with variant 2
-         "ENABLE_FP32_VARIANT_2", // Would widen the FP32 variant space
+         "STATS", "DEBUG", "NO_ASM", "CARRY64", "ROUNDOFF_LIMIT",       // Debugging and correctness options
+         "SHOULD_BE_FASTER", "ENABLE_BETTER_ONEPAIRSQ", "TEST_KERNEL",  // Upstream A/B options
+         "TRY_SHL30", "TRY_SHL31", "TRY_SQRT2",                         // GF61 experiments, correctness unverified
+         "WAVEFRONT",                                                   // Set too high, bar() skips needed barriers
+         "USE_REGISTER_BARSYNC",   // Picks barsync()'s body, reached only through LDSMUL > 1
+         "LDSMUL_W", "LDSMUL_H",   // Shared LDS: slower where tried upstream, and unsafe with variant 2
+         "ENABLE_FP32_VARIANT_2",  // Would widen the FP32 variant space
        }) {
     t.push_back({.key = key, .kind = Kind::Fixed});
   }
@@ -688,7 +688,7 @@ string join(const vector<Group>& groups) {
 
 bool contains(const vector<int>& v, int x) { return std::find(v.begin(), v.end(), x) != v.end(); }
 
-} // namespace
+}  // namespace
 
 const vector<Option>& allOptions() {
   static const vector<Option> table = buildTable();
@@ -955,12 +955,12 @@ vector<MatrixPoint> selfCheckMatrix() {
 
   vector<vector<KeyVal>> const scenarios{
     {},
-    {{"LDSPAD_W", "0"}, {"LDSPAD_H", "0"}}, // opens LDSSWIZ_*
-    {{"SHUFL_BYTES_W", "4"}, {"SHUFL_BYTES_H", "4"}}, // closes LDSSWIZ_*
-    {{"SHUFL_BYTES_W", "16"}, {"SHUFL_BYTES_H", "16"}}, // tightens WMUL, may close LDSPAD_W
+    {{"LDSPAD_W", "0"}, {"LDSPAD_H", "0"}},              // opens LDSSWIZ_*
+    {{"SHUFL_BYTES_W", "4"}, {"SHUFL_BYTES_H", "4"}},    // closes LDSSWIZ_*
+    {{"SHUFL_BYTES_W", "16"}, {"SHUFL_BYTES_H", "16"}},  // tightens WMUL, may close LDSPAD_W
     {{"WMUL", "4"}},
-    {{"NOREG", "1"}}, // closes REG*
-    {{"DISABLE_MUL64", "1"}}, // opens ENABLE_ALT_MUL64
+    {{"NOREG", "1"}},          // closes REG*
+    {{"DISABLE_MUL64", "1"}},  // opens ENABLE_ALT_MUL64
   };
 
   vector<MatrixPoint> points;
@@ -1029,7 +1029,7 @@ u32 selfCheck() {
 
   // dependsOn names real keys and the graph is acyclic.
   {
-    std::map<string, int> state; // 1 while on the DFS stack, 2 once finished
+    std::map<string, int> state;  // 1 while on the DFS stack, 2 once finished
     auto visit = [&](auto&& self, const Option& o) -> void {
       int& s = state[o.key];
       if (s == 2) { return; }
@@ -1198,4 +1198,4 @@ u32 dumpOptionSpace(const Env& env, const FFTConfig& fft) {
   return problems;
 }
 
-} // namespace tune
+}  // namespace tune
