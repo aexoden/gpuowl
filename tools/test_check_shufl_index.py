@@ -28,6 +28,73 @@ class StripCommentsTest(unittest.TestCase):
         self.assertEqual([line.strip() for line in stripped.splitlines()], ["a", "", "b", "", "d"])
 
 
+BASE_TYPEDEFS: Final = """\
+typedef double T;
+typedef double2 T2;
+typedef float F;
+typedef float2 F2;
+typedef uint Z31;
+typedef ulong Z61;
+"""
+
+EXPAND_MACROS: Final = """\
+#if FFT_FP64
+#define T_Z61 T
+#define T2_GF61 T2
+#define T_F_Z31_Z61 T
+#define as_T_Z61 as_double
+#endif
+#if FFT_FP32
+#define F_Z31 F
+#define F2_GF31 F2
+#define T_F_Z31_Z61 F
+#endif
+"""
+
+
+class ElementWidthTest(unittest.TestCase):
+    def widths(self, base: str = BASE_TYPEDEFS, expand: str = EXPAND_MACROS) -> dict[str, int | None]:
+        return csi.element_widths(base, expand)
+
+    def test_widths_come_from_the_typedefs(self) -> None:
+        self.assertEqual(self.widths()["T_Z61"], 8)
+        self.assertEqual(self.widths()["T2_GF61"], 16)
+        self.assertEqual(self.widths()["F_Z31"], 4)
+        self.assertEqual(self.widths()["F2_GF31"], 8)
+        self.assertEqual(self.widths()[csi.PLAIN_ELEMENT], 4)
+
+    def test_a_retyped_scalar_changes_the_width(self) -> None:
+        self.assertEqual(self.widths(base=BASE_TYPEDEFS.replace("typedef double T;", "typedef float T;"))["T_Z61"], 4)
+
+    def test_a_macro_of_two_widths_has_none(self) -> None:
+        self.assertIsNone(self.widths()["T_F_Z31_Z61"])
+
+    def test_an_as_cast_macro_is_not_a_type(self) -> None:
+        self.assertNotIn("as_T_Z61", self.widths())
+
+    def test_a_target_of_unknown_width_is_an_error(self) -> None:
+        with self.assertRaises(csi.SourceError):
+            self.widths(expand=EXPAND_MACROS.replace("#define T2_GF61 T2", "#define T2_GF61 T4"))
+
+    def test_no_macros_at_all_is_an_error(self) -> None:
+        with self.assertRaises(csi.SourceError):
+            self.widths(expand="")
+
+    def test_slot_bytes_refuses_a_type_of_no_fixed_width(self) -> None:
+        self.assertEqual(csi.slot_bytes(self.widths(), "T_Z61", "where"), 8)
+
+        with self.assertRaises(csi.SourceError):
+            csi.slot_bytes(self.widths(), "T_F_Z31_Z61", "where")
+
+    def test_this_repository_has_one_width_for_every_type_an_arm_uses(self) -> None:
+        sources = csi.Sources.read(csi.REPO_ROOT)
+        widths = csi.element_widths(sources.base, sources.expand)
+
+        for arm in csi.parse_shufl(sources.shufl, widths):
+            self.assertEqual(arm.element_bytes, widths[arm.element_type])
+            self.assertEqual(arm.pointer_bytes, widths[arm.pointer_type])
+
+
 class SourcesTest(unittest.TestCase):
     def test_undecodable_source_is_a_source_error(self) -> None:
         with tempfile.TemporaryDirectory() as root:
