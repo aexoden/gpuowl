@@ -13,8 +13,8 @@ element, checking that:
 
 LDSMUL and the number of workgroups decide which arm runs and how large its block is, so every combination of them is
 checked. The plain implementations also undergo checks 1, 2, 4 and 6, including arms without optimized paths.
-Expressions, allocation rules, and supported parameter combinations are read from the source; unreadable or unrecognized
-source is an error, never a silent skip. No GPU is required.
+Expressions, allocation rules, type widths, and supported parameter combinations are read from the source; unreadable or
+unrecognized source is an error, never a silent skip. No GPU is required.
 
 The reference is the plain implementation in the same SHUFL_BYTES arm; incorrect permutations shared with that
 implementation are not detected. An error common to every arm of a function is not detected.
@@ -39,18 +39,14 @@ from typing import Final, Literal, NamedTuple
 PROG: Final = "check-shufl-index"
 REPO_ROOT: Final = Path(__file__).resolve().parent.parent
 
-# Bytes per element of each type shufl casts its LDS block to. These are the expand.cl macro names, and both
-# instantiations of each have the same width. The LDS macros count bytes, so the element type decides how many slots the
-# expressions may index.
-ELEMENT_BYTES: Final = {
-    "T2_GF61": 16,
-    "T_Z61": 8,
-    "F2_GF31": 8,
-    "F_Z31": 4,
-    "int": 4,
-    "T2_F2_GF31_GF61": 16,
-    "T_F_Z31_Z61": 8,
-}
+# The OpenCL scalar types base.cl builds its own out of, and the vector lengths it results in.
+SCALAR_BYTES: Final = {"char": 1, "short": 2, "int": 4, "uint": 4, "float": 4, "long": 8, "ulong": 8, "double": 8}
+VECTOR_LENGTHS: Final = (2, 4, 8, 16)
+
+# The one concrete type shufl casts to by name rather than through an expand.cl macro.
+PLAIN_ELEMENT: Final = "int"
+
+IDENTIFIER: Final = r"[A-Za-z_][A-Za-z0-9_]*"
 
 # The values SHUFL_BYTES takes.
 SHUFL_BYTES_VALUES: Final = (4, 8, 16)
@@ -123,12 +119,68 @@ def skip_space(text: str, start: int, end: int) -> int:
     return match.end()
 
 
+def element_widths(base: str, expand: str) -> dict[str, int | None]:
+    """Return the byte width of every type shufl may cast its LDS block to.
+
+    base.cl names the concrete types, and expand.cl maps each generic macro onto one of them once per arithmetic part.
+    The LDS macros count bytes, so the element type decides how many slots an expression may index. A macro expand.cl
+    instantiates at more than one width has no one slot size, and maps to None.
+    """
+    concrete = {
+        f"{scalar}{length or ''}": width * (length or 1)
+        for scalar, width in SCALAR_BYTES.items()
+        for length in (0, *VECTOR_LENGTHS)
+    }
+
+    for m in re.finditer(rf"\btypedef\s+({IDENTIFIER})\s+({IDENTIFIER})\s*;", base):
+        if m.group(1) in concrete:
+            concrete[m.group(2)] = concrete[m.group(1)]
+
+    seen: dict[str, set[int]] = {}
+
+    for m in re.finditer(rf"^[ \t]*#[ \t]*define[ \t]+({IDENTIFIER})[ \t]+({IDENTIFIER})[ \t]*$", expand, re.MULTILINE):
+        name, target = m.group(1), m.group(2)
+
+        if name.startswith("as_"):
+            continue
+
+        if target not in concrete:
+            msg = f"expand.cl: {name} expands to {target}, which base.cl does not typedef to a type of known width"
+            raise SourceError(msg)
+
+        seen.setdefault(name, set()).add(concrete[target])
+
+    if not seen:
+        msg = "expand.cl defines no generic type macros"
+        raise SourceError(msg)
+
+    widths: dict[str, int | None] = {PLAIN_ELEMENT: concrete[PLAIN_ELEMENT]}
+
+    for name, found in sorted(seen.items()):
+        widths[name] = found.pop() if len(found) == 1 else None
+
+    return widths
+
+
+def slot_bytes(widths: Mapping[str, int | None], name: str, where: str) -> int:
+    """Return the byte width of one slot of `name`, or refuse to guess at a type of no fixed width."""
+    width = widths.get(name)
+
+    if width is None:
+        msg = f"{where}: {name} has no one width across expand.cl's instantiations, so it cannot size an LDS slot"
+        raise SourceError(msg)
+
+    return width
+
+
 @dataclass(frozen=True)
 class Sources:
     """The comment-stripped text of every file the checker reads."""
 
     shufl: str
     fftbase: str
+    base: str
+    expand: str
     fftconfig_cpp: str
     fftconfig_h: str
 
@@ -144,6 +196,8 @@ class Sources:
         return cls(
             shufl=load("src/cl/shufl.cl"),
             fftbase=load("src/cl/fftbase.cl"),
+            base=load("src/cl/base.cl"),
+            expand=load("src/cl/expand.cl"),
             fftconfig_cpp=load("src/FFTConfig.cpp"),
             fftconfig_h=load("src/FFTConfig.h"),
         )
@@ -768,7 +822,7 @@ _POINTER_BODIES: Final = {
 }
 
 
-def check_lds_pointers(shufl: str) -> None:
+def check_lds_pointers(shufl: str, widths: Mapping[str, int | None]) -> None:
     """Require shufl.cl's typed LDSptr and LDSsharing_ptr to compute the block starts Allocation models."""
     found: set[tuple[str, str]] = set()
 
@@ -776,7 +830,7 @@ def check_lds_pointers(shufl: str) -> None:
         pointer_type, function = m.groups()
         end = skip_balanced(shufl, m.end() - 1) - 1
 
-        if pointer_type not in ELEMENT_BYTES or _condensed(shufl[m.end() : end]) != _POINTER_BODIES[function].format(
+        if pointer_type not in widths or _condensed(shufl[m.end() : end]) != _POINTER_BODIES[function].format(
             t=pointer_type,
         ):
             where = f"shufl.cl:{line_of(shufl, m.start())}"
@@ -895,19 +949,13 @@ class Arm:
     value_type: str
     element_type: str
     pointer_type: str
+    element_bytes: int
+    pointer_bytes: int
     guards: tuple[ArmGuard, ...]
     line: int
     blocks: tuple[SpecialBlock, ...]
     plain: tuple[Loop, ...]
     transaction: tuple[str, ...]
-
-    @property
-    def element_bytes(self) -> int:
-        return ELEMENT_BYTES[self.element_type]
-
-    @property
-    def pointer_bytes(self) -> int:
-        return ELEMENT_BYTES[self.pointer_type]
 
     def serves(self, arm_bytes: int) -> bool:
         """Whether this arm runs when SBMUL(numWG) * SHUFL_BYTES is `arm_bytes`."""
@@ -976,7 +1024,7 @@ def _family(component: str) -> str:
     return "all of u[i]" if not component else "as_int4(u[i])" if component.startswith("int4.") else "u[i].x/.y"
 
 
-def parse_shufl(text: str) -> list[Arm]:
+def parse_shufl(text: str, widths: Mapping[str, int | None]) -> list[Arm]:
     """Parse every SHUFL_BYTES arm of every shufl and shufl_and_fft2 overload, in source order."""
     arms: list[Arm] = []
     defined: set[tuple[str, str]] = set()
@@ -1012,7 +1060,7 @@ def parse_shufl(text: str) -> list[Arm]:
             raise SourceError(msg)
 
         defined.add((function, value_type))
-        arms.extend(_parse_function(text, function, value_type, brace + 1, body_end))
+        arms.extend(_parse_function(text, function, value_type, brace + 1, body_end, widths))
 
     if not arms:
         msg = "found no SHUFL_BYTES arms in shufl.cl"
@@ -1025,7 +1073,14 @@ def parse_shufl(text: str) -> list[Arm]:
     return arms
 
 
-def _parse_function(text: str, function: str, value_type: str, start: int, end: int) -> list[Arm]:
+def _parse_function(
+    text: str,
+    function: str,
+    value_type: str,
+    start: int,
+    end: int,
+    widths: Mapping[str, int | None],
+) -> list[Arm]:
     arms: list[Arm] = []
     guards: list[ArmGuard] = []
     has_mask, position = False, start
@@ -1049,7 +1104,7 @@ def _parse_function(text: str, function: str, value_type: str, start: int, end: 
 
         guards.append(ArmGuard(arm.group(1), int(arm.group(2))))
         position = skip_balanced(text, arm.end() - 1)
-        arms.append(_parse_arm(text, function, value_type, arm, position, tuple(guards)))
+        arms.append(_parse_arm(text, function, value_type, arm, position, tuple(guards), widths))
 
         if not any(arms[-1].serves(value) for value in ARM_BYTES_VALUES):
             guard = f"SBMUL(numWG) * SHUFL_BYTES {guards[-1].op} {guards[-1].bytes}"
@@ -1081,6 +1136,8 @@ class _ArmContext:
     value_type: str
     element_type: str
     frames: tuple[tuple[Condition, ...], ...]
+    widths: Mapping[str, int | None]
+    element_bytes: int
     stashes: set[str] = field(default_factory=set[str])
 
 
@@ -1091,20 +1148,32 @@ def _parse_arm(
     arm: re.Match[str],
     end: int,
     guards: tuple[ArmGuard, ...],
+    widths: Mapping[str, int | None],
 ) -> Arm:
     line = line_of(text, arm.start())
     base = _LDS_BASE.match(text, skip_space(text, arm.end(), end))
 
     pointer_type = value_type if base is None or base.group(2) is None else base.group(2)
 
-    if base is None or base.group(1) not in ELEMENT_BYTES or pointer_type not in ELEMENT_BYTES:
+    if base is None or base.group(1) not in widths or pointer_type not in widths:
         msg = (
             f"shufl.cl:{line}: expected 'local T* lds = [(local T*)]LDSsharing_ptr([(local P *)]lds2, numWG);' with T"
-            f" and P among {sorted(ELEMENT_BYTES)}"
+            f" and P among {sorted(widths)}"
         )
         raise SourceError(msg)
 
-    context = _ArmContext(text, value_type, base.group(1), tuple(preprocessor_frames(text, arm.start())))
+    where = f"shufl.cl:{line}"
+    element_bytes = slot_bytes(widths, base.group(1), where)
+    pointer_bytes = slot_bytes(widths, pointer_type, where)
+
+    context = _ArmContext(
+        text,
+        value_type,
+        base.group(1),
+        tuple(preprocessor_frames(text, arm.start())),
+        widths,
+        element_bytes,
+    )
     body_end = end - 1
 
     if ending := _RETURN_AT_END.search(text, base.end(), end):
@@ -1137,6 +1206,8 @@ def _parse_arm(
         value_type,
         base.group(1),
         pointer_type,
+        element_bytes,
+        pointer_bytes,
         guards,
         line,
         tuple(blocks),
@@ -1378,7 +1449,7 @@ def _parse_loop(context: _ArmContext, start: int, end: int, guard: WgGuard | Non
         joined = m.group(1)
 
         # Two slots make one value, so the type the halves are joined into must be twice as wide as a slot.
-        if ELEMENT_BYTES.get(joined, 0) != 2 * ELEMENT_BYTES[context.element_type]:
+        if context.widths.get(joined) != 2 * context.element_bytes:
             msg = (
                 f"{where}: {joined} is not a type twice the width of the {context.element_type} slots it is joined from"
             )
@@ -1775,8 +1846,9 @@ def run_checks(sources: Sources) -> Report:
     shapes = shape_space(sources.fftconfig_cpp, sources.fftconfig_h)
     sites = call_sites(sources.fftbase, shapes)
     macros = LdsMacros.parse(sources.fftbase)
-    check_lds_pointers(sources.shufl)
-    arms = parse_shufl(sources.shufl)
+    widths = element_widths(sources.base, sources.expand)
+    check_lds_pointers(sources.shufl, widths)
+    arms = parse_shufl(sources.shufl, widths)
 
     called = {site.function for calls in sites.values() for site in calls}
     defined = {(arm.function, arm.value_type) for arm in arms}

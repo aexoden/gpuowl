@@ -122,6 +122,18 @@ jobs:
           test "$rc" -eq 0
         done
 
+  Source-Checkers:
+    name: Source checkers (tools/)
+    # The checkers themselves run as a prerequisite of every build below; this job also runs their own tests, which
+    # are slower than the checkers and need neither a compiler nor a device.
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v7
+    - name: Script
+      run: |
+        make check-source
+        make check-tools
+
   Linux-OpenCL:
     name: Linux OpenCL
 
