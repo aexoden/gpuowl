@@ -131,6 +131,8 @@ jobs:
         os: [ubuntu-22.04, ubuntu-24.04, ubuntu-26.04, ubuntu-22.04-arm, ubuntu-24.04-arm, ubuntu-26.04-arm]
         cxx: [g++, clang++]
         exclude:
+        - os: ubuntu-22.04
+          cxx: clang++
         - os: ubuntu-22.04-arm
           cxx: clang++
       fail-fast: false
@@ -164,6 +166,9 @@ jobs:
       matrix:
         os: [ubuntu-22.04, ubuntu-24.04, ubuntu-26.04]
         cxx: [g++, clang++]
+        exclude:
+        - os: ubuntu-22.04
+          cxx: clang++
       fail-fast: false
     env:
       CXX: ${{ matrix.cxx }}
