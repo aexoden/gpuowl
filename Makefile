@@ -90,11 +90,40 @@ amd: $(BIN)/prpll-amd
 #$(BIN)/test: $(BIN)/test.o
 #	$(CXX) $(CXXFLAGS) -o $@ $< $(LIBPATH)
 
-$(BIN)/prpll: ${OBJS}
+PYTHON ?= python3
+
+ifeq ($(shell command -v $(PYTHON) >/dev/null 2>&1 && echo yes), yes)
+ CHECKERS = $(BIN)/check-option-inventory.stamp $(BIN)/check-shufl-index.stamp
+else
+ CHECKERS =
+ ifeq ($(filter clean,$(MAKECMDGOALS)),)
+  $(info Note: $(PYTHON) not found; skipping the source checkers in tools/)
+ endif
+endif
+
+INVENTORY_SRCS = tools/check_option_inventory.py src/OptionSpace.cpp $(wildcard src/cl/*.cl) $(wildcard src/cuda/*.cuh) $(filter-out src/bundle.cpp,$(wildcard src/*.cpp)) $(wildcard src/*.h) $(wildcard src/cuda/*.cpp) $(wildcard src/cuda/*.h)
+SHUFL_SRCS = tools/check_shufl_index.py src/cl/shufl.cl src/cl/fftbase.cl src/cl/base.cl src/cl/expand.cl src/FFTConfig.cpp src/FFTConfig.h
+
+$(BIN)/check-option-inventory.stamp: $(INVENTORY_SRCS)
+	$(PYTHON) tools/check_option_inventory.py
+	@touch $@
+
+$(BIN)/check-shufl-index.stamp: $(SHUFL_SRCS)
+	$(PYTHON) tools/check_shufl_index.py
+	@touch $@
+
+.PHONY: check-source
+check-source: $(CHECKERS)
+
+.PHONY: check-tools
+check-tools:
+	$(PYTHON) -m unittest discover -s tools -p 'test_*.py'
+
+$(BIN)/prpll: ${OBJS} | $(CHECKERS)
 	$(CXX) $(LDFLAGS) $(CXXFLAGS) -o $@ ${OBJS} $(LIBPATH) $(OPENCL_LIBS)
 
 # Instead of linking with libOpenCL, link with libamdocl64
-$(BIN)/prpll-amd: ${OBJS}
+$(BIN)/prpll-amd: ${OBJS} | $(CHECKERS)
 	$(CXX) $(LDFLAGS) $(CXXFLAGS) -o $@ ${OBJS} $(LIBPATH) -lamdocl64 -L/opt/rocm/lib
 
 # GPU-free unit tests (tests/).
@@ -102,10 +131,10 @@ TESTSRCS = test_main.cpp test_Gpu.cpp test_OptionSpace.cpp test_UseResolve.cpp t
 TESTOBJS = $(TESTSRCS:%.cpp=$(BIN)/tests/%.o)
 
 .PHONY: check
-check: $(BIN)/prpll-test
+check: $(BIN)/prpll-test $(CHECKERS)
 	$(BIN)/prpll-test
 
-$(BIN)/prpll-test: $(filter-out $(BIN)/main.o,$(OBJS)) $(TESTOBJS)
+$(BIN)/prpll-test: $(filter-out $(BIN)/main.o,$(OBJS)) $(TESTOBJS) | $(CHECKERS)
 	$(CXX) $(LDFLAGS) $(CXXFLAGS) -o $@ $^ $(LIBPATH) $(OPENCL_LIBS)
 
 $(BIN)/tests/%.o : tests/%.cpp $(DEPDIR)/%.d
