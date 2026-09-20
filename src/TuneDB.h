@@ -9,6 +9,7 @@
 #include "common.h"
 #include "Eligibility.h"
 #include "OptionSpace.h"
+#include "Stats.h"
 #include "UseResolve.h"
 
 #include <charconv>
@@ -40,11 +41,6 @@ template<typename T> [[nodiscard]] std::optional<T> parseInt(std::string_view te
 [[nodiscard]] bool isWriteableConfig(const UseConfig& config);
 
 [[nodiscard]] std::optional<FFTConfig> parseFft(std::string_view spec);
-
-enum class Status : u8 { Ok, Err, NoCompile, Unsupported, Lost };
-
-[[nodiscard]] const char* toString(Status status);
-[[nodiscard]] std::optional<Status> parseStatus(std::string_view text);
 
 enum class Evidence : u8 { Unvalidated, Confirmed, Rejected, Unavailable, NotApplicable };
 
@@ -91,17 +87,6 @@ struct SessRow {
 
   // The session had a drift alarm.
   bool alarmed = false;
-};
-
-// One timing with its error bar, in microseconds per iteration.
-struct Measurement {
-  double mean = 0;
-  double stddev = 0;
-  u32 blocks = 0;
-  u32 calls = 0;
-  double drift = 1;
-  Status status = Status::Ok;
-  u64 ts = 0;
 };
 
 // One timing of one configuration at one exponent.
