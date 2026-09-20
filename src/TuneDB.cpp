@@ -179,26 +179,6 @@ std::optional<FFTConfig> parseFft(std::string_view spec) {
   return FFTConfig{FFTShape{type, *width, *middle, *height}, variant, carry};
 }
 
-const char* toString(Status status) {
-  switch (status) {
-  case Status::Ok: return "ok";
-  case Status::Err: return "err";
-  case Status::NoCompile: return "nocompile";
-  case Status::Unsupported: return "unsupported";
-  case Status::Lost: return "lost";
-  }
-
-  return "err";
-}
-
-std::optional<Status> parseStatus(std::string_view text) {
-  for (Status s : {Status::Ok, Status::Err, Status::NoCompile, Status::Unsupported, Status::Lost}) {
-    if (text == toString(s)) { return s; }
-  }
-
-  return {};
-}
-
 const char* toString(Evidence evidence) {
   switch (evidence) {
   case Evidence::Unvalidated: return "unvalidated";

@@ -25,6 +25,7 @@ add_executable(prpll
   Eligibility.cpp
   TuneDB.cpp
   Selection.cpp
+  Stats.cpp
   fs.cpp
   version.inc
   )

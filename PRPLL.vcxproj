@@ -48,6 +48,7 @@
     <ClCompile Include=".\src\sha3.cpp" />
     <ClCompile Include=".\src\Signal.cpp" />
     <ClCompile Include=".\src\state.cpp" />
+    <ClCompile Include=".\src\Stats.cpp" />
     <ClCompile Include=".\src\Task.cpp" />
     <ClCompile Include=".\src\TimeInfo.cpp" />
     <ClCompile Include=".\src\timeutil.cpp" />
