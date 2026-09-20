@@ -26,6 +26,7 @@ add_executable(prpll
   TuneDB.cpp
   Selection.cpp
   Stats.cpp
+  Measure.cpp
   fs.cpp
   version.inc
   )

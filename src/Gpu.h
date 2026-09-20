@@ -46,6 +46,18 @@ struct LLResult {
   u64 res64;
 };
 
+// The result from one timing call.
+struct IterSamples {
+  vector<double> usPerIt;
+
+  // The Gerbicz check over the timed blocks, and the residue after them.
+  bool checkOk = true;
+  u64 res64 = 0;
+
+  // Iterations behind res64, warm-up included.
+  u64 iters = 0;
+};
+
 struct ZAvg {
   double sum{};
   double n{};
@@ -320,6 +332,13 @@ public:
   array<u64, 4> isCERT(const Task& task);
 
   double timePRP(int quick = 7);
+
+  // Times nBlocks Gerbicz blocks after warmupBlocks untimed ones, and returns one sample per timed
+  // block.  A block is one modMul followed by blockSize squarings.
+  //
+  // The samples are microseconds per iteration, so each already carries 1/blockSize of a modMul:
+  // costs are comparable only across measurements taken at the same blockSize.
+  IterSamples timeIters(u32 nBlocks, u32 blockSize, u32 warmupBlocks = 1);
 
   tuple<bool, u64, RoeInfo, RoeInfo> measureROE(bool quick);
   tuple<bool, RoeInfo> measureCarry();

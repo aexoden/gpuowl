@@ -144,6 +144,8 @@ its reach.
 -info <fft>        : print detailed information about the given FFT; e.g. -h 1K:13:256
 -options [<fft>]   : print the -use options this build knows, resolved for this GPU and <fft> (default 512:15:512),
                      with the tuner's groups and combo clusters, then check the option table (exit 1 if it fails)
+-measure <fft>     : time <fft> in production-sized blocks and report its per-block costs, its residue and its
+                     rounding error, at the exponent given by -prp or, without one, the top of the FFT's range
 -dir <folder>      : specify local work directory (containing worktodo.txt, results.txt, config.txt, gpuowl.log)
 -pool <dir>        : specify a directory with the shared (pooled) worktodo.txt and results.txt
                      Multiple PRPLL instances, each in its own directory, can share a pool of assignments and report
@@ -324,6 +326,13 @@ void Args::parse(const string& line, bool fromConfigFile) {
     } else if (key == "-tune") {
       doTune = true;
       if (!s.empty()) { tune = s; }
+    } else if (key == "-measure") {
+      // Resolving the options and building a Gpu need the device, so main() does this once a
+      // context exists.
+      if (s.empty()) { throw "-measure needs an FFT spec"; }
+      doMeasure = true;
+      measureFft = s;
+      (void) FFTConfig{measureFft};
     } else if (key == "-options") {
       // Resolving the table needs the GPU, so main() does this once a context exists.
       dumpOptions = true;

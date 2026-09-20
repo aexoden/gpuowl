@@ -16,6 +16,7 @@
 #include "Gpu.h"
 #include "tune.h"
 #include "OptionSpace.h"
+#include "Measure.h"
 
 #include <atomic>
 #include <cstring>
@@ -140,6 +141,8 @@ int main(int argc, char **argv) {
 
     if (args.dumpOptions) {
       if (tune::dumpOptionSpace(tune::detectEnv(context, args), FFTConfig{args.optionsFft})) { exitCode = EXIT_FAILED; }
+    } else if (args.doMeasure) {
+      if (!tune::runMeasure(shared, args.measureFft, args.prpExp)) { exitCode = EXIT_FAILED; }
     } else if (args.doCtune || args.doTune || args.doZtune || args.carryTune) {
       Tune tune{shared};
 

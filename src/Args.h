@@ -55,6 +55,9 @@ public:
   bool dumpOptions{};
   string optionsFft = "512:15:512";
 
+  bool doMeasure{};
+  string measureFft;
+
   std::map<std::string, std::string> flags;
   std::set<std::string> cliKeys;
   std::vector<tune::UseLine> perFftConfig;

@@ -2524,6 +2524,65 @@ tuple<bool, u64, RoeInfo, RoeInfo> Gpu::measureROE(bool  /*quick*/) {
   return {ok, res, roes.first, roes.second};
 }
 
+IterSamples Gpu::timeIters(u32 nBlocks, u32 blockSize, u32 warmupBlocks) {
+  assert(nBlocks > 0 && blockSize > 1);
+  // The first modMul of a timed block has to close a block of real squarings; with no warm-up it
+  // would land on top of the one that establishes the Gerbicz base, and the check would fail.
+  assert(warmupBlocks > 0);
+
+  PRPState const state{.exponent=E, .k=0, .blockSize=blockSize, .res64=3, .check=makeWords(E, 1), .nErrors=0};
+  writeState(state.k, state.check, state.blockSize);
+  assert(dataResidue() == state.res64);
+
+  enum LEAD_TYPE leadIn = LEAD_NONE;
+  enum LEAD_TYPE const leadOut = useLongCarry ? LEAD_NONE : LEAD_WIDTH;
+
+  modMul(bufCheck, bufData, leadIn);
+  leadIn = LEAD_MIDDLE;
+
+  auto squares = [&] {
+    for (u32 i = 0; i + 1 < blockSize; ++i) {
+      square(bufData, bufData, leadIn, leadOut);
+      leadIn = leadOut;
+    }
+    square(bufData, bufData, leadIn, LEAD_NONE);
+    leadIn = LEAD_NONE;
+  };
+
+  for (u32 w = 0; w < warmupBlocks; ++w) {
+    if (w) {
+      modMul(bufCheck, bufData, leadIn);
+      leadIn = LEAD_MIDDLE;
+    }
+    squares();
+  }
+  queue.finish();
+  if (Signal::stopRequested()) { throw "stop requested"; }
+
+  IterSamples out;
+  out.usPerIt.reserve(nBlocks);
+
+  queue.setSquareTime(0);     // Busy wait on nVidia to get the most accurate timings while tuning
+  Timer t;
+  for (u32 b = 0; b < nBlocks; ++b) {
+    modMul(bufCheck, bufData, leadIn);
+    leadIn = LEAD_MIDDLE;
+    squares();
+
+    // Draining here is what turns one long timing into a sequence of comparable ones, at the cost
+    // of a launch-latency bubble per block.
+    queue.finish();
+    out.usPerIt.push_back(t.reset() * 1e6 / blockSize);
+
+    if (Signal::stopRequested()) { throw "stop requested"; }
+  }
+
+  out.res64 = dataResidue();
+  out.checkOk = doCheck(blockSize);
+  out.iters = u64(warmupBlocks + nBlocks) * blockSize;
+  return out;
+}
+
 double Gpu::timePRP(int quick) {        // Quick varies from 1 (slowest, longest) to 10 (quickest, shortest)
   u32 blockSize{}, iters{}, warmup{};
 
