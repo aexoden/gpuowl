@@ -1,0 +1,409 @@
+// Copyright (C) Jason Lynch
+
+// Tests that what a selection file publishes is what production resolves: every published option set comes back
+// unchanged through production's own resolver, a user setting that overrides one of them costs the entry the reach its
+// measurement bought and names the key that did it, a key that changes nothing here costs it nothing, an -fft spec
+// holds the walk to the shape it names, and a file with no entry for the exponent leaves the shape scan to answer.
+
+#include "Production.h"
+
+#include "Args.h"
+#include "Emit.h"
+#include "File.h"
+#include "test.h"
+
+#include <string>
+
+using namespace tune;
+
+namespace {
+
+std::string joined(const UseConfig& config) { return configText(config); }
+
+// A file built and finalized here rather than typed out, so that the ids are the ones the grammar computes, and then
+// read back through the reader production reads it with.
+SelectionFile published(std::vector<SelectionEntry> entries, const Defaults& defaults = {}) {
+  SelectionFile file{.provenance = "written 1753471500 by test from tunedb.txt env 1",
+                     .global = {defaults.global.begin(), defaults.global.end()},
+                     .family = defaults.family,
+                     .entries = std::move(entries),
+                     .unknown = {}};
+
+  CHECK(finalize(file));
+
+  auto const read = parseSelection(text(file), "fixture");
+  CHECK(read.has_value());
+  return read.value_or(SelectionFile{});
+}
+
+// Choice holds an FFTConfig, which has no empty value, so a failed choice is reported by spec rather than by a
+// default-constructed Choice.
+std::string specOf(const std::optional<Choice>& choice) { return choice ? choice->fft.spec() : std::string{"none"}; }
+
+// Runs a test in a directory of its own, and puts the old one back however the test ends.
+class WorkingDirectory {
+public:
+  explicit WorkingDirectory(const fs::path& to) : previous_{fs::current_path()} { fs::current_path(to); }
+  ~WorkingDirectory() { fs::current_path(previous_); }
+
+  WorkingDirectory(const WorkingDirectory&) = delete;
+  WorkingDirectory& operator=(const WorkingDirectory&) = delete;
+
+private:
+  fs::path previous_;
+};
+
+Args configured(const std::vector<std::string>& configLines, const std::vector<std::string>& commandLine = {}) {
+  Args args{true};
+  for (const std::string& line : configLines) { args.parse(line, true); }
+  for (const std::string& line : commandLine) { args.parse(line); }
+  return args;
+}
+
+const UseConfig CHEAP_OPTS{{"INPLACE", "1"}, {"TAIL_KERNELS", "3"}};
+const UseConfig DEAR_OPTS{{"INPLACE", "1"}, {"TAIL_KERNELS", "2"}};
+
+// Two entries of one kind over one workload: the cheaper one stops where the fitted table stops for its shape plus a
+// little, which a measured reach may do and which is what makes the clamp observable.
+u64 table() { return maxExp(FFTConfig{"512:15:512:212"}); }
+
+SelectionFile twoEntries() {
+  SelectionEntry cheap{.id = {},
+                       .cost = 1700,
+                       .fft = "512:15:512:212",
+                       .kind = TestKind::PRP,
+                       .emin = 100'000'000,
+                       .reach = table() + 30'000,
+                       .regime = {},
+                       .evidence = Evidence::Confirmed,
+                       .opts = CHEAP_OPTS};
+
+  SelectionEntry dear{.id = {},
+                      .cost = 1900,
+                      .fft = "1K:8:1K:202",
+                      .kind = TestKind::PRP,
+                      .emin = 100'000'000,
+                      .reach = 160'000'000,
+                      .regime = {},
+                      .evidence = Evidence::Unvalidated,
+                      .opts = DEAR_OPTS};
+
+  return published({cheap, dear}, Defaults{.global = UseConfig{{"INPLACE", "1"}}, .family = {}});
+}
+
+}  // namespace
+
+TEST(a_published_option_set_resolves_to_what_was_measured) {
+  SelectionFile const file = twoEntries();
+  Args const args = configured({});
+
+  for (const SelectionEntry& e : file.entries) {
+    Args pinned = args;
+    pinned.fftSpec = e.fft;
+
+    for (u64 const E : {e.emin, (e.emin + e.reach) / 2, e.reach}) {
+      auto const choice = chooseFrom(file, pinned, Env{}, E, e.kind);
+      CHECK(choice.has_value());
+      if (!choice) { continue; }
+
+      CHECK_EQ(choice->fft.spec(), e.fft);
+      CHECK_EQ(joined(choice->options), joined(e.opts));
+      CHECK(choice->shadowed.empty());
+      CHECK_EQ(choice->reach, e.reach);
+    }
+  }
+}
+
+TEST(the_cheapest_entry_that_covers_the_exponent_wins) {
+  SelectionFile const file = twoEntries();
+  Args const args = configured({});
+
+  // Both cover it, and the cheaper one is not the first line of the file after a sort by cost.
+  CHECK_EQ(specOf(chooseFrom(file, args, Env{}, 120'000'000, TestKind::PRP)), std::string{"512:15:512:212"});
+
+  // Only the dearer one reaches here.
+  CHECK_EQ(specOf(chooseFrom(file, args, Env{}, 150'000'000, TestKind::PRP)), std::string{"1K:8:1K:202"});
+
+  // Nothing is published for LL, and an entry of the other kind is not a substitute for one.
+  CHECK(!chooseFrom(file, args, Env{}, 120'000'000, TestKind::LL));
+}
+
+TEST(a_shadowed_entry_clamps_and_names_the_keys) {
+  SelectionFile const file = twoEntries();
+  Args const args = configured({"-use TAIL_KERNELS=1"});
+  u64 const clamped = table();
+
+  // Below the fitted table's own limit the entry still runs, at the options the user asked for, saying what it lost.
+  auto const inside = chooseFrom(file, args, Env{}, 120'000'000, TestKind::PRP);
+  CHECK(specOf(inside) == std::string{"512:15:512:212"});
+  if (inside) {
+    CHECK_EQ(inside->options.at("TAIL_KERNELS"), std::string{"1"});
+    CHECK_EQ(inside->shadowed.size(), size_t{1});
+    CHECK_EQ(inside->shadowed.at(0), std::string{"TAIL_KERNELS"});
+    CHECK_EQ(inside->reach, clamped);
+  }
+
+  // Between the clamped reach and the measured one, the entry is no longer eligible and the walk moves on, which is
+  // the whole point of clamping before the interval is re-tested rather than after.
+  u64 const between = clamped + 10'000;
+  CHECK(between < file.entries.at(0).reach);
+  CHECK_EQ(specOf(chooseFrom(file, args, Env{}, between, TestKind::PRP)), std::string{"1K:8:1K:202"});
+
+  // Without the override it is eligible there, so it is the override that moved the answer and not the exponent.
+  CHECK_EQ(specOf(chooseFrom(file, configured({}), Env{}, between, TestKind::PRP)), std::string{"512:15:512:212"});
+}
+
+TEST(a_key_that_changes_nothing_here_does_not_shadow) {
+  SelectionFile const file = twoEntries();
+
+  // ENABLE_BARSYNC needs PTX 200, which this env has not got, so setting it cannot make the entry run differently from
+  // the way it was measured -- and taking its reach away for it would be a safety cost paid for nothing.
+  auto const inert = chooseFrom(file, configured({"-use ENABLE_BARSYNC=1"}), Env{}, 120'000'000, TestKind::PRP);
+  CHECK(inert.has_value());
+  if (inert) {
+    CHECK(inert->shadowed.empty());
+    CHECK_EQ(inert->reach, file.entries.at(0).reach);
+  }
+
+  // On a card where it does apply, it does.
+  Env nvidia;
+  nvidia.isNvidia = true;
+  nvidia.computeCapability = 806;
+  auto const live = chooseFrom(file, configured({"-use ENABLE_BARSYNC=1"}), nvidia, 120'000'000, TestKind::PRP);
+  CHECK(live.has_value());
+  if (live) { CHECK_EQ(live->shadowed.size(), size_t{1}); }
+}
+
+TEST(a_command_line_use_shadows_as_a_config_file_one_does) {
+  SelectionFile const file = twoEntries();
+
+  auto const choice = chooseFrom(file, configured({}, {"-use TAIL_KERNELS=1"}), Env{}, 120'000'000, TestKind::PRP);
+  CHECK(choice.has_value());
+  if (choice) {
+    CHECK_EQ(choice->shadowed.size(), size_t{1});
+    CHECK_EQ(choice->reach, table());
+  }
+}
+
+TEST(an_fft_spec_holds_the_walk_to_the_shape_it_names) {
+  SelectionFile const file = twoEntries();
+
+  Args args = configured({});
+  args.fftSpec = "1K:8:1K:202";
+
+  // The cheaper entry covers this exponent, but it is not the shape that was asked for.
+  auto const choice = chooseFrom(file, args, Env{}, 120'000'000, TestKind::PRP);
+  CHECK_EQ(specOf(choice), std::string{"1K:8:1K:202"});
+  if (choice) { CHECK_EQ(joined(choice->options), joined(DEAR_OPTS)); }
+
+  // A shape nothing is published for is the shape scan's to answer, not this walk's.
+  args.fftSpec = "256:2:256:101";
+  CHECK(!chooseFrom(file, args, Env{}, 20'000'000, TestKind::PRP));
+}
+
+TEST(an_exponent_no_entry_covers_is_left_to_the_shape_scan) {
+  SelectionFile const file = twoEntries();
+  Args const args = configured({});
+
+  CHECK(!chooseFrom(file, args, Env{}, 90'000'000, TestKind::PRP));
+  CHECK(!chooseFrom(file, args, Env{}, 400'000'000, TestKind::PRP));
+
+  // -fftOverdrive is the user's standing override of every such limit, and means the same thing here as it does to the
+  // shape scan.
+  Args overdriven = configured({});
+  overdriven.fftOverdrive = 1.5;
+  CHECK(chooseFrom(file, overdriven, Env{}, 165'000'000, TestKind::PRP));
+
+  // It does not carry an entry across a regime boundary, though: past 167772151 the 1K:8:1K entry's own kernels are
+  // not the ones it was measured with, whatever the user is willing to risk on its accuracy.
+  CHECK(!chooseFrom(file, overdriven, Env{}, 200'000'000, TestKind::PRP));
+}
+
+TEST(a_selection_file_is_optional_and_its_own_lines_survive_a_fallback) {
+  // In a directory of its own, so that neither this checkout's tune.txt nor a selection file beside it answers for a
+  // question about what happens when there is none.
+  fs::path const dir = fs::temp_directory_path() / "prpll-test-production";
+  fs::remove_all(dir);
+  fs::create_directories(dir);
+  WorkingDirectory const here{dir};
+
+  Args const args = configured({});
+
+  // No file at all: the shape scan answers, exactly as it does for a build that has never been tuned.
+  Choice const untuned = choose(args, Env{}, 40'000'000, TestKind::PRP);
+  CHECK(!untuned.entry.has_value());
+  CHECK(untuned.options.empty());
+  CHECK_EQ(untuned.reach, maxExp(untuned.fft));
+  CHECK(isEligible(untuned.fft, 40'000'000));
+
+  writeSelection("selection.txt", twoEntries());
+
+  // Covered by an entry: that entry's own set, complete.
+  Choice const covered = choose(args, Env{}, 120'000'000, TestKind::PRP);
+  CHECK(covered.entry.has_value());
+  CHECK_EQ(joined(covered.options), joined(CHEAP_OPTS));
+
+  // Not covered by any entry: the shape scan answers again, and the file's global line still applies to what it
+  // answers, since that line is what a configuration with no entry of its own runs at.
+  Choice const uncovered = choose(args, Env{}, 40'000'000, TestKind::PRP);
+  CHECK(!uncovered.entry.has_value());
+  CHECK_EQ(joined(uncovered.options), std::string{"INPLACE=1"});
+
+  fs::remove_all(dir);
+}
+
+TEST(every_entry_emit_publishes_resolves_to_the_row_it_transcribes) {
+  // The round trip end to end: rows in, a published file out, and every option set in it read back through the
+  // resolver production runs -- so nothing can be published that production would not reproduce.
+  const char* const DB =
+    "# prpll tunedb v1\n"
+    "env   1 gpu=\"NVIDIA RTX A4000\" name=\"NVIDIA RTX A4000\" drv=550.163.01 vendor=nvidia be=ocl cc=806 noasm=0"
+    " pdl=0 machine=01:00.0 build=9a3f21c0d1e2f304\n"
+    "cfg   1 -\n"
+    "cfg   17 INPLACE=1,PAD=256,TAIL_KERNELS=3\n"
+    "cfg   18 INPLACE=1,PAD=128,TAIL_KERNELS=3\n"
+    "sess  4 env=1 start=1753471200 gen=0 anchor=512:15:512:212@100000000\n"
+    "run   4 512:15:512:212 prp 100000000 short32 17 1774.230 2.100 24 6 1.0000 ok 1753471274\n"
+    "run   4 512:15:512:212 prp 100000000 short32 18 1750.000 3.000 16 4 1.0000 ok 1753471284\n"
+    "run   4 1K:8:1K:202 prp 200000000 short32 1 3100.000 4.000 16 4 1.0000 ok 1753471354\n"
+    "run   4 512:15:512:212 ll 100000000 short32 17 1800.000 3.000 16 4 1.0000 ok 1753471324\n";
+
+  TuneDB db;
+  CHECK(db.parse(DB, "fixture"));
+
+  auto const emitted = emit(db, Defaults{}, Provenance{.ts = 1'753'471'500, .db = "tunedb.txt", .env = 1});
+  CHECK(emitted.has_value());
+  SelectionFile const file = emitted.value_or(SelectionFile{});
+  CHECK(!file.entries.empty());
+
+  Args const args = configured({});
+  for (const SelectionEntry& e : file.entries) {
+    auto const choice = chooseFrom(file, args, Env{}, e.emin, e.kind);
+    CHECK(choice.has_value());
+    if (!choice) { continue; }
+
+    CHECK_EQ(joined(choice->options), joined(e.opts));
+    CHECK(choice->shadowed.empty());
+  }
+}
+
+TEST(shadowed_keys_names_the_key_that_differs) {
+  SelectionFile const file = twoEntries();
+  FFTConfig const fft{"512:15:512:212"};
+
+  auto const keys = shadowedKeys(configured({"-use TAIL_KERNELS=1"}), Env{}, file, file.entries.at(0), fft);
+  CHECK_EQ(keys.size(), size_t{1});
+  CHECK_EQ(keys.at(0), std::string{"TAIL_KERNELS"});
+
+  // A key nothing published names at all is a setting the measurement did not have, which is the same kind of
+  // difference as one it had another value for.
+  CHECK_EQ(shadowedKeys(configured({"-use WMUL=1"}), Env{}, file, file.entries.at(0), fft).size(), size_t{1});
+
+  CHECK(shadowedKeys(configured({}), Env{}, file, file.entries.at(0), fft).empty());
+}
+
+TEST(a_size_only_fft_argument_still_finds_its_entry) {
+  // -fft takes a bare size, a shape, or a full spec, and the shape scan resolves each of them to one FFT. The walk has
+  // to resolve them the same way or a spec the scan would honour silently drops the options published for it.
+  FFTConfig const named{"8M"};
+  Interval const span = intervals(named, minExp(named), maxExp(named)).back();
+
+  SelectionEntry entry{.id = {},
+                       .cost = 1700,
+                       .fft = named.spec(),
+                       .kind = TestKind::PRP,
+                       .emin = span.lo,
+                       .reach = span.hi,
+                       .regime = {},
+                       .evidence = Evidence::Confirmed,
+                       .opts = CHEAP_OPTS};
+
+  SelectionFile const file = published({entry});
+  u64 const E = (span.lo + span.hi) / 2;
+
+  for (const std::string& spec : {std::string{"8M"}, named.spec()}) {
+    Args args = configured({});
+    args.fftSpec = spec;
+
+    auto const choice = chooseFrom(file, args, Env{}, E, TestKind::PRP);
+    CHECK_EQ(specOf(choice), named.spec());
+    if (choice) { CHECK_EQ(joined(choice->options), joined(CHEAP_OPTS)); }
+  }
+}
+
+TEST(carry_long_costs_an_entry_the_reach_it_measured) {
+  SelectionFile const file = twoEntries();
+
+  // The entry was measured in a short-carry regime; -carry long runs the expanded carry kernels instead, whatever the
+  // bits per word say, so what runs is not what was measured.
+  Args args = configured({});
+  args.carry = CARRY_64;
+
+  auto const choice = chooseFrom(file, args, Env{}, 120'000'000, TestKind::PRP);
+  CHECK(choice.has_value());
+  if (choice) {
+    CHECK(choice->entry->regime.longCarry == false);
+    CHECK_EQ(choice->shadowed.size(), size_t{1});
+    CHECK_EQ(choice->shadowed.at(0), std::string{"-carry"});
+    CHECK_EQ(choice->reach, table());
+  }
+
+  // -carry short does not reach the kernels at all -- Gpu takes the 32-bit carry from the spec, not from this -- so it
+  // is not a difference and must not cost the entry anything.
+  Args shortCarry = configured({});
+  shortCarry.carry = CARRY_32;
+  auto const unaffected = chooseFrom(file, shortCarry, Env{}, 120'000'000, TestKind::PRP);
+  CHECK(unaffected.has_value());
+  if (unaffected) { CHECK(unaffected->shadowed.empty()); }
+}
+
+TEST(the_fallback_does_not_re_select_a_configuration_published_as_reaching_less) {
+  fs::path const dir = fs::temp_directory_path() / "prpll-test-production-reach";
+  fs::remove_all(dir);
+  fs::create_directories(dir);
+  WorkingDirectory const here{dir};
+
+  // One entry, published as stopping short of what the fitted table allows its shape -- a configuration this machine
+  // measured and found wanting, which is exactly what the fallback must not hand back.
+  FFTConfig const small{"256:2:256:202"};
+  Interval const span = intervals(small, minExp(small), maxExp(small)).back();
+  u64 const restricted = span.lo + (span.hi - span.lo) / 2;
+
+  SelectionEntry entry{.id = {},
+                       .cost = 100,
+                       .fft = small.spec(),
+                       .kind = TestKind::PRP,
+                       .emin = span.lo,
+                       .reach = restricted,
+                       .regime = {},
+                       .evidence = Evidence::Rejected,
+                       .opts = {}};
+
+  writeSelection("selection.txt", published({entry}));
+
+  // The shape scan reads tune.txt first, so this is what makes it offer the restricted shape.
+  { File::openWrite("tune.txt").printf("100.0 %s # %llu\n", small.spec().c_str(), (unsigned long long)maxExp(small)); }
+
+  u64 const past = restricted + 1000;
+  CHECK(past < maxExp(small));
+
+  Args const args = configured({});
+  CHECK(!chooseFrom(*readSelection("selection.txt"), args, Env{}, past, TestKind::PRP));
+
+  // Above the published reach the entry is gone, and the answer is something else entirely rather than the same
+  // configuration at the limit the fitted table would have allowed it.
+  Choice const above = choose(args, Env{}, past, TestKind::PRP);
+  CHECK(above.fft.spec() != small.spec());
+  CHECK(past <= above.reach);
+
+  // Below it, the entry answers as usual.
+  Choice const below = choose(args, Env{}, restricted - 1000, TestKind::PRP);
+  CHECK_EQ(below.fft.spec(), small.spec());
+
+  // An -fft naming that very shape is an explicit choice, and keeps upstream's warn-and-run.
+  Args pinned = configured({});
+  pinned.fftSpec = small.spec();
+  CHECK_EQ(choose(pinned, Env{}, past, TestKind::PRP).fft.spec(), small.spec());
+
+  fs::remove_all(dir);
+}

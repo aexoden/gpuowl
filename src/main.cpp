@@ -19,6 +19,7 @@
 #include "Measure.h"
 #include "Restart.h"
 #include "GpuFault.h"
+#include "Production.h"
 
 #include <atomic>
 #include <cerrno>
@@ -236,6 +237,7 @@ int main(int argc, char **argv) {
         tune.carryTune();
       }
     } else {
+      tune::reportShadowing(args, tune::detectEnv(context, args));
       {
         vector<jthread> threads;
         for (int i = 1; std::cmp_less(i, args.workers); ++i) {

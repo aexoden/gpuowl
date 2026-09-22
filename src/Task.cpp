@@ -11,6 +11,7 @@
 #include "Primes.h"
 #include "Proof.h"
 #include "log.h"
+#include "Production.h"
 #include "timeutil.h"
 
 #include <cmath>
@@ -242,9 +243,11 @@ void Task::execute(GpuCommon shared, u32 instance) {
 
   LogContext const pushContext(std::to_string(exponent));
 
-  FFTConfig const fft = FFTConfig::bestFit(*shared.args, exponent, shared.args->fftSpec);
+  tune::TestKind const testKind = kind == LL ? tune::TestKind::LL : tune::TestKind::PRP;
+  tune::Choice const choice = tune::choose(*shared.args, tune::detectEnv(*shared.context, *shared.args), exponent, testKind);
+  FFTConfig const fft = choice.fft;
 
-  auto gpu = Gpu::make(exponent, shared, fft, {}, true, kind == LL ? tune::TestKind::LL : tune::TestKind::PRP);
+  auto gpu = Gpu::make(exponent, shared, fft, {choice.options.begin(), choice.options.end()}, true, testKind);
 
   if (kind == VERIFY) {
     Proof const proof{Proof::load(verifyPath)};
