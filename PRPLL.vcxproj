@@ -72,6 +72,7 @@
     <ClCompile Include=".\src\tune.cpp" />
     <ClCompile Include=".\src\TuneDB.cpp" />
     <ClCompile Include=".\src\TuneEntry.cpp" />
+    <ClCompile Include=".\src\Tuner.cpp" />
     <ClCompile Include=".\src\UseResolve.cpp" />
     <ClCompile Include=".\src\version.cpp" />
     <ClCompile Include=".\src\Worktodo.cpp" />

@@ -6,6 +6,7 @@
 #include "BuildId.h"
 #include "CycleFile.h"
 #include "File.h"
+#include "fs.h"
 #include "log.h"
 
 #include <algorithm>
@@ -404,7 +405,12 @@ bool TuneDB::lockForWriting(const fs::path& path) {
   (void)path;
   return true;
 #else
-  File claim = File::openAppend(path);
+  // A sibling rather than the database itself: `save` replaces the database through a rename, so a claim on its inode
+  // ends up guarding a file that is no longer the database, and the next writer opens the new inode and finds nothing
+  // held.  Nothing renames or removes the sibling, so every writer meets the same one.
+  fs::path const claimPath = path + ".lock";
+
+  File claim = File::openAppend(claimPath);
   int const fd = fileno(claim.get());
 
   // Close on exec, or the lock outlives the image that took it: a flock belongs to the open file description, exec
@@ -412,7 +418,7 @@ bool TuneDB::lockForWriting(const fs::path& path) {
   // this the next generation is refused by its own predecessor's descriptor, which no longer has an owner -- measured
   // on the Radeon, where the fault handler execs while this object is still alive.
   if (int const flags = fcntl(fd, F_GETFD); flags == -1 || fcntl(fd, F_SETFD, flags | FD_CLOEXEC) == -1) {
-    log("tune-db: could not claim '%s' safely across a restart (%s)\n", path.string().c_str(), strerror(errno));
+    log("tune-db: could not claim '%s' safely across a restart (%s)\n", claimPath.string().c_str(), strerror(errno));
     return false;
   }
 
