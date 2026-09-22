@@ -10,10 +10,12 @@
 #include "log.h"
 #include "Primes.h"
 #include "Restart.h"
+#include "timeutil.h"
 
 #include <cinttypes>
 #include <cmath>
 #include <ctime>
+#include <optional>
 #include <vector>
 
 namespace tune {
@@ -96,8 +98,13 @@ Call timeCall(GpuCommon shared, const FFTConfig& fft, TestKind kind, u64 exponen
               u32 nBlocks, u32 blockSize) {
   if (kind != TestKind::PRP) { throw "LL timing is not implemented"; }
 
+  Timer t;
   auto gpu = Gpu::make(exponent, shared, fft, asExtraConf(options), false, kind);
+  double const buildSec = t.reset();
+
   Call out = summarize(gpu->timeIters(nBlocks, blockSize));
+  out.timedSec = t.at();
+  out.buildSec = buildSec;
   out.ran = gpu->args.flags;
   return out;
 }
@@ -230,8 +237,18 @@ void Session::cannotDeclare(const FFTConfig& fft, const UseConfig& options) {
       fft.spec().c_str(), configText(options).c_str());
 }
 
+Call Session::warmUp(const FFTConfig& fft, TestKind kind, u64 exponent, const UseConfig& options, u32 nBlocks,
+                     u32 blockSize) {
+  return runCall(fft, kind, exponent, options, nBlocks, blockSize, false);
+}
+
 Call Session::run(const FFTConfig& fft, TestKind kind, u64 exponent, const UseConfig& options, u32 nBlocks,
                   u32 blockSize) {
+  return runCall(fft, kind, exponent, options, nBlocks, blockSize, true);
+}
+
+Call Session::runCall(const FFTConfig& fft, TestKind kind, u64 exponent, const UseConfig& options, u32 nBlocks,
+                      u32 blockSize, bool record) {
   Call out;
   if (stopped_) {
     out.measurement.status = Status::Lost;
@@ -255,8 +272,8 @@ Call Session::run(const FFTConfig& fft, TestKind kind, u64 exponent, const UseCo
     out.measurement.status = status;
   }
 
-  // Nothing is recorded for a stop.
-  if (stopped_) { return out; }
+  // Nothing is recorded for a stop, nor for a reading taken only to warm the device.
+  if (stopped_ || !record) { return out; }
 
   // Keyed on what the kernels were built with.
   u32 const ran = out.ran.empty() ? cfg : db_.internCfg(out.ran);
@@ -324,18 +341,141 @@ bool Session::underAttempt(const FFTConfig& fft, TestKind kind, u64 exponent, co
   return caught(work, fft, kind, exponent, options, during) == Status::Ok;
 }
 
-MeasureOutcome runMeasure(GpuCommon shared, const std::string& fftSpec, u64 exponent) {
+MeasureArgs parseMeasureArgs(std::string_view text) {
+  MeasureArgs out;
+
+  auto number = [](std::string_view v, const char* what) -> u64 {
+    if (v.empty() || v.find_first_not_of("0123456789") != std::string_view::npos) {
+      throw "-measure: " + std::string{what} + " takes a number";
+    }
+    return strtoull(std::string{v}.c_str(), nullptr, 10);
+  };
+
+  bool first = true;
+  for (size_t at = 0; at <= text.size();) {
+    size_t const comma = text.find(',', at);
+    std::string_view const token = text.substr(at, comma == std::string_view::npos ? comma : comma - at);
+    at = comma == std::string_view::npos ? text.size() + 1 : comma + 1;
+
+    size_t const eq = token.find('=');
+    if (eq == std::string_view::npos) {
+      // Only the leading token may be a bare FFT spec; a later one is a mistyped setting, not a second spec.
+      if (!first || token.empty()) { throw "-measure: '" + std::string{token} + "' is not a <key>=<value> setting"; }
+      out.fft = std::string{token};
+      first = false;
+      continue;
+    }
+    first = false;
+
+    std::string_view const key = token.substr(0, eq);
+    std::string_view const val = token.substr(eq + 1);
+
+    if (key == "fft") {
+      out.fft = std::string{val};
+    } else if (key == "anchor") {
+      out.anchorFft = std::string{val};
+    } else if (key == "exp") {
+      out.exponent = number(val, "exp=");
+    } else if (key == "n") {
+      out.calls = u32(number(val, "n="));
+    } else if (key == "blocks") {
+      out.blocks = u32(number(val, "blocks="));
+    } else if (key == "block") {
+      out.blockSize = u32(number(val, "block="));
+    } else if (key == "roe") {
+      out.roe = number(val, "roe=") != 0;
+    } else if (key == "drain") {
+      out.drain = number(val, "drain=") != 0;
+    } else {
+      throw "-measure: '" + std::string{key} +
+        "=' is not understood. Accepted: fft=<spec>, exp=<E>, n=<calls>, blocks=<per call>, block=<iterations>,"
+        " anchor=<spec>, roe=0|1, drain=0|1";
+    }
+  }
+
+  if (out.fft.empty()) { throw std::string{"-measure needs an FFT spec"}; }
+  // A verdict is about how far independent rows move, so it takes two whole rows; fewer calls than that can time a
+  // configuration but cannot say anything about the error bar, which is what this command is for.
+  if (out.calls < 2 * MIN_CALLS) {
+    throw "-measure: n= must be at least " + to_string(2 * MIN_CALLS) + ": a verdict needs two rows of " +
+      to_string(MIN_CALLS) + " calls";
+  }
+  if (out.blocks < 2) { throw std::string{"-measure: blocks= must be at least 2"}; }
+  if (out.blockSize == 1) { throw std::string{"-measure: block= must be at least 2 iterations"}; }
+
+  // Validated here so that a bad spec is a usage error rather than a failure once a device is open.
+  (void)FFTConfig{out.fft};
+  if (!out.anchorFft.empty()) { (void)FFTConfig{out.anchorFft}; }
+
+  return out;
+}
+
+namespace {
+
+void logBlocks(const char* what, const Call& c) {
+  string blocks;
+  for (double const us : c.usPerIt) {
+    char buf[32];
+    snprintf(buf, sizeof(buf), " %.3f", us);
+    blocks += buf;
+  }
+  log("measure: %s:%s us/it | mean %.3f sd %.3f (%.3f%%) dropped %u%s, %s %016" PRIx64 "\n", what, blocks.c_str(),
+      c.measurement.mean, c.measurement.stddev,
+      c.measurement.mean > 0 ? c.measurement.stddev / c.measurement.mean * 100 : 0, c.dropped,
+      c.declined ? " (declined)" : "", c.checkOk ? "OK" : "EE", c.res64);
+}
+
+void logSpread(const char* what, const Spread& s) {
+  auto pct = [&](double v) { return s.mean > 0 ? v / s.mean * 100 : 0; };
+  log("measure:   %s: observed %.3f us (%.3f%%) against predicted %.3f us (%.3f%%) over %u -- ratio %.2f, %.2f with\n"
+      "measure:     any trend removed; first to last %+.3f us (%+.3f%%)\n",
+      what, s.observed, pct(s.observed), s.predicted, pct(s.predicted), s.n, s.ratio(), s.detrended(), s.trend,
+      pct(s.trend));
+}
+
+void logNoise(const char* what, const NoiseReport& r) {
+  log("measure: %s, mean %.3f us/it:\n", what, r.row.mean > 0 ? r.row.mean : r.call.mean);
+  logSpread("between calls, against the blocks inside one", r.call);
+  if (r.row.n >= 2) {
+    char label[80];
+    snprintf(label, sizeof(label), "between rows of %u calls, against the bar such a row declares", r.callsPerRow);
+    logSpread(label, r.row);
+  }
+  log("measure:   verdict: %s\n", toString(r.verdict));
+}
+
+}  // namespace
+
+MeasureOutcome runMeasure(GpuCommon shared, const MeasureArgs& want) {
   static const Primes primes;
 
-  FFTConfig const fft{fftSpec};
+  FFTConfig const fft{want.fft};
+  u64 exponent = want.exponent ? want.exponent : shared.args->prpExp;
   if (!exponent) { exponent = primes.prevPrime(fft.maxExp()); }
   if (!primes.isPrime(exponent)) { log("measure: warning: %" PRIu64 " is not prime\n", exponent); }
 
-  u32 const blockSize = shared.args->blockSize;
-  u32 const nBlocks = BLOCKS_PER_CALL;
+  u32 const blockSize = want.blockSize ? want.blockSize : shared.args->blockSize;
+  u32 const nBlocks = want.blocks;
 
-  log("measure: %s at exponent %" PRIu64 " (%.2f bpw), %u blocks of %u\n", fft.spec().c_str(), exponent,
-      double(exponent) / fft.shape.size(), nBlocks, blockSize);
+  std::optional<FFTConfig> anchor;
+  u64 anchorExp = exponent;
+  if (!want.anchorFft.empty()) {
+    anchor.emplace(want.anchorFft);
+    if (anchor->spec() == fft.spec()) {
+      // An anchor that is the configuration under test divides out exactly what this command measures.
+      log("measure: the anchor must be a different configuration from the one being measured\n");
+      return MeasureOutcome::Failed;
+    }
+    if (exponent > anchor->maxExp()) {
+      anchorExp = primes.prevPrime(anchor->maxExp());
+      log("measure: the anchor %s cannot hold E=%" PRIu64 "; timing it at %" PRIu64 " instead\n",
+          anchor->spec().c_str(), exponent, anchorExp);
+    }
+  }
+
+  std::string const anchoredOn = anchor ? ", anchored on " + anchor->spec() : std::string{};
+  log("measure: %s at exponent %" PRIu64 " (%.2f bpw), %u calls of %u blocks of %u%s\n", fft.spec().c_str(), exponent,
+      double(exponent) / fft.shape.size(), want.calls, nBlocks, blockSize, anchoredOn.c_str());
 
   fs::path const dbPath = TuneDB::DEFAULT_NAME;
   TuneDB db;
@@ -352,42 +492,125 @@ MeasureOutcome runMeasure(GpuCommon shared, const std::string& fftSpec, u64 expo
   if (u32 const gen = restart::generation()) { log("measure: generation %u\n", gen); }
 
   UseConfig const options = resolveConfig(*shared.args, fft, TestKind::PRP);
+  UseConfig const anchorOptions = anchor ? resolveConfig(*shared.args, *anchor, TestKind::PRP) : UseConfig{};
 
   std::vector<std::string> varied;
   for (const auto& [key, value] : shared.args->flags) { varied.push_back(key); }
   session.varying(varied);
 
-  if (std::string const why = session.held(fft, TestKind::PRP, exponent, options); !why.empty()) {
+  auto skip = [&](const FFTConfig& what, const UseConfig& with, u64 at) {
+    std::string const why = session.held(what, TestKind::PRP, at, with);
+    if (why.empty()) { return false; }
     log("measure: skipping %s -use %s: %s.\n"
         "measure:   It will not be built again on this device.\n",
-        fft.spec().c_str(), configText(options).c_str(), why.c_str());
+        what.spec().c_str(), configText(with).c_str(), why.c_str());
+    return true;
+  };
+
+  if (skip(fft, options, exponent) || (anchor && skip(*anchor, anchorOptions, anchorExp))) {
     session.end();
     return MeasureOutcome::Failed;
   }
 
   bool ok = true;
-  for (u32 call = 0; call < MIN_CALLS && !session.stopped(); ++call) {
+  double warmUpOverhead = 0;
+
+  // Only the configuration under test: the anchor is a different shape, and averaging the two would describe neither.
+  std::vector<double> buildSecs;
+  std::vector<double> timedSecs;
+
+  for (u32 w = 0; w < SESSION_WARM_CALLS && !session.stopped(); ++w) {
+    Call const c = session.warmUp(fft, TestKind::PRP, exponent, options, nBlocks, blockSize);
+    if (session.stopped() || !c.measurement.ok()) {
+      ok = false;
+      break;
+    }
+    // A cold kernel cache, if this process has one, is paid here, which is what makes it visible on its own.
+    warmUpOverhead = c.buildSec + c.timedSec - double(nBlocks) * blockSize * c.measurement.mean * 1e-6;
+    logBlocks("warm-up (discarded)", c);
+  }
+
+  std::vector<CallSummary> raw;
+  std::vector<CallSummary> corrected;
+  double firstAnchor = 0;
+  double drift = 1;
+
+  for (u32 call = 0; call < want.calls && !session.stopped(); ++call) {
+    if (anchor) {
+      Call const a = session.run(*anchor, TestKind::PRP, anchorExp, anchorOptions, nBlocks, blockSize);
+      if (session.stopped() || !a.measurement.ok()) {
+        ok = false;
+        break;
+      }
+      if (!firstAnchor) { firstAnchor = a.measurement.mean; }
+      drift = a.measurement.mean / firstAnchor;
+      log("measure: anchor %u: %.3f us/it, drift %.4f\n", call, a.measurement.mean, drift);
+    }
+
     Call const c = session.run(fft, TestKind::PRP, exponent, options, nBlocks, blockSize);
     if (session.stopped() || !c.measurement.ok()) {
       ok = false;
-      continue;
+      break;
     }
 
-    string blocks;
-    for (double const us : c.usPerIt) {
-      char buf[32];
-      snprintf(buf, sizeof(buf), " %.3f", us);
-      blocks += buf;
-    }
-    log("measure: call %u:%s us/it\n", call, blocks.c_str());
-    log("measure: call %u: mean %.3f sd %.3f (%.3f%%) blocks %u dropped %u%s, %s %016" PRIx64 "\n", call,
-        c.measurement.mean, c.measurement.stddev, c.measurement.stddev / c.measurement.mean * 100, c.measurement.blocks,
-        c.dropped, c.declined ? " (declined)" : "", c.checkOk ? "OK" : "EE", c.res64);
+    char label[32];
+    snprintf(label, sizeof(label), "call %u", call);
+    logBlocks(label, c);
+    raw.push_back(c.summary());
+    corrected.push_back(c.summary(drift));
+    buildSecs.push_back(c.buildSec);
+    timedSecs.push_back(c.timedSec);
     ok = ok && c.checkOk;
   }
 
+  NoiseReport const rawReport = noiseOf(raw);
+  NoiseReport const finalReport = anchor ? noiseOf(corrected) : rawReport;
+
+  if (!raw.empty()) {
+    logNoise("as measured", rawReport);
+    if (anchor) { logNoise("with the anchor correction applied", finalReport); }
+  }
+
+  // A stop is not a verdict about anything.
+  if (session.stopped()) {
+    // Nothing to conclude.
+  } else if (finalReport.verdict == NoiseVerdict::TooFew) {
+    // Never the device's fault: `n` cannot be set low enough to reach this, so a run that lands here was cut short.
+    log("measure: only %zu of the %u calls asked for completed, which is too few to judge the error bar a row\n"
+        "measure:   declares -- that takes two rows of %u. Nothing here says the device is bad, only that it was\n"
+        "measure:   not measured.\n",
+        raw.size(), want.calls, MIN_CALLS);
+    ok = false;
+  } else if (!finalReport.trustworthy()) {
+    log("measure: the error bar a row declares does not describe how far its readings move, so a race here would\n"
+        "measure:   eliminate candidates on differences that are not real. Nothing measured on this device can be\n"
+        "measure:   trusted to rank configurations until that is dealt with.\n");
+    ok = false;
+  }
+
+  // What a call spends on something other than the samples it yields: an item is one call, so this is the overhead the
+  // queue pays per item.  Gpu::make loads kernels and allocates buffers lazily, so most of the setup falls inside the
+  // first block rather than in the constructor; what separates the two here is the iterations the samples account for.
+  if (!buildSecs.empty()) {
+    Stats const build = statsOf(buildSecs);
+    Stats const timed = statsOf(timedSecs);
+    double const total = build.mean + timed.mean;
+    double const sampled = double(nBlocks) * blockSize * rawReport.call.mean * 1e-6;
+    double const overhead = std::max(0.0, total - sampled);
+    log("measure: one call: %.2f s, of which %.2f s is the blocks it timed and %.2f s (%.1f%%) is everything else --\n"
+        "measure:   the Gpu, its buffers, its warm-up block and the kernel loads the first block triggers (%.2f s of\n"
+        "measure:   that is the constructor itself)\n",
+        total, sampled, overhead, total > 0 ? overhead / total * 100 : 0, build.mean);
+    // The warm-up call pays whatever the kernel cache could not answer, so the gap between it and the rest is what a
+    // compile costs on this machine.
+    if (warmUpOverhead > overhead + 0.05) {
+      log("measure:   the warm-up call spent %.2f s there instead, so a compile costs about %.2f s here\n",
+          warmUpOverhead, warmUpOverhead - overhead);
+    }
+  }
+
   // What draining at every block boundary costs.
-  if (!session.stopped()) {
+  if (want.drain && !session.stopped()) {
     auto time = [&](u32 blocks, u32 size) {
       auto gpu = Gpu::make(exponent, shared, fft, asExtraConf(options), false, TestKind::PRP);
       return statsOf(gpu->timeIters(blocks, size, 5000 / size).usPerIt).mean;
@@ -406,7 +629,7 @@ MeasureOutcome runMeasure(GpuCommon shared, const std::string& fftSpec, u64 expo
     }
   }
 
-  if (!session.stopped()) {
+  if (want.roe && !session.stopped()) {
     RoeCheck const roe = session.checkRoe(fft, options, exponent);
     if (roe.status != Status::Ok) {
       log("measure: ROE: could not be checked (%s)\n", toString(roe.status));
@@ -414,8 +637,8 @@ MeasureOutcome runMeasure(GpuCommon shared, const std::string& fftSpec, u64 expo
     } else if (!roe.applicable) {
       log("measure: ROE: not applicable (exact arithmetic)\n");
     } else {
-      log("measure: ROE at %" PRIu64 ": z %.2f (floor %.0f) n %u max %f, %s%s\n", roe.exponent, roe.z, roe.minZ, roe.n,
-          roe.maxRoe, roe.checkOk ? "OK" : "EE", roe.conclusive() ? "" : ", inconclusive");
+      log("measure: ROE at %" PRIu64 ": z %.4g (floor %.0f) n %u max %.4g, %s%s\n", roe.exponent, roe.z, roe.minZ,
+          roe.n, roe.maxRoe, roe.checkOk ? "OK" : "EE", roe.conclusive() ? "" : ", inconclusive");
       ok = ok && roe.passed();
     }
   }

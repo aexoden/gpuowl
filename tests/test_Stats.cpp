@@ -353,3 +353,168 @@ TEST(the_pessimistic_cost_is_on_the_drift_corrected_scale) {
   CHECK(near(standardError(m), 20 * std::sqrt(15.0 / 12) / std::sqrt(4.0)));
   CHECK(near(pessimisticCost(m), 1000 + 2 * standardError(m)));
 }
+
+// --- the noise report ------------------------------------------------------------------------------------------
+
+namespace {
+
+// A call that claims `sd` over `blocks` blocks around `mean`.  The block values themselves never enter the report, so
+// a synthetic call is exactly this.
+CallSummary call(double mean, double sd, double drift = 1, u32 blocks = BLOCKS_PER_CALL) {
+  return {.mean = mean, .sd = sd, .blocks = blocks, .drift = drift};
+}
+
+// Call means about `mean`, at a known spread and with no trend.  `smooth` neighbours each other the way a real
+// device's do -- consecutive calls similar, so a row does not average its own noise away -- while `jumpy` puts the
+// whole excursion between neighbours.  Both sets have mean 0 and a sample standard deviation of 1, so `spread` is what
+// it says.
+std::vector<CallSummary> scattering(double mean, double spread, double sd, bool smooth) {
+  static const std::vector<double> smoothUnit{-1.3339, -1.0914, 1.2127, 1.4552, 0.3638, 0.1213, -0.4851, -0.2425};
+  static const std::vector<double> jumpyUnit{-1.214, 0.7081, 1.3151, -0.5058, 0.9105, -1.4163, 0.4047, -0.2023};
+
+  std::vector<CallSummary> out;
+  for (double const u : smooth ? smoothUnit : jumpyUnit) { out.push_back(call(mean + spread * u, sd)); }
+  return out;
+}
+
+// What the blocks inside one call say the call's mean is worth.
+double blockBar(double sd, u32 blocks = BLOCKS_PER_CALL) { return sd / std::sqrt(double(blocks)); }
+
+}  // namespace
+
+TEST(a_quiet_device_reads_near_one_and_is_raced_on) {
+  // The calls agreeing to about what the blocks inside them predict: the case every band is measured against.
+  std::vector<CallSummary> const calls = scattering(1000, blockBar(1.0), 1.0, true);
+
+  NoiseReport const r = noiseOf(calls);
+  CHECK_EQ(r.call.n, 8u);
+  CHECK_EQ(r.row.n, 4u);
+  CHECK_EQ(r.callsPerRow, MIN_CALLS);
+  CHECK(r.call.ratio() > 0.8 && r.call.ratio() < 1.3);
+  // Section 7.2's bound is conservative by up to sqrt(blocks per call), so a quiet card's row ratio is expected at
+  // the bottom of [1/sqrt(blocks per call), 1] and not at 1.
+  CHECK(r.row.ratio() > 1 / std::sqrt(double(BLOCKS_PER_CALL)) && r.row.ratio() < 1.5);
+  CHECK(r.verdict == NoiseVerdict::Matches);
+  CHECK(r.trustworthy());
+}
+
+TEST(within_call_correlation_reads_high_on_the_blocks_and_near_one_on_the_row) {
+  // Section 7.2's measured case: the calls scatter 2.5x wider than the blocks inside them predict.  The block-level
+  // ratio has to see it -- that is what the call-based error bar exists for -- and the row-level ratio, built from the
+  // bar a row declares, has to stay near 1 rather than condemning the device.
+  std::vector<CallSummary> const calls = scattering(1000, 2.5 * blockBar(1.0), 1.0, true);
+
+  NoiseReport const r = noiseOf(calls);
+  CHECK(r.call.ratio() > 2 && r.call.ratio() < 3);
+  CHECK(r.row.ratio() > 1 && r.row.ratio() < 2);
+  CHECK(r.verdict == NoiseVerdict::Matches);
+  CHECK(r.trustworthy());
+}
+
+TEST(noise_the_blocks_cannot_account_for_is_refused) {
+  // Neighbouring calls disagreeing by far more than even a per-call bar allows for: the A4000's thermal excursion,
+  // which is not a smooth trend, so removing a trend does not rescue it.  A row averages such a pair, which is why
+  // its own ratio looks innocent and the verdict cannot rest on it.
+  std::vector<CallSummary> const calls = scattering(1000, 20, 0.2, false);
+
+  NoiseReport const r = noiseOf(calls);
+  CHECK(r.call.detrended() > NOISE_BLOCK_SIGMAS * std::sqrt(double(BLOCKS_PER_CALL)));
+  CHECK(r.row.ratio() < 1);
+  CHECK(r.verdict == NoiseVerdict::Disturbed);
+  CHECK(!r.trustworthy());
+}
+
+TEST(a_smooth_trend_is_reported_as_a_trend_and_not_as_noise) {
+  // A device warming up: every call slower than the last.  `observed` grows with the ramp while the trend-blind
+  // estimator sees only the step between neighbours, and it is that shape -- not the size -- which says whether the
+  // anchor or the error bar is at fault.
+  std::vector<CallSummary> calls;
+  for (u32 i = 0; i < 8; ++i) { calls.push_back(call(1000 + 4.0 * i, 0.4)); }
+
+  NoiseReport const r = noiseOf(calls);
+  CHECK(near(r.call.trend, 28));
+  CHECK(r.call.observed > NOISE_TREND_SHAPE * r.call.neighbour);
+  CHECK(r.row.ratio() > NOISE_DRIFTING);
+  CHECK(r.verdict == NoiseVerdict::Drifting);
+  CHECK(!r.trustworthy());
+}
+
+TEST(the_anchor_correction_removes_a_ramp_the_anchor_also_saw) {
+  // The same ramp, with an interleaved reference configuration reading it as a per-call ratio.  Correcting by that
+  // ratio is what Section 7.3's anchor does to a stored row, and it has to bring the same readings back to a device
+  // the error bars describe.
+  std::vector<CallSummary> raw;
+  std::vector<CallSummary> corrected;
+  for (u32 i = 0; i < 8; ++i) {
+    double const ramp = 1 + 0.004 * i;
+    raw.push_back(call(1000 * ramp, 0.4));
+    corrected.push_back(call(1000 * ramp, 0.4, ramp));
+  }
+
+  NoiseReport const before = noiseOf(raw);
+  NoiseReport const after = noiseOf(corrected);
+
+  CHECK(before.verdict == NoiseVerdict::Drifting);
+  CHECK(!before.trustworthy());
+  CHECK(near(before.call.trend, 28));
+  CHECK(near(after.call.trend, 0, 1e-6));
+  CHECK(near(after.call.mean, 1000, 1e-6));
+  CHECK(after.trustworthy());
+}
+
+TEST(a_report_over_too_few_rows_concludes_nothing) {
+  std::vector<CallSummary> const one = {call(1000, 1)};
+  CHECK(noiseOf(one).verdict == NoiseVerdict::TooFew);
+  CHECK(!noiseOf(one).trustworthy());
+
+  // Two calls make one row, and one row has nothing to scatter against.
+  std::vector<CallSummary> const two = {call(1000, 1), call(1001, 1)};
+  NoiseReport const r = noiseOf(two);
+  CHECK_EQ(r.call.n, 2u);
+  CHECK_EQ(r.row.n, 1u);
+  CHECK(r.verdict == NoiseVerdict::TooFew);
+}
+
+TEST(three_calls_are_one_row_and_a_half_and_conclude_nothing) {
+  // Two rows is the least that can be compared, so three calls cannot reach a verdict however well they agree.  What
+  // matters is that this is not confused with a device whose bars do not hold: it is a run that was cut short.
+  std::vector<CallSummary> calls = scattering(1000, 0.5, 1.0, true);
+  calls.resize(3);
+
+  NoiseReport const r = noiseOf(calls);
+  CHECK_EQ(r.row.n, 1u);
+  CHECK(r.verdict == NoiseVerdict::TooFew);
+  CHECK(!r.trustworthy());
+}
+
+TEST(blocks_claiming_no_spread_at_all_do_not_excuse_calls_that_move) {
+  // Every block inside a call identical, so the blocks predict nothing at all, while the calls alternate by 2%.  The
+  // row level cannot catch this on its own -- rows of two average the pair away and scatter not at all -- so what has
+  // to work is that a positive observation against a zero prediction reads as unbounded rather than as zero.
+  std::vector<CallSummary> calls;
+  for (u32 i = 0; i < 8; ++i) { calls.push_back(call(i % 2 ? 1020 : 1000, 0)); }
+
+  NoiseReport const r = noiseOf(calls);
+  CHECK_EQ(r.call.predicted, 0.0);
+  CHECK(r.call.observed > 0);
+  CHECK(std::isinf(r.call.ratio()) && std::isinf(r.call.detrended()));
+  CHECK_EQ(r.row.observed, 0.0);  // the rows really do agree, which is why they cannot be the test
+  CHECK(r.verdict == NoiseVerdict::Disturbed);
+  CHECK(!r.trustworthy());
+
+  // Nothing moving at all is degenerate rather than disturbed: no prediction and no observation is a ratio of 0.
+  std::vector<CallSummary> const still(8, call(1000, 0));
+  NoiseReport const s = noiseOf(still);
+  CHECK_EQ(s.call.ratio(), 0.0);
+  CHECK(s.trustworthy());
+}
+
+TEST(a_trailing_partial_row_is_left_out) {
+  // Seven calls are three rows of two; the odd call out would declare a bar built from half the calls the others used.
+  std::vector<CallSummary> calls = scattering(1000, 0.5, 1.0, true);
+  calls.pop_back();
+
+  NoiseReport const r = noiseOf(calls);
+  CHECK_EQ(r.call.n, 7u);
+  CHECK_EQ(r.row.n, 3u);
+}

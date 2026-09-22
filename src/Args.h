@@ -55,7 +55,10 @@ public:
   string optionsFft = "512:15:512";
 
   bool doMeasure{};
-  string measureFft;
+
+  // Parsed by tune::parseMeasureArgs once a device exists; validated at parse time, so a mistyped setting is a usage
+  // error and not a failure half way into a run.
+  string measureSpec;
 
   std::map<std::string, std::string> flags;
   std::set<std::string> cliKeys;

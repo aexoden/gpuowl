@@ -9,6 +9,8 @@
 #include "Measure.h"
 
 #include <cmath>
+#include <string>
+#include <string_view>
 #include <vector>
 
 using namespace tune;
@@ -131,8 +133,8 @@ TEST(a_stop_is_not_a_failure_of_anything) {
 }
 
 TEST(a_lost_device_is_fatal_and_is_not_recorded_against_the_configuration) {
-  for (const char* message : {"DEVICE_NOT_AVAILABLE (-2) clFinish(q) at src/clwrap.cpp:326 finish",
-                              "DEVICE_NOT_FOUND (-1) clGetDeviceIDs"}) {
+  for (const char* message :
+       {"DEVICE_NOT_AVAILABLE (-2) clFinish(q) at src/clwrap.cpp:326 finish", "DEVICE_NOT_FOUND (-1) clGetDeviceIDs"}) {
     Failure const f = classify(message);
     CHECK(f.stop);
     CHECK(f.fatal);
@@ -173,4 +175,72 @@ TEST(an_accuracy_check_that_could_not_be_taken_is_not_a_pass) {
   RoeCheck const tooNoisy{.applicable = true, .z = 3, .n = 100, .minZ = 20};
   CHECK(tooNoisy.status == Status::Ok);
   CHECK(!tooNoisy.passed());
+}
+
+// --- what -measure was asked for -------------------------------------------------------------------------------
+
+namespace {
+
+// parseMeasureArgs reports a usage error by throwing; the message itself is what reaches the user.
+bool rejected(std::string_view text) {
+  try {
+    (void)parseMeasureArgs(text);
+    return false;
+  } catch (const std::string&) { return true; } catch (const char*) {
+    return true;
+  }
+}
+
+}  // namespace
+
+TEST(a_bare_spec_measures_with_every_default) {
+  MeasureArgs const a = parseMeasureArgs("512:15:512:202");
+
+  CHECK_EQ(a.fft, std::string{"512:15:512:202"});
+  CHECK_EQ(a.calls, 8u);
+  CHECK_EQ(a.blocks, BLOCKS_PER_CALL);
+  CHECK_EQ(a.blockSize, 0u);  // the production block size, which only Args knows
+  CHECK_EQ(a.exponent, 0u);   // the top of the FFT's range
+  CHECK(a.anchorFft.empty());
+  CHECK(a.roe);
+  CHECK(!a.drain);
+}
+
+TEST(every_setting_is_read_off_the_spec) {
+  MeasureArgs const a =
+    parseMeasureArgs("4:1K:8:256:202,n=12,blocks=6,block=500,exp=118063003,anchor=256:2:256,roe=0,drain=1");
+
+  CHECK_EQ(a.fft, std::string{"4:1K:8:256:202"});
+  CHECK_EQ(a.anchorFft, std::string{"256:2:256"});
+  CHECK_EQ(a.exponent, 118'063'003u);
+  CHECK_EQ(a.calls, 12u);
+  CHECK_EQ(a.blocks, 6u);
+  CHECK_EQ(a.blockSize, 500u);
+  CHECK(!a.roe);
+  CHECK(a.drain);
+}
+
+TEST(the_spec_can_also_be_named_by_key) {
+  CHECK_EQ(parseMeasureArgs("fft=512:15:512,n=4").fft, std::string{"512:15:512"});
+}
+
+TEST(a_setting_that_would_conclude_nothing_is_a_usage_error) {
+  // A verdict compares two rows of MIN_CALLS, so anything under 2 * MIN_CALLS could time the configuration but never
+  // judge its error bar, which is what the command is for.  A single-iteration block times a warm-up, not an iteration.
+  CHECK(rejected("512:15:512,n=1"));
+  CHECK(rejected("512:15:512,n=2"));
+  CHECK(rejected("512:15:512,n=3"));
+  CHECK_EQ(parseMeasureArgs("512:15:512,n=4").calls, 2 * MIN_CALLS);
+  CHECK(rejected("512:15:512,blocks=1"));
+  CHECK(rejected("512:15:512,block=1"));
+}
+
+TEST(a_mistyped_setting_is_refused_rather_than_ignored) {
+  CHECK(rejected("512:15:512,calls=8"));  // n=, not calls=
+  CHECK(rejected("512:15:512,n=eight"));
+  CHECK(rejected("512:15:512,512:15:512"));     // a second bare token is a typo, not a second FFT
+  CHECK(rejected("n=8"));                       // no FFT at all
+  CHECK(rejected("512:15:512,"));               // a trailing comma leaves an empty token
+  CHECK(rejected("nonsense:spec"));             // not an FFT the parser accepts
+  CHECK(rejected("512:15:512,anchor=nope:x"));  // nor is the anchor
 }
