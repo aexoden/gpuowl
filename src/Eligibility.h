@@ -44,6 +44,10 @@ struct Interval {
   [[nodiscard]] bool contains(u64 E) const { return lo <= E && E <= hi; }
 };
 
+// Whether the arithmetic is exact: a pure NTT over GF31 or GF61 rounds nothing, so it has no accuracy for an option
+// to spend and its reach is a property of the modulus rather than something a measurement can move.
+[[nodiscard]] bool exactArithmetic(const FFTConfig& fft);
+
 // Bits per word as the Gpu constructor computes it, including its conversion of the exponent to float.
 [[nodiscard]] float bitsPerWord(const FFTConfig& fft, u64 E);
 
