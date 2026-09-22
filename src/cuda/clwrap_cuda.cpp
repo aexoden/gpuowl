@@ -77,6 +77,10 @@ static bool isStickyError(CUresult r) {
   }
 }
 
+// clwrap.cpp
+bool isContextLost();
+void markContextLost(const char* why);
+
 // The mapping onto an OpenCL error is lossy, so the real CUDA error is named on the way through.
 static int clResult(const char* what, CUresult r) {
   if (r == CUDA_SUCCESS) { return CL_SUCCESS; }
@@ -87,11 +91,18 @@ static int clResult(const char* what, CUresult r) {
     log("\nCUDA context lost in %s: %s (%d).\n"
         "The context is now unusable and every CUDA operation will fail. PRPLL must be restarted.\n\n",
         what, name ? name : "?", (int) r);
+    markContextLost(name ? name : "a sticky CUDA error");
     return CL_DEVICE_NOT_AVAILABLE;
   }
 
-  logCudaError(what, r);
+  // Once the context is gone, everything downstream fails for that reason.
+  if (isContextLost()) { return CL_DEVICE_NOT_AVAILABLE; }
+
+  // Expected while configurations are measured; the caller records them as the configuration's own failure.
   if (r == CUDA_ERROR_OUT_OF_MEMORY) { return CL_MEM_OBJECT_ALLOCATION_FAILURE; }
+  if (r == CUDA_ERROR_LAUNCH_OUT_OF_RESOURCES) { return CL_OUT_OF_RESOURCES; }
+
+  logCudaError(what, r);
   return CL_OUT_OF_RESOURCES;
 }
 
@@ -206,9 +217,8 @@ cl_context clCreateContext(const intptr_t*, unsigned nDevices, const cl_device_i
   CUresult const r = cuCtxCreate(&ctx->ctx, 0, ctx->dev);
 #endif
   if (r != CUDA_SUCCESS) {
-    logCudaError("cuCtxCreate", r);
     delete ctx;
-    if (err) *err = CL_OUT_OF_RESOURCES;
+    if (err) *err = clResult("cuCtxCreate", r);
     return nullptr;
   }
   g_cudaContext = ctx->ctx;  // Track for ensureContextCurrent()
@@ -880,9 +890,8 @@ cl_command_queue clCreateCommandQueueWithProperties(cl_context ctx, cl_device_id
   cuCtxSetCurrent(ctx->ctx);
   CUresult const r = cuStreamCreate(&q->stream, CU_STREAM_NON_BLOCKING);
   if (r != CUDA_SUCCESS) {
-    logCudaError("cuStreamCreate", r);
     delete q;
-    if (err) *err = CL_OUT_OF_RESOURCES;
+    if (err) *err = clResult("cuStreamCreate", r);
     return nullptr;
   }
   if (err) *err = CL_SUCCESS;

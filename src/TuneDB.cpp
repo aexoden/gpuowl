@@ -7,12 +7,21 @@
 #include "log.h"
 
 #include <algorithm>
+#include <cerrno>
 #include <charconv>
 #include <cinttypes>
 #include <cmath>
 #include <cstdio>
+#include <cstring>
+#include <ctime>
 #include <limits>
+#include <ranges>
 #include <system_error>
+
+#ifndef _WIN32
+#include <fcntl.h>
+#include <sys/file.h>
+#endif
 
 namespace tune {
 
@@ -302,6 +311,8 @@ std::string formatRow(const TryRow& row) {
     ' ' + to_string(row.cfg) + ' ' + to_string(row.ts);
 }
 
+std::string formatRow(const DoneRow& row) { return "done  " + to_string(row.sess) + ' ' + to_string(row.ts); }
+
 std::string formatRow(const NogoRow& row) {
   return "nogo  " + to_string(row.sess) + ' ' + row.fft + ' ' + row.key + '=' + row.val + ' ' + to_string(row.ts);
 }
@@ -338,17 +349,78 @@ const UseConfig* TuneDB::findCfg(u32 id) const {
   return it == cfgs_.end() ? nullptr : &it->second;
 }
 
-namespace {
-
-template<typename Row> bool pushCanonical(std::vector<Row>& into, const Row& row) {
-  auto const fft = canonicalFft(row.fft);
-  if (!fft) { return false; }
-  into.push_back(row);
-  into.back().fft = *fft;
-  return true;
+void TuneDB::noteTry(const TryRow& row) {
+  open_[row.sess] = row;
+  answered_.erase(row.sess);
 }
 
-}  // namespace
+void TuneDB::noteRow(u32 sess, u64 ts) {
+  if (open_.erase(sess)) { answered_[sess] = ts; }
+}
+
+bool TuneDB::append(const std::string& line) {
+  if (appendTo_.empty()) { return true; }
+
+  std::error_code ec;
+  bool const fresh = !fs::exists(appendTo_, ec) || fs::file_size(appendTo_, ec) == 0;
+
+  bool ok = true;
+  int failedWith = 0;
+  {
+    File out = File::openAppend(appendTo_);
+    if (fresh) { ok = out.printf("%s\n", HEADER) >= 0; }
+    ok = ok && out.printf("%s\n", line.c_str()) >= 0;
+    // The return value alone is not the answer: a buffered write can succeed and the flush behind it fail.
+    out.flush();
+    ok = ok && !ferror(out.get());
+    // Read here, not after the block: closing the file is itself a call that sets it.
+    if (!ok) { failedWith = errno; }
+  }
+
+  if (!ok) {
+    log("tune-db: could not write to '%s', so the row was not recorded: %s\n", appendTo_.string().c_str(),
+        strerror(failedWith));
+  }
+  return ok;
+}
+
+void TuneDB::attach(const fs::path& path) { appendTo_ = path; }
+
+bool TuneDB::lockForWriting(const fs::path& path) {
+#ifdef _WIN32
+  (void)path;
+  return true;
+#else
+  File claim = File::openAppend(path);
+  int const fd = fileno(claim.get());
+
+  // Close on exec, or the lock outlives the image that took it: a flock belongs to the open file description, exec
+  // keeps file descriptors, and the recovery unit for a GPU fault is exec of this same command (Restart.h). Without
+  // this the next generation is refused by its own predecessor's descriptor, which no longer has an owner -- measured
+  // on the Radeon, where the fault handler execs while this object is still alive.
+  if (int const flags = fcntl(fd, F_GETFD); flags == -1 || fcntl(fd, F_SETFD, flags | FD_CLOEXEC) == -1) {
+    log("tune-db: could not claim '%s' safely across a restart (%s)\n", path.string().c_str(), strerror(errno));
+    return false;
+  }
+
+  if (flock(fd, LOCK_EX | LOCK_NB)) {
+    log("tune-db: another process is writing '%s', so this one will not touch it (%s)\n", path.string().c_str(),
+        strerror(errno));
+    return false;
+  }
+  lock_ = std::move(claim);
+  return true;
+#endif
+}
+
+template<typename Row> bool TuneDB::record(std::vector<Row>& into, Row row) {
+  auto const fft = canonicalFft(row.fft);
+  if (!fft) { return false; }
+  row.fft = *fft;
+  if (!append(formatRow(row))) { return false; }
+  into.push_back(std::move(row));
+  return true;
+}
 
 bool TuneDB::add(const DbEnv& row) {
   if (findEnv(row.id)) { return false; }
@@ -358,57 +430,186 @@ bool TuneDB::add(const DbEnv& row) {
   }
   if (!std::ranges::all_of(row.extra, [](const std::string& f) { return isWriteableField(f); })) { return false; }
 
+  if (!append(formatRow(row))) { return false; }
   envs_.push_back(row);
   return true;
 }
 
 bool TuneDB::addCfg(u32 id, UseConfig config) {
   if (!isWriteableConfig(config)) { return false; }
-  return cfgs_.emplace(id, std::move(config)).second;
+  if (cfgs_.contains(id) || !append(formatCfgRow(id, config))) { return false; }
+  cfgs_.emplace(id, std::move(config));
+  return true;
 }
 
 bool TuneDB::add(const SessRow& row) {
   if (findSession(row.id) || !findEnv(row.env) || !isWriteableField(row.anchor)) { return false; }
+  if (!append(formatRow(row))) { return false; }
   sessions_.push_back(row);
   return true;
 }
 
 bool TuneDB::add(const RunRow& row) {
-  if (!findSession(row.sess) || !findCfg(row.cfg)) { return false; }
+  if (!findSession(row.sess) || !findCfg(row.cfg) || isSealed(row.sess)) { return false; }
   Measurement const& m = row.m;
   if (!std::isfinite(m.mean) || m.mean < 0 || !std::isfinite(m.stddev) || m.stddev < 0) { return false; }
   if (!parsePositive(driftText(m.drift))) { return false; }
-  return pushCanonical(runs_, row);
+  u64 const ts = m.ts;
+  if (!record(runs_, row)) { return false; }
+  noteRow(row.sess, ts);
+  return true;
 }
 
 bool TuneDB::add(const TryRow& row) {
-  if (!findSession(row.sess) || !findCfg(row.cfg)) { return false; }
-  return pushCanonical(tries_, row);
+  if (!findSession(row.sess) || !findCfg(row.cfg) || isSealed(row.sess)) { return false; }
+  if (!record(tries_, row)) { return false; }
+  noteTry(tries_.back());
+  return true;
+}
+
+bool TuneDB::add(const DoneRow& row) {
+  if (!findSession(row.sess) || isSealed(row.sess)) { return false; }
+  if (!append(formatRow(row))) { return false; }
+  noteRow(row.sess, row.ts);
+  return true;
 }
 
 bool TuneDB::add(const NogoRow& row) {
   auto const plain = [](std::string_view s) { return s.find_first_of(" \t\"\n\r") == std::string_view::npos; };
-  if (!findSession(row.sess) || row.key.empty() || !plain(row.key) || !plain(row.val)) { return false; }
-  return pushCanonical(nogos_, row);
+  if (!findSession(row.sess) || row.key.empty() || !plain(row.key) || !plain(row.val) || isSealed(row.sess)) {
+    return false;
+  }
+  u64 const ts = row.ts;
+  if (!record(nogos_, row)) { return false; }
+  noteRow(row.sess, ts);
+  return true;
 }
 
 bool TuneDB::add(const RoeRow& row) {
-  if (!findSession(row.sess) || !findCfg(row.cfg)) { return false; }
+  if (!findSession(row.sess) || !findCfg(row.cfg) || isSealed(row.sess)) { return false; }
   if (!std::isfinite(row.z) || !std::isfinite(row.maxRoe) || row.maxRoe < 0) { return false; }
-  return pushCanonical(roes_, row);
+  u64 const ts = row.ts;
+  if (!record(roes_, row)) { return false; }
+  noteRow(row.sess, ts);
+  return true;
 }
 
 bool TuneDB::add(const ReachRow& row) {
-  if (!findSession(row.sess) || !findCfg(row.cfg)) { return false; }
-  return pushCanonical(reaches_, row);
+  if (!findSession(row.sess) || !findCfg(row.cfg) || isSealed(row.sess)) { return false; }
+  u64 const ts = row.ts;
+  if (!record(reaches_, row)) { return false; }
+  noteRow(row.sess, ts);
+  return true;
 }
 
 bool TuneDB::add(const RefRow& row) {
-  if (!findSession(row.sess)) { return false; }
-  return pushCanonical(refs_, row);
+  if (!findSession(row.sess) || isSealed(row.sess)) { return false; }
+  u64 const ts = row.ts;
+  if (!record(refs_, row)) { return false; }
+  noteRow(row.sess, ts);
+  return true;
+}
+
+namespace {
+
+// Ids are dense and small, and a database holds a handful of envs and sessions against thousands of measurements, so
+// the highest one in the file is cheaper to find than to maintain.
+template<typename Rows, typename Id> u32 nextId(const Rows& rows, Id id) {
+  u32 highest = 0;
+  for (const auto& row : rows) { highest = std::max(highest, row.*id); }
+  return highest + 1;
+}
+
+}  // namespace
+
+u32 TuneDB::internEnv(const DbEnv& env) {
+  for (const DbEnv& held : envs_) {
+    if (held.sameMachine(env)) { return held.id; }
+  }
+
+  DbEnv row = env;
+  row.id = nextId(envs_, &DbEnv::id);
+  return add(row) ? row.id : 0;
+}
+
+u32 TuneDB::findCfgId(const UseConfig& config) const {
+  for (const auto& [id, held] : cfgs_) {
+    if (held == config) { return id; }
+  }
+  return 0;
+}
+
+u32 TuneDB::internCfg(const UseConfig& config) {
+  if (u32 const held = findCfgId(config)) { return held; }
+
+  u32 const id = cfgs_.empty() ? 1 : cfgs_.rbegin()->first + 1;
+  return addCfg(id, config) ? id : 0;
+}
+
+u32 TuneDB::beginSession(u32 env, const std::string& anchor, u32 gen, u64 start) {
+  SessRow row{.id = nextId(sessions_, &SessRow::id),
+              .env = env,
+              .start = start ? start : u64(std::time(nullptr)),
+              .gen = gen,
+              .anchor = anchor,
+              .alarmed = false};
+  if (!add(row)) { return 0; }
+  live_.insert(row.id);
+  return row.id;
+}
+
+u32 TuneDB::envOf(u32 sess) const {
+  const SessRow* const row = findSession(sess);
+  return row ? row->env : 0;
+}
+
+void TuneDB::closeTry(u32 sess) {
+  if (isSealed(sess) || !open_.contains(sess)) { return; }
+  (void)add(DoneRow{.sess = sess, .ts = u64(std::time(nullptr))});
+}
+
+void TuneDB::sealSession(u32 sess) { sealed_.insert(sess); }
+
+bool TuneDB::isSealed(u32 sess) const { return sealed_.contains(sess); }
+
+std::vector<TryRow> TuneDB::diedHolding() const {
+  std::vector<TryRow> out;
+  for (const auto& [sess, row] : open_) {
+    // An attempt one of this process's own live sessions holds has not been answered yet either. Only a sealed
+    // session -- the device went away under it -- or one from an earlier generation is a verdict.
+    if (live_.contains(sess) && !isSealed(sess)) { continue; }
+    out.push_back(row);
+  }
+  return out;
+}
+
+bool TuneDB::diedOn(u32 env, u32 cfg, TestKind kind, const std::string& fft, u64 exponent) const {
+  auto const spec = canonicalFft(fft);
+  for (const TryRow& row : diedHolding()) {
+    // This env only: a configuration that took another card down is a hint about that card.
+    if (envOf(row.sess) != env) { continue; }
+    if (row.cfg == cfg && row.kind == kind && row.exponent == exponent && spec && row.fft == *spec) { return true; }
+  }
+  return false;
+}
+
+bool TuneDB::isNogo(u32 env, const std::string& fft, const UseConfig& config) const {
+  auto const spec = canonicalFft(fft);
+  if (!spec) { return false; }
+  for (const NogoRow& row : nogos_) {
+    if (envOf(row.sess) != env || row.fft != *spec) { continue; }
+    auto const it = config.find(row.key);
+    if (it != config.end() && it->second == row.val) { return true; }
+  }
+  return false;
 }
 
 void TuneDB::clear() {
+  appendTo_.clear();
+  open_.clear();
+  answered_.clear();
+  sealed_.clear();
+  live_.clear();
   envs_.clear();
   cfgs_.clear();
   sessions_.clear();
@@ -470,8 +671,8 @@ bool TuneDB::parse(std::string_view text, std::string_view name) {
 
     std::string const& tag = f[0];
 
-    auto const known = tag == "env" || tag == "cfg" || tag == "sess" || tag == "run" || tag == "try" || tag == "nogo" ||
-      tag == "roe" || tag == "reach" || tag == "ref";
+    auto const known = tag == "env" || tag == "cfg" || tag == "sess" || tag == "run" || tag == "try" || tag == "done" ||
+      tag == "nogo" || tag == "roe" || tag == "reach" || tag == "ref";
     if (known && f.size() < 2) {
       refuse(tag + " row has no fields");
       continue;
@@ -654,6 +855,16 @@ bool TuneDB::parse(std::string_view text, std::string_view name) {
       } else if (!add(s)) {
         refuse("session " + to_string(s.id) + " declared twice" + TWO_WRITERS);
       }
+    } else if (tag == "done") {
+      if (f.size() != 3) {
+        refuse("done row has " + to_string(f.size()) + " fields, expected 3");
+        continue;
+      }
+      std::optional<u32> const sess = sessionOf();
+      auto const ts = parseInt<u64>(f[2]);
+      if (!ts) { refuse("'" + f[2] + "' is not a timestamp"); }
+      if (!sess || !ts) { continue; }
+      if (!add(DoneRow{.sess = *sess, .ts = *ts})) { refuse("done row names a session that is not declared"); }
     } else if (tag == "run" || tag == "try" || tag == "nogo" || tag == "roe" || tag == "reach" || tag == "ref") {
       size_t const want = tag == "run" ? 14
         : tag == "try"                 ? 7
@@ -718,9 +929,8 @@ bool TuneDB::parse(std::string_view text, std::string_view name) {
         if (!exponent) { refuse("'" + f[4] + "' is not an exponent"); }
         if (!ts) { refuse("'" + f[6] + "' is not a timestamp"); }
         if (!kind || !exponent || !cfg || !ts) { continue; }
-        tries_.push_back(
-          TryRow{.sess = *sess, .fft = *fft, .kind = *kind, .exponent = *exponent, .cfg = *cfg, .ts = *ts});
-
+        TryRow const row{.sess = *sess, .fft = *fft, .kind = *kind, .exponent = *exponent, .cfg = *cfg, .ts = *ts};
+        if (!add(row)) { refuse("try row holds a value this format cannot write back"); }
       } else if (tag == "nogo") {
         auto const [key, val] = keyValue(f[3]);
         auto const ts = parseInt<u64>(f[4]);
@@ -769,15 +979,15 @@ bool TuneDB::parse(std::string_view text, std::string_view name) {
         if (!evidence) { refuse("'" + f[7] + "' is not an evidence state"); }
         if (!ts) { refuse("'" + f[8] + "' is not a timestamp"); }
         if (!kind || !regime || !cfg || !reach || !evidence || !ts) { continue; }
-        reaches_.push_back(ReachRow{.sess = *sess,
-                                    .fft = *fft,
-                                    .kind = *kind,
-                                    .regime = *regime,
-                                    .cfg = *cfg,
-                                    .reach = *reach,
-                                    .evidence = *evidence,
-                                    .ts = *ts});
-
+        ReachRow const row{.sess = *sess,
+                           .fft = *fft,
+                           .kind = *kind,
+                           .regime = *regime,
+                           .cfg = *cfg,
+                           .reach = *reach,
+                           .evidence = *evidence,
+                           .ts = *ts};
+        if (!add(row)) { refuse("reach row holds a value this format cannot write back"); }
       } else {
         auto const exponent = parseInt<u64>(f[3]);
         auto const iters = parseInt<u64>(f[4]);
@@ -787,8 +997,9 @@ bool TuneDB::parse(std::string_view text, std::string_view name) {
         if (!res64) { refuse("'" + f[5] + "' is not a residue"); }
         if (!ts) { refuse("'" + f[6] + "' is not a timestamp"); }
         if (!exponent || !iters || !res64 || !ts) { continue; }
-        refs_.push_back(
-          RefRow{.sess = *sess, .fft = *fft, .exponent = *exponent, .iters = *iters, .res64 = *res64, .ts = *ts});
+        RefRow const row{
+          .sess = *sess, .fft = *fft, .exponent = *exponent, .iters = *iters, .res64 = *res64, .ts = *ts};
+        if (!add(row)) { refuse("ref row holds a value this format cannot write back"); }
       }
     } else {
       unknown_.push_back(line);
@@ -820,11 +1031,12 @@ std::string TuneDB::text() const {
   for (const auto& [id, config] : cfgs_) { out += formatCfgRow(id, config) + '\n'; }
   for (const SessRow& s : sessions_) { out += formatRow(s) + '\n'; }
   for (const RunRow& r : runs_) { out += formatRow(r) + '\n'; }
-  for (const TryRow& r : tries_) { out += formatRow(r) + '\n'; }
   for (const NogoRow& r : nogos_) { out += formatRow(r) + '\n'; }
   for (const RoeRow& r : roes_) { out += formatRow(r) + '\n'; }
   for (const ReachRow& r : reaches_) { out += formatRow(r) + '\n'; }
   for (const RefRow& r : refs_) { out += formatRow(r) + '\n'; }
+  for (const TryRow& r : tries_) { out += formatRow(r) + '\n'; }
+  for (const auto& [sess, ts] : answered_) { out += formatRow(DoneRow{.sess = sess, .ts = ts}) + '\n'; }
   for (const std::string& line : unknown_) { out += line + '\n'; }
 
   return out;

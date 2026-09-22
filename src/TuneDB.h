@@ -8,6 +8,7 @@
 
 #include "common.h"
 #include "Eligibility.h"
+#include "File.h"
 #include "OptionSpace.h"
 #include "Stats.h"
 #include "UseResolve.h"
@@ -15,6 +16,7 @@
 #include <charconv>
 #include <filesystem>
 #include <map>
+#include <set>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -110,6 +112,12 @@ struct TryRow {
   u64 ts = 0;
 };
 
+// A session that declared an attempt and then ended with nothing to say about it.
+struct DoneRow {
+  u32 sess = 0;
+  u64 ts = 0;
+};
+
 // One key=value that will not build on one FFT.
 struct NogoRow {
   u32 sess = 0;
@@ -170,6 +178,14 @@ public:
   // writing to the file.
   void save(const fs::path& path) const;
 
+  // Claims the right to write this database, or returns false and says why.
+  [[nodiscard]] bool lockForWriting(const fs::path& path);
+
+  // Appends every row added from now on to `path`, as it is added. Call after load(), and only while holding the lock
+  // above.
+  void attach(const fs::path& path);
+  [[nodiscard]] bool attached() const { return !appendTo_.empty(); }
+
   [[nodiscard]] const std::vector<DbEnv>& envs() const { return envs_; }
   [[nodiscard]] const std::map<u32, UseConfig>& cfgs() const { return cfgs_; }
   [[nodiscard]] const std::vector<SessRow>& sessions() const { return sessions_; }
@@ -194,9 +210,52 @@ public:
   [[nodiscard]] bool add(const RoeRow& row);
   [[nodiscard]] bool add(const ReachRow& row);
   [[nodiscard]] bool add(const RefRow& row);
+  [[nodiscard]] bool add(const DoneRow& row);
+
+  // The id an identical entry already has, or a fresh one.
+  [[nodiscard]] u32 internEnv(const DbEnv& env);
+  [[nodiscard]] u32 internCfg(const UseConfig& config);
+
+  // The id this configuration already has, or 0.
+  [[nodiscard]] u32 findCfgId(const UseConfig& config) const;
+
+  // Opens a session on `env`. `start` is its wall-clock time, or 0 for now.
+  [[nodiscard]] u32 beginSession(u32 env, const std::string& anchor, u32 gen = 0, u64 start = 0);
+
+  // The env a row belongs to, through its session; 0 when the session is unknown.
+  [[nodiscard]] u32 envOf(u32 sess) const;
+
+  void closeTry(u32 sess);
+
+  // Stops `sess` writing anything further, for good.
+  void sealSession(u32 sess);
+  [[nodiscard]] bool isSealed(u32 sess) const;
+
+  // Every attempt this database has standing against it.
+  [[nodiscard]] std::vector<TryRow> diedHolding() const;
+
+  // Whether this configuration was what a previous generation was holding when it died.
+  [[nodiscard]] bool diedOn(u32 env, u32 cfg, TestKind kind, const std::string& fft, u64 exponent) const;
+
+  // Whether `config` sets a key to a value recorded as unbuildable on `fft` for this env.
+  [[nodiscard]] bool isNogo(u32 env, const std::string& fft, const UseConfig& config) const;
 
 private:
   void clear();
+
+  // Maintains the open-attempt state a row implies.
+  void noteTry(const TryRow& row);
+  void noteRow(u32 sess, u64 ts);
+
+  // False if the line did not reach the file, having said so. Silently true when nothing is attached.
+  [[nodiscard]] bool append(const std::string& line);
+
+  // Canonicalises `row`'s FFT spec, writes it, and keeps it only if the write landed.
+  template<typename Row> [[nodiscard]] bool record(std::vector<Row>& into, Row row);
+
+  fs::path appendTo_;
+
+  File lock_;
 
   std::vector<DbEnv> envs_;
   std::map<u32, UseConfig> cfgs_;
@@ -208,6 +267,13 @@ private:
   std::vector<ReachRow> reaches_;
   std::vector<RefRow> refs_;
   std::vector<std::string> unknown_;
+
+  std::map<u32, TryRow> open_;
+  std::map<u32, u64> answered_;
+
+  std::set<u32> sealed_;
+
+  std::set<u32> live_;
 };
 
 [[nodiscard]] std::string formatRow(const DbEnv& row);
@@ -219,6 +285,7 @@ private:
 [[nodiscard]] std::string formatRow(const RoeRow& row);
 [[nodiscard]] std::string formatRow(const ReachRow& row);
 [[nodiscard]] std::string formatRow(const RefRow& row);
+[[nodiscard]] std::string formatRow(const DoneRow& row);
 
 [[nodiscard]] std::string configText(const UseConfig& config);
 [[nodiscard]] std::optional<UseConfig> parseConfigText(std::string_view text);
