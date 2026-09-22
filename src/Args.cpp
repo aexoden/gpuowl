@@ -3,6 +3,7 @@
 #include "Args.h"
 #include "FFTVariants.h"
 #include "Measure.h"
+#include "Tuner.h"
 #include "File.h"
 #include "clwrap.h"
 #include "gpuid.h"
@@ -278,6 +279,13 @@ its reach.
                                         -tune minexp=10000000,maxexp=20000000
                          fp6431       - Time FP64+M31 FFTs for tune.txt.  Only GPUs with great FP64 performance will find this beneficial.
                          quick=<val>  - Use higher values for a quicker, potentially less accurate tune.  Val ranges from 1 to 10.
+                     These subcommands work on the measurement database alone.  They open no device, so they run on a
+                     machine that has none, and without an env= (into= for adopt) they act on the one env whose rows
+                     were measured against the kernels this binary carries.
+                         emit[,env=<id>]               - write selection.txt from what the database supports
+                         reset[,env=<id>][,fft=<spec>] - drop what was measured, for an env or for one of its FFTs
+                         adopt[,into=<id>][,from=<id>] - take an earlier env's rows as the current kernels' own
+                         compact                       - fold duplicate rows, and drop option sets nothing names
 -device <N>        : select the GPU at position N in the list of devices
 -uid    <UID>      : select the GPU with the given UID (on ROCm/AMDGPU, Linux)
 -pci    <BDF>      : select the GPU with the given PCI BDF, e.g. "0c:00.0"
@@ -384,7 +392,10 @@ void Args::parse(const string& line, bool fromConfigFile) {
       logROE = true;
     } else if (key == "-tune") {
       doTune = true;
-      if (!s.empty()) { checkTuneOptions(s); tune = s; }
+      if (!s.empty()) { tune = s; }
+      // The database-only subcommands are dispatched by main() before a device exists; validated here, so a mistyped
+      // setting is a usage error rather than a silent fall-through to the tuner that takes the same flag.
+      if (!tune::parseDbCommand(tune)) { checkTuneOptions(tune); }
     } else if (key == "-measure") {
       // Resolving the options and building a Gpu need the device, so main() does this once a
       // context exists.

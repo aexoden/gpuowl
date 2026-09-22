@@ -5,6 +5,8 @@
 
 #include "TuneDB.h"
 
+#include "fs.h"
+
 #include "BuildId.h"
 #include "File.h"
 #include "test.h"
@@ -580,6 +582,7 @@ TEST(a_row_that_cannot_be_written_is_not_kept) {
 TEST(only_one_process_may_write_a_database) {
   fs::path const path = fs::temp_directory_path() / "prpll-test-lock.txt";
   fs::remove(path);
+  fs::remove(path + ".lock");
 
   TuneDB first;
   CHECK(first.lockForWriting(path));
@@ -599,6 +602,27 @@ TEST(only_one_process_may_write_a_database) {
   CHECK(fourth.lockForWriting(path));
 
   fs::remove(path);
+  fs::remove(path + ".lock");
+}
+
+TEST(a_rewrite_does_not_give_the_database_away) {
+  fs::path const path = fs::temp_directory_path() / "prpll-test-lock-rewrite.txt";
+  fs::remove(path);
+  fs::remove(path + ".lock");
+
+  TuneDB holder;
+  CHECK(holder.lockForWriting(path));
+  CHECK(holder.load(path));
+
+  // `save` replaces the database through a rename, which unlinks the inode it was read from.  A claim taken on that
+  // inode would go with it, and the next writer in would be told the database is free while this one still has it.
+  holder.save(path);
+
+  TuneDB other;
+  CHECK(!other.lockForWriting(path));
+
+  fs::remove(path);
+  fs::remove(path + ".lock");
 }
 
 TEST(an_alarm_row_flags_the_session_it_names) {

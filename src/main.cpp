@@ -20,12 +20,14 @@
 #include "Restart.h"
 #include "GpuFault.h"
 #include "Production.h"
+#include "Tuner.h"
 
 #include <atomic>
 #include <cerrno>
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
+#include <optional>
 #include <thread>
 #include <utility>
 #ifndef _WIN32
@@ -198,6 +200,16 @@ int main(int argc, char **argv) {
     args.readConfig("config.txt");
     args.parse(mainLine);
     parsing = false;
+
+    // The database-only -tune subcommands read and rewrite tunedb.txt, or publish selection.txt from it, and never
+    // build a kernel -- so they are answered here, before a device is opened, and work where there is none.
+    if (args.doTune) {
+      if (std::optional<tune::DbCommand> const command = tune::parseDbCommand(args.tune)) {
+        exitCode = tune::runDbCommand(*command, fs::current_path()) ? EXIT_OK : EXIT_FAILED;
+        log("Bye\n");
+        return exitCode;
+      }
+    }
 
     args.setDefaults();
 
