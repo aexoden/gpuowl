@@ -4,6 +4,7 @@
 
 #include "common.h"
 
+#include <optional>
 #include <string>
 #include <tuple>
 #include <vector>
@@ -73,7 +74,8 @@ enum CARRY_KIND {CARRY_32=0, CARRY_64=1, CARRY_AUTO=2};
 
 struct FFTConfig {
 public:
-  static FFTConfig bestFit(const Args& args, u64 E, const std::string& spec);
+  // fp64: whether the device has FP64, or empty to ask the device.
+  static FFTConfig bestFit(const Args& args, u64 E, const std::string& spec, std::optional<bool> fp64 = {});
 
   // Which FP and NTT primes are involved in the FFT
   bool FFT_FP64;
