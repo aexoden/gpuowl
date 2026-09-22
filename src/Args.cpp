@@ -187,7 +187,8 @@ its reach.
                      declares describes how far its readings move, plus its per-call construction cost, its residue
                      and its rounding error, at the exponent given by -prp or, without one, the top of its range.
                      Settings: n=<calls> (8), blocks=<per call>, block=<iterations>, exp=<E>, anchor=<fft> (time a
-                     second configuration alternately and correct for its drift), roe=0|1, drain=0|1
+                     second configuration alternately and correct for its drift, which turns off the scheduled one),
+                     roe=0|1, drain=0|1, drift=0|1 (time the session's drift anchor, on by default)
 -dir <folder>      : specify local work directory (containing worktodo-<N>.txt, results-<N>.txt, config.txt,
                      gpuowl-<N>.log)
 -pool <dir>        : specify a directory with the shared (pooled) worktodo.txt and config.txt

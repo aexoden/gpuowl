@@ -5,10 +5,12 @@
 
 #pragma once
 
+#include "Anchor.h"
 #include "FFTConfig.h"
 #include "GpuCommon.h"
 #include "OptionSpace.h"
 #include "Stats.h"
+#include "timeutil.h"
 #include "TuneDB.h"
 #include "UseResolve.h"
 
@@ -97,8 +99,15 @@ class Session {
 public:
   Session(GpuCommon shared, TuneDB& db, const Env& env);
 
-  [[nodiscard]] bool begin();
+  // `probe` is the exponent the session is measuring around, which is where its drift anchor is timed when the env
+  // does not already have one pinned. Zero leaves the session unanchored: its rows are recorded as measured.
+  [[nodiscard]] bool begin(u64 probe = 0);
   void end();
+
+  // What every row of this session is divided by to compare it with a row of another one.
+  [[nodiscard]] double drift() const { return anchorState_.ratio; }
+
+  [[nodiscard]] const AnchorSpec& anchor() const { return anchor_; }
 
   [[nodiscard]] u32 id() const { return session_; }
   [[nodiscard]] u32 envId() const { return envId_; }
@@ -145,6 +154,13 @@ private:
   // Records `options` value for the known bad configuration.
   void noteNogo(const FFTConfig& fft, const UseConfig& options);
 
+  // Times the anchor if the session has one and it is due, and updates the drift the rows carry.
+  void keepAnchor();
+
+  // Stops anchoring this session, keeping whatever ratio the anchor last gave: a reading already taken against the
+  // env's baseline is still the best thing its rows have.
+  void unanchor() { anchor_ = {}; }
+
   // Handles an exception from a build or a run.
   [[nodiscard]] Status failed(const FFTConfig& fft, TestKind kind, u64 exponent, const UseConfig& options,
                               const std::string& message, const char* during);
@@ -159,6 +175,15 @@ private:
   GpuCommon shared_;
   TuneDB& db_;
   Env env_;
+
+  AnchorSpec anchor_{};
+  AnchorState anchorState_{};
+
+  // The options the env's baseline reading was taken under; 0 when there is no baseline yet.
+  u32 baselineCfg_ = 0;
+
+  Timer sinceAnchor_{};
+  bool inAnchor_ = false;
 
   u32 envId_ = 0;
   u32 session_ = 0;
@@ -186,6 +211,10 @@ struct MeasureArgs {
 
   bool roe = true;
   bool drain = false;
+
+  // Time the drift anchor and record the ratio on every row. Off when `anchorFft` names one instead: that anchor is
+  // timed alternately with the configuration under test, and two corrections applied at once describe neither.
+  bool drift = true;
 };
 
 // Pure.  Throws a message for anything it does not understand, so a mistyped setting is a usage error.

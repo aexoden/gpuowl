@@ -127,11 +127,31 @@ RoeCheck roeCheck(GpuCommon shared, const FFTConfig& fft, const UseConfig& optio
 
 Session::Session(GpuCommon shared, TuneDB& db, const Env& env) : shared_{shared}, db_{db}, env_{env} {}
 
-bool Session::begin() {
+bool Session::begin(u64 probe) {
   envId_ = db_.internEnv(dbEnvOf(env_));
   if (!envId_) { return false; }
 
-  session_ = db_.beginSession(envId_, "-", restart::generation());
+  if (probe) {
+    // The env's first session fixes the anchor for the rest of the env's life: rows are comparable only against
+    // readings of one configuration at one exponent, and a later session probing elsewhere still has to divide by the
+    // movement of the same thing.
+    if (auto const pinned = parseAnchorSpec(db_.envAnchor(envId_))) {
+      anchor_ = *pinned;
+    } else if (auto const chosen = chooseAnchor(probe)) {
+      anchor_ = *chosen;
+    } else {
+      log("measure: no FP64 configuration is eligible at %" PRIu64 ", so this session has no drift anchor and its\n"
+          "measure:   rows are recorded as measured\n",
+          probe);
+    }
+
+    if (const AnchorRow* const baseline = db_.envBaseline(envId_)) {
+      anchorState_.baseline = baseline->mean;
+      baselineCfg_ = baseline->cfg;
+    }
+  }
+
+  session_ = db_.beginSession(envId_, anchor_.valid() ? anchor_.text() : "", restart::generation());
   return session_ != 0;
 }
 
@@ -237,6 +257,103 @@ void Session::cannotDeclare(const FFTConfig& fft, const UseConfig& options) {
       fft.spec().c_str(), configText(options).c_str());
 }
 
+void Session::keepAnchor() {
+  if (!anchor_.valid() || inAnchor_ || stopped_) { return; }
+  if (anchorState_.readings && sinceAnchor_.at() < ANCHOR_EVERY_SEC) { return; }
+
+  FFTConfig const fft{anchor_.fft};
+
+  // The anchor is built like anything else, so it is held back like anything else. Without this a configuration that
+  // took the device down would be rebuilt by every generation the restart limit allows, since the env names it and
+  // every session re-times it.
+  if (std::string const why = held(fft, TestKind::PRP, anchor_.exponent, {}); !why.empty()) {
+    log("measure: the drift anchor %s is not built again here: %s. This session is unanchored and its rows are\n"
+        "measure:   recorded as measured.\n",
+        anchor_.text().c_str(), why.c_str());
+    unanchor();
+    return;
+  }
+
+  // Always the same shape of call, whatever the caller is timing its own configurations with: a reading taken over a
+  // different number of iterations is not comparable with the baseline it is divided by.
+  auto time = [&] {
+    inAnchor_ = true;
+    Call const c = runCall(fft, TestKind::PRP, anchor_.exponent, {}, BLOCKS_PER_CALL, ANCHOR_BLOCK_SIZE, false);
+    inAnchor_ = false;
+    sinceAnchor_ = Timer{};
+    return c;
+  };
+
+  Call c = time();
+  if (stopped_ || !c.measurement.ok()) {
+    // The anchor is one fixed configuration, so what stopped it once will stop it every time; asking again at each
+    // call would spend a build on it and say the same thing.
+    log("measure: the drift anchor %s could not be timed, so this session is unanchored from here on and its rows\n"
+        "measure:   carry the last ratio it gave (%.4f)\n",
+        anchor_.text().c_str(), anchorState_.ratio);
+    unanchor();
+    return;
+  }
+
+  u32 ranCfg = db_.internCfg(c.ran);
+
+  // The ratio only means anything against a reading of the same thing. An env holds one reference, so a session that
+  // cannot reproduce the options the baseline was taken under leaves its rows as measured rather than re-basing them
+  // on something else and putting two references in one env. Nothing is recorded either: this is not a reading of the
+  // configuration the env is anchored to.
+  if (baselineCfg_ && ranCfg != baselineCfg_) {
+    log("measure: this env's anchor baseline was taken under -use %s and this session times it under %s, so the two\n"
+        "measure:   are not comparable; this session is unanchored and its rows are recorded as measured.\n",
+        configText(*db_.findCfg(baselineCfg_)).c_str(), configText(c.ran).c_str());
+    unanchor();
+    return;
+  }
+
+  bool const inherited = anchorState_.baseline > 0;
+  DriftLevel level = anchorState_.observe(c.measurement.mean);
+  bool const first = anchorState_.readings == 1;
+
+  if (first && inherited) {
+    log("measure: anchor %s: %.3f us/it, against a baseline of %.3f (%+.1f%%)\n", anchor_.text().c_str(),
+        anchorState_.latest, anchorState_.baseline, (anchorState_.ratio - 1) * 100);
+  } else if (first) {
+    log("measure: anchor %s: %.3f us/it, which is the baseline for this env\n", anchor_.text().c_str(),
+        anchorState_.latest);
+  }
+
+  if (level == DriftLevel::Alarm) {
+    log("measure: the drift anchor %s reads %.3f us/it against a baseline of %.3f (%+.1f%%) -- pausing %.0f s and\n"
+        "measure:   asking again\n",
+        anchor_.text().c_str(), anchorState_.latest, anchorState_.baseline, (anchorState_.ratio - 1) * 100,
+        ALARM_COOLDOWN_SEC);
+    Timer::usleep(u32(ALARM_COOLDOWN_SEC * 1'000'000));
+
+    c = time();
+    if (!stopped_ && c.measurement.ok()) {
+      level = anchorState_.observe(c.measurement.mean);
+      ranCfg = db_.internCfg(c.ran);
+    }
+
+    if (level == DriftLevel::Alarm && !anchorState_.alarmed) {
+      anchorState_.alarmed = true;
+      (void)db_.add(AlarmRow{.sess = session_, .ts = now()});
+      log("measure: it is still there, so this device has moved by more than the correction should be trusted to\n"
+          "measure:   absorb. The ratio is still applied and the session is flagged.\n");
+    }
+  } else if (level == DriftLevel::Warn && !first) {
+    log("measure: drift: the anchor %s has moved %+.1f%% since its baseline of %.3f us/it\n", anchor_.text().c_str(),
+        (anchorState_.ratio - 1) * 100, anchorState_.baseline);
+  }
+
+  (void)db_.add(AnchorRow{.sess = session_,
+                          .fft = anchor_.fft,
+                          .exponent = anchor_.exponent,
+                          .cfg = ranCfg,
+                          .mean = anchorState_.latest,
+                          .ratio = anchorState_.ratio,
+                          .ts = now()});
+}
+
 Call Session::warmUp(const FFTConfig& fft, TestKind kind, u64 exponent, const UseConfig& options, u32 nBlocks,
                      u32 blockSize) {
   return runCall(fft, kind, exponent, options, nBlocks, blockSize, false);
@@ -250,6 +367,7 @@ Call Session::run(const FFTConfig& fft, TestKind kind, u64 exponent, const UseCo
 Call Session::runCall(const FFTConfig& fft, TestKind kind, u64 exponent, const UseConfig& options, u32 nBlocks,
                       u32 blockSize, bool record) {
   Call out;
+  if (record) { keepAnchor(); }
   if (stopped_) {
     out.measurement.status = Status::Lost;
     return out;
@@ -274,6 +392,8 @@ Call Session::runCall(const FFTConfig& fft, TestKind kind, u64 exponent, const U
 
   // Nothing is recorded for a stop, nor for a reading taken only to warm the device.
   if (stopped_ || !record) { return out; }
+
+  out.measurement.drift = anchorState_.ratio;
 
   // Keyed on what the kernels were built with.
   u32 const ran = out.ran.empty() ? cfg : db_.internCfg(out.ran);
@@ -386,10 +506,12 @@ MeasureArgs parseMeasureArgs(std::string_view text) {
       out.roe = number(val, "roe=") != 0;
     } else if (key == "drain") {
       out.drain = number(val, "drain=") != 0;
+    } else if (key == "drift") {
+      out.drift = number(val, "drift=") != 0;
     } else {
       throw "-measure: '" + std::string{key} +
         "=' is not understood. Accepted: fft=<spec>, exp=<E>, n=<calls>, blocks=<per call>, block=<iterations>,"
-        " anchor=<spec>, roe=0|1, drain=0|1";
+        " anchor=<spec>, roe=0|1, drain=0|1, drift=0|1";
     }
   }
 
@@ -402,6 +524,9 @@ MeasureArgs parseMeasureArgs(std::string_view text) {
   }
   if (out.blocks < 2) { throw std::string{"-measure: blocks= must be at least 2"}; }
   if (out.blockSize == 1) { throw std::string{"-measure: block= must be at least 2 iterations"}; }
+
+  // The scheduled anchor and the alternating one correct for the same thing, and applying both describes neither.
+  if (!out.anchorFft.empty()) { out.drift = false; }
 
   // Validated here so that a bad spec is a usage error rather than a failure once a device is open.
   (void)FFTConfig{out.fft};
@@ -485,7 +610,7 @@ MeasureOutcome runMeasure(GpuCommon shared, const MeasureArgs& want) {
   db.attach(dbPath);
 
   Session session{shared, db, detectEnv(*shared.context, *shared.args)};
-  if (!session.begin()) {
+  if (!session.begin(want.drift ? exponent : 0)) {
     log("measure: '%s' would not take a session\n", dbPath.string().c_str());
     return MeasureOutcome::Failed;
   }
@@ -641,6 +766,11 @@ MeasureOutcome runMeasure(GpuCommon shared, const MeasureArgs& want) {
           roe.n, roe.maxRoe, roe.checkOk ? "OK" : "EE", roe.conclusive() ? "" : ", inconclusive");
       ok = ok && roe.passed();
     }
+  }
+
+  if (want.drift && session.anchor().valid() && !raw.empty()) {
+    log("measure: the rows this session recorded carry a drift of %.4f against %s\n", session.drift(),
+        session.anchor().text().c_str());
   }
 
   if (session.deviceLost()) { return MeasureOutcome::DeviceLost; }

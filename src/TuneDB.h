@@ -64,7 +64,7 @@ struct DbEnv {
   // Which physical card, as a PCI address; empty for a machine that cannot tell.
   std::string machine{};
 
-  // A hash of the kernel sources; placeholder for now.
+  // Which kernels were measured, as BuildId.h's fingerprint of their sources.
   u64 build = 0;
 
   // Fields of this row that weren't recognized.
@@ -150,6 +150,27 @@ struct ReachRow {
   u64 ts = 0;
 };
 
+// One timing of the session's drift anchor.
+struct AnchorRow {
+  u32 sess = 0;
+  std::string fft;
+  u64 exponent = 0;
+  u32 cfg = 0;
+  double mean = 0;
+
+  // Against the first reading taken for this env, which is what a later session divides its own rows by.
+  double ratio = 1;
+
+  u64 ts = 0;
+};
+
+// A session whose anchor stayed past the drift alarm.  Folded into the session row it names, which is where a rewrite
+// puts it: a session's row is written before its anchor has ever been timed, so the flag cannot be set there in place.
+struct AlarmRow {
+  u32 sess = 0;
+  u64 ts = 0;
+};
+
 // One LL residue reading.
 struct RefRow {
   u32 sess = 0;
@@ -193,6 +214,7 @@ public:
   [[nodiscard]] const std::vector<TryRow>& tries() const { return tries_; }
   [[nodiscard]] const std::vector<NogoRow>& nogos() const { return nogos_; }
   [[nodiscard]] const std::vector<RoeRow>& roes() const { return roes_; }
+  [[nodiscard]] const std::vector<AnchorRow>& anchors() const { return anchors_; }
   [[nodiscard]] const std::vector<ReachRow>& reaches() const { return reaches_; }
   [[nodiscard]] const std::vector<RefRow>& refs() const { return refs_; }
   [[nodiscard]] const std::vector<std::string>& unknownRows() const { return unknown_; }
@@ -208,6 +230,8 @@ public:
   [[nodiscard]] bool add(const TryRow& row);
   [[nodiscard]] bool add(const NogoRow& row);
   [[nodiscard]] bool add(const RoeRow& row);
+  [[nodiscard]] bool add(const AnchorRow& row);
+  [[nodiscard]] bool add(const AlarmRow& row);
   [[nodiscard]] bool add(const ReachRow& row);
   [[nodiscard]] bool add(const RefRow& row);
   [[nodiscard]] bool add(const DoneRow& row);
@@ -221,6 +245,14 @@ public:
 
   // Opens a session on `env`. `start` is its wall-clock time, or 0 for now.
   [[nodiscard]] u32 beginSession(u32 env, const std::string& anchor, u32 gen = 0, u64 start = 0);
+
+  // The anchor this env is pinned to, as its earliest session that named one spells it; empty when it has none. An
+  // env compares its rows against readings of one configuration at one exponent, so the first session to time an
+  // anchor fixes it for the rest of the env's life.
+  [[nodiscard]] std::string envAnchor(u32 env) const;
+
+  // The first anchor reading taken for this env under the anchor it is pinned to; nullptr when there is none.
+  [[nodiscard]] const AnchorRow* envBaseline(u32 env) const;
 
   // The env a row belongs to, through its session; 0 when the session is unknown.
   [[nodiscard]] u32 envOf(u32 sess) const;
@@ -264,6 +296,7 @@ private:
   std::vector<TryRow> tries_;
   std::vector<NogoRow> nogos_;
   std::vector<RoeRow> roes_;
+  std::vector<AnchorRow> anchors_;
   std::vector<ReachRow> reaches_;
   std::vector<RefRow> refs_;
   std::vector<std::string> unknown_;
@@ -283,6 +316,8 @@ private:
 [[nodiscard]] std::string formatRow(const TryRow& row);
 [[nodiscard]] std::string formatRow(const NogoRow& row);
 [[nodiscard]] std::string formatRow(const RoeRow& row);
+[[nodiscard]] std::string formatRow(const AnchorRow& row);
+[[nodiscard]] std::string formatRow(const AlarmRow& row);
 [[nodiscard]] std::string formatRow(const ReachRow& row);
 [[nodiscard]] std::string formatRow(const RefRow& row);
 [[nodiscard]] std::string formatRow(const DoneRow& row);
