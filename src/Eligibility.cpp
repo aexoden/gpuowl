@@ -45,6 +45,8 @@ std::optional<Regime> parseRegime(std::string_view label) {
   return {};
 }
 
+bool exactArithmetic(const FFTConfig& fft) { return !fft.FFT_FP64 && !fft.FFT_FP32; }
+
 float bitsPerWord(const FFTConfig& fft, u64 E) { return E / float(fft.size()); }
 
 Regime regimeOf(const FFTConfig& fft, u64 E) {

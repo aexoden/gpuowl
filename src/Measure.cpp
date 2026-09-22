@@ -112,7 +112,7 @@ Call timeCall(GpuCommon shared, const FFTConfig& fft, TestKind kind, u64 exponen
 RoeCheck roeCheck(GpuCommon shared, const FFTConfig& fft, const UseConfig& options, u64 exponent) {
   RoeCheck out{.minZ = minSafeZ(fft.shape.fft_type), .exponent = exponent};
 
-  if (!fft.FFT_FP64 && !fft.FFT_FP32) { return out; }
+  if (exactArithmetic(fft)) { return out; }
   out.applicable = true;
 
   auto gpu = Gpu::make(exponent, shared, fft, asExtraConf(options), false, TestKind::PRP);

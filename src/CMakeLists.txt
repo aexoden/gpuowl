@@ -31,6 +31,7 @@ add_executable(prpll
   Measure.cpp
   Restart.cpp
   GpuFault.cpp
+  Emit.cpp
   fs.cpp
   )
 
