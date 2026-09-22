@@ -97,6 +97,100 @@ double pessimisticCost(const Measurement& m) { return m.cost() * (1 + PESSIMISM_
 
 bool concluded(const Measurement& m) { return m.ok() && m.calls >= MIN_CALLS; }
 
+const char* toString(NoiseVerdict verdict) {
+  switch (verdict) {
+  case NoiseVerdict::TooFew: return "too few readings";
+  case NoiseVerdict::Matches: return "the error bars match what the readings do";
+  case NoiseVerdict::Conservative: return "the error bars are wider than they need to be";
+  case NoiseVerdict::Drifting: return "the device is drifting between readings";
+  case NoiseVerdict::Disturbed: return "the readings disagree by more than their error bars allow";
+  }
+
+  return "too few readings";
+}
+
+namespace {
+
+// `predicted` pools the individual error bars in quadrature, so one wide reading cannot be averaged away by narrow
+// ones; `bars` are those error bars, `values` the readings themselves, in the order taken.
+Spread spreadOf(std::span<const double> values, std::span<const double> bars) {
+  Spread out;
+  Stats const st = statsOf(values);
+  out.n = st.n;
+  out.mean = st.mean;
+  out.observed = st.sd;
+
+  if (st.n < 2) { return out; }
+
+  double sq = 0;
+  for (double const bar : bars) { sq += bar * bar; }
+  out.predicted = std::sqrt(sq / bars.size());
+
+  // Von Neumann's successive-difference estimator: blind to any smooth trend, so a device warming up leaves this
+  // alone while `observed` grows, and noise that is genuinely correlated moves both together.
+  double diffSq = 0;
+  for (size_t i = 1; i < values.size(); ++i) {
+    double const d = values[i] - values[i - 1];
+    diffSq += d * d;
+  }
+  out.neighbour = std::sqrt(diffSq / (2 * double(values.size() - 1)));
+  out.trend = values.back() - values.front();
+
+  return out;
+}
+
+Measurement asMeasurement(const CallSummary& c) {
+  return {.mean = c.mean, .stddev = c.sd, .blocks = c.blocks, .calls = 1, .drift = c.drift, .status = Status::Ok};
+}
+
+}  // namespace
+
+NoiseReport noiseOf(std::span<const CallSummary> calls, u32 callsPerRow) {
+  NoiseReport out;
+  out.callsPerRow = std::max(callsPerRow, 1u);
+
+  std::vector<double> callMeans;
+  std::vector<double> callBars;
+  for (const CallSummary& c : calls) {
+    Measurement const m = asMeasurement(c);
+    callMeans.push_back(m.cost());
+    callBars.push_back(c.blocks > 1 ? m.costStddev() / std::sqrt(double(c.blocks)) : 0);
+  }
+  out.call = spreadOf(callMeans, callBars);
+
+  std::vector<double> rowMeans;
+  std::vector<double> rowBars;
+  for (size_t i = 0; i + out.callsPerRow <= calls.size(); i += out.callsPerRow) {
+    Measurement row = asMeasurement(calls[i]);
+    for (u32 k = 1; k < out.callsPerRow; ++k) { mergeInto(row, asMeasurement(calls[i + k])); }
+    rowMeans.push_back(row.cost());
+    rowBars.push_back(standardError(row));
+  }
+  out.row = spreadOf(rowMeans, rowBars);
+
+  if (out.row.n < 2) { return out; }
+
+  double blocks = 0;
+  for (const CallSummary& c : calls) { blocks += c.blocks; }
+  blocks /= double(calls.size());
+
+  bool const trendShaped = out.call.neighbour > 0 && out.call.observed > NOISE_TREND_SHAPE * out.call.neighbour;
+
+  if (trendShaped && out.row.ratio() > NOISE_DRIFTING) {
+    out.verdict = NoiseVerdict::Drifting;
+  } else if (out.call.detrended() > NOISE_BLOCK_SIGMAS * std::sqrt(std::max(1.0, blocks))) {
+    out.verdict = NoiseVerdict::Disturbed;
+  } else if (out.row.detrended() > NOISE_DISTURBED) {
+    out.verdict = NoiseVerdict::Disturbed;
+  } else if (out.row.detrended() * NOISE_CONSERVATIVE * std::sqrt(std::max(1.0, blocks)) < 1) {
+    out.verdict = NoiseVerdict::Conservative;
+  } else {
+    out.verdict = NoiseVerdict::Matches;
+  }
+
+  return out;
+}
+
 void mergeInto(Measurement& into, const Measurement& add) {
   if (add.status != Status::Ok) {
     into = add;

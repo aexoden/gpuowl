@@ -218,7 +218,7 @@ int main(int argc, char **argv) {
     if (args.dumpOptions) {
       if (tune::dumpOptionSpace(tune::detectEnv(context, args), FFTConfig{args.optionsFft})) { exitCode = EXIT_FAILED; }
     } else if (args.doMeasure) {
-      switch (tune::runMeasure(shared, args.measureFft, args.prpExp)) {
+      switch (tune::runMeasure(shared, tune::parseMeasureArgs(args.measureSpec))) {
         case tune::MeasureOutcome::Ok: break;
         case tune::MeasureOutcome::Failed: exitCode = EXIT_FAILED; break;
         case tune::MeasureOutcome::DeviceLost: exitCode = restartOrReport(); break;

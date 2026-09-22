@@ -38,6 +38,15 @@ struct Call {
 
   // The options the kernels were built with.
   UseConfig ran;
+
+  // Wall-clock seconds, so that what an item costs can be told from what it measures: building the Gpu (a compile
+  // included, on a cold kernel cache) against the timed blocks themselves.
+  double buildSec = 0;
+  double timedSec = 0;
+
+  [[nodiscard]] CallSummary summary(double drift = 1) const {
+    return {.mean = measurement.mean, .sd = measurement.stddev, .blocks = measurement.blocks, .drift = drift};
+  }
 };
 
 // Spike rejection and the statistics over what survives.  Pure; a failed Gerbicz check makes the row an error.
@@ -97,6 +106,11 @@ public:
   // Returns the reason the configuration is never built again here.
   [[nodiscard]] std::string held(const FFTConfig& fft, TestKind kind, u64 exponent, const UseConfig& options) const;
 
+  // Runs one configuration and discards the reading.  The first Gpu of a process is slow everywhere it has been
+  // measured, and a session that does not absorb that charges it to whichever configuration it happens to run first.
+  Call warmUp(const FFTConfig& fft, TestKind kind, u64 exponent, const UseConfig& options,
+              u32 nBlocks = BLOCKS_PER_CALL, u32 blockSize = 1000);
+
   // Runs one configuration, returning its call result.
   [[nodiscard]] Call run(const FFTConfig& fft, TestKind kind, u64 exponent, const UseConfig& options,
                          u32 nBlocks = BLOCKS_PER_CALL, u32 blockSize = 1000);
@@ -118,6 +132,9 @@ public:
   [[nodiscard]] bool deviceLost() const { return deviceLost_; }
 
 private:
+  [[nodiscard]] Call runCall(const FFTConfig& fft, TestKind kind, u64 exponent, const UseConfig& options, u32 nBlocks,
+                             u32 blockSize, bool record);
+
   // Whether the context can still do anything at all.
   [[nodiscard]] bool deviceUsable();
 
@@ -153,8 +170,30 @@ private:
 
 enum class MeasureOutcome : u8 { Ok, Failed, DeviceLost };
 
-// The -measure subcommand: times one configuration, prints its blocks, reports its rounding error, and records what it
-// found in the tuning database alongside the attempt it declared first.
-[[nodiscard]] MeasureOutcome runMeasure(GpuCommon shared, const std::string& fftSpec, u64 exponent);
+// What -measure was asked for: an FFT spec and then comma-separated settings.
+struct MeasureArgs {
+  std::string fft;
+
+  // A second, different configuration timed alternately with the first, whose readings stand in for the drift anchor.
+  // Empty for no anchor, which leaves the readings as measured.
+  std::string anchorFft;
+
+  u64 exponent = 0;  // 0: the top of the FFT's range
+
+  u32 calls = 8;
+  u32 blocks = BLOCKS_PER_CALL;
+  u32 blockSize = 0;  // 0: the production block size
+
+  bool roe = true;
+  bool drain = false;
+};
+
+// Pure.  Throws a message for anything it does not understand, so a mistyped setting is a usage error.
+[[nodiscard]] MeasureArgs parseMeasureArgs(std::string_view text);
+
+// The -measure subcommand: times one configuration repeatedly and reports whether the error bar a row declares
+// describes how far independent readings of it actually move.  Also prints what one call spends on construction, what
+// its rounding error is, and records every reading in the tuning database alongside the attempt it declared first.
+[[nodiscard]] MeasureOutcome runMeasure(GpuCommon shared, const MeasureArgs& want);
 
 }  // namespace tune

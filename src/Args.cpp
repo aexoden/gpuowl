@@ -2,6 +2,7 @@
 
 #include "Args.h"
 #include "FFTVariants.h"
+#include "Measure.h"
 #include "File.h"
 #include "clwrap.h"
 #include "gpuid.h"
@@ -182,8 +183,11 @@ its reach.
 -info <fft>        : print detailed information about the given FFT; e.g. -info 1K:13:256
 -options [<fft>]   : print the -use options this build knows, resolved for this GPU and <fft> (default 512:15:512),
                      with the tuner's groups and combo clusters, then check the option table (exit 1 if it fails)
--measure <fft>     : time <fft> in production-sized blocks and report its per-block costs, its residue and its
-                     rounding error, at the exponent given by -prp or, without one, the top of the FFT's range
+-measure <fft>[,<k>=<v>...] : time <fft> repeatedly in production-sized blocks and report whether the error bar it
+                     declares describes how far its readings move, plus its per-call construction cost, its residue
+                     and its rounding error, at the exponent given by -prp or, without one, the top of its range.
+                     Settings: n=<calls> (8), blocks=<per call>, block=<iterations>, exp=<E>, anchor=<fft> (time a
+                     second configuration alternately and correct for its drift), roe=0|1, drain=0|1
 -dir <folder>      : specify local work directory (containing worktodo-<N>.txt, results-<N>.txt, config.txt,
                      gpuowl-<N>.log)
 -pool <dir>        : specify a directory with the shared (pooled) worktodo.txt and config.txt
@@ -385,8 +389,8 @@ void Args::parse(const string& line, bool fromConfigFile) {
       // context exists.
       if (s.empty()) { throw "-measure needs an FFT spec"; }
       doMeasure = true;
-      measureFft = s;
-      (void) FFTConfig{measureFft};
+      measureSpec = s;
+      (void)tune::parseMeasureArgs(measureSpec);
     } else if (key == "-options") {
       // Resolving the table needs the GPU, so main() does this once a context exists.
       dumpOptions = true;
