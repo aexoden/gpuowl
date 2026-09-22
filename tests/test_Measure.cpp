@@ -5,10 +5,12 @@
 
 #include "test.h"
 
+#include "BuildId.h"
 #include "Gpu.h"
 #include "Measure.h"
 
 #include <cmath>
+#include <cstdio>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -204,6 +206,7 @@ TEST(a_bare_spec_measures_with_every_default) {
   CHECK(a.anchorFft.empty());
   CHECK(a.roe);
   CHECK(!a.drain);
+  CHECK(a.drift);
 }
 
 TEST(every_setting_is_read_off_the_spec) {
@@ -218,6 +221,12 @@ TEST(every_setting_is_read_off_the_spec) {
   CHECK_EQ(a.blockSize, 500u);
   CHECK(!a.roe);
   CHECK(a.drain);
+
+  // The scheduled anchor and the alternating one correct for the same thing; naming the second turns the first off.
+  CHECK(!a.drift);
+  CHECK(!parseMeasureArgs("512:15:512:202,drift=0").drift);
+  CHECK(parseMeasureArgs("512:15:512:202,drift=1").drift);
+  CHECK(rejected("512:15:512:202,drift=yes"));
 }
 
 TEST(the_spec_can_also_be_named_by_key) {
@@ -243,4 +252,107 @@ TEST(a_mistyped_setting_is_refused_rather_than_ignored) {
   CHECK(rejected("512:15:512,"));               // a trailing comma leaves an empty token
   CHECK(rejected("nonsense:spec"));             // not an FFT the parser accepts
   CHECK(rejected("512:15:512,anchor=nope:x"));  // nor is the anchor
+}
+
+namespace {
+
+// A session needs a database and an Env to open, and neither needs a device: what is exercised below is which anchor
+// the session adopts and what it divides by, all of which happens before anything is built.
+Env const NVIDIA{.isNvidia = true, .computeCapability = 806, .deviceName = "a card", .driverVersion = "1"};
+
+TuneDB dbOf(const std::string& rows) {
+  TuneDB db;
+  CHECK(db.parse(std::string{TuneDB::HEADER} + '\n' + rows, "fixture"));
+  return db;
+}
+
+}  // namespace
+
+TEST(a_session_picks_an_anchor_at_the_exponent_it_probes) {
+  TuneDB db;
+  Session session{GpuCommon{}, db, NVIDIA};
+  CHECK(session.begin(118'063'003));
+
+  auto const want = chooseAnchor(118'063'003);
+  CHECK(want.has_value());
+  CHECK_EQ(session.anchor().text(), want->text());
+  CHECK_EQ(db.sessions().at(0).anchor, want->text());
+  CHECK_EQ(session.drift(), 1.0);
+}
+
+TEST(a_session_with_no_probe_is_unanchored) {
+  TuneDB db;
+  Session session{GpuCommon{}, db, NVIDIA};
+  CHECK(session.begin());
+
+  CHECK(!session.anchor().valid());
+  CHECK_EQ(db.sessions().at(0).anchor, std::string{});
+  CHECK_EQ(session.drift(), 1.0);
+}
+
+TEST(a_later_session_takes_the_anchor_its_env_is_pinned_to) {
+  // The first session of the env chose 512:15:512:212 at an exponent this one is not probing; it still divides by the
+  // movement of that, since a ratio against anything else says nothing about the rows already stored.
+  TuneDB db =
+    dbOf("env   1 gpu=\"a card\" name=\"a card\" drv=1 vendor=nvidia be=ocl cc=806 noasm=0 pdl=0 machine=- build=" +
+         [] {
+           char b[32];
+           snprintf(b, sizeof(b), "%016llx", (unsigned long long)buildFingerprint());
+           return std::string{b};
+         }() +
+         "\n"
+         "cfg   1 -\n"
+         "sess  1 env=1 start=1753471200 gen=0 anchor=512:15:512:212@143400073\n"
+         "anchor 1 512:15:512:212 143400073 1 1774.230 1.0000 1753471410\n");
+
+  Session session{GpuCommon{}, db, NVIDIA};
+  CHECK(session.begin(118'063'003));
+
+  CHECK_EQ(session.anchor().text(), std::string{"512:15:512:212@143400073"});
+  CHECK_EQ(db.sessions().at(1).anchor, std::string{"512:15:512:212@143400073"});
+  CHECK_EQ(db.sessions().at(1).env, 1u);
+}
+
+TEST(an_env_of_other_kernels_is_not_this_ones_anchor) {
+  // Same card, another build: a new env, so the anchor and the baseline are chosen afresh rather than inherited from
+  // measurements taken against kernels this binary no longer has.
+  TuneDB db =
+    dbOf("env   1 gpu=\"a card\" name=\"a card\" drv=1 vendor=nvidia be=ocl cc=806 noasm=0 pdl=0 machine=- build=dead\n"
+         "cfg   1 -\n"
+         "sess  1 env=1 start=1753471200 gen=0 anchor=512:15:512:212@143400073\n"
+         "anchor 1 512:15:512:212 143400073 1 1774.230 1.0000 1753471410\n");
+
+  Session session{GpuCommon{}, db, NVIDIA};
+  CHECK(session.begin(118'063'003));
+
+  CHECK_EQ(db.envs().size(), size_t{2});
+  CHECK_EQ(session.envId(), 2u);
+  CHECK_EQ(session.anchor().text(), chooseAnchor(118'063'003)->text());
+}
+
+TEST(an_anchor_a_generation_died_on_is_not_built_again) {
+  // The restart unit re-execs the same command, so a configuration that took the device down is named by the env and
+  // re-timed by every generation. held() is what stops that, and the anchor is subject to it like anything else.
+  std::string const build = [] {
+    char b[32];
+    snprintf(b, sizeof(b), "%016llx", (unsigned long long)buildFingerprint());
+    return std::string{b};
+  }();
+  auto const anchor = chooseAnchor(118'063'003);
+  CHECK(anchor.has_value());
+
+  TuneDB db = dbOf("env   1 gpu=\"a card\" name=\"a card\" drv=1 vendor=nvidia be=ocl cc=806 noasm=0 pdl=0 machine=-"
+                   " build=" +
+                   build +
+                   "\n"
+                   "cfg   1 -\n"
+                   "sess  1 env=1 start=1753471200 gen=0 anchor=" +
+                   anchor->text() +
+                   "\n"
+                   "try   1 " +
+                   anchor->fft + " prp " + to_string(anchor->exponent) + " 1 1753471250\n");
+
+  Session session{GpuCommon{}, db, NVIDIA};
+  CHECK(session.begin(118'063'003));
+  CHECK(!session.held(FFTConfig{anchor->fft}, TestKind::PRP, anchor->exponent, {}).empty());
 }

@@ -5,6 +5,7 @@
 
 #include "TuneDB.h"
 
+#include "BuildId.h"
 #include "File.h"
 #include "test.h"
 
@@ -30,6 +31,8 @@ const char* const FIXTURE =
   "run   4 512:15:512:212 ll 143400073 short32 1 1801.000 3.000 8 2 0.9980 err 1753471300\n"
   "nogo  4 512:15:512:212 SHUFL_BYTES_W=16 1753471260\n"
   "roe   4 512:15:512:212 143400073 17 29.40 118 0.371094 ok 1753471402\n"
+  "anchor 4 512:15:512:212 143400073 1 1774.230 1.0000 1753471410\n"
+  "anchor 5 512:15:512:212 143400073 1 1792.000 1.0100 1753481410\n"
   "reach 4 512:15:512:212 prp short32 17 148000000 confirmed 1753471460\n"
   "ref   5 512:15:512:212 1000151 2000 171f3662c332472f 1753471480\n"
   "try   4 512:15:512:212 prp 143400073 17 1753471250\n"
@@ -124,6 +127,17 @@ TEST(rows_are_read) {
   CHECK_EQ(db.roes().at(0).z, 29.40);
   CHECK_EQ(db.roes().at(0).n, 118u);
   CHECK(db.roes().at(0).checkOk);
+
+  CHECK_EQ(db.anchors().size(), size_t{2});
+  CHECK_EQ(db.anchors().at(0).mean, 1774.23);
+  CHECK_EQ(db.anchors().at(0).ratio, 1.0);
+  CHECK_EQ(db.anchors().at(1).ratio, 1.01);
+
+  // The env is pinned to the anchor its earliest session named, and its baseline is the first reading of it.
+  CHECK_EQ(db.envAnchor(1), std::string{"512:15:512:212@143400073"});
+  CHECK_EQ(db.envAnchor(2), std::string{});
+  CHECK(db.envBaseline(1) == &db.anchors().at(0));
+  CHECK(db.envBaseline(2) == nullptr);
 
   CHECK_EQ(db.reaches().size(), size_t{1});
   CHECK_EQ(db.reaches().at(0).reach, u64{148'000'000});
@@ -582,4 +596,85 @@ TEST(only_one_process_may_write_a_database) {
   CHECK(fourth.lockForWriting(path));
 
   fs::remove(path);
+}
+
+TEST(an_alarm_row_flags_the_session_it_names) {
+  // A session's row is written before its anchor has ever been timed, so the flag arrives later as a row of its own
+  // and a rewrite puts it back where the grammar keeps it.
+  std::string const text = withRow("sess  5 env=1 start=1753481200 gen=1 anchor=- alarmed=1",
+                                   "sess  5 env=1 start=1753481200 gen=1 anchor=-") +
+    "alarm 5 1753481500\n";
+
+  TuneDB const db = loaded(text);
+  CHECK(!db.sessions().at(0).alarmed);
+  CHECK(db.sessions().at(1).alarmed);
+  CHECK(db.text().find("alarm 5") == std::string::npos);
+  CHECK(db.text().find("anchor=- alarmed=1") != std::string::npos);
+}
+
+TEST(an_alarm_is_recorded_once) {
+  TuneDB db = loaded(FIXTURE);
+  CHECK(db.add(AlarmRow{.sess = 4, .ts = 1'753'471'600}));
+  CHECK(db.sessions().at(0).alarmed);
+
+  // Already flagged: nothing more to say, and nothing more to write.
+  CHECK(db.add(AlarmRow{.sess = 4, .ts = 1'753'471'700}));
+  CHECK(!db.add(AlarmRow{.sess = 99, .ts = 1'753'471'700}));
+}
+
+TEST(a_malformed_anchor_row_is_refused) {
+  rejects("anchor 4 512:15:512:212 143400073 1 1774.230 1.0000 1753471410",
+          "anchor 4 512:15:512:212 143400073 1 1774.230 1.0000");
+  rejects("anchor 4 512:15:512:212 143400073 1 1774.230 1.0000 1753471410",
+          "anchor 4 512:15:512:212 143400073 1 1774.230 0.0000 1753471410");
+  rejects("anchor 4 512:15:512:212 143400073 1 1774.230 1.0000 1753471410",
+          "anchor 4 512:15:512:212 143400073 1 -1.000 1.0000 1753471410");
+  rejects("anchor 4 512:15:512:212 143400073 1 1774.230 1.0000 1753471410",
+          "anchor 4 512:15:512:212 143400073 99 1774.230 1.0000 1753471410");
+
+  TuneDB db;
+  CHECK(!db.parse(std::string{FIXTURE} + "alarm 5 later\n", "fixture"));
+  CHECK(!db.parse(std::string{FIXTURE} + "alarm 99 1753481500\n", "fixture"));
+}
+
+TEST(an_anchor_row_answers_the_attempt_it_followed) {
+  TuneDB db = loaded(FIXTURE);
+  CHECK_EQ(db.diedHolding().size(), size_t{1});
+  CHECK(db.add(AnchorRow{.sess = 5,
+                         .fft = "512:15:512:212",
+                         .exponent = 143'400'073,
+                         .cfg = 1,
+                         .mean = 1800,
+                         .ratio = 1.014,
+                         .ts = 1'753'481'600}));
+  CHECK(db.diedHolding().empty());
+}
+
+TEST(an_env_row_carries_this_builds_kernels) {
+  DbEnv const fresh = dbEnvOf(Env{.isNvidia = true, .computeCapability = 806});
+  CHECK_EQ(fresh.build, buildFingerprint());
+  CHECK(fresh.build != 0);
+
+  // A row measured against other kernels is another env, however much of the machine it shares.
+  DbEnv other = fresh;
+  other.build = fresh.build + 1;
+  CHECK(!fresh.sameMachine(other));
+  CHECK(fresh.sameMachine(fresh));
+}
+
+TEST(a_baseline_is_found_however_its_anchor_was_spelled) {
+  // An explicit FP64 type digit and an unstated variant both name the configuration the rows were measured under.
+  std::string const text = withRow("sess  4 env=1 start=1753471200 gen=0 anchor=512:15:512:212@143400073",
+                                   "sess  4 env=1 start=1753471200 gen=0 anchor=0:512:15:512@143400073");
+  TuneDB const db = loaded(text);
+  CHECK(db.envBaseline(1) == &db.anchors().at(0));
+}
+
+TEST(a_baseline_belongs_to_the_anchor_its_env_is_pinned_to) {
+  // A reading of something else -- an env re-pinned by hand, or a row from a build that chose differently -- is not
+  // this env's baseline.
+  std::string const text = withRow("anchor 4 512:15:512:212 143400073 1 1774.230 1.0000 1753471410",
+                                   "anchor 4 512:15:512:212 143400071 1 1774.230 1.0000 1753471410");
+  TuneDB const db = loaded(text);
+  CHECK(db.envBaseline(1) == &db.anchors().at(1));
 }

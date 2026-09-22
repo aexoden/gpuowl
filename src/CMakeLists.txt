@@ -26,6 +26,8 @@ add_executable(prpll
   TuneDB.cpp
   Selection.cpp
   Stats.cpp
+  Anchor.cpp
+  BuildId.cpp
   Measure.cpp
   Restart.cpp
   GpuFault.cpp

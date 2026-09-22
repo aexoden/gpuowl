@@ -2,6 +2,8 @@
 
 #include "TuneDB.h"
 
+#include "Anchor.h"
+#include "BuildId.h"
 #include "CycleFile.h"
 #include "File.h"
 #include "log.h"
@@ -263,7 +265,7 @@ DbEnv dbEnvOf(const Env& env) {
                .pdlLaunch = env.pdlLaunch,
                .computeCapability = env.computeCapability,
                .machine = {},
-               .build = 0,
+               .build = buildFingerprint(),
                .extra = {}};
 }
 
@@ -328,6 +330,15 @@ std::string formatRow(const ReachRow& row) {
   return "reach " + to_string(row.sess) + ' ' + row.fft + ' ' + toString(row.kind) + ' ' + row.regime.label() + ' ' +
     to_string(row.cfg) + ' ' + to_string(row.reach) + ' ' + toString(row.evidence) + ' ' + to_string(row.ts);
 }
+
+std::string formatRow(const AnchorRow& row) {
+  char reading[64];
+  snprintf(reading, sizeof(reading), "%.3f", row.mean);
+  return "anchor " + to_string(row.sess) + ' ' + row.fft + ' ' + to_string(row.exponent) + ' ' + to_string(row.cfg) +
+    ' ' + reading + ' ' + driftText(row.ratio) + ' ' + to_string(row.ts);
+}
+
+std::string formatRow(const AlarmRow& row) { return "alarm " + to_string(row.sess) + ' ' + to_string(row.ts); }
 
 std::string formatRow(const RefRow& row) {
   return "ref   " + to_string(row.sess) + ' ' + row.fft + ' ' + to_string(row.exponent) + ' ' + to_string(row.iters) +
@@ -494,6 +505,25 @@ bool TuneDB::add(const RoeRow& row) {
   return true;
 }
 
+bool TuneDB::add(const AnchorRow& row) {
+  if (!findSession(row.sess) || !findCfg(row.cfg) || isSealed(row.sess)) { return false; }
+  if (!std::isfinite(row.mean) || row.mean < 0 || !parsePositive(driftText(row.ratio))) { return false; }
+  u64 const ts = row.ts;
+  if (!record(anchors_, row)) { return false; }
+  noteRow(row.sess, ts);
+  return true;
+}
+
+bool TuneDB::add(const AlarmRow& row) {
+  auto const sess = std::ranges::find(sessions_, row.sess, &SessRow::id);
+  if (sess == sessions_.end() || isSealed(row.sess)) { return false; }
+  if (sess->alarmed) { return true; }
+  if (!append(formatRow(row))) { return false; }
+  sess->alarmed = true;
+  noteRow(row.sess, row.ts);
+  return true;
+}
+
 bool TuneDB::add(const ReachRow& row) {
   if (!findSession(row.sess) || !findCfg(row.cfg) || isSealed(row.sess)) { return false; }
   u64 const ts = row.ts;
@@ -558,6 +588,28 @@ u32 TuneDB::beginSession(u32 env, const std::string& anchor, u32 gen, u64 start)
   return row.id;
 }
 
+std::string TuneDB::envAnchor(u32 env) const {
+  const SessRow* first = nullptr;
+  for (const SessRow& s : sessions_) {
+    if (s.env != env || s.anchor.empty()) { continue; }
+    if (!first || s.id < first->id) { first = &s; }
+  }
+  return first ? first->anchor : std::string{};
+}
+
+const AnchorRow* TuneDB::envBaseline(u32 env) const {
+  // Through the parser on both sides, so that a spec spelled another way in a hand-written file still names the rows
+  // that were measured under it.
+  auto const pinned = parseAnchorSpec(envAnchor(env));
+  if (!pinned) { return nullptr; }
+
+  for (const AnchorRow& r : anchors_) {
+    if (envOf(r.sess) != env) { continue; }
+    if (AnchorSpec{.fft = r.fft, .exponent = r.exponent} == *pinned) { return &r; }
+  }
+  return nullptr;
+}
+
 u32 TuneDB::envOf(u32 sess) const {
   const SessRow* const row = findSession(sess);
   return row ? row->env : 0;
@@ -617,6 +669,7 @@ void TuneDB::clear() {
   tries_.clear();
   nogos_.clear();
   roes_.clear();
+  anchors_.clear();
   reaches_.clear();
   refs_.clear();
   unknown_.clear();
@@ -865,11 +918,23 @@ bool TuneDB::parse(std::string_view text, std::string_view name) {
       if (!ts) { refuse("'" + f[2] + "' is not a timestamp"); }
       if (!sess || !ts) { continue; }
       if (!add(DoneRow{.sess = *sess, .ts = *ts})) { refuse("done row names a session that is not declared"); }
-    } else if (tag == "run" || tag == "try" || tag == "nogo" || tag == "roe" || tag == "reach" || tag == "ref") {
+    } else if (tag == "alarm") {
+      if (f.size() != 3) {
+        refuse("alarm row has " + to_string(f.size()) + " fields, expected 3");
+        continue;
+      }
+      std::optional<u32> const sess = sessionOf();
+      auto const ts = parseInt<u64>(f[2]);
+      if (!ts) { refuse("'" + f[2] + "' is not a timestamp"); }
+      if (!sess || !ts) { continue; }
+      if (!add(AlarmRow{.sess = *sess, .ts = *ts})) { refuse("alarm row names a session that is not declared"); }
+    } else if (tag == "run" || tag == "try" || tag == "nogo" || tag == "roe" || tag == "anchor" || tag == "reach" ||
+               tag == "ref") {
       size_t const want = tag == "run" ? 14
         : tag == "try"                 ? 7
         : tag == "nogo"                ? 5
         : tag == "roe"                 ? 10
+        : tag == "anchor"              ? 8
         : tag == "reach"               ? 9
                                        : 7;
       if (f.size() != want) {
@@ -965,6 +1030,20 @@ bool TuneDB::parse(std::string_view text, std::string_view name) {
                          .ts = *ts};
         if (!add(row)) { refuse("roe row holds a value this format cannot write back"); }
 
+      } else if (tag == "anchor") {
+        auto const exponent = parseInt<u64>(f[3]);
+        std::optional<u32> cfg;
+        cfgOf(f[4], cfg);
+        auto const mean = parseNonNegative(f[5]);
+        auto const ratio = parsePositive(f[6]);
+        auto const ts = parseInt<u64>(f[7]);
+        if (!exponent) { refuse("'" + f[3] + "' is not an exponent"); }
+        if (!mean || !ratio) { refuse("anchor row has a malformed reading"); }
+        if (!ts) { refuse("'" + f[7] + "' is not a timestamp"); }
+        if (!exponent || !cfg || !mean || !ratio || !ts) { continue; }
+        AnchorRow const row{
+          .sess = *sess, .fft = *fft, .exponent = *exponent, .cfg = *cfg, .mean = *mean, .ratio = *ratio, .ts = *ts};
+        if (!add(row)) { refuse("anchor row holds a value this format cannot write back"); }
       } else if (tag == "reach") {
         auto const kind = parseTestKind(f[3]);
         auto const regime = parseRegime(f[4]);
@@ -1033,6 +1112,7 @@ std::string TuneDB::text() const {
   for (const RunRow& r : runs_) { out += formatRow(r) + '\n'; }
   for (const NogoRow& r : nogos_) { out += formatRow(r) + '\n'; }
   for (const RoeRow& r : roes_) { out += formatRow(r) + '\n'; }
+  for (const AnchorRow& r : anchors_) { out += formatRow(r) + '\n'; }
   for (const ReachRow& r : reaches_) { out += formatRow(r) + '\n'; }
   for (const RefRow& r : refs_) { out += formatRow(r) + '\n'; }
   for (const TryRow& r : tries_) { out += formatRow(r) + '\n'; }

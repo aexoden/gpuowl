@@ -46,6 +46,8 @@
     <ClCompile Include=".\src\log.cpp" />
     <ClCompile Include=".\src\main.cpp" />
     <ClCompile Include=".\src\md5.cpp" />
+    <ClCompile Include=".\src\Anchor.cpp" />
+    <ClCompile Include=".\src\BuildId.cpp" />
     <ClCompile Include=".\src\Measure.cpp" />
     <ClCompile Include=".\src\OptionSpace.cpp" />
     <ClCompile Include=".\src\Primes.cpp" />
