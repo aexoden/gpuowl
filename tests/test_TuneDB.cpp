@@ -364,8 +364,10 @@ TEST(option_sets_round_trip) {
   UseConfig const two{{"PAD", "256"}, {"INPLACE", "1"}};
   CHECK_EQ(configText(two), std::string{"INPLACE=1,PAD=256"});
   CHECK(parseConfigText("-")->empty());
-  CHECK_EQ(parseConfigText("INPLACE=1,PAD=256")->at("PAD"), std::string{"256"});
-  CHECK_EQ(parseConfigText("DEBUG")->at("DEBUG"), std::string{"1"});  // the bare '-use KEY' spelling
+  auto const pair = parseConfigText("INPLACE=1,PAD=256");
+  CHECK_EQ(pair->at("PAD"), std::string{"256"});
+  auto const bare = parseConfigText("DEBUG");  // the bare '-use KEY' spelling
+  CHECK_EQ(bare->at("DEBUG"), std::string{"1"});
   CHECK(!parseConfigText(""));
   CHECK(!parseConfigText("INPLACE=1,"));
 }
@@ -440,8 +442,12 @@ struct Attached {
   }
 
   [[nodiscard]] TryRow attempt(u32 cfg) const {
-    return TryRow{.sess = sess, .fft = "512:15:512:212", .kind = TestKind::PRP, .exponent = 143'400'073, .cfg = cfg,
-                  .ts = 1753471250};
+    return TryRow{.sess = sess,
+                  .fft = "512:15:512:212",
+                  .kind = TestKind::PRP,
+                  .exponent = 143'400'073,
+                  .cfg = cfg,
+                  .ts = 1'753'471'250};
   }
 };
 
@@ -475,7 +481,7 @@ TEST(a_result_answers_the_attempt_it_followed) {
                         .exponent = 143'400'073,
                         .regime = regimeOf(FFTConfig{"512:15:512:212"}, 143'400'073),
                         .cfg = cfg,
-                        .m = {.mean = 1000, .stddev = 1, .blocks = 4, .calls = 1, .ts = 1753471260}}));
+                        .m = {.mean = 1000, .stddev = 1, .blocks = 4, .calls = 1, .ts = 1'753'471'260}}));
 
   CHECK(a.reread().diedHolding().empty());
 }
@@ -500,7 +506,7 @@ TEST(a_stop_answers_the_attempt_and_a_death_does_not) {
                             .exponent = 143'400'073,
                             .regime = {},
                             .cfg = cfg2,
-                            .m = {.mean = 1000, .blocks = 4, .calls = 1, .ts = 1753471260}}));
+                            .m = {.mean = 1000, .blocks = 4, .calls = 1, .ts = 1'753'471'260}}));
   lost.db.closeTry(lost.sess);
   CHECK_EQ(lost.reread().diedHolding().size(), size_t{1});
 }
@@ -523,8 +529,8 @@ TEST(this_processs_own_attempt_is_in_flight_rather_than_fatal) {
 
 TEST(a_key_that_will_not_build_is_excluded_whatever_else_is_set) {
   Attached a{"prpll-test-nogo.txt"};
-  CHECK(a.db.add(NogoRow{.sess = a.sess, .fft = "512:15:512:212", .key = "SHUFL_BYTES_W", .val = "16",
-                         .ts = 1753471260}));
+  CHECK(a.db.add(
+    NogoRow{.sess = a.sess, .fft = "512:15:512:212", .key = "SHUFL_BYTES_W", .val = "16", .ts = 1'753'471'260}));
 
   TuneDB const next = a.reread();
   CHECK(next.isNogo(1, "512:15:512:212", UseConfig{{"PAD", "256"}, {"SHUFL_BYTES_W", "16"}}));
@@ -677,4 +683,302 @@ TEST(a_baseline_belongs_to_the_anchor_its_env_is_pinned_to) {
                                    "anchor 4 512:15:512:212 143400071 1 1774.230 1.0000 1753471410");
   TuneDB const db = loaded(text);
   CHECK(db.envBaseline(1) == &db.anchors().at(1));
+}
+
+namespace {
+
+// Two envs that are the same card under two kernel builds, each with readings of its own, plus a pair of duplicate
+// readings inside one env and a second spelling of one option set.
+const char* const FOLDING =
+  "# prpll tunedb v1\n"
+  "env   1 gpu=\"a card\" name=\"a card\" drv=1.0 vendor=nvidia be=ocl cc=806 noasm=0 pdl=0 machine=01:00.0"
+  " build=1111111111111111\n"
+  "env   2 gpu=\"a card\" name=\"a card\" drv=1.0 vendor=nvidia be=ocl cc=806 noasm=0 pdl=0 machine=01:00.0"
+  " build=2222222222222222\n"
+  "cfg   1 PAD=256\n"
+  "cfg   2 PAD=256\n"
+  "cfg   3 PAD=128\n"
+  "sess  1 env=1 start=1000 gen=0 anchor=512:15:512:212@143400073\n"
+  "sess  2 env=1 start=2000 gen=0 anchor=512:15:512:212@143400073\n"
+  "sess  3 env=2 start=3000 gen=0 anchor=512:15:512:212@143400073\n"
+  "run   1 512:15:512:212 prp 143400073 short32 1 1000.000 0.000 4 1 1.0000 ok 1100\n"
+  "run   2 512:15:512:212 prp 143400073 short32 2 1010.000 0.000 4 1 1.0000 ok 2100\n"
+  "run   1 512:15:512:212 prp 143400073 short32 3 1500.000 0.000 4 1 1.0000 ok 1200\n"
+  "run   3 512:15:512:212 prp 143400073 short32 1 1400.000 0.000 4 1 1.0000 ok 3100\n"
+  "nogo  1 256:2:256:212 SHUFL_BYTES_W=16 1150\n"
+  "roe   1 512:15:512:212 143400073 1 29.40 118 0.371094 ok 1300\n"
+  "roe   2 512:15:512:212 143400073 1 31.00 200 0.400000 fail 2300\n"
+  "reach 1 512:15:512:212 prp short32 1 148000000 unvalidated 1400\n"
+  "reach 2 512:15:512:212 prp short32 1 149000000 confirmed 2400\n"
+  "ref   1 512:15:512:212 1000151 2000 171f3662c332472f 1500\n";
+
+// The fixture above with one row replaced.
+std::string withRow(const std::string& original, const std::string& replacement, const std::string& text) {
+  auto const at = text.find(original);
+  CHECK(at != std::string::npos);
+  std::string out = text;
+  return out.replace(at, original.size(), replacement);
+}
+
+const RunRow* runAt(const std::vector<RunRow>& rows, u64 exponent, u32 cfg) {
+  for (const RunRow& r : rows) {
+    if (r.exponent == exponent && r.cfg == cfg) { return &r; }
+  }
+  return nullptr;
+}
+
+}  // namespace
+
+TEST(duplicate_readings_of_one_configuration_pool) {
+  TuneDB const db = loaded(FOLDING);
+  CHECK_EQ(db.runs().size(), size_t{4});
+
+  // Three keys: the same options at 1 and 2 in env 1, PAD=128 in env 1, and env 2's own reading, which is a different
+  // kernel build and so never enters the comparison.
+  auto const merged = db.mergedRuns();
+  CHECK_EQ(merged.size(), size_t{3});
+
+  const RunRow* const pooled = runAt(merged, 143'400'073, 1);
+  CHECK(pooled);
+  CHECK_EQ(pooled->m.mean, 1005.0);
+  CHECK_EQ(pooled->m.blocks, 8u);
+  CHECK_EQ(pooled->m.calls, 2u);
+  // The spread the two readings really showed, which neither row declared on its own.
+  CHECK(pooled->m.stddev > 5.34 && pooled->m.stddev < 5.35);
+  CHECK_EQ(pooled->m.ts, u64{2100});
+
+  CHECK_EQ(runAt(merged, 143'400'073, 3)->m.mean, 1500.0);
+}
+
+TEST(a_failure_does_not_average_with_a_reading) {
+  std::string const okThenErr =
+    withRow("run   2 512:15:512:212 prp 143400073 short32 2 1010.000 0.000 4 1 1.0000 ok 2100",
+            "run   2 512:15:512:212 prp 143400073 short32 2 1010.000 0.000 4 1 1.0000 err 2100", FOLDING);
+  auto const afterErr = loaded(okThenErr).mergedRuns();
+  const RunRow* const failed = runAt(afterErr, 143'400'073, 1);
+  CHECK(failed->m.status == Status::Err);
+  CHECK_EQ(failed->m.mean, 1010.0);
+
+  // And the other way round: a configuration that failed once is not redeemed by a later reading that happened to run.
+  std::string const errThenOk =
+    withRow("run   1 512:15:512:212 prp 143400073 short32 1 1000.000 0.000 4 1 1.0000 ok 1100",
+            "run   1 512:15:512:212 prp 143400073 short32 1 1000.000 0.000 4 1 1.0000 err 1100", FOLDING);
+  auto const afterOk = loaded(errThenOk).mergedRuns();
+  const RunRow* const sticky = runAt(afterOk, 143'400'073, 1);
+  CHECK(sticky->m.status == Status::Err);
+  CHECK_EQ(sticky->m.mean, 1000.0);
+}
+
+TEST(one_option_set_spelled_twice_is_one_measurement) {
+  // cfg 1 and cfg 2 are the same options, which is what makes the two readings above duplicates at all.
+  TuneDB const db = loaded(FOLDING);
+  CHECK(*db.findCfg(1) == *db.findCfg(2));
+
+  std::string const apart = withRow("cfg   2 PAD=256", "cfg   2 PAD=64", FOLDING);
+  CHECK_EQ(loaded(apart).mergedRuns().size(), size_t{4});
+}
+
+TEST(evidence_is_replaced_rather_than_pooled) {
+  TuneDB const db = loaded(FOLDING);
+
+  auto const roes = db.latestRoes();
+  CHECK_EQ(roes.size(), size_t{1});
+  CHECK_EQ(roes.at(0).z, 31.0);
+  CHECK(!roes.at(0).checkOk);
+
+  auto const reaches = db.latestReaches();
+  CHECK_EQ(reaches.size(), size_t{1});
+  CHECK_EQ(reaches.at(0).reach, u64{149'000'000});
+  CHECK(reaches.at(0).evidence == Evidence::Confirmed);
+}
+
+TEST(a_compacted_database_says_the_same_thing_and_says_it_once) {
+  TuneDB db = loaded(FOLDING);
+  CHECK(db.compact());
+
+  CHECK_EQ(db.runs().size(), size_t{3});
+  CHECK_EQ(db.roes().size(), size_t{1});
+  CHECK_EQ(db.reaches().size(), size_t{1});
+
+  // PAD=128 is named by a surviving row; the second spelling of PAD=256 is not, since the readings under it folded
+  // into the row that names the first.
+  CHECK(db.findCfg(1) && db.findCfg(3));
+  CHECK(!db.findCfg(2));
+
+  // A rewrite is a file another build has to read back, and compacting one twice changes nothing further.
+  TuneDB again = loaded(db.text());
+  CHECK(again.compact());
+  CHECK_EQ(again.text(), db.text());
+  CHECK_EQ(again.mergedRuns().size(), db.mergedRuns().size());
+}
+
+TEST(a_reset_drops_what_was_measured_and_keeps_the_env_that_measured_it) {
+  TuneDB db = loaded(FOLDING);
+  CHECK(db.reset(1));
+
+  CHECK_EQ(db.runs().size(), size_t{1});
+  CHECK_EQ(db.runs().at(0).sess, 3u);
+  CHECK(db.roes().empty() && db.reaches().empty() && db.refs().empty() && db.nogos().empty());
+
+  // The env and its sessions stay: the env is still this card under these kernels, and it is the earliest session
+  // that pins the anchor every later reading is divided by.
+  CHECK_EQ(db.envs().size(), size_t{2});
+  CHECK_EQ(db.sessions().size(), size_t{3});
+  CHECK_EQ(db.envAnchor(1), std::string{"512:15:512:212@143400073"});
+
+  CHECK(!db.reset(9));
+  CHECK(!db.reset(1, "not-an-fft"));
+}
+
+TEST(a_reset_of_one_shape_leaves_the_others) {
+  std::string const twoShapes =
+    withRow("run   1 512:15:512:212 prp 143400073 short32 3 1500.000 0.000 4 1 1.0000 ok 1200",
+            "run   1 256:2:256:212 prp 143400073 short32 3 1500.000 0.000 4 1 1.0000 ok 1200", FOLDING);
+
+  TuneDB db = loaded(twoShapes);
+  CHECK(db.reset(1, "512:15:512:212"));
+
+  CHECK_EQ(db.runs().size(), size_t{2});
+  CHECK(runAt(db.runs(), 143'400'073, 3));
+  CHECK_EQ(db.nogos().size(), size_t{1});
+  CHECK(db.roes().empty() && db.refs().empty());
+}
+
+TEST(a_reset_drops_the_attempts_standing_against_an_env) {
+  std::string text = FOLDING;
+  text += "try   1 512:15:512:212 prp 143400073 1 1600\n";
+  text += "try   3 512:15:512:212 prp 143400073 1 3600\n";
+
+  TuneDB db = loaded(text);
+  CHECK_EQ(db.diedHolding().size(), size_t{2});
+
+  // A kernel change can undo a configuration that took the card down, which is the whole reason to ask for this.
+  CHECK(db.reset(1));
+  CHECK_EQ(db.diedHolding().size(), size_t{1});
+  CHECK(!db.diedOn(1, 1, TestKind::PRP, "512:15:512:212", 143'400'073));
+  CHECK(db.diedOn(2, 1, TestKind::PRP, "512:15:512:212", 143'400'073));
+
+  CHECK_EQ(loaded(db.text()).diedHolding().size(), size_t{1});
+}
+
+TEST(a_reset_keeps_saying_that_an_attempt_it_orphans_was_answered) {
+  std::string text = FOLDING;
+  text += "try   1 512:15:512:212 prp 143400073 1 1600\n";
+  text += "run   1 512:15:512:212 prp 143400073 short32 1 1000.000 0.000 4 1 1.0000 ok 1700\n";
+  text += "try   1 256:2:256:212 prp 143400073 1 1800\n";
+
+  TuneDB db = loaded(text);
+  CHECK_EQ(db.diedHolding().size(), size_t{1});
+
+  // Dropping the attempt that was in flight leaves the earlier one standing, and an attempt left standing condemns
+  // its configuration for good -- so the `done` that resolved it has to survive the rewrite.
+  CHECK(db.reset(1, "256:2:256:212"));
+  CHECK(db.diedHolding().empty());
+  CHECK(loaded(db.text()).diedHolding().empty());
+}
+
+TEST(a_reset_will_not_take_the_baseline_out_from_under_what_survives) {
+  std::string text = FOLDING;
+  text += "anchor 1 512:15:512:212 143400073 1 1000.000 1.0000 1900\n";
+  text += "run   1 256:2:256:212 prp 143400073 short32 1 900.000 0.000 4 1 1.0000 ok 1950\n";
+
+  TuneDB db = loaded(text);
+
+  // Every other shape's cost is expressed against these readings, so dropping them alone would leave the survivors
+  // normalised against a reference that is gone.
+  CHECK(!db.reset(1, "512:15:512:212"));
+  CHECK_EQ(db.anchors().size(), size_t{1});
+
+  // The shape that is not the anchor is free to go, and so is the whole env, which takes the dependent rows with it.
+  CHECK(db.reset(1, "256:2:256:212"));
+  CHECK(db.reset(1));
+  CHECK(db.anchors().empty());
+}
+
+TEST(adopt_folds_two_envs_and_merges_their_common_rows) {
+  TuneDB db = loaded(FOLDING);
+  CHECK_EQ(db.adoptCandidate(1), 2u);
+  CHECK(db.adopt(2, 1));
+
+  CHECK_EQ(db.envs().size(), size_t{1});
+  CHECK_EQ(db.envs().at(0).id, 1u);
+  CHECK_EQ(db.envOf(3), 1u);
+
+  // env 2's reading was of the same configuration as env 1's pair, and now that the user has said the kernels that
+  // moved were not these, the three are one measurement.
+  auto const merged = db.mergedRuns();
+  CHECK_EQ(merged.size(), size_t{2});
+  const RunRow* const pooled = runAt(merged, 143'400'073, 1);
+  CHECK_EQ(pooled->m.calls, 3u);
+  CHECK_EQ(pooled->m.blocks, 12u);
+  CHECK(pooled->m.mean > 1136.66 && pooled->m.mean < 1136.67);
+
+  CHECK(loaded(db.text()).mergedRuns().size() == merged.size());
+}
+
+TEST(adopt_leaves_the_target_env_the_reference_it_had) {
+  std::string text = FOLDING;
+  text += "anchor 1 512:15:512:212 143400073 1 1100.000 1.0000 1900\n";
+  text += "anchor 3 512:15:512:212 143400073 1 1000.000 1.0000 3900\n";
+
+  TuneDB db = loaded(text);
+  CHECK_EQ(db.envBaseline(2)->mean, 1000.0);
+
+  // env 1's sessions are the older ones, so without care the fold would hand env 2 a baseline taken under the very
+  // kernels being adopted -- and every later session divides by it.
+  CHECK(db.adopt(1, 2));
+  CHECK_EQ(db.envAnchor(2), std::string{"512:15:512:212@143400073"});
+  CHECK_EQ(db.envBaseline(2)->mean, 1000.0);
+  CHECK_EQ(db.anchors().size(), size_t{1});
+
+  // The adopted readings keep the correction they were measured under: what the user is saying is that it still
+  // applies, not that it should be recomputed against another build's clock.
+  CHECK_EQ(db.runs().size(), size_t{4});
+}
+
+TEST(adopt_refuses_two_envs_that_measure_against_different_anchors) {
+  std::string const elsewhere = withRow("sess  3 env=2 start=3000 gen=0 anchor=512:15:512:212@143400073",
+                                        "sess  3 env=2 start=3000 gen=0 anchor=256:2:256:212@143400073", FOLDING);
+
+  TuneDB db = loaded(elsewhere);
+  CHECK(!db.adopt(1, 2));
+  CHECK(!db.adopt(2, 1));
+  CHECK_EQ(db.envs().size(), size_t{2});
+
+  // An env that has never named an anchor has no reference to disagree with.
+  TuneDB unpinned = loaded(withRow("sess  3 env=2 start=3000 gen=0 anchor=256:2:256:212@143400073",
+                                   "sess  3 env=2 start=3000 gen=0 anchor=-", elsewhere));
+  CHECK(unpinned.adopt(1, 2));
+}
+
+TEST(adopt_refuses_an_env_that_is_not_the_card) {
+  std::string const otherCard = withRow("env   2 gpu=\"a card\" name=\"a card\" drv=1.0 vendor=nvidia be=ocl cc=806"
+                                        " noasm=0 pdl=0 machine=01:00.0 build=2222222222222222",
+                                        "env   2 gpu=\"a card\" name=\"a card\" drv=1.0 vendor=nvidia be=ocl cc=806"
+                                        " noasm=0 pdl=0 machine=02:00.0 build=2222222222222222",
+                                        FOLDING);
+
+  TuneDB db = loaded(otherCard);
+  CHECK_EQ(db.adoptCandidate(1), 0u);
+  CHECK(!db.adopt(2, 1));
+  CHECK(!db.adopt(9, 1));
+  CHECK(!db.adopt(1, 9));
+  CHECK_EQ(db.envs().size(), size_t{2});
+}
+
+TEST(a_rewrite_is_refused_while_a_session_is_appending) {
+  fs::path const path = fs::temp_directory_path() / "prpll-test-rewrite.txt";
+  fs::remove(path);
+
+  TuneDB db = loaded(FOLDING);
+  db.attach(path);
+
+  // These three are the only operations that do not append, and a file being appended to cannot be rewritten under
+  // the rows still arriving in it.
+  CHECK(!db.compact());
+  CHECK(!db.reset(1));
+  CHECK(!db.adopt(2, 1));
+  CHECK_EQ(db.runs().size(), size_t{4});
+
+  fs::remove(path);
 }

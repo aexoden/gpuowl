@@ -75,6 +75,10 @@ struct DbEnv {
   // Everything a measurement's validity depends on, the kernel build included: two rows that disagree may not be
   // compared, even where the card is the same one.
   [[nodiscard]] bool sameMachine(const DbEnv& other) const;
+
+  // The same physical card under the same driver and backend, whatever kernels were built for it.  This is the
+  // relation `adopt` works across, and the only one it works across.
+  [[nodiscard]] bool sameCard(const DbEnv& other) const;
 };
 
 [[nodiscard]] DbEnv dbEnvOf(const Env& env);
@@ -219,6 +223,33 @@ public:
   [[nodiscard]] const std::vector<RefRow>& refs() const { return refs_; }
   [[nodiscard]] const std::vector<std::string>& unknownRows() const { return unknown_; }
 
+  // One row per distinct measurement, duplicates folded as a running mean and pooled variance with the calls summed
+  // and failure statuses sticky.  The rows themselves stay as the file spelled them: what merges is the reading, not
+  // the record of which session took it.
+  [[nodiscard]] std::vector<RunRow> mergedRuns() const;
+
+  // The surviving reading for each key.  A later roe or reach replaces the earlier one rather than pooling with it:
+  // one is evidence about a configuration and the other the state derived from it, and neither is a sample.
+  [[nodiscard]] std::vector<RoeRow> latestRoes() const;
+  [[nodiscard]] std::vector<ReachRow> latestReaches() const;
+
+  // Replaces the rows with the folded views above and drops option sets no surviving row names.
+  [[nodiscard]] bool compact();
+
+  // Drops everything measured on `env`, or on one shape of it: the timings, the evidence derived from them, the keys
+  // recorded as unbuildable and the attempts standing against the env.  A kernel change can undo any of those, which
+  // is what makes this worth asking for.  The env and its sessions stay, so the env keeps the anchor it is pinned to.
+  [[nodiscard]] bool reset(u32 env, std::string_view fft = {});
+
+  // Restamps every row of `from` as a row of `into`, which is the user saying that the kernels that moved were not
+  // the ones these rows measured.  Refused unless the two envs are the same card: a different card's rows were never
+  // comparable, whatever was built for it.  Rows the two have in common merge from then on like any duplicates.
+  [[nodiscard]] bool adopt(u32 from, u32 into);
+
+  // The env `adopt` takes for `into` when the user names none: the most recent one that is this card under other
+  // kernels.  0 when there is none.
+  [[nodiscard]] u32 adoptCandidate(u32 into) const;
+
   [[nodiscard]] const DbEnv* findEnv(u32 id) const;
   [[nodiscard]] const SessRow* findSession(u32 id) const;
   [[nodiscard]] const UseConfig* findCfg(u32 id) const;
@@ -273,6 +304,9 @@ public:
   [[nodiscard]] bool isNogo(u32 env, const std::string& fft, const UseConfig& config) const;
 
 private:
+  // Whether the database may be rewritten in place, saying why not when it may not.
+  [[nodiscard]] bool rewritable(const char* what) const;
+
   void clear();
 
   // Maintains the open-attempt state a row implies.

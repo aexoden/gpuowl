@@ -19,6 +19,7 @@
 #include <limits>
 #include <ranges>
 #include <system_error>
+#include <tuple>
 
 #ifndef _WIN32
 #include <fcntl.h>
@@ -247,11 +248,12 @@ Env DbEnv::toEnv() const {
              .driverVersion = driver};
 }
 
-bool DbEnv::sameMachine(const DbEnv& other) const {
+bool DbEnv::sameMachine(const DbEnv& other) const { return sameCard(other) && build == other.build; }
+
+bool DbEnv::sameCard(const DbEnv& other) const {
   return gpu == other.gpu && name == other.name && driver == other.driver && isAmd == other.isAmd &&
     isNvidia == other.isNvidia && cudaBackend == other.cudaBackend && noAsm == other.noAsm &&
-    pdlLaunch == other.pdlLaunch && computeCapability == other.computeCapability && machine == other.machine &&
-    build == other.build;
+    pdlLaunch == other.pdlLaunch && computeCapability == other.computeCapability && machine == other.machine;
 }
 
 DbEnv dbEnvOf(const Env& env) {
@@ -653,6 +655,215 @@ bool TuneDB::isNogo(u32 env, const std::string& fft, const UseConfig& config) co
     auto const it = config.find(row.key);
     if (it != config.end() && it->second == row.val) { return true; }
   }
+  return false;
+}
+
+namespace {
+
+// Rows are grouped by kind rather than kept in file order, so a fold that wants first-appearance order has to carry
+// its own index.  Small enough to stay a map: a database holds thousands of rows and the keys are compared once each.
+template<typename Key, typename Row, typename KeyOf, typename Fold>
+std::vector<Row> foldBy(const std::vector<Row>& rows, KeyOf keyOf, Fold fold) {
+  std::vector<Row> out;
+  std::map<Key, size_t> at;
+
+  for (const Row& row : rows) {
+    auto const [it, fresh] = at.try_emplace(keyOf(row), out.size());
+    if (fresh) {
+      out.push_back(row);
+    } else {
+      fold(out[it->second], row);
+    }
+  }
+
+  return out;
+}
+
+}  // namespace
+
+// The option set itself rather than the id that names it: a hand-written file may declare one set twice, and two rows
+// that were measured under the same options are the same measurement however they spell it.
+std::vector<RunRow> TuneDB::mergedRuns() const {
+  using Key = std::tuple<u32, std::string, TestKind, u64, std::string, UseConfig>;
+
+  auto const keyOf = [this](const RunRow& row) {
+    const UseConfig* const opts = findCfg(row.cfg);
+    return Key{envOf(row.sess), row.fft, row.kind, row.exponent, row.regime.label(), opts ? *opts : UseConfig{}};
+  };
+
+  return foldBy<Key>(runs_, keyOf, [](RunRow& into, const RunRow& add) { mergeInto(into.m, add.m); });
+}
+
+std::vector<RoeRow> TuneDB::latestRoes() const {
+  using Key = std::tuple<u32, std::string, u64, u32>;
+
+  auto const keyOf = [this](const RoeRow& row) { return Key{envOf(row.sess), row.fft, row.exponent, row.cfg}; };
+
+  return foldBy<Key>(roes_, keyOf, [](RoeRow& into, const RoeRow& add) { into = add; });
+}
+
+std::vector<ReachRow> TuneDB::latestReaches() const {
+  using Key = std::tuple<u32, std::string, TestKind, std::string, u32>;
+
+  auto const keyOf = [this](const ReachRow& row) {
+    return Key{envOf(row.sess), row.fft, row.kind, row.regime.label(), row.cfg};
+  };
+
+  return foldBy<Key>(reaches_, keyOf, [](ReachRow& into, const ReachRow& add) { into = add; });
+}
+
+bool TuneDB::compact() {
+  if (!rewritable("compact")) { return false; }
+
+  runs_ = mergedRuns();
+  roes_ = latestRoes();
+  reaches_ = latestReaches();
+
+  std::set<u32> named;
+  for (const RunRow& r : runs_) { named.insert(r.cfg); }
+  for (const RoeRow& r : roes_) { named.insert(r.cfg); }
+  for (const ReachRow& r : reaches_) { named.insert(r.cfg); }
+  for (const AnchorRow& r : anchors_) { named.insert(r.cfg); }
+  for (const TryRow& r : tries_) { named.insert(r.cfg); }
+
+  std::erase_if(cfgs_, [&named](const auto& entry) { return !named.contains(entry.first); });
+  return true;
+}
+
+bool TuneDB::reset(u32 env, std::string_view fft) {
+  if (!rewritable("reset")) { return false; }
+
+  if (!findEnv(env)) {
+    log("tune-db: there is no env %u to reset\n", env);
+    return false;
+  }
+
+  std::string spec;
+  if (!fft.empty()) {
+    auto const canonical = canonicalFft(std::string{fft});
+    if (!canonical) {
+      log("tune-db: '%s' is not an FFT specification\n", std::string{fft}.c_str());
+      return false;
+    }
+    spec = *canonical;
+  }
+
+  auto const drop = [this, env, &spec](const auto& row) {
+    if (envOf(row.sess) != env) { return false; }
+    if constexpr (requires { row.fft; }) {
+      return spec.empty() || row.fft == spec;
+    } else {
+      return spec.empty();
+    }
+  };
+
+  // The anchor readings of one shape are the reference every other shape's cost is expressed against, so dropping
+  // them alone would leave the survivors normalised against a baseline that no longer exists.  Resetting the whole
+  // env drops those rows too, which is why it is the thing to say instead.
+  if (!spec.empty() && std::ranges::any_of(anchors_, drop)) {
+    auto const pinned = parseAnchorSpec(envAnchor(env));
+    auto const stranded = [this, env, &spec](const auto& rows) {
+      return std::ranges::any_of(
+        rows, [this, env, &spec](const auto& row) { return envOf(row.sess) == env && row.fft != spec; });
+    };
+
+    if (pinned && pinned->fft == spec && (stranded(runs_) || stranded(roes_) || stranded(reaches_))) {
+      log("tune-db: '%s' is the anchor env %u is pinned to, and rows of other shapes are normalised against its"
+          " readings; reset the env itself to drop those too\n",
+          spec.c_str(), env);
+      return false;
+    }
+  }
+
+  std::erase_if(runs_, drop);
+  std::erase_if(roes_, drop);
+  std::erase_if(reaches_, drop);
+  std::erase_if(anchors_, drop);
+  std::erase_if(refs_, drop);
+  std::erase_if(nogos_, drop);
+  std::erase_if(tries_, drop);
+
+  std::vector<std::pair<u32, u64>> orphaned;
+  std::erase_if(open_, [&drop, &orphaned](const auto& entry) {
+    if (!drop(entry.second)) { return false; }
+    orphaned.emplace_back(entry.first, entry.second.ts);
+    return true;
+  });
+
+  auto const hasTry = [this](u32 sess) {
+    return std::ranges::any_of(tries_, [sess](const TryRow& t) { return t.sess == sess; });
+  };
+
+  // An answered attempt whose `try` row is gone would be written back as a `done` naming nothing, which the next load
+  // would drop -- so the file would stop round-tripping through this one.
+  std::erase_if(answered_, [&hasTry](const auto& entry) { return !hasTry(entry.first); });
+
+  // The other direction: dropping the attempt that was in flight leaves an earlier one of the same session standing,
+  // and an attempt left standing is a death.  It was answered -- by the very row being dropped -- so the session has
+  // to keep saying so, or the rewrite condemns a configuration that was measured.
+  for (auto const& [sess, ts] : orphaned) {
+    if (hasTry(sess)) { answered_[sess] = ts; }
+  }
+
+  return true;
+}
+
+bool TuneDB::adopt(u32 from, u32 into) {
+  if (!rewritable("adopt")) { return false; }
+
+  const DbEnv* const source = findEnv(from);
+  const DbEnv* const target = findEnv(into);
+  if (!source || !target) {
+    log("tune-db: there is no env %u\n", source ? into : from);
+    return false;
+  }
+
+  if (from == into) { return true; }
+
+  if (!source->sameCard(*target)) {
+    log("tune-db: env %u is not the card env %u is, so its rows were never measurements of it\n", from, into);
+    return false;
+  }
+
+  // Both envs express their costs against a reading of their own anchor, and two anchors that are not the same
+  // configuration measure nothing in common: there is no fold of the two that means anything.
+  auto const mine = parseAnchorSpec(envAnchor(into));
+  auto const theirs = parseAnchorSpec(envAnchor(from));
+  if (mine && theirs && !(*mine == *theirs)) {
+    log("tune-db: env %u is anchored to %s and env %u to %s, so their costs are not on one reference\n", into,
+        mine->text().c_str(), from, theirs->text().c_str());
+    return false;
+  }
+
+  // The adopted env's anchor readings were taken under the kernels that moved, and its sessions are the older ones,
+  // so leaving them in would hand the env a baseline from the build being adopted -- and every later session divides
+  // by it.  The rows that were adopted keep the correction they were measured under; what the user is saying is that
+  // it still applies.
+  std::erase_if(anchors_, [this, from](const AnchorRow& r) { return envOf(r.sess) == from; });
+
+  for (SessRow& s : sessions_) {
+    if (s.env == from) { s.env = into; }
+  }
+
+  std::erase_if(envs_, [from](const DbEnv& e) { return e.id == from; });
+  return true;
+}
+
+u32 TuneDB::adoptCandidate(u32 into) const {
+  const DbEnv* const target = findEnv(into);
+  if (!target) { return 0; }
+
+  u32 best = 0;
+  for (const DbEnv& e : envs_) {
+    if (e.id == into || !e.sameCard(*target)) { continue; }
+    best = std::max(best, e.id);
+  }
+  return best;
+}
+
+bool TuneDB::rewritable(const char* what) const {
+  if (!attached()) { return true; }
+  log("tune-db: '%s' rewrites the database, which a session appending to it cannot do\n", what);
   return false;
 }
 
