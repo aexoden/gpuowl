@@ -17,6 +17,8 @@
 #include "tune.h"
 #include "OptionSpace.h"
 #include "Measure.h"
+#include "Restart.h"
+#include "GpuFault.h"
 
 #include <atomic>
 #include <cerrno>
@@ -76,6 +78,15 @@ namespace {
 constexpr int EXIT_OK = 0;
 constexpr int EXIT_FAILED = 1;
 constexpr int EXIT_USAGE = 2;
+constexpr int EXIT_DEVICE_LOST = 3;
+
+// A GPU fault poisons the process rather than the context, so only a restart will help.
+int restartOrReport() {
+  log("The device was lost; restarting to recover it.\n");
+  string const why = restart::reexec();
+  log("Could not restart: %s\n", why.c_str());
+  return EXIT_DEVICE_LOST;
+}
 
 } // namespace
 
@@ -97,12 +108,15 @@ int main(int argc, char **argv) {
 #endif
 
   // 0 for a normal end — the queue ran dry, a stop was requested, -h, -info
-  // or -version; 2 for an argument that could not be read or accepted; and 1 for
-  // everything else (a kernel that would not compile, a missing device, a lost
-  // context), so a supervisor can tell "out of work" from "fix your command
-  // line" from "cannot run" without parsing the log.
+  // or -version; 2 for an argument that could not be read or accepted; 3 for a
+  // device that went away and could not be recovered by restarting; and 1 for
+  // everything else (a kernel that would not compile, a missing device), so a
+  // supervisor can tell "out of work" from "fix your command line" from
+  // "cannot run" from "this card is gone" without parsing the log.
   int exitCode = EXIT_OK;
   bool parsing = true;
+
+  restart::init(argc, argv);
 
   try {
     string const mainLine = Args::mergeArgs(argc, argv);
@@ -189,6 +203,9 @@ int main(int argc, char **argv) {
     if (args.maxAlloc) { AllocTrac::setMaxAlloc(args.maxAlloc); }
 
     Context context(getDevice(args.device));
+
+    gpufault::arm(context.deviceId(), EXIT_DEVICE_LOST);
+
     Signal const signal;
     Background background;
     GpuCommon shared;
@@ -201,7 +218,11 @@ int main(int argc, char **argv) {
     if (args.dumpOptions) {
       if (tune::dumpOptionSpace(tune::detectEnv(context, args), FFTConfig{args.optionsFft})) { exitCode = EXIT_FAILED; }
     } else if (args.doMeasure) {
-      if (!tune::runMeasure(shared, args.measureFft, args.prpExp)) { exitCode = EXIT_FAILED; }
+      switch (tune::runMeasure(shared, args.measureFft, args.prpExp)) {
+        case tune::MeasureOutcome::Ok: break;
+        case tune::MeasureOutcome::Failed: exitCode = EXIT_FAILED; break;
+        case tune::MeasureOutcome::DeviceLost: exitCode = restartOrReport(); break;
+      }
     } else if (args.doCtune || args.doTune || args.doZtune || args.carryTune) {
       Tune tune{shared};
 

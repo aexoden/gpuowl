@@ -2,6 +2,7 @@
 
 #include "Event.h"
 #include "TimeInfo.h"
+#include "clwrap.h"
 #include "log.h"
 
 #include <atomic>
@@ -21,7 +22,7 @@ Event::~Event() {
   // log it and drop the event.  A failing GPU also fails the queue's next finish/read, which reports it.
   try {
     [[maybe_unused]] bool const done = isComplete();
-    assert(done);
+    assert(done || isContextLost());
   } catch (const std::exception& e) {
     // Log only the first: a lost device fails the query for every event still in the queue.
     static std::atomic<bool> logged{false};

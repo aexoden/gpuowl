@@ -3,6 +3,7 @@
 #include "File.h"
 #include "clwrap.h"
 #include "fs.h"
+#include "log.h"
 
 #include <cmath>
 #include <cstdio>
@@ -59,9 +60,47 @@ public:
   }
 };
 
+static std::atomic<bool> g_contextLost = false;
+static std::atomic<bool> g_hadContext = false;
+
+static bool isContextLostError(int err) {
+  switch (err) {
+    case -9999:                                       // NVIDIA's "unknown error", post-fault
+    case CL_INVALID_CONTEXT:
+    case CL_DEVICE_NOT_AVAILABLE:
+      return true;
+#ifdef CL_INVALID_COMMAND_QUEUE                       // the CUDA shim's header carries only the codes it can return
+    case CL_INVALID_COMMAND_QUEUE:
+      return true;
+#endif
+#ifdef CL_EXEC_STATUS_ERROR_FOR_EVENTS_IN_WAIT_LIST
+    case CL_EXEC_STATUS_ERROR_FOR_EVENTS_IN_WAIT_LIST:
+      return true;
+#endif
+    default:
+      return false;
+  }
+}
+
+bool isContextLost() { return g_contextLost; }
+
+void markContextLost(const char* why) {
+  if (g_contextLost.exchange(true)) { return; }
+  log("\nGPU context lost: %s.\nEvery later GPU call in this process will fail whatever it asks for; PRPLL must be "
+      "restarted.\n\n", why);
+}
+
 void check(int err, const char *file, int line, const char *func, string_view mes) {  
   if (err != CL_SUCCESS) {
     // log("CL error %s (%d) %s\n", errMes(err).c_str(), err, mes.c_str());
+    if (g_hadContext && isContextLostError(err)) {
+      if (!g_contextLost.exchange(true)) {
+        log("\nGPU context lost in %s (%s).\nThe context is now unusable -- every later GPU call in this process will "
+            "fail, whatever it asks for, and creating a fresh context fails too. PRPLL must be restarted.\n\n",
+            func, errMes(err).c_str());
+      }
+    }
+    if (g_contextLost) { throw gpu_error(CL_DEVICE_NOT_AVAILABLE, file, line, func, mes); }
     throw gpu_error(err, file, line, func, mes);
   }
 }
@@ -288,16 +327,24 @@ cl_context createContext(cl_device_id id) {
   int err;
   cl_context context = clCreateContext(nullptr, 1, &id, nullptr, nullptr, &err);
   CHECK2(err, "clCreateContext");
+  g_hadContext = true;
   return context;
 }
-
 
 // The release()s run from the Holder deleters, i.e. from destructors, often while an earlier CL error is
 // unwinding the stack.  A throw there calls std::terminate, so log the error instead of throwing it.
 // Log only the first: on a lost device every remaining object fails the same way.
 static void releaseCheck(int err, const char *what) {
+  if (err == CL_SUCCESS) { return; }
+  if (g_hadContext && isContextLostError(err)) {
+    if (!g_contextLost.exchange(true)) {
+      log("\nGPU context lost (noticed in %s: %s).\nEvery later GPU call in this process will fail "
+          "whatever it asks for; PRPLL must be restarted.\n\n", what, errMes(err).c_str());
+    }
+    return;
+  }
   static std::atomic<bool> logged{false};
-  if (err != CL_SUCCESS && !logged.exchange(true)) { log("%s: %s\n", what, errMes(err).c_str()); }
+  if (!g_contextLost && !logged.exchange(true)) { log("%s: %s\n", what, errMes(err).c_str()); }
 }
 
 void release(cl_context context) { releaseCheck(clReleaseContext(context), "clReleaseContext"); }
