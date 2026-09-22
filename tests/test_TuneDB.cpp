@@ -28,11 +28,13 @@ const char* const FIXTURE =
   "sess  5 env=1 start=1753481200 gen=1 anchor=- alarmed=1\n"
   "run   4 512:15:512:212 prp 143400073 short32 17 1774.230 2.100 24 6 1.0000 ok 1753471274\n"
   "run   4 512:15:512:212 ll 143400073 short32 1 1801.000 3.000 8 2 0.9980 err 1753471300\n"
-  "try   4 512:15:512:212 prp 143400073 17 1753471250\n"
   "nogo  4 512:15:512:212 SHUFL_BYTES_W=16 1753471260\n"
   "roe   4 512:15:512:212 143400073 17 29.40 118 0.371094 ok 1753471402\n"
   "reach 4 512:15:512:212 prp short32 17 148000000 confirmed 1753471460\n"
   "ref   5 512:15:512:212 1000151 2000 171f3662c332472f 1753471480\n"
+  "try   4 512:15:512:212 prp 143400073 17 1753471250\n"
+  "try   5 512:15:512:212 prp 143400073 1 1753481250\n"
+  "done  4 1753471500\n"
   "hint  4 512:15:512:212 from-a-later-build 7\n"
   "milestone\n"
   "# a note the user added by hand\n";
@@ -106,7 +108,14 @@ TEST(rows_are_read) {
   CHECK(db.runs().at(1).kind == TestKind::LL);
   CHECK(db.runs().at(1).m.status == Status::Err);
 
-  CHECK_EQ(db.tries().size(), size_t{1});
+  CHECK_EQ(db.tries().size(), size_t{2});
+  // Session 4's attempt was answered by the rows that followed it; session 5's was not.
+  std::vector<TryRow> const standing = db.diedHolding();
+  CHECK_EQ(standing.size(), size_t{1});
+  CHECK_EQ(standing.at(0).sess, 5u);
+  CHECK(db.diedOn(1, 1, TestKind::PRP, "512:15:512:212", 143'400'073));
+  CHECK(!db.diedOn(1, 17, TestKind::PRP, "512:15:512:212", 143'400'073));
+
   CHECK_EQ(db.nogos().size(), size_t{1});
   CHECK_EQ(db.nogos().at(0).key, std::string{"SHUFL_BYTES_W"});
   CHECK_EQ(db.nogos().at(0).val, std::string{"16"});
@@ -381,4 +390,193 @@ TEST(device_names_with_spaces_survive) {
   CHECK_EQ(db.envs().at(0).driver, std::string{"3581.0"});
   CHECK(db.envs().at(0).isAmd);
   CHECK_EQ(db.text(), text);
+}
+
+namespace {
+
+// A database with one env and one session, attached to a scratch file the way a measuring process attaches to its own.
+struct Attached {
+  fs::path path;
+  TuneDB db;
+  u32 sess = 0;
+
+  explicit Attached(const char* name) : path{fs::temp_directory_path() / name} {
+    fs::remove(path);
+    CHECK(db.load(path));
+    db.attach(path);
+
+    u32 const env = db.internEnv(DbEnv{.gpu = "a card", .name = "a card", .driver = "1.0"});
+    CHECK(env);
+    sess = db.beginSession(env, "-");
+    CHECK(sess);
+  }
+
+  ~Attached() { fs::remove(path); }
+
+  [[nodiscard]] std::string onDisk() const { return File::openRead(path).readAll(); }
+
+  // What the next generation would see: the file as written, read by a process that wrote none of it.
+  [[nodiscard]] TuneDB reread() const {
+    TuneDB next;
+    CHECK(next.load(path));
+    return next;
+  }
+
+  [[nodiscard]] TryRow attempt(u32 cfg) const {
+    return TryRow{.sess = sess, .fft = "512:15:512:212", .kind = TestKind::PRP, .exponent = 143'400'073, .cfg = cfg,
+                  .ts = 1753471250};
+  }
+};
+
+}  // namespace
+
+TEST(an_attempt_reaches_the_file_before_its_result_does) {
+  Attached a{"prpll-test-attempt.txt"};
+  u32 const cfg = a.db.internCfg(UseConfig{{"PAD", "256"}});
+  CHECK(cfg);
+
+  CHECK(a.db.add(a.attempt(cfg)));
+  // The declaration is durable on its own: this is everything a process that died here would leave behind.
+  CHECK(a.onDisk().find(formatRow(a.attempt(cfg)) + '\n') != std::string::npos);
+
+  TuneDB const died = a.reread();
+  CHECK_EQ(died.diedHolding().size(), size_t{1});
+  CHECK(died.diedOn(1, cfg, TestKind::PRP, "512:15:512:212", 143'400'073));
+
+  // And the configuration it names is the only one condemned.
+  u32 const other = a.db.internCfg(UseConfig{{"PAD", "128"}});
+  CHECK(!died.diedOn(1, other, TestKind::PRP, "512:15:512:212", 143'400'073));
+}
+
+TEST(a_result_answers_the_attempt_it_followed) {
+  Attached a{"prpll-test-answered.txt"};
+  u32 const cfg = a.db.internCfg(UseConfig{});
+  CHECK(a.db.add(a.attempt(cfg)));
+  CHECK(a.db.add(RunRow{.sess = a.sess,
+                        .fft = "512:15:512:212",
+                        .kind = TestKind::PRP,
+                        .exponent = 143'400'073,
+                        .regime = regimeOf(FFTConfig{"512:15:512:212"}, 143'400'073),
+                        .cfg = cfg,
+                        .m = {.mean = 1000, .stddev = 1, .blocks = 4, .calls = 1, .ts = 1753471260}}));
+
+  CHECK(a.reread().diedHolding().empty());
+}
+
+TEST(a_stop_answers_the_attempt_and_a_death_does_not) {
+  Attached stopped{"prpll-test-stopped.txt"};
+  u32 const cfg = stopped.db.internCfg(UseConfig{});
+  CHECK(stopped.db.add(stopped.attempt(cfg)));
+  stopped.db.closeTry(stopped.sess);
+  // Ctrl-C between the declaration and the result is not a death: without the 'done' row the configuration being
+  // measured at the time would be condemned for having been interrupted.
+  CHECK(stopped.reread().diedHolding().empty());
+
+  Attached lost{"prpll-test-lost.txt"};
+  u32 const cfg2 = lost.db.internCfg(UseConfig{});
+  CHECK(lost.db.add(lost.attempt(cfg2)));
+  lost.db.sealSession(lost.sess);
+  // A sealed session writes nothing further, so the round it was in cannot answer for the attempt that ended it.
+  CHECK(!lost.db.add(RunRow{.sess = lost.sess,
+                            .fft = "512:15:512:212",
+                            .kind = TestKind::PRP,
+                            .exponent = 143'400'073,
+                            .regime = {},
+                            .cfg = cfg2,
+                            .m = {.mean = 1000, .blocks = 4, .calls = 1, .ts = 1753471260}}));
+  lost.db.closeTry(lost.sess);
+  CHECK_EQ(lost.reread().diedHolding().size(), size_t{1});
+}
+
+TEST(this_processs_own_attempt_is_in_flight_rather_than_fatal) {
+  Attached a{"prpll-test-inflight.txt"};
+  u32 const cfg = a.db.internCfg(UseConfig{});
+  CHECK(a.db.add(a.attempt(cfg)));
+
+  // Held open by a session this process opened: reading it as a death would condemn every configuration the moment it
+  // was declared.
+  CHECK(a.db.diedHolding().empty());
+  CHECK(!a.db.diedOn(1, cfg, TestKind::PRP, "512:15:512:212", 143'400'073));
+
+  // Until the device goes away under it.
+  a.db.sealSession(a.sess);
+  CHECK_EQ(a.db.diedHolding().size(), size_t{1});
+  CHECK(a.db.diedOn(1, cfg, TestKind::PRP, "512:15:512:212", 143'400'073));
+}
+
+TEST(a_key_that_will_not_build_is_excluded_whatever_else_is_set) {
+  Attached a{"prpll-test-nogo.txt"};
+  CHECK(a.db.add(NogoRow{.sess = a.sess, .fft = "512:15:512:212", .key = "SHUFL_BYTES_W", .val = "16",
+                         .ts = 1753471260}));
+
+  TuneDB const next = a.reread();
+  CHECK(next.isNogo(1, "512:15:512:212", UseConfig{{"PAD", "256"}, {"SHUFL_BYTES_W", "16"}}));
+  CHECK(!next.isNogo(1, "512:15:512:212", UseConfig{{"SHUFL_BYTES_W", "8"}}));
+  // One FFT only: the budget that will not fit here may fit at another shape.
+  CHECK(!next.isNogo(1, "256:2:256:212", UseConfig{{"SHUFL_BYTES_W", "16"}}));
+}
+
+TEST(ids_are_allocated_from_what_was_read) {
+  Attached a{"prpll-test-ids.txt"};
+  u32 const first = a.db.internCfg(UseConfig{{"PAD", "256"}});
+  CHECK_EQ(a.db.internCfg(UseConfig{{"PAD", "256"}}), first);
+  CHECK(a.db.internCfg(UseConfig{{"PAD", "128"}}) != first);
+
+  // The same machine is the same env, and a second session of it does not declare a second one.
+  CHECK_EQ(a.db.internEnv(DbEnv{.gpu = "a card", .name = "a card", .driver = "1.0"}), 1u);
+  CHECK_EQ(a.db.envs().size(), size_t{1});
+
+  TuneDB const next = a.reread();
+  CHECK_EQ(next.findCfgId(UseConfig{{"PAD", "256"}}), first);
+  CHECK_EQ(next.findCfgId(UseConfig{{"NOT", "HERE"}}), 0u);
+}
+
+TEST(a_row_that_cannot_be_written_is_not_kept) {
+  fs::path const path = fs::temp_directory_path() / "prpll-test-unwritable.txt";
+  fs::remove(path);
+  // A file every write fails against, which is what a full disk looks like from here.
+  fs::create_symlink("/dev/full", path);
+  if (!fs::exists("/dev/full")) {
+    fs::remove(path);
+    return;
+  }
+
+  TuneDB db;
+  CHECK(db.load(path));
+  db.attach(path);
+
+  // The whole crash layer rests on the row reaching the disk, so a database that says it wrote one when it did not is
+  // worse than one that refuses: the caller would measure a configuration nothing is recorded against.
+  CHECK(!db.internEnv(DbEnv{.gpu = "a card", .name = "a card", .driver = "1.0"}));
+  CHECK(db.envs().empty());
+  CHECK(!db.beginSession(1, "-"));
+  CHECK(db.sessions().empty());
+  CHECK(!db.internCfg(UseConfig{{"PAD", "256"}}));
+  CHECK(db.cfgs().empty());
+
+  fs::remove(path);
+}
+
+TEST(only_one_process_may_write_a_database) {
+  fs::path const path = fs::temp_directory_path() / "prpll-test-lock.txt";
+  fs::remove(path);
+
+  TuneDB first;
+  CHECK(first.lockForWriting(path));
+
+  // Ids are allocated from what was read, so a second writer would hand out the same ones and the next load would
+  // refuse the file for declaring an id twice -- permanently, since a file that did not parse is never rewritten.
+  TuneDB second;
+  CHECK(!second.lockForWriting(path));
+
+  // And the claim goes with the object, so the next one in gets it.
+  {
+    TuneDB third;
+    CHECK(!third.lockForWriting(path));
+  }
+  first = TuneDB{};
+  TuneDB fourth;
+  CHECK(fourth.lockForWriting(path));
+
+  fs::remove(path);
 }

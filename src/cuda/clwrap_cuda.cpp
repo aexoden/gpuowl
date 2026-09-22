@@ -63,9 +63,12 @@ static bool isStickyError(CUresult r) {
   }
 }
 
-// Maps a synchronization failure to an OpenCL error code. The mapping is lossy, so the real
-// CUDA error is named on the way through.
-static int cudaSyncFail(CUresult r, const char* what) {
+// clwrap.cpp
+bool isContextLost();
+void markContextLost(const char* why);
+
+// Maps a CUDA failure onto an OpenCL error. The mapping is lossy, so the real CUDA error is named on the way through.
+static int cudaFail(CUresult r, const char* what) {
   if (r == CUDA_SUCCESS) { return CL_SUCCESS; }
 
   const char* name = nullptr;
@@ -75,11 +78,17 @@ static int cudaSyncFail(CUresult r, const char* what) {
     fprintf(stderr, "\nCUDA context lost in %s: %s (%d).\n"
             "The context is now unusable and every CUDA operation will fail."
             "PRPLL must be restarted.\n\n", what, name ? name : "?", (int) r);
+    markContextLost(name ? name : "a sticky CUDA error");
     return CL_DEVICE_NOT_AVAILABLE;
   }
 
-  fprintf(stderr, "CUDA error in %s: %s (%d)\n", what, name ? name : "?", (int) r);
+  // Once the context is gone, everything downstream fails for that reason.
+  if (isContextLost()) { return CL_DEVICE_NOT_AVAILABLE; }
+
   if (r == CUDA_ERROR_OUT_OF_MEMORY) { return CL_MEM_OBJECT_ALLOCATION_FAILURE; }
+  if (r == CUDA_ERROR_LAUNCH_OUT_OF_RESOURCES) { return CL_OUT_OF_RESOURCES; }
+
+  fprintf(stderr, "CUDA error in %s: %s (%d)\n", what, name ? name : "?", (int) r);
   return CL_OUT_OF_RESOURCES;
 }
 
@@ -195,7 +204,7 @@ cl_context clCreateContext(const intptr_t*, unsigned nDevices, const cl_device_i
 #endif
   if (r != CUDA_SUCCESS) {
     delete ctx;
-    if (err) *err = CL_OUT_OF_RESOURCES;
+    if (err) *err = cudaFail(r, "clCreateContext");
     return nullptr;
   }
   g_cudaContext = ctx->ctx;  // Track for ensureContextCurrent()
@@ -871,7 +880,7 @@ cl_command_queue clCreateCommandQueueWithProperties(cl_context ctx, cl_device_id
   CUresult const r = cuStreamCreate(&q->stream, CU_STREAM_NON_BLOCKING);
   if (r != CUDA_SUCCESS) {
     delete q;
-    if (err) *err = CL_OUT_OF_RESOURCES;
+    if (err) *err = cudaFail(r, "clCreateCommandQueue");
     return nullptr;
   }
   if (err) *err = CL_SUCCESS;
@@ -944,7 +953,7 @@ int clEnqueueNDRangeKernel(cl_command_queue q, cl_kernel k, unsigned workDim,
     CUresult const r = launchKernel(k, numBlocksX, numBlocksY, lsX, lsY, q->stream, argPtrs);
     cuEventRecord(ev->end, q->stream);
     *event = ev;
-    return r == CUDA_SUCCESS ? CL_SUCCESS : CL_OUT_OF_RESOURCES;
+    return cudaFail(r, "clEnqueueNDRangeKernel");
   }
   if (doProfile) {
     static std::map<std::string, double> kTime;
@@ -985,7 +994,7 @@ int clEnqueueNDRangeKernel(cl_command_queue q, cl_kernel k, unsigned workDim,
       fprintf(stderr, "  TOTAL: %.1f ms\n===\n\n", totalMs);
     }
     if (event) *event = nullptr;
-    return r == CUDA_SUCCESS ? CL_SUCCESS : CL_OUT_OF_RESOURCES;
+    return cudaFail(r, "clEnqueueNDRangeKernel");
   }
 
   CUresult const r = launchKernel(k, numBlocksX, numBlocksY, lsX, lsY, q->stream, argPtrs);
@@ -996,7 +1005,7 @@ int clEnqueueNDRangeKernel(cl_command_queue q, cl_kernel k, unsigned workDim,
   }
 
   if (event) *event = nullptr;
-  return r == CUDA_SUCCESS ? CL_SUCCESS : CL_OUT_OF_RESOURCES;
+  return cudaFail(r, "clEnqueueNDRangeKernel");
 }
 
 int clEnqueueReadBuffer(cl_command_queue q, cl_mem buf, cl_bool blocking,
@@ -1005,11 +1014,11 @@ int clEnqueueReadBuffer(cl_command_queue q, cl_mem buf, cl_bool blocking,
   // Must use stream-ordered copy because the stream was created with CU_STREAM_NON_BLOCKING,
   // which means cuMemcpyDtoH (NULL stream) won't wait for pending kernels on this stream.
   CUresult r = cuMemcpyDtoHAsync(ptr, buf->ptr + offset, size, q->stream);
-  if (r == CUDA_SUCCESS && blocking) {
-    r = cuStreamSynchronize(q->stream);
-  }
   if (event) *event = nullptr;
-  return r == CUDA_SUCCESS ? CL_SUCCESS : CL_OUT_OF_RESOURCES;
+  if (r == CUDA_SUCCESS && blocking) {
+    return cudaFail(cuStreamSynchronize(q->stream), "clEnqueueReadBuffer");
+  }
+  return cudaFail(r, "clEnqueueReadBuffer");
 }
 
 int clEnqueueWriteBuffer(cl_command_queue q, cl_mem buf, cl_bool blocking,
@@ -1017,11 +1026,11 @@ int clEnqueueWriteBuffer(cl_command_queue q, cl_mem buf, cl_bool blocking,
                           unsigned  /*nWaits*/, const cl_event*  /*waits*/, cl_event* event) {
   // Must use stream-ordered copy (same reason as clEnqueueReadBuffer above)
   CUresult r = cuMemcpyHtoDAsync(buf->ptr + offset, ptr, size, q->stream);
-  if (r == CUDA_SUCCESS && blocking) {
-    r = cuStreamSynchronize(q->stream);
-  }
   if (event) *event = nullptr;
-  return r == CUDA_SUCCESS ? CL_SUCCESS : CL_OUT_OF_RESOURCES;
+  if (r == CUDA_SUCCESS && blocking) {
+    return cudaFail(cuStreamSynchronize(q->stream), "clEnqueueWriteBuffer");
+  }
+  return cudaFail(r, "clEnqueueWriteBuffer");
 }
 
 int clEnqueueCopyBuffer(cl_command_queue q, cl_mem src, cl_mem dst,
@@ -1029,7 +1038,7 @@ int clEnqueueCopyBuffer(cl_command_queue q, cl_mem src, cl_mem dst,
                          unsigned  /*nWaits*/, const cl_event*  /*waits*/, cl_event* event) {
   CUresult const r = cuMemcpyDtoDAsync(dst->ptr + dstOffset, src->ptr + srcOffset, size, q->stream);
   if (event) *event = nullptr;
-  return r == CUDA_SUCCESS ? CL_SUCCESS : CL_OUT_OF_RESOURCES;
+  return cudaFail(r, "clEnqueueCopyBuffer");
 }
 
 int clEnqueueFillBuffer(cl_command_queue q, cl_mem buf, const void* pattern,
@@ -1068,7 +1077,7 @@ int clEnqueueFillBuffer(cl_command_queue q, cl_mem buf, const void* pattern,
     return CL_INVALID_VALUE;
   }
   if (event) *event = nullptr;
-  return r == CUDA_SUCCESS ? CL_SUCCESS : CL_OUT_OF_RESOURCES;
+  return cudaFail(r, "clEnqueueFillBuffer");
 }
 
 int clEnqueueMarkerWithWaitList(cl_command_queue q, unsigned nWaits, const cl_event* waits, cl_event* event) {
@@ -1094,7 +1103,7 @@ int clFlush(cl_command_queue  /*q*/) {
 
 int clFinish(cl_command_queue q) {
   if (!q) { return CL_SUCCESS; }
-  return cudaSyncFail(cuStreamSynchronize(q->stream), "clFinish");
+  return cudaFail(cuStreamSynchronize(q->stream), "clFinish");
 }
 
 // ---- Events ----
@@ -1107,7 +1116,7 @@ int clReleaseEvent(cl_event ev) {
 int clWaitForEvents(unsigned n, const cl_event* events) {
   for (unsigned i = 0; i < n; i++) {
     if (events[i] && events[i]->end) {
-      int const err = cudaSyncFail(cuEventSynchronize(events[i]->end), "clWaitForEvents");
+      int const err = cudaFail(cuEventSynchronize(events[i]->end), "clWaitForEvents");
       if (err != CL_SUCCESS) { return err; }
     }
   }
@@ -1454,7 +1463,7 @@ bool clIsGraphSupported(cl_device_id dev) {
 int clGraphBeginRecording(cl_command_queue q) {
   ensureContextCurrent();
   CUresult r = cuStreamBeginCapture(q->stream, CU_STREAM_CAPTURE_MODE_THREAD_LOCAL);
-  return r == CUDA_SUCCESS ? CL_SUCCESS : CL_OUT_OF_RESOURCES;
+  return cudaFail(r, "clGraphBeginRecording");
 }
 
 int clGraphEndRecording(cl_command_queue q, cl_graph* graph) {
@@ -1470,13 +1479,13 @@ int clGraphEndRecording(cl_command_queue q, cl_graph* graph) {
   if (r == CUDA_SUCCESS) r = cuGraphInstantiate(&g->graphExec, g->graph, nullptr, nullptr, 0);
 #endif
   *graph = g;
-  return r == CUDA_SUCCESS ? CL_SUCCESS : CL_OUT_OF_RESOURCES;
+  return cudaFail(r, "clGraphEndRecording");
 }
 
 int clGraphLaunch(cl_graph graph) {
   ensureContextCurrent();
   CUresult r = cuGraphLaunch(graph->graphExec, graph->queue->stream);
-  return r == CUDA_SUCCESS ? CL_SUCCESS : CL_OUT_OF_RESOURCES;
+  return cudaFail(r, "clGraphLaunch");
 }
 
 int clReleaseGraph(cl_graph graph) {

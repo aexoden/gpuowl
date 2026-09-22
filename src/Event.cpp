@@ -2,6 +2,7 @@
 
 #include "Event.h"
 #include "TimeInfo.h"
+#include "clwrap.h"
 
 #include <cassert>
 #include <utility>
@@ -16,7 +17,7 @@ Event::Event(EventHolder&& e, TimeInfo* tInfo) :
 Event::~Event() {
   try {
     [[maybe_unused]] bool const done = isComplete();
-    assert(done);
+    assert(done || isContextLost());
   } catch (...) {
     // Suppress any exceptions in the destructor
   }

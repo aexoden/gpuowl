@@ -54,6 +54,9 @@ std::string getUUID(int seqId);
 std::string errMes(int err);
 void check(int err, const char *file, int line, const char *func, string_view mes);
 
+bool isContextLost();
+void markContextLost(const char* why);
+
 #define CHECK1(err) check(err, __FILE__, __LINE__, __func__, #err)
 #define CHECK2(err, mes) check(err, __FILE__, __LINE__, __func__, mes)
 

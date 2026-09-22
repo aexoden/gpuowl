@@ -27,6 +27,8 @@ add_executable(prpll
   Selection.cpp
   Stats.cpp
   Measure.cpp
+  Restart.cpp
+  GpuFault.cpp
   fs.cpp
   version.inc
   )

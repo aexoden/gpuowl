@@ -120,3 +120,57 @@ TEST(ll_timing_is_refused_rather_than_answered_with_prp) {
 
   CHECK(threw);
 }
+
+// What a thrown message means. A verdict here goes into the database and is read as final, so the cost of reading a
+// lost device as a fact about the configuration is every configuration measured after it.
+TEST(a_stop_is_not_a_failure_of_anything) {
+  Failure const f = classify("stop requested");
+  CHECK(f.stop);
+  CHECK(!f.fatal);
+  CHECK(f.status == Status::Ok);
+}
+
+TEST(a_lost_device_is_fatal_and_is_not_recorded_against_the_configuration) {
+  for (const char* message : {"DEVICE_NOT_AVAILABLE (-2) clFinish(q) at src/clwrap.cpp:326 finish",
+                              "DEVICE_NOT_FOUND (-1) clGetDeviceIDs"}) {
+    Failure const f = classify(message);
+    CHECK(f.stop);
+    CHECK(f.fatal);
+  }
+}
+
+TEST(a_build_failure_is_permanent_and_a_refusal_is_not) {
+  CHECK(classify("Can't compile fftmiddlein.cl").status == Status::NoCompile);
+  CHECK(classify("Can't find kernel tailMulZero").status == Status::NoCompile);
+
+  // Everything else is a fact about this device: most often a launch asking for more than it has, which is the
+  // tuner's most ordinary answer and must not read as a lost device.
+  Failure const refused = classify("OUT_OF_RESOURCES (-5) clEnqueueNDRangeKernel at src/clwrap.cpp:1 run");
+  CHECK(refused.status == Status::Unsupported);
+  CHECK(!refused.stop && !refused.fatal);
+}
+
+TEST(the_message_survives_the_classification) {
+  CHECK_EQ(classify("Can't compile shufl.cl").what, std::string{"Can't compile shufl.cl"});
+}
+
+// A check that could not be taken is not a check that found nothing to measure. Before this distinction existed, a
+// failed accuracy check reported "not applicable (exact arithmetic)" on an FP64 configuration and exited 0.
+TEST(an_accuracy_check_that_could_not_be_taken_is_not_a_pass) {
+  RoeCheck const notRun{.applicable = true, .minZ = 20, .status = Status::Unsupported};
+  CHECK(notRun.status != Status::Ok);
+  CHECK(!notRun.conclusive());
+
+  // It is not a *rejection* either: a configuration that would not run produced no timing to adopt, so the gate has
+  // nothing to reject. Whoever needs to know that no reading exists asks the status, which is why it is on the result.
+  CHECK(notRun.passed());
+
+  RoeCheck const exact{.applicable = false, .minZ = 20};
+  CHECK(exact.status == Status::Ok);
+  CHECK(exact.passed());
+
+  // And a reading that was taken and failed still fails.
+  RoeCheck const tooNoisy{.applicable = true, .z = 3, .n = 100, .minZ = 20};
+  CHECK(tooNoisy.status == Status::Ok);
+  CHECK(!tooNoisy.passed());
+}
