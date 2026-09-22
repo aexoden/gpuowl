@@ -109,8 +109,14 @@ Program KernelCompiler::compile(const string& fileName, const string& extraArgs)
                            1, (cl_program *) &p1, nullptr, nullptr, &err)};
   // The linker's diagnostics live on the linked program.  Asking p1 again instead says nothing about the link
   // -- and repeats the compile log that was already printed above.  A failed clLinkProgram may hand back no
-  // program at all, and then there is nothing to query.
-  if (p2) { if (string const mes = getBuildLog(p2.get(), deviceId); !mes.empty()) { log("%s\n", mes.c_str()); } }
+  // program at all, and then p1's log is the only account of what went wrong.
+  //
+  // Only show it when it explains something.  nVidia's OpenCL linker reports "Function <name> is a kernel, so
+  // overriding noinline attribute" for every kernel of every successful link -- 30 lines per configuration on an
+  // RTX A4000 -- and a run that builds many configurations drowns in them.
+  if (err != CL_SUCCESS || verbose) {
+    if (string const mes = getBuildLog(p2 ? p2.get() : p1.get(), deviceId); !mes.empty()) { log("%s\n", mes.c_str()); }
+  }
   if (err != CL_SUCCESS) {
     log("Linking '%s' error %s (args %s)\n", fileName.c_str(), errMes(err).c_str(), linkArgs.c_str());
   }
