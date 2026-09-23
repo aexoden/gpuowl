@@ -1,18 +1,23 @@
 // Copyright (C) Jason Lynch
 
-// Tests the database-only -tune subcommands: that the grammar reads what it should and refuses what it should, that
-// an env is chosen only where the choice is unambiguous, that each command changes the database the way it says, and
-// that all four run against files alone -- no device is opened anywhere below.
+// Tests the device-free -tune subcommands: that the grammar reads what it should and refuses what it should, that an
+// env is chosen only where the choice is unambiguous, that each command changes the database the way it says, and
+// that the scope derived from a worktodo is the one the run would work within.  No device is opened anywhere below.
 
 #include "Tuner.h"
 
+#include "Args.h"
+#include "File.h"
 #include "Selection.h"
 #include "TuneDB.h"
 
 #include "test.h"
 
+#include <algorithm>
+#include <cmath>
 #include <cstdio>
 #include <string>
+#include <vector>
 
 using namespace tune;
 
@@ -46,8 +51,8 @@ TuneDB loaded(const char* text = DB) {
   return db;
 }
 
-DbCommand parsed(const char* text) {
-  std::optional<DbCommand> const command = parseDbCommand(text);
+TuneCommand parsed(const char* text) {
+  std::optional<TuneCommand> const command = parseTuneCommand(text);
   CHECK(command.has_value());
   return *command;
 }
@@ -55,7 +60,7 @@ DbCommand parsed(const char* text) {
 // The message a malformed subcommand is refused with, or "" where it was accepted.
 std::string refusal(const char* text) {
   try {
-    (void)parseDbCommand(text);
+    (void)parseTuneCommand(text);
   } catch (const std::string& mes) { return mes; } catch (const char* mes) {
     return mes;
   }
@@ -98,24 +103,24 @@ struct Dir {
 
 TEST(a_subcommand_of_another_tuner_is_not_one_of_these) {
   // Upstream's own -tune takes the same flag, and none of its option words is a subcommand here.
-  CHECK(!parseDbCommand("").has_value());
-  CHECK(!parseDbCommand("noconfig,fp64").has_value());
-  CHECK(!parseDbCommand("quick=5").has_value());
-  CHECK(!parseDbCommand("emitter").has_value());
+  CHECK(!parseTuneCommand("").has_value());
+  CHECK(!parseTuneCommand("noconfig,fp64").has_value());
+  CHECK(!parseTuneCommand("quick=5").has_value());
+  CHECK(!parseTuneCommand("emitter").has_value());
 }
 
 TEST(each_subcommand_reads_its_own_settings) {
-  CHECK(parsed("emit").verb == DbVerb::Emit);
+  CHECK(parsed("emit").verb == TuneVerb::Emit);
   CHECK_EQ(parsed("emit").env, 0u);
   CHECK_EQ(parsed("emit,env=7").env, 7u);
 
-  CHECK(parsed("compact").verb == DbVerb::Compact);
+  CHECK(parsed("compact").verb == TuneVerb::Compact);
 
-  CHECK(parsed("reset,env=2,fft=1K:8:1K:202").verb == DbVerb::Reset);
+  CHECK(parsed("reset,env=2,fft=1K:8:1K:202").verb == TuneVerb::Reset);
   CHECK_EQ(parsed("reset,env=2,fft=1K:8:1K:202").env, 2u);
   CHECK_EQ(parsed("reset,fft=1K:8:1K:202").fft, std::string{"1K:8:1K:202"});
 
-  CHECK(parsed("adopt,from=3,into=1").verb == DbVerb::Adopt);
+  CHECK(parsed("adopt,from=3,into=1").verb == TuneVerb::Adopt);
   CHECK_EQ(parsed("adopt,from=3,into=1").from, 3u);
   CHECK_EQ(parsed("adopt,from=3,into=1").env, 1u);
   CHECK_EQ(parsed("adopt,env=1").env, 1u);
@@ -219,7 +224,7 @@ TEST(emit_publishes_the_selection_file_beside_the_database) {
 
   // Env 3's rows are the only ones a binary carrying OTHER_BUILD can see, and the one env carrying it needs no naming
   // -- but this test cannot choose the fingerprint the binary was built with, so it names the env instead.
-  CHECK(runDbCommand(parsed("emit,env=1"), dir.path));
+  CHECK(runTuneCommand(parsed("emit,env=1"), Args{}, dir.path));
   CHECK(dir.has("selection.txt"));
 
   std::optional<SelectionFile> const file = readSelection(dir.path / "selection.txt");
@@ -242,7 +247,7 @@ TEST(a_command_that_rewrites_writes_the_database_back) {
   Dir const dir{"prpll-test-tuner-compact"};
   dir.write(TuneDB::DEFAULT_NAME, DB);
 
-  CHECK(runDbCommand(parsed("compact"), dir.path));
+  CHECK(runTuneCommand(parsed("compact"), Args{}, dir.path));
 
   TuneDB after;
   CHECK(after.load(dir.path / TuneDB::DEFAULT_NAME));
@@ -254,10 +259,10 @@ TEST(a_command_says_so_rather_than_writing_anything_it_cannot) {
   Dir const dir{"prpll-test-tuner-refused"};
   dir.write(TuneDB::DEFAULT_NAME, DB);
 
-  CHECK(!runDbCommand(parsed("emit,env=9"), dir.path));
+  CHECK(!runTuneCommand(parsed("emit,env=9"), Args{}, dir.path));
   CHECK(!dir.has("selection.txt"));
 
-  CHECK(!runDbCommand(parsed("reset,env=2,fft=not-a-spec"), dir.path));
+  CHECK(!runTuneCommand(parsed("reset,env=2,fft=not-a-spec"), Args{}, dir.path));
 
   TuneDB after;
   CHECK(after.load(dir.path / TuneDB::DEFAULT_NAME));
@@ -269,10 +274,368 @@ TEST(a_database_that_is_not_there_is_an_empty_one) {
 
   // Nothing was measured, so there is no env to work on and nothing is published -- but the command reads a missing
   // file as empty rather than as a failure to read.
-  CHECK(!runDbCommand(parsed("emit"), dir.path));
+  CHECK(!runTuneCommand(parsed("emit"), Args{}, dir.path));
   CHECK(!dir.has("selection.txt"));
 
   // `compact` needs no env, so an empty database is one it can rewrite.
-  CHECK(runDbCommand(parsed("compact"), dir.path));
+  CHECK(runTuneCommand(parsed("compact"), Args{}, dir.path));
   CHECK(dir.has(TuneDB::DEFAULT_NAME));
+}
+
+// ---------------------------------------------------------------------------------------------------------------
+// Scope: the range, the probe, the grid and the weights.
+
+namespace {
+
+// The total weight of a grid, which is what the mixture is normalised to.
+double total(const Grid& grid) {
+  double sum = 0;
+  for (const GridPoint& point : grid.points) { sum += point.weight; }
+  return sum;
+}
+
+bool near(double a, double b) { return std::abs(a - b) < 1e-9; }
+
+ScopeArgs scopeOf(const char* text) { return parsed(text).scope; }
+
+// A worktodo the way a real one is written: PRP assignments with and without an AID, a double check, a comment, a
+// line for another number entirely, and an exponent that is not prime.
+const char* const WORKTODO = "# my work\n"
+                             "PRP=FEEE9DCD59A0855711265C1165C4C693,1,2,124647911,-1,77,0\n"
+                             "PRP=1,2,124647911,-1,77,0\n"
+                             "PRP=B2EE67DC0A514753E488794C9DD6F6BD,1,2,131088689,-1,78,0\n"
+                             "PRP=1,2,3,332192831,-1,77,0\n"
+                             "DoubleCheck=E0F583710728343C61643028FBDBA0FB,286472227,75,1\n"
+                             "PRP=1,2,124647912,-1,77,0\n"
+                             "PRP=1,2,124647911,-1,77,0\n";
+
+}  // namespace
+
+TEST(scope_settings_are_read_off_the_subcommand) {
+  CHECK(parsed("scope").verb == TuneVerb::Scope);
+  CHECK_EQ(scopeOf("scope").lo, 0u);
+  CHECK_EQ(scopeOf("scope").probe, 0u);
+  CHECK(near(scopeOf("scope").probeWeight, 0.5));
+  CHECK(scopeOf("scope").kinds == std::vector<TestKind>{TestKind::PRP});
+
+  CHECK_EQ(scopeOf("scope,workload=100M-400M").lo, 100'000'000u);
+  CHECK_EQ(scopeOf("scope,workload=100M-400M").hi, 400'000'000u);
+  CHECK_EQ(scopeOf("scope,workload=100000000-400000000").lo, 100'000'000u);
+  CHECK_EQ(scopeOf("scope,workload=1G-2G").hi, 2'000'000'000u);
+  CHECK_EQ(scopeOf("scope,workload=136279841").hi, 136'279'841u);
+
+  CHECK_EQ(scopeOf("scope,probe=136279841").probe, 136'279'841u);
+  CHECK(near(scopeOf("scope,probeWeight=0").probeWeight, 0));
+  CHECK(near(scopeOf("scope,probeWeight=1").probeWeight, 1));
+
+  CHECK(scopeOf("scope,kinds=ll").kinds == std::vector<TestKind>{TestKind::LL});
+  CHECK(scopeOf("scope,kinds=prp+ll").kinds == (std::vector<TestKind>{TestKind::PRP, TestKind::LL}));
+  CHECK(scopeOf("scope,kinds=ll+ll").kinds == std::vector<TestKind>{TestKind::LL});
+}
+
+TEST(a_scope_setting_that_cannot_describe_a_scope_is_a_usage_error) {
+  CHECK(!refusal("scope,workload=400M-100M").empty());
+  CHECK(!refusal("scope,workload=").empty());
+  CHECK(!refusal("scope,workload=100X-400X").empty());
+  CHECK(!refusal("scope,probe=0").empty());
+  CHECK(!refusal("scope,probeWeight=2").empty());
+  CHECK(!refusal("scope,probeWeight=-1").empty());
+  CHECK(!refusal("scope,kinds=cert").empty());
+  CHECK(!refusal("scope,kinds=").empty());
+  CHECK(!refusal("scope,env=1").empty());
+
+  // The settings belong to `scope` alone, and the other subcommands' to theirs.
+  CHECK(!refusal("emit,workload=100M-400M").empty());
+  CHECK(!refusal("scope,fft=1K:8:1K:202").empty());
+}
+
+TEST(with_no_pending_work_the_grid_spreads_over_the_default_range) {
+  RunScope const scope = makeScope(scopeOf("scope"), {});
+
+  CHECK_EQ(scope.lo, DEFAULT_WORKLOAD_LO);
+  CHECK_EQ(scope.hi, DEFAULT_WORKLOAD_HI);
+
+  // The geometric centre of 100M-400M is 200M, and the probe is the prime at or below it.
+  CHECK_EQ(scope.probe, 199'999'991u);
+
+  const Grid* const grid = scope.grid(TestKind::PRP);
+  CHECK(grid != nullptr);
+  CHECK(!grid->fromWorktodo);
+  CHECK_EQ(grid->points.size(), size_t{GRID_POINTS} + 1);  // the probe is not one of the spread points
+  CHECK_EQ(grid->points.front().exponent, DEFAULT_WORKLOAD_LO);
+  CHECK_EQ(grid->points.back().exponent, DEFAULT_WORKLOAD_HI);
+  CHECK(near(total(*grid), 1));
+
+  // Half the weight on the probe, the other half spread evenly.
+  CHECK(near(grid->weight(scope.probe), 0.5));
+  CHECK(near(grid->weight(DEFAULT_WORKLOAD_LO), 0.5 / GRID_POINTS));
+
+  // Log-spaced, so the gaps grow.
+  CHECK(grid->points[1].exponent - grid->points[0].exponent <
+        grid->points[GRID_POINTS - 1].exponent - grid->points[GRID_POINTS - 2].exponent);
+
+  CHECK(scope.grid(TestKind::LL) == nullptr);
+}
+
+TEST(the_range_and_the_probe_come_from_the_pending_work) {
+  Dir const dir{"prpll-test-tuner-worktodo"};
+  dir.write("worktodo-0.txt", WORKTODO);
+
+  Args args;
+  std::vector<fs::path> const files = worktodoFiles(args, dir.path);
+  CHECK_EQ(files.size(), size_t{1});
+
+  std::vector<PendingWork> const pending = scanWorktodo(files);
+
+  // Four PRP assignments (three of one exponent) and one LL; the base-3 line, the comment and the composite exponent
+  // are not work this could run.
+  CHECK_EQ(pending.size(), size_t{5});
+  CHECK_EQ(std::ranges::count(pending, PendingWork{TestKind::PRP, 124'647'911}), 3);
+  CHECK_EQ(std::ranges::count(pending, PendingWork{TestKind::LL, 286'472'227}), 1);
+
+  RunScope const scope = makeScope(scopeOf("scope"), pending);
+
+  // Padded 5% either side of the PRP work alone, the LL exponent not being a kind this run is tuning for.
+  CHECK_EQ(scope.lo, u64(124'647'911 * 0.95));
+  CHECK_EQ(scope.hi, u64(131'088'689 * 1.05));
+
+  // The three assignments at 124647911 outnumber the one at 131088689, and they are a 2% bin apart.
+  CHECK_EQ(scope.probe, 124'647'911u);
+
+  const Grid* const grid = scope.grid(TestKind::PRP);
+  CHECK(grid != nullptr);
+  CHECK(grid->fromWorktodo);
+  CHECK_EQ(grid->points.size(), size_t{2});
+  CHECK(near(total(*grid), 1));
+
+  // Half the weight on the probe, and the other half over the four assignments as they fall.
+  CHECK(near(grid->weight(124'647'911), 0.5 + 0.5 * 3 / 4.0));
+  CHECK(near(grid->weight(131'088'689), 0.5 / 4));
+}
+
+TEST(each_kind_has_its_own_grid) {
+  Dir const dir{"prpll-test-tuner-kinds"};
+  dir.write("worktodo-0.txt", WORKTODO);
+
+  std::vector<PendingWork> const pending = scanWorktodo(worktodoFiles(Args{}, dir.path));
+  RunScope const scope = makeScope(scopeOf("scope,kinds=prp+ll,workload=100M-400M"), pending);
+
+  const Grid* const prp = scope.grid(TestKind::PRP);
+  const Grid* const ll = scope.grid(TestKind::LL);
+  CHECK(prp != nullptr);
+  CHECK(ll != nullptr);
+
+  CHECK(prp->fromWorktodo);
+  CHECK(ll->fromWorktodo);
+  CHECK(near(total(*prp), 1));
+  CHECK(near(total(*ll), 1));
+
+  // An LL entry and a PRP entry are never compared, so the one LL assignment carries its kind's whole range weight
+  // while the PRP exponents carry none of it.  The probe is the one exponent both kinds share: it is where the user
+  // is, whichever kind is running there.
+  CHECK(near(ll->weight(286'472'227), 0.5));
+  CHECK(near(prp->weight(286'472'227), 0));
+  CHECK_EQ(scope.probe, 124'647'911u);
+  CHECK(near(ll->weight(scope.probe), 0.5));
+  CHECK(near(prp->weight(scope.probe), 0.5 + 0.5 * 3 / 4.0));
+}
+
+TEST(a_kind_with_no_pending_work_of_its_own_spreads_over_the_range) {
+  std::vector<PendingWork> const pending{{TestKind::PRP, 124'647'911}};
+  RunScope const scope = makeScope(scopeOf("scope,kinds=prp+ll,workload=100M-400M"), pending);
+
+  CHECK(scope.grid(TestKind::PRP)->fromWorktodo);
+  CHECK(!scope.grid(TestKind::LL)->fromWorktodo);
+  CHECK(near(total(*scope.grid(TestKind::LL)), 1));
+}
+
+TEST(a_cert_is_prp_work) {
+  Dir const dir{"prpll-test-tuner-cert"};
+  dir.write("worktodo-0.txt", "Cert=B2EE67DC0A514753E488794C9DD6F6BD,1,2,124647911,-1,162105\n");
+
+  std::vector<PendingWork> const pending = scanWorktodo(worktodoFiles(Args{}, dir.path));
+  CHECK_EQ(pending.size(), size_t{1});
+  CHECK(pending.front().kind == TestKind::PRP);
+  CHECK_EQ(pending.front().exponent, 124'647'911u);
+}
+
+TEST(a_worktodo_that_cannot_be_read_is_an_error) {
+  Dir const dir{"prpll-test-tuner-unreadable"};
+  dir.write("worktodo-0.txt", WORKTODO);
+  std::vector<fs::path> const files = worktodoFiles(Args{}, dir.path);
+  CHECK_EQ(files.size(), size_t{1});
+
+  fs::permissions(files.front(), fs::perms::none);
+  // Root, and Windows, read the file all the same, and there is then nothing to test.
+  if (!File::openRead(files.front())) {
+    bool threw = false;
+    try {
+      (void)scanWorktodo(files);
+    } catch (const char*) { threw = true; }
+    CHECK(threw);
+  }
+  fs::permissions(files.front(), fs::perms::owner_all);
+}
+
+TEST(a_named_workload_is_what_bounds_the_grid) {
+  std::vector<PendingWork> const pending{
+    {TestKind::PRP, 90'000'049}, {TestKind::PRP, 124'647'911}, {TestKind::PRP, 500'000'003}};
+
+  RunScope const scope = makeScope(scopeOf("scope,workload=100M-400M"), pending);
+  CHECK_EQ(scope.lo, 100'000'000u);
+  CHECK_EQ(scope.hi, 400'000'000u);
+
+  // The exponents outside the range are outside the workload, which is what "outside the workload" is meant to mean.
+  const Grid* const grid = scope.grid(TestKind::PRP);
+  CHECK_EQ(grid->points.size(), size_t{1});
+  CHECK_EQ(grid->points.front().exponent, 124'647'911u);
+  CHECK(near(total(*grid), 1));
+}
+
+TEST(a_probe_outside_a_named_workload_is_a_usage_error) {
+  CHECK(!refusal("scope,workload=100M-400M,probe=500000003").empty());
+
+  bool threw = false;
+  try {
+    (void)makeScope(ScopeArgs{.lo = 100'000'000, .hi = 400'000'000, .probe = 500'000'003}, {});
+  } catch (const std::string&) { threw = true; }
+  CHECK(threw);
+}
+
+TEST(a_named_probe_widens_a_range_that_was_only_derived) {
+  // The worktodo says where the work is now, and the probe where it is headed; a range nobody named covers both.
+  RunScope const scope = makeScope(scopeOf("scope,probe=500000003"), {{TestKind::PRP, 124'647'911}});
+
+  CHECK(scope.lo <= 124'647'911u);
+  CHECK(scope.hi >= 500'000'003u);
+  CHECK_EQ(scope.probe, 500'000'003u);
+  CHECK(scope.rangeSource.find("widened to the probe") != std::string::npos);
+  CHECK(near(total(*scope.grid(TestKind::PRP)), 1));
+}
+
+TEST(a_probe_is_always_an_exponent_the_tuner_could_time) {
+  // 124647912 is even; the probe is the prime at or below whatever is asked for.
+  RunScope const scope = makeScope(scopeOf("scope,workload=100M-400M,probe=124647912"), {});
+  CHECK_EQ(scope.probe, 124'647'911u);
+  CHECK(scope.probeSource.find("124647912") != std::string::npos);
+
+  // An exponent that is already prime is left alone.
+  CHECK_EQ(makeScope(scopeOf("scope,workload=100M-400M,probe=124647911"), {}).probe, 124'647'911u);
+}
+
+TEST(the_probe_weight_moves_all_of_the_weight_and_none_of_it) {
+  std::vector<PendingWork> const pending{{TestKind::PRP, 124'647'911}, {TestKind::PRP, 131'088'689}};
+
+  RunScope const all = makeScope(scopeOf("scope,probeWeight=1"), pending);
+  CHECK(near(all.grid(TestKind::PRP)->weight(all.probe), 1));
+  CHECK(near(total(*all.grid(TestKind::PRP)), 1));
+
+  RunScope const none = makeScope(scopeOf("scope,probeWeight=0"), pending);
+  CHECK(near(none.grid(TestKind::PRP)->weight(124'647'911), 0.5));
+  CHECK(near(none.grid(TestKind::PRP)->weight(131'088'689), 0.5));
+  CHECK(near(total(*none.grid(TestKind::PRP)), 1));
+}
+
+TEST(every_worktodo_a_run_would_read_is_read) {
+  Dir const dir{"prpll-test-tuner-files"};
+  Dir const pool{"prpll-test-tuner-pool"};
+
+  dir.write("worktodo-0.txt", "PRP=1,2,124647911,-1,77,0\n");
+  dir.write("worktodo-1.txt", "PRP=1,2,131088689,-1,78,0\n");
+  dir.write("worktodo.txt", "DoubleCheck=E0F583710728343C61643028FBDBA0FB,286472227,75,1\n");
+  pool.write("worktodo.txt", "PRP=1,2,143413741,-1,79,0\n");
+
+  Args args;
+  args.workers = 2;
+  args.masterDir = pool.path;
+
+  std::vector<fs::path> const files = worktodoFiles(args, dir.path);
+  CHECK_EQ(files.size(), size_t{4});
+
+  // A worker's file that is not there contributes nothing rather than failing the scan.
+  args.workers = 4;
+  CHECK_EQ(worktodoFiles(args, dir.path).size(), size_t{4});
+
+  std::vector<PendingWork> const pending = scanWorktodo(files);
+  CHECK_EQ(pending.size(), size_t{4});
+  CHECK_EQ(std::ranges::count(pending, PendingWork{TestKind::LL, 286'472'227}), 1);
+  CHECK_EQ(std::ranges::count(pending, PendingWork{TestKind::PRP, 143'413'741}), 1);
+}
+
+TEST(a_single_exponent_of_pending_work_still_gives_a_range) {
+  RunScope const scope = makeScope(scopeOf("scope"), {{TestKind::PRP, 124'647'911}});
+
+  CHECK(scope.lo < 124'647'911u);
+  CHECK(scope.hi > 124'647'911u);
+  CHECK_EQ(scope.probe, 124'647'911u);
+  CHECK(near(total(*scope.grid(TestKind::PRP)), 1));
+
+  // Named as one exponent, it is widened the same way rather than leaving a grid of one point.
+  RunScope const named = makeScope(scopeOf("scope,workload=124647911"), {});
+  CHECK(named.lo < 124'647'911u);
+  CHECK(named.hi > 124'647'911u);
+}
+
+TEST(an_exponent_the_prime_test_cannot_answer_for_is_a_usage_error) {
+  // Both ends of the band, each of which used to run the sieve off its own supported range and never return.
+  CHECK(!refusal("scope,probe=1").empty());
+  CHECK(!refusal("scope,probe=999").empty());
+  CHECK(!refusal("scope,probe=20G").empty());
+  CHECK(!refusal("scope,workload=1-2").empty());
+  CHECK(!refusal("scope,workload=15G-20G").empty());
+
+  // The suffix is applied to an exponent that would wrap past the band rather than back into it.
+  CHECK(!refusal("scope,probe=99999999999G").empty());
+
+  CHECK_EQ(scopeOf("scope,probe=10G").probe, 10'000'000'000u);
+  CHECK_EQ(scopeOf("scope,workload=1000-2000").lo, 1000u);
+}
+
+TEST(a_scope_given_exponents_the_parser_never_saw_refuses_them_too) {
+  // makeScope is the entry point the tuner will use, not only the command line, so it holds the band itself.
+  for (const ScopeArgs& args :
+       {ScopeArgs{.lo = 1, .hi = 2}, ScopeArgs{.lo = 100'000'000, .hi = 400'000'000, .probe = 1}}) {
+    bool threw = false;
+    try {
+      (void)makeScope(args, {});
+    } catch (const std::string&) { threw = true; }
+    CHECK(threw);
+  }
+
+  // Pending work outside the band is not work this can be scoped to, and does not drag the range out with it.
+  RunScope const scope = makeScope(ScopeArgs{}, {{TestKind::PRP, 124'647'911}, {TestKind::PRP, 20'000'000'000}});
+  CHECK(scope.hi <= MAX_EXPONENT);
+  CHECK_EQ(scope.probe, 124'647'911u);
+}
+
+TEST(a_range_with_no_prime_in_it_is_refused) {
+  // 124647912 and 124647913 are both composite, so the range names no exponent the tuner could time.
+  bool threw = false;
+  try {
+    (void)makeScope(ScopeArgs{.lo = 124'647'912, .hi = 124'647'913}, {});
+  } catch (const std::string&) { threw = true; }
+  CHECK(threw);
+
+  // One that does hold a prime, but not below the exponent asked for, reaches up for it instead.
+  RunScope const up = makeScope(ScopeArgs{.lo = 124'647'912, .hi = 124'647'960}, {});
+  CHECK_EQ(up.probe, 124'647'953u);
+}
+
+TEST(one_worktodo_reached_two_ways_is_read_once) {
+  Dir const dir{"prpll-test-tuner-equivalent"};
+  dir.write("worktodo.txt", "PRP=1,2,124647911,-1,77,0\n");
+  dir.write("worktodo-0.txt", "PRP=1,2,131088689,-1,78,0\n");
+
+  // A pool naming the run directory by another spelling of the same path: the same file, and its assignments must
+  // not be counted twice.
+  Args args;
+  args.masterDir = dir.path / ".";
+
+  std::vector<fs::path> const files = worktodoFiles(args, dir.path);
+  CHECK_EQ(files.size(), size_t{2});
+  CHECK_EQ(scanWorktodo(files).size(), size_t{2});
+
+  RunScope const scope = makeScope(ScopeArgs{}, scanWorktodo(files));
+  CHECK(near(scope.grid(TestKind::PRP)->weight(124'647'911), 0.75));
+  CHECK(near(scope.grid(TestKind::PRP)->weight(131'088'689), 0.25));
 }

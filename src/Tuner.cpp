@@ -2,13 +2,21 @@
 
 #include "Tuner.h"
 
+#include "Args.h"
 #include "BuildId.h"
 #include "Emit.h"
 #include "log.h"
+#include "Primes.h"
+#include "Task.h"
 #include "TuneDB.h"
+#include "Worktodo.h"
 
+#include <algorithm>
+#include <cinttypes>
+#include <cmath>
 #include <cstdio>
 #include <ctime>
+#include <map>
 #include <vector>
 
 namespace tune {
@@ -16,6 +24,9 @@ namespace tune {
 namespace {
 
 constexpr const char* SELECTION_NAME = "selection.txt";
+
+// How many grid points a report prints in full before it falls back to the heaviest few.
+constexpr size_t GRID_SHOWN = 12;
 
 [[nodiscard]] u32 asEnvId(std::string_view text, const char* what) {
   std::optional<u32> const id = parseInt<u32>(text);
@@ -41,31 +52,338 @@ void listEnvs(const std::vector<const DbEnv*>& envs) {
   for (const DbEnv* const env : envs) { log("%s", describe(*env).c_str()); }
 }
 
+// Everything the scope is expressed in has to be an exponent the rest of it can work with: one a primality test is
+// answered for, since the probe is a prime, and one a worktodo could carry.
+[[nodiscard]] std::string outsideBand(const char* what, const std::string& shown) {
+  return "-tune scope: " + std::string{what} + shown + " is outside the exponents this can work with (" +
+    std::to_string(MIN_EXPONENT) + " to " + std::to_string(MAX_EXPONENT) + ")";
+}
+
+void requireExponent(u64 E, const char* what) {
+  if (E < MIN_EXPONENT || E > MAX_EXPONENT) { throw outsideBand(what, std::to_string(E)); }
+}
+
+// An exponent with the K/M/G suffix the ranges are usually written with.
+[[nodiscard]] u64 asExponent(std::string_view text, const char* what) {
+  u64 scale = 1;
+  if (!text.empty()) {
+    switch (text.back()) {
+    case 'K':
+    case 'k': scale = 1000; break;
+    case 'M':
+    case 'm': scale = 1'000'000; break;
+    case 'G':
+    case 'g': scale = 1'000'000'000; break;
+    default: break;
+    }
+  }
+  std::optional<u64> const value = parseInt<u64>(text.substr(0, text.size() - (scale > 1)));
+  if (!value || *value == 0) {
+    throw "-tune scope: " + std::string{what} + " takes an exponent, such as 400M or 400000000";
+  }
+  // Checked before the multiplication rather than after it, which would wrap and land back in range.
+  if (*value > MAX_EXPONENT / scale) { throw outsideBand(what, std::string{text}); }
+
+  u64 const E = *value * scale;
+  requireExponent(E, what);
+  return E;
+}
+
+void parseWorkload(std::string_view text, ScopeArgs& out) {
+  size_t const dash = text.find('-');
+  out.lo = asExponent(text.substr(0, dash), "workload=");
+  out.hi = dash == std::string_view::npos ? out.lo : asExponent(text.substr(dash + 1), "workload=");
+  if (out.hi < out.lo) { throw std::string{"-tune scope: workload= is empty: its first exponent is the larger"}; }
+}
+
+void parseKinds(std::string_view text, ScopeArgs& out) {
+  out.kinds.clear();
+  for (size_t at = 0; at <= text.size();) {
+    size_t const plus = text.find('+', at);
+    std::string_view const one = text.substr(at, plus == std::string_view::npos ? plus : plus - at);
+    at = plus == std::string_view::npos ? text.size() + 1 : plus + 1;
+
+    std::optional<TestKind> const kind = parseTestKind(one);
+    if (!kind) { throw "-tune scope: kinds= does not know '" + std::string{one} + "'. Accepted: prp, ll, prp+ll"; }
+    if (std::ranges::find(out.kinds, *kind) == out.kinds.end()) { out.kinds.push_back(*kind); }
+  }
+  if (out.kinds.empty()) { throw std::string{"-tune scope: kinds= takes at least one test kind"}; }
+}
+
+// The prime at or below `E`, which is what the tuner can actually time, raised back into the range where there is no
+// prime below `E` in it. Nothing at all where the range holds no prime: it then names no exponent that could be timed.
+[[nodiscard]] std::optional<u64> primeAtOrBelow(const Primes& primes, u64 E, u64 lo, u64 hi) {
+  u64 const below = primes.isPrime(E) ? E : primes.prevPrime(E);
+  if (below >= lo) { return below; }
+
+  u64 const above = primes.nextPrime(lo - 1);
+  if (above <= hi) { return above; }
+  return {};
+}
+
+// The most-populated bin of `PROBE_BIN` relative width, represented by the mean of the exponents in it. Ties go to the
+// lower bin, so that the same worktodo always names the same probe.
+[[nodiscard]] u64 modeOf(const std::vector<u64>& exponents, u64 lo) {
+  struct Bin {
+    u32 count = 0;
+    double sum = 0;
+  };
+  std::map<i64, Bin> bins;
+
+  double const width = std::log1p(PROBE_BIN);
+  for (u64 const E : exponents) {
+    Bin& bin = bins[i64(std::floor(std::log(double(E) / double(lo)) / width))];
+    ++bin.count;
+    bin.sum += double(E);
+  }
+
+  const Bin* best = nullptr;
+  for (const auto& [index, bin] : bins) {
+    if (!best || bin.count > best->count) { best = &bin; }
+  }
+  return u64(std::llround(best->sum / best->count));
+}
+
+// The points a kind with no pending work is spread over: `GRID_POINTS` log-spaced across the range, which samples the
+// cost curve evenly in the variable it actually bends in.
+[[nodiscard]] std::vector<u64> spreadOver(u64 lo, u64 hi) {
+  if (hi <= lo) { return {lo}; }
+
+  std::vector<u64> out;
+  double const ratio = std::log(double(hi) / double(lo));
+  for (u32 i = 0; i < GRID_POINTS; ++i) {
+    u64 const E = std::clamp(u64(std::llround(double(lo) * std::exp(ratio * i / (GRID_POINTS - 1)))), lo, hi);
+    if (out.empty() || out.back() != E) { out.push_back(E); }
+  }
+  return out;
+}
+
+[[nodiscard]] Grid gridFor(TestKind kind, const std::vector<PendingWork>& pending, u64 lo, u64 hi, u64 probe,
+                           double probeWeight) {
+  std::vector<u64> mine;
+  for (const PendingWork& work : pending) {
+    if (work.kind == kind && lo <= work.exponent && work.exponent <= hi) { mine.push_back(work.exponent); }
+  }
+
+  Grid out{.kind = kind, .fromWorktodo = !mine.empty(), .points = {}};
+
+  std::map<u64, double> weights;
+  if (out.fromWorktodo) {
+    for (u64 const E : mine) { weights[E] += (1 - probeWeight) / double(mine.size()); }
+  } else {
+    std::vector<u64> const spread = spreadOver(lo, hi);
+    for (u64 const E : spread) { weights[E] += (1 - probeWeight) / double(spread.size()); }
+  }
+  weights[probe] += probeWeight;
+
+  for (const auto& [E, weight] : weights) { out.points.push_back({.exponent = E, .weight = weight}); }
+  return out;
+}
+
 }  // namespace
 
-const char* toString(DbVerb verb) {
+bool ScopeArgs::wantsKind(TestKind kind) const { return std::ranges::find(kinds, kind) != kinds.end(); }
+
+double Grid::weight(u64 E) const {
+  auto const at = std::ranges::find_if(points, [E](const GridPoint& p) { return p.exponent == E; });
+  return at == points.end() ? 0 : at->weight;
+}
+
+const Grid* RunScope::grid(TestKind kind) const {
+  auto const at = std::ranges::find_if(grids, [kind](const Grid& g) { return g.kind == kind; });
+  return at == grids.end() ? nullptr : &*at;
+}
+
+RunScope makeScope(const ScopeArgs& args, const std::vector<PendingWork>& pending) {
+  if (args.kinds.empty()) { throw std::string{"-tune scope: there is no test kind to tune for"}; }
+
+  // The settings the command line validates, validated again: this is the entry point, and not everything reaching it
+  // has been through the parser.
+  if (args.lo) {
+    requireExponent(args.lo, "workload=");
+    requireExponent(args.hi, "workload=");
+  }
+  if (args.probe) { requireExponent(args.probe, "probe="); }
+
+  // An assignment for an exponent nothing here can place is not work this can be scoped to.
+  std::vector<u64> wanted;
+  for (const PendingWork& work : pending) {
+    if (args.wantsKind(work.kind) && MIN_EXPONENT <= work.exponent && work.exponent <= MAX_EXPONENT) {
+      wanted.push_back(work.exponent);
+    }
+  }
+
+  RunScope out;
+  out.probeWeight = args.probeWeight;
+
+  if (args.lo) {
+    out.lo = args.lo;
+    out.hi = args.hi;
+    out.rangeSource = "named on the command line";
+  } else if (!wanted.empty()) {
+    auto const [lo, hi] = std::ranges::minmax(wanted);
+    out.lo = u64(double(lo) * (1 - WORKLOAD_PAD));
+    out.hi = u64(double(hi) * (1 + WORKLOAD_PAD));
+    out.rangeSource = std::to_string(wanted.size()) + (wanted.size() == 1 ? " assignment" : " assignments") +
+      " pending, padded " + std::to_string(u32(WORKLOAD_PAD * 100)) + "% at each end";
+  } else {
+    out.lo = DEFAULT_WORKLOAD_LO;
+    out.hi = DEFAULT_WORKLOAD_HI;
+    out.rangeSource = "the default range, there being no pending work";
+  }
+
+  // A single exponent is a legitimate thing to tune for, but a range of no width leaves the grid with one point and
+  // nothing to say about the exponents either side of it.
+  if (out.hi == out.lo) {
+    out.lo = u64(double(out.lo) * (1 - WORKLOAD_PAD));
+    out.hi = u64(double(out.hi) * (1 + WORKLOAD_PAD));
+  }
+
+  // A named probe is where the user is headed, so a range that was derived rather than named reaches it.
+  if (args.probe && !args.lo && (args.probe < out.lo || args.probe > out.hi)) {
+    out.lo = std::min(out.lo, u64(double(args.probe) * (1 - WORKLOAD_PAD)));
+    out.hi = std::max(out.hi, u64(double(args.probe) * (1 + WORKLOAD_PAD)));
+    out.rangeSource += ", widened to the probe";
+  }
+
+  // The padding above is the only thing that can leave the band, every exponent it was computed from being inside it.
+  out.lo = std::max(out.lo, MIN_EXPONENT);
+  out.hi = std::min(out.hi, MAX_EXPONENT);
+
+  std::vector<u64> inRange;
+  for (u64 const E : wanted) {
+    if (out.lo <= E && E <= out.hi) { inRange.push_back(E); }
+  }
+
+  Primes const primes;
+  u64 asked = 0;
+  if (args.probe) {
+    asked = args.probe;
+    if (asked < out.lo || asked > out.hi) {
+      throw "-tune scope: probe=" + std::to_string(asked) + " is outside workload=" + std::to_string(out.lo) + "-" +
+        std::to_string(out.hi);
+    }
+    out.probeSource = "named on the command line";
+  } else if (!inRange.empty()) {
+    asked = modeOf(inRange, out.lo);
+    out.probeSource = "the most-populated " + std::to_string(u32(PROBE_BIN * 100)) + "% bin of the pending work";
+  } else {
+    asked = u64(std::llround(std::sqrt(double(out.lo) * double(out.hi))));
+    out.probeSource = "the geometric centre of the range";
+  }
+
+  std::optional<u64> const probe = primeAtOrBelow(primes, asked, out.lo, out.hi);
+  if (!probe) {
+    throw "-tune scope: workload=" + std::to_string(out.lo) + "-" + std::to_string(out.hi) +
+      " holds no prime, so there is no exponent in it the tuner could time";
+  }
+
+  out.probe = *probe;
+  if (out.probe != asked) { out.probeSource += ", the prime at or below " + std::to_string(asked); }
+
+  for (TestKind const kind : args.kinds) {
+    out.grids.push_back(gridFor(kind, pending, out.lo, out.hi, out.probe, out.probeWeight));
+  }
+  return out;
+}
+
+std::vector<fs::path> worktodoFiles(const Args& args, const fs::path& dir) {
+  std::vector<fs::path> out;
+
+  // By file identity rather than by spelling, since a pool given as `.` of the run directory names the same file
+  // twice and would count its assignments twice.
+  auto take = [&out](const fs::path& path) {
+    std::error_code ec;
+    if (!fs::exists(path, ec) || ec) { return; }
+    for (const fs::path& seen : out) {
+      if (fs::equivalent(seen, path, ec) && !ec) { return; }
+    }
+    out.push_back(path);
+  };
+
+  for (u32 i = 0; i == 0 || i < args.workers; ++i) { take(dir / ("worktodo-" + std::to_string(i) + ".txt")); }
+
+  // Not a file a run takes work from unless it is the pool's, but a user who has left one here means it as their
+  // workload, and reading it costs a scope nothing.
+  take(dir / "worktodo.txt");
+  if (!args.masterDir.empty()) { take(args.masterDir / "worktodo.txt"); }
+  return out;
+}
+
+std::vector<PendingWork> scanWorktodo(const std::vector<fs::path>& files) {
+  std::vector<PendingWork> out;
+  for (const Task& task : Worktodo::pending(files)) {
+    switch (task.kind) {
+    case Task::PRP:
+    case Task::CERT: out.push_back({.kind = TestKind::PRP, .exponent = task.exponent}); break;
+    case Task::LL: out.push_back({.kind = TestKind::LL, .exponent = task.exponent}); break;
+    case Task::VERIFY: break;
+    }
+  }
+  return out;
+}
+
+void reportScope(const RunScope& scope, const std::vector<fs::path>& files) {
+  std::string read;
+  for (const fs::path& file : files) { read += (read.empty() ? "" : ", ") + file.filename().string(); }
+  log("tune: pending work read from %s\n", read.empty() ? "no worktodo file" : read.c_str());
+
+  log("tune: workload %" PRIu64 "-%" PRIu64 " (%s)\n", scope.lo, scope.hi, scope.rangeSource.c_str());
+  log("tune: probe %" PRIu64 " (%s), carrying %.0f%% of the weight\n", scope.probe, scope.probeSource.c_str(),
+      scope.probeWeight * 100);
+
+  for (const Grid& grid : scope.grids) {
+    log("tune: %s grid: %zu %s, %s\n", toString(grid.kind), grid.points.size(),
+        grid.points.size() == 1 ? "exponent" : "exponents",
+        grid.fromWorktodo ? "from the pending work" : "spread across the range");
+
+    // The whole grid where it is short enough to read, and otherwise the points carrying the most weight, which are
+    // the ones a ranking is going to turn on.
+    std::vector<GridPoint> shown = grid.points;
+    bool const all = shown.size() <= GRID_SHOWN;
+    if (!all) {
+      // Exponent order breaks the ties, which a spread grid is almost entirely made of, so that what is printed is a
+      // readable run of points rather than an arbitrary selection of equals.
+      std::ranges::partial_sort(shown, shown.begin() + GRID_SHOWN, [](const GridPoint& a, const GridPoint& b) {
+        return a.weight != b.weight ? a.weight > b.weight : a.exponent < b.exponent;
+      });
+      shown.resize(GRID_SHOWN);
+      std::ranges::sort(shown, [](const GridPoint& a, const GridPoint& b) { return a.exponent < b.exponent; });
+    }
+    for (const GridPoint& point : shown) {
+      log("tune:   %" PRIu64 " %5.1f%%%s\n", point.exponent, point.weight * 100,
+          point.exponent == scope.probe ? "  (probe)" : "");
+    }
+    if (!all) { log("tune:   ... and %zu more\n", grid.points.size() - shown.size()); }
+  }
+}
+
+const char* toString(TuneVerb verb) {
   switch (verb) {
-  case DbVerb::Emit: return "emit";
-  case DbVerb::Reset: return "reset";
-  case DbVerb::Adopt: return "adopt";
-  case DbVerb::Compact: return "compact";
+  case TuneVerb::Emit: return "emit";
+  case TuneVerb::Reset: return "reset";
+  case TuneVerb::Adopt: return "adopt";
+  case TuneVerb::Compact: return "compact";
+  case TuneVerb::Scope: return "scope";
   }
   return "?";
 }
 
-std::optional<DbCommand> parseDbCommand(std::string_view text) {
+std::optional<TuneCommand> parseTuneCommand(std::string_view text) {
   size_t const firstComma = text.find(',');
   std::string_view const verb = text.substr(0, firstComma);
 
-  DbCommand out;
+  TuneCommand out;
   if (verb == "emit") {
-    out.verb = DbVerb::Emit;
+    out.verb = TuneVerb::Emit;
   } else if (verb == "reset") {
-    out.verb = DbVerb::Reset;
+    out.verb = TuneVerb::Reset;
   } else if (verb == "adopt") {
-    out.verb = DbVerb::Adopt;
+    out.verb = TuneVerb::Adopt;
   } else if (verb == "compact") {
-    out.verb = DbVerb::Compact;
+    out.verb = TuneVerb::Compact;
+  } else if (verb == "scope") {
+    out.verb = TuneVerb::Scope;
   } else {
     return {};
   }
@@ -83,33 +401,53 @@ std::optional<DbCommand> parseDbCommand(std::string_view text) {
     std::string_view const key = token.substr(0, eq);
     std::string_view const val = token.substr(eq + 1);
 
-    bool const wantsEnv = out.verb != DbVerb::Compact;
+    bool const wantsEnv = out.verb != TuneVerb::Compact && out.verb != TuneVerb::Scope;
 
     if (key == "env" && wantsEnv) {
       out.env = asEnvId(val, "env=");
-    } else if (key == "into" && out.verb == DbVerb::Adopt) {
+    } else if (key == "into" && out.verb == TuneVerb::Adopt) {
       out.env = asEnvId(val, "into=");
-    } else if (key == "from" && out.verb == DbVerb::Adopt) {
+    } else if (key == "from" && out.verb == TuneVerb::Adopt) {
       out.from = asEnvId(val, "from=");
-    } else if (key == "fft" && out.verb == DbVerb::Reset) {
+    } else if (key == "fft" && out.verb == TuneVerb::Reset) {
       if (val.empty()) { throw std::string{"-tune reset: fft= takes an FFT specification"}; }
       out.fft = std::string{val};
+    } else if (key == "workload" && out.verb == TuneVerb::Scope) {
+      parseWorkload(val, out.scope);
+    } else if (key == "probe" && out.verb == TuneVerb::Scope) {
+      out.scope.probe = asExponent(val, "probe=");
+    } else if (key == "probeWeight" && out.verb == TuneVerb::Scope) {
+      std::optional<double> const weight = parseNonNegative(val);
+      if (!weight || *weight > 1) { throw std::string{"-tune scope: probeWeight= takes a fraction between 0 and 1"}; }
+      out.scope.probeWeight = *weight;
+    } else if (key == "kinds" && out.verb == TuneVerb::Scope) {
+      parseKinds(val, out.scope);
     } else {
       std::string accepted = "nothing";
       switch (out.verb) {
-      case DbVerb::Emit: accepted = "env=<id>"; break;
-      case DbVerb::Reset: accepted = "env=<id>, fft=<spec>"; break;
-      case DbVerb::Adopt: accepted = "into=<id> (or env=<id>), from=<id>"; break;
-      case DbVerb::Compact: break;
+      case TuneVerb::Emit: accepted = "env=<id>"; break;
+      case TuneVerb::Reset: accepted = "env=<id>, fft=<spec>"; break;
+      case TuneVerb::Adopt: accepted = "into=<id> (or env=<id>), from=<id>"; break;
+      case TuneVerb::Compact: break;
+      case TuneVerb::Scope: accepted = "workload=<lo>-<hi>, probe=<E>, probeWeight=<0..1>, kinds=prp|ll|prp+ll"; break;
       }
       throw "-tune " + std::string{verb} + ": '" + std::string{key} + "=' is not understood. Accepted: " + accepted;
     }
   }
 
+  // Both named and contradictory is a mistyped command rather than a scope: caught here, so that it is refused
+  // before anything else happens.  A probe named against a range derived from the worktodo is not contradictory --
+  // it says where the user is going, and makeScope widens the range to it.
+  if (out.verb == TuneVerb::Scope && out.scope.lo && out.scope.probe &&
+      (out.scope.probe < out.scope.lo || out.scope.probe > out.scope.hi)) {
+    throw "-tune scope: probe=" + std::to_string(out.scope.probe) +
+      " is outside workload=" + std::to_string(out.scope.lo) + "-" + std::to_string(out.scope.hi);
+  }
+
   return out;
 }
 
-u32 commandEnv(const TuneDB& db, const DbCommand& command, u64 build) {
+u32 commandEnv(const TuneDB& db, const TuneCommand& command, u64 build) {
   if (command.env) {
     if (!db.findEnv(command.env)) {
       log("tune: there is no env %u in the database\n", command.env);
@@ -142,15 +480,18 @@ u32 commandEnv(const TuneDB& db, const DbCommand& command, u64 build) {
   return 0;
 }
 
-bool rewriteFor(TuneDB& db, const DbCommand& command, u32 env) {
+bool rewriteFor(TuneDB& db, const TuneCommand& command, u32 env) {
   switch (command.verb) {
-  case DbVerb::Emit: return true;
+  case TuneVerb::Emit: return true;
 
-  case DbVerb::Compact: return db.compact();
+  // Answered before the database is opened, and here only so that the switch is complete.
+  case TuneVerb::Scope: return false;
 
-  case DbVerb::Reset: return db.reset(env, command.fft);
+  case TuneVerb::Compact: return db.compact();
 
-  case DbVerb::Adopt: {
+  case TuneVerb::Reset: return db.reset(env, command.fft);
+
+  case TuneVerb::Adopt: {
     u32 const from = command.from ? command.from : db.adoptCandidate(env);
     if (!from) {
       log("tune: env %u has no earlier env of the same card to adopt; name one with from=<id>\n", env);
@@ -170,7 +511,13 @@ bool rewriteFor(TuneDB& db, const DbCommand& command, u32 env) {
   return false;
 }
 
-bool runDbCommand(const DbCommand& command, const fs::path& dir) {
+bool runTuneCommand(const TuneCommand& command, const Args& args, const fs::path& dir) {
+  if (command.verb == TuneVerb::Scope) {
+    std::vector<fs::path> const files = worktodoFiles(args, dir);
+    reportScope(makeScope(command.scope, scanWorktodo(files)), files);
+    return true;
+  }
+
   fs::path const dbPath = dir / TuneDB::DEFAULT_NAME;
 
   TuneDB db;
@@ -180,12 +527,12 @@ bool runDbCommand(const DbCommand& command, const fs::path& dir) {
   if (!db.load(dbPath)) { return false; }
 
   u32 env = 0;
-  if (command.verb != DbVerb::Compact) {
+  if (command.verb != TuneVerb::Compact) {
     env = commandEnv(db, command, buildFingerprint());
     if (!env) { return false; }
   }
 
-  if (command.verb == DbVerb::Emit) {
+  if (command.verb == TuneVerb::Emit) {
     Provenance const from{.ts = u64(time(nullptr)), .db = TuneDB::DEFAULT_NAME, .env = env};
 
     std::optional<SelectionFile> const file = emit(db, {}, from);

@@ -201,11 +201,12 @@ int main(int argc, char **argv) {
     args.parse(mainLine);
     parsing = false;
 
-    // The database-only -tune subcommands read and rewrite tunedb.txt, or publish selection.txt from it, and never
-    // build a kernel -- so they are answered here, before a device is opened, and work where there is none.
+    // The device-free -tune subcommands read and rewrite tunedb.txt, publish selection.txt from it, or report the
+    // scope a run would work within, and never build a kernel -- so they are answered here, before a device is
+    // opened, and work where there is none.
     if (args.doTune) {
-      if (std::optional<tune::DbCommand> const command = tune::parseDbCommand(args.tune)) {
-        exitCode = tune::runDbCommand(*command, fs::current_path()) ? EXIT_OK : EXIT_FAILED;
+      if (std::optional<tune::TuneCommand> const command = tune::parseTuneCommand(args.tune)) {
+        exitCode = tune::runTuneCommand(*command, args, fs::current_path()) ? EXIT_OK : EXIT_FAILED;
         log("Bye\n");
         return exitCode;
       }
