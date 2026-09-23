@@ -446,10 +446,13 @@ vector<Option> buildTable() {
                .defaultValue = 0,
                .inert = [](const Env& e, const FFTConfig&, const UseConfig&) { return e.hasBackoffBarrier(); },
                .inertWhen = "AMD gfx90a, gfx94x, gfx95x and RDNA"});
+  // Off AMD and nVidia the host forces OLD_FENCE=1 whatever is asked for, since the other hand-off relies on a
+  // lock-step wavefront those two alone guarantee (Gpu.cpp), so there is nothing to choose between.
   t.push_back({.key = "OLD_FENCE",
                .scope = Scope::Device,
                .group = Group::Queues,
                .touches = KG_CARRY,
+               .applies = [](const Env& e, const FFTConfig&, const UseConfig&) { return e.isAmd || e.isNvidia; },
                .values = {0, 1},
                .defaultFn = [](const Env& e, const FFTConfig&, const UseConfig&) { return e.isAmd ? 0 : 1; }});
   t.push_back({.key = "ENABLE_BARSYNC",

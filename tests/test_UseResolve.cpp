@@ -6,6 +6,7 @@
 #include "test.h"
 
 #include "Args.h"
+#include "TuneDB.h"
 #include "UseResolve.h"
 
 #include <filesystem>
@@ -358,4 +359,27 @@ TEST(takeover_lists_ignored_keys) {
   Args clean{true};
   CHECK(takeOverConfig(clean).configKeys.empty());
   CHECK_EQ(describe(takeOverConfig(clean)), std::string{"Tuning from built-in defaults; no -use settings to ignore"});
+}
+
+TEST(selection_lines_are_fitted_to_the_fft_they_reach) {
+  Env const nv{.isNvidia = true, .computeCapability = 806};
+  SelectionLayers const layers{
+    .global = {{"SHUFL_BYTES_W", "16"}, {"TAIL_KERNELS", "3"}}, .family = {parseUseLine("! 2 WMUL=1")}, .entry = {}};
+
+  // At width 1K everything fits.
+  SelectionLayers const narrow = fittedTo(layers, nv, FFTConfig{"2:1K:8:256:212"}, TestKind::PRP);
+  UseConfig const narrowSet{narrow.global.begin(), narrow.global.end()};
+  CHECK_EQ(configText(narrowSet), std::string{"SHUFL_BYTES_W=16,TAIL_KERNELS=3,WMUL=1"});
+  CHECK(narrow.family.empty());
+
+  // At 4K SHUFL_BYTES_W=16 does not, and is left at its default; the rest still reaches it.
+  SelectionLayers const wide = fittedTo(layers, nv, FFTConfig{"2:4K:8:256:212"}, TestKind::PRP);
+  UseConfig const wideSet{wide.global.begin(), wide.global.end()};
+  CHECK_EQ(configText(wideSet), std::string{"TAIL_KERNELS=3,WMUL=1"});
+
+  // An entry's own set is what was measured on that FFT, and passes through untouched.
+  SelectionLayers withEntry = layers;
+  withEntry.entry = {{"SHUFL_BYTES_W", "4"}};
+  SelectionLayers const entry = fittedTo(withEntry, nv, FFTConfig{"2:4K:8:256:212"}, TestKind::PRP);
+  CHECK(entry.entry == withEntry.entry);
 }

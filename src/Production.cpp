@@ -81,7 +81,8 @@ u64 publishedReach(const SelectionFile& file, const FFTConfig& fft, TestKind kin
 
 std::vector<std::string> shadowedKeys(const Args& args, const Env& env, const SelectionFile& file,
                                       const SelectionEntry& entry, const FFTConfig& fft) {
-  UseConfig const resolved = resolveConfig(args, fft, entry.kind, file.layersFor(entry));
+  UseConfig const resolved =
+    resolveConfig(args, fft, entry.kind, fittedTo(file.layersFor(entry), env, fft, entry.kind));
 
   std::vector<std::string> out;
 
@@ -129,7 +130,7 @@ std::optional<Choice> chooseFrom(const SelectionFile& file, const Args& args, co
     if (double(E) > double(reach) * args.fftOverdrive) { continue; }
 
     best = Choice{.fft = *fft,
-                  .options = resolveConfig(args, *fft, kind, file.layersFor(entry)),
+                  .options = resolveConfig(args, *fft, kind, fittedTo(file.layersFor(entry), env, *fft, kind)),
                   .entry = entry,
                   .shadowed = std::move(shadowed),
                   .reach = reach};
@@ -171,7 +172,7 @@ Choice choose(const Args& args, const Env& env, u64 E, TestKind kind) {
 
   auto const scan = [&](u64 ask) {
     FFTConfig const fft = FFTConfig::bestFit(args, ask, args.fftSpec, env.hasFP64);
-    UseConfig options = resolveConfig(args, fft, kind, layers);
+    UseConfig options = resolveConfig(args, fft, kind, fittedTo(layers, env, fft, kind));
     u64 const limit = file ? publishedReach(*file, fft, kind, options, E) : maxExp(fft);
 
     return Choice{.fft = fft, .options = std::move(options), .entry = {}, .shadowed = {}, .reach = limit};

@@ -69,6 +69,14 @@ struct SelectionLayers {
   std::vector<std::pair<std::string, std::string>> entry;
 };
 
+// The selection file's layers as they reach one FFT: its global and family lines folded into one set, less any key
+// whose value the option table does not offer this FFT against the rest of what the file resolves for it, which is left
+// at its built-in default.  A line is decided on one shape of a family and reaches all of them, and a value one shape
+// takes -- SHUFL_BYTES_W=16 at width 1K -- can be one another cannot build at all.  The entry's own set is a transcript
+// of what was measured on this FFT and passes through untouched.
+[[nodiscard]] SelectionLayers fittedTo(const SelectionLayers& layers, const Env& env, const FFTConfig& fft,
+                                       TestKind kind);
+
 // The -use options in effect for one FFT under one test kind. Weakest first, each overriding the ones before:
 //   built-in defaults (absent from the result)
 //   the selection file's global line, then its family lines, then the selected entry's option set

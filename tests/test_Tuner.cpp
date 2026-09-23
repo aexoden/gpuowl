@@ -389,8 +389,11 @@ TEST(a_scope_setting_that_cannot_describe_a_scope_is_a_usage_error) {
   CHECK(!refusal("scope,kinds=").empty());
   CHECK(!refusal("scope,env=0").empty());
 
-  // The settings belong to `scope` alone, and the other subcommands' to theirs.
-  CHECK(!refusal("emit,workload=100M-400M").empty());
+  // The scope's settings belong to `scope`, and to `emit`, whose default lines are the races run at the scope's
+  // probe; the other subcommands' belong to theirs.
+  CHECK(refusal("emit,workload=100M-400M,probe=118063003").empty());
+  CHECK(!refusal("reset,workload=100M-400M").empty());
+  CHECK(!refusal("compact,probe=118063003").empty());
   CHECK(!refusal("scope,fft=1K:8:1K:202").empty());
 }
 
@@ -683,4 +686,17 @@ TEST(one_worktodo_reached_two_ways_is_read_once) {
   RunScope const scope = makeScope(ScopeArgs{}, scanWorktodo(files));
   CHECK(near(scope.grid(TestKind::PRP)->weight(124'647'911), 0.75));
   CHECK(near(scope.grid(TestKind::PRP)->weight(131'088'689), 0.25));
+}
+
+TEST(the_bootstrap_is_on_unless_a_run_turns_it_off) {
+  CHECK(parseTuneCommand("workload=100M-400M")->bootstrap);
+  CHECK(!parseTuneCommand("workload=100M-400M,bootstrap=0")->bootstrap);
+  CHECK(parseTuneCommand("bootstrap=1")->bootstrap);
+
+  CHECK(!refusal("bootstrap=2").empty());
+  CHECK(!refusal("bootstrap=").empty());
+
+  // It is a run's setting: nothing else races anything.
+  CHECK(!refusal("scope,bootstrap=0").empty());
+  CHECK(!refusal("emit,bootstrap=0").empty());
 }

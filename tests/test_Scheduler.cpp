@@ -8,6 +8,7 @@
 
 #include "Anchor.h"
 #include "Emit.h"
+#include "FFTVariants.h"
 #include "Primes.h"
 #include "Selection.h"
 
@@ -15,6 +16,7 @@
 
 #include <cmath>
 #include <cstdio>
+#include <functional>
 #include <map>
 #include <string>
 #include <vector>
@@ -76,7 +78,17 @@ public:
     clock_ += 5;
   }
 
-  [[nodiscard]] Result run(const FFTConfig& fft, TestKind kind, u64 exponent) override {
+  // What the device builds when asked for an option set: what was asked, unless a test says the host sets part of it
+  // aside.
+  std::function<UseConfig(const UseConfig&)> builtAs = [](const UseConfig& asked) { return asked; };
+
+  // What an option set does to a configuration's cost, as a factor; none by default.
+  std::function<double(const FFTConfig&, const UseConfig&)> optionFactor = [](const FFTConfig&, const UseConfig&) {
+    return 1.0;
+  };
+
+  [[nodiscard]] Result run(const FFTConfig& fft, TestKind kind, u64 exponent, const UseConfig& options,
+                           const std::string&) override {
     // A stop in the middle of a call, as Ctrl-C would make one: nothing is recorded.
     if (calls_ == stopAfter_) {
       stopped_ = true;
@@ -85,27 +97,28 @@ public:
     ++calls_;
 
     std::string const spec = fft.spec();
-    order.push_back(spec + "@" + std::to_string(exponent));
+    order.push_back(spec + "@" + std::to_string(exponent) + (options.empty() ? "" : " " + configText(options)));
 
-    double const cost = pseudoCost(fft);
-    bool const fresh = built_.insert(spec).second;
+    double const cost = pseudoCost(fft) * optionFactor(fft, options);
+    bool const fresh = built_.insert(spec + " " + configText(options)).second;
     double const seconds = 5 * 1000 * cost * 1e-6 + 1.5 + (fresh ? 12 : 0);
     clock_ += seconds;
 
-    record(fft, kind, exponent, cost);
-    return {.completed = true, .seconds = seconds, .usPerIt = cost};
+    UseConfig const built = builtAs(options);
+    record(fft, kind, exponent, cost, built);
+    return {.completed = true, .seconds = seconds, .usPerIt = cost, .ran = built};
   }
 
   [[nodiscard]] bool stopped() const override { return stopped_; }
 
 private:
-  void record(const FFTConfig& fft, TestKind kind, u64 exponent, double cost) {
+  void record(const FFTConfig& fft, TestKind kind, u64 exponent, double cost, const UseConfig& options = {}) {
     CHECK(db_.add(RunRow{.sess = sess_,
                          .fft = fft.spec(),
                          .kind = kind,
                          .exponent = exponent,
                          .regime = regimeOf(fft, exponent),
-                         .cfg = db_.internCfg({}),
+                         .cfg = db_.internCfg(options),
                          .m = {.mean = cost,
                                .stddev = cost * 0.001,
                                .blocks = BLOCKS_PER_CALL,
@@ -146,7 +159,7 @@ struct Fixture {
 
 std::vector<std::string> runAll(Fixture& f, FakeBench& bench, u32* published = nullptr) {
   Scheduler scheduler{scope(), baselines(nvidia(), scope(), shapes())};
-  (void)runQueue(scheduler, f.db, f.env, bench, [&](const Objective&) {
+  (void)runQueue(scheduler, f.db, f.env, bench, [&](const Objective&, const Defaults&) {
     if (published) { ++*published; }
   });
   return bench.order;
@@ -358,10 +371,10 @@ TEST(an_interrupted_run_leaves_a_valid_selection_file_and_a_rerun_resumes) {
   fs::path const out = dir.path / "selection.txt";
 
   auto publisher = [&](const TuneDB& db, u32 env) {
-    return [&db, env, &out](const Objective& objective) {
+    return [&db, env, &out](const Objective& objective, const Defaults& defaults) {
       Provenance const from{
         .ts = 1'753'471'200, .db = "tunedb.txt", .env = env, .T = objective.T(), .workloadLo = 1, .workloadHi = 2};
-      CHECK(publish(out, db, {}, from));
+      CHECK(publish(out, db, defaults, from));
     };
   };
 
@@ -512,4 +525,165 @@ TEST(the_first_item_follows_what_the_anchor_race_read) {
   CHECK(order.size() >= 2);
   CHECK_EQ(order[0], std::string{"anchor"});
   CHECK_EQ(order[1], std::string{"1:512:8:512:202@118063003"});
+}
+
+namespace {
+
+// Two families of the four shapes: FP64 on 512:15:512 and FFT3161 on 1:512:8:512, each at its default variant.
+Bootstrap twoFamilies(bool enabled = true) {
+  std::vector<Family> families;
+  for (const char* spec : {"512:15:512", "1:512:8:512"}) {
+    FFTShape const shape{spec};
+    families.push_back({.type = shape.fft_type, .fft = FFTConfig{shape, defaultVariant(shape), CARRY_AUTO}});
+  }
+  return Bootstrap{nvidia(), 118'063'003, families, enabled};
+}
+
+// WMUL=1 saves 2% everywhere and TAIL_KERNELS=3 saves 2% on FP64 only; every other move costs 1%.
+double planted(const FFTConfig& fft, const UseConfig& options) {
+  double factor = 1;
+  for (const auto& [key, value] : options) {
+    bool const wins =
+      (key == "WMUL" && value == "1") || (key == "TAIL_KERNELS" && value == "3" && fft.shape.fft_type == FFT64);
+    factor *= wins ? 0.98 : 1.01;
+  }
+  return factor;
+}
+
+struct BootstrapRun {
+  std::vector<std::string> order;
+  Defaults defaults;
+  QueueReport report;
+};
+
+BootstrapRun runBootstrapped(Fixture& f, u32 stopAfter = ~0u,
+                             const std::function<UseConfig(const UseConfig&)>& builtAs = {}, bool enabled = true) {
+  FakeBench bench{f.db, f.sess, false, stopAfter};
+  bench.optionFactor = planted;
+  if (builtAs) { bench.builtAs = builtAs; }
+  Scheduler scheduler{scope(), baselines(nvidia(), scope(), shapes()), 1000, twoFamilies(enabled)};
+
+  BootstrapRun out;
+  out.report = runQueue(scheduler, f.db, f.env, bench,
+                        [&](const Objective&, const Defaults& defaults) { out.defaults = defaults; });
+  out.order = bench.order;
+  return out;
+}
+
+bool isFamilyCall(const std::string& call) {
+  return call.starts_with(twoFamilies().families()[0].fft.spec() + "@") ||
+    call.starts_with(twoFamilies().families()[1].fft.spec() + "@");
+}
+
+}  // namespace
+
+TEST(the_bootstrap_runs_first_and_every_baseline_runs_at_what_it_decided) {
+  Fixture f;
+  BootstrapRun const run = runBootstrapped(f);
+  const std::vector<std::string>& order = run.order;
+
+  // Each family read at its defaults before anything is raced.
+  CHECK(order.size() > 2);
+  CHECK(isFamilyCall(order[0]) && order[0].find(' ') == std::string::npos);
+  CHECK(isFamilyCall(order[1]) && order[1].find(' ') == std::string::npos);
+
+  // Every bootstrap call comes before every baseline: the baselines run at what the races decide.
+  auto const firstBaseline = std::ranges::find_if(order, [](const std::string& s) { return !isFamilyCall(s); });
+  CHECK(firstBaseline != order.end());
+  CHECK(std::none_of(firstBaseline, order.end(), isFamilyCall));
+
+  // A race calls its candidates turn about: never the same one twice running.
+  for (auto it = order.begin(); std::next(it) < firstBaseline; ++it) { CHECK(*it != *std::next(it)); }
+
+  // What the families agreed on is the global line, and the key only FP64 moved is FP64's.
+  CHECK_EQ(configText(run.defaults.global), std::string{"WMUL=1"});
+  CHECK_EQ(run.defaults.family.size(), size_t(1));
+  if (run.defaults.family.size() == 1) {
+    std::vector<std::pair<std::string, std::string>> const tailKernels{{"TAIL_KERNELS", "3"}};
+    CHECK(run.defaults.family[0].selector.type == FFT64);
+    CHECK(run.defaults.family[0].uses == tailKernels);
+  }
+
+  // Every baseline ran at the lines as production resolves them for its type.
+  for (auto it = firstBaseline; it != order.end(); ++it) {
+    FFTConfig const fft{it->substr(0, it->find('@'))};
+    std::string const want = fft.shape.fft_type == FFT64 ? "TAIL_KERNELS=3,WMUL=1" : "WMUL=1";
+    CHECK_EQ(it->substr(it->find(' ') + 1), want);
+  }
+}
+
+TEST(a_bootstrap_interrupted_carries_on_from_its_rows) {
+  Fixture whole;
+  BootstrapRun const all = runBootstrapped(whole);
+
+  // Stopped part way through the first family's races, and carried on by a later process.
+  Fixture f;
+  BootstrapRun const first = runBootstrapped(f, 40);
+  CHECK(first.report.stopped);
+  CHECK(first.defaults.global.empty() && first.defaults.family.empty());
+
+  f.newSession();
+  BootstrapRun const second = runBootstrapped(f);
+  CHECK(!second.report.stopped);
+
+  // Between them the two runs made exactly the calls one whole run does, and came to the same lines.
+  std::map<std::string, u32> split;
+  std::map<std::string, u32> single;
+  for (const std::string& s : first.order) { ++split[s]; }
+  for (const std::string& s : second.order) { ++split[s]; }
+  for (const std::string& s : all.order) { ++single[s]; }
+  CHECK(split == single);
+  CHECK_EQ(configText(second.defaults.global), configText(all.defaults.global));
+  CHECK_EQ(second.defaults.family.size(), all.defaults.family.size());
+}
+
+TEST(with_the_bootstrap_off_the_baselines_run_at_the_built_in_defaults) {
+  Fixture f;
+  FakeBench bench{f.db, f.sess, false};
+  bench.optionFactor = planted;
+  Scheduler scheduler{scope(), baselines(nvidia(), scope(), shapes()), 1000, twoFamilies(false)};
+  (void)runQueue(scheduler, f.db, f.env, bench, [](const Objective&, const Defaults&) {});
+
+  // The same schedule as a scheduler that has no bootstrap at all.
+  Fixture g;
+  FakeBench plain{g.db, g.sess, false};
+  CHECK(runAll(g, plain) == bench.order);
+}
+
+TEST(a_candidate_the_host_builds_otherwise_drops_out_of_its_race) {
+  // A host that sets every WMUL aside, as it sets OLD_FENCE=0 aside off AMD and nVidia: the calls land on the
+  // incumbent, never on the candidate, and without a limit the race would ask for it for ever.
+  // Stopped after 3000 calls, far more than the run needs, so that a race that never ends fails here rather than hangs.
+  Fixture f;
+  BootstrapRun const run = runBootstrapped(f, 3000, [](const UseConfig& asked) {
+    UseConfig built = asked;
+    built.erase("WMUL");
+    return built;
+  });
+
+  CHECK(!run.report.stopped);
+  std::map<std::string, u32> asked;
+  for (const std::string& s : run.order) {
+    if (s.find("WMUL=") != std::string::npos && isFamilyCall(s)) { ++asked[s]; }
+  }
+  CHECK(!asked.empty());
+  for (const auto& [call, n] : asked) { CHECK(n <= 2 * MIN_CALLS); }
+
+  // It decides nothing about WMUL, and TAIL_KERNELS=3 still wins on FP64.
+  CHECK(run.defaults.global.find("WMUL") == run.defaults.global.end());
+  CHECK_EQ(run.defaults.family.size(), size_t(1));
+}
+
+TEST(baselines_measured_under_earlier_defaults_are_measured_again_under_new_ones) {
+  // A run with the bootstrap off measures every baseline at the built-in defaults; turned on, the races decide lines
+  // those rows do not match, emission would drop them, and so the baselines are owed again at the lines.
+  Fixture f;
+  BootstrapRun const off = runBootstrapped(f, ~0u, {}, false);
+  CHECK(std::ranges::none_of(off.order, [](const std::string& s) { return s.find(' ') != std::string::npos; }));
+
+  f.newSession();
+  BootstrapRun const on = runBootstrapped(f);
+  CHECK_EQ(configText(on.defaults.global), std::string{"WMUL=1"});
+  CHECK(std::ranges::count(on.order, std::string{"512:15:512:101@118063003 TAIL_KERNELS=3,WMUL=1"}) == MIN_CALLS);
+  CHECK(std::ranges::count(on.order, std::string{"3:1K:8:512:202@118063003 WMUL=1"}) == MIN_CALLS);
 }
