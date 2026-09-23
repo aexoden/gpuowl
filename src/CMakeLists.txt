@@ -38,6 +38,7 @@ add_executable(prpll
   Scheduler.cpp
   Bootstrap.cpp
   Probe.cpp
+  Value.cpp
   fs.cpp
   )
 

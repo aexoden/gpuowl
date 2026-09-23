@@ -52,6 +52,17 @@ struct Provenance {
 // set does not name a key they set would run differently from the way it was measured, and is not published.
 [[nodiscard]] std::vector<SelectionEntry> entriesFor(const TuneDB& db, u32 env, const Defaults& defaults = {});
 
+// A publishable option set, and the row it would be a transcript of.
+struct OptionSet {
+  SelectionEntry entry;
+  Measurement m;
+};
+
+// Every option set of every identity that could be published beside `defaults`, one per option set, before any is
+// dropped for being dominated: the one a slightly cheaper set of the same identity keeps out is still what production
+// would run if that reading were the unlucky one.
+[[nodiscard]] std::vector<OptionSet> optionSetsFor(const TuneDB& db, u32 env, const Defaults& defaults = {});
+
 // What entriesFor() chooses the table from: every option set of every identity that no other of the same identity
 // dominates, including those that another identity's entry would keep out of the table.
 [[nodiscard]] std::vector<SelectionEntry> candidatesFor(const TuneDB& db, u32 env, const Defaults& defaults = {});

@@ -34,8 +34,6 @@ constexpr u32 MAX_ATTEMPTS = 2 * MIN_CALLS;
   return top >= band.lo ? top : 0;
 }
 
-using KernelKey = std::tuple<std::string, TestKind, std::string>;
-
 // The partial row a baseline resumes from: the exponent it was started at, and the calls it has.
 struct Partial {
   u64 exponent = 0;
@@ -46,17 +44,17 @@ struct Progress {
   // Settled by a concluded row emission would publish beside the current lines -- the baseline is the first
   // measurement, and whatever measured it second is not one -- but not by one the lines have since shadowed, whose
   // options are no longer what the configuration runs at.
-  std::set<KernelKey> settled;
+  std::set<EntryKey> settled;
 
   // A failure is a verdict on the options it was taken under, which a repeat would only repeat; by the canonical set.
-  std::set<std::pair<KernelKey, std::string>> failed;
+  std::set<std::pair<EntryKey, std::string>> failed;
 
   // By the canonical option set as well: calls under other options do not pool with the ones a baseline will make.
-  std::map<std::pair<KernelKey, std::string>, Partial> partial;
+  std::map<std::pair<EntryKey, std::string>, Partial> partial;
 
   // Every option set a row has concluded, canonical, shadowed or not: what a probe asks may already be answered by a
   // row the lines have since withdrawn from publication.
-  std::map<KernelKey, std::vector<UseConfig>> concluded;
+  std::map<EntryKey, std::vector<UseConfig>> concluded;
 };
 
 // Where each entry stands, from the rows `env` has.  A row the device lost under is not recorded, so it says nothing
@@ -71,7 +69,7 @@ struct Progress {
     auto const fft = parseFft(row.fft);
     if (!opts || !fft) { continue; }
 
-    KernelKey const key{row.fft, row.kind, row.regime.label()};
+    EntryKey const key{row.fft, row.kind, row.regime.label()};
     UseConfig const canonical = canonicalConfig(device, *fft, *opts);
     if (row.m.status != Status::Ok) {
       out.failed.insert({key, configText(canonical)});
@@ -95,8 +93,8 @@ struct Progress {
 
 // The cheapest option set of each identity emission could publish -- whether or not another identity keeps it out of
 // the table, since tuning it is how it might get in.
-[[nodiscard]] std::map<KernelKey, const SelectionEntry*> bestEntries(const std::vector<SelectionEntry>& candidates) {
-  std::map<KernelKey, const SelectionEntry*> out;
+[[nodiscard]] std::map<EntryKey, const SelectionEntry*> bestEntries(const std::vector<SelectionEntry>& candidates) {
+  std::map<EntryKey, const SelectionEntry*> out;
   for (const SelectionEntry& e : candidates) {
     auto const [at, fresh] = out.try_emplace({e.fft, e.kind, e.regime.label()}, &e);
     if (!fresh && std::tuple{e.cost, e.id} < std::tuple{at->second->cost, at->second->id}) { at->second = &e; }
@@ -133,12 +131,6 @@ UseConfig besideLines(const Env& env, const FFTConfig& fft, TestKind kind, const
     }
   }
   return config;
-}
-
-double expectedSaving(double best, double estimate) {
-  double out = 0;
-  for (const GainBin& bin : GAIN_PRIOR) { out += bin.p * std::max(0.0, best - estimate * (1 - bin.gain)); }
-  return out;
 }
 
 double CallClock::iterSeconds(double usPerIt) const {
@@ -277,12 +269,14 @@ std::vector<Item> Scheduler::admissible(const TuneDB& db, u32 env, const Objecti
 
   const Env& device = bootstrap_.env();
   Progress const progress = progressOf(db, env, device, state.defaults);
+  GainModel const gains = gainsOf(db, env);
+  GainDist const unmeasured = gains.global();
 
   std::vector<Item> out;
   for (size_t i = 0; i < baselines_.size(); ++i) {
     const Baseline& b = baselines_[i];
     std::string const spec = b.fft.spec();
-    KernelKey const key{spec, b.kind, b.band.regime.label()};
+    EntryKey const key{spec, b.kind, b.band.regime.label()};
 
     if (progress.settled.contains(key)) { continue; }
     if (auto const at = attempts_.find(i); at != attempts_.end() && at->second >= MAX_ATTEMPTS) { continue; }
@@ -303,11 +297,7 @@ std::vector<Item> Scheduler::admissible(const TuneDB& db, u32 env, const Objecti
     if (u32 const cfg = db.findCfgId(options); cfg && db.diedOn(env, cfg, b.kind, spec, exponent)) { continue; }
 
     double const estimate = objective.priorModel().cost(b.fft.shape);
-    double value = 0;
-    for (const ObjectivePoint& point : objective.points()) {
-      if (point.kind != b.kind || !point.cost || !b.band.contains(point.exponent)) { continue; }
-      value += point.weight * expectedSaving(point.cost->us, estimate);
-    }
+    double const value = expectedSaving(objective.points(), b.kind, b.band, estimate, unmeasured);
 
     bool const fresh = !built_.contains(builtKey(b.fft, options));
     out.push_back({.kind = ItemKind::Baseline,
@@ -324,21 +314,17 @@ std::vector<Item> Scheduler::admissible(const TuneDB& db, u32 env, const Objecti
 
   if (strategy_) {
     std::vector<SelectionEntry> const candidates = candidatesFor(db, env, state.defaults);
-    std::map<KernelKey, const SelectionEntry*> const best = bestEntries(candidates);
+    std::map<EntryKey, const SelectionEntry*> const best = bestEntries(candidates);
     for (size_t i = 0; i < baselines_.size(); ++i) {
       const Baseline& b = baselines_[i];
-      KernelKey const key{b.fft.spec(), b.kind, b.band.regime.label()};
+      EntryKey const key{b.fft.spec(), b.kind, b.band.regime.label()};
       auto const at = best.find(key);
       if (at == best.end()) { continue; }
       const SelectionEntry& entry = *at->second;
 
-      // Every probe of an entry is worth the same until the gains it has shown are learnt from: what the gain prior
-      // expects a configuration of the entry's own cost to save.
-      double value = 0;
-      for (const ObjectivePoint& point : objective.points()) {
-        if (point.kind != b.kind || !point.cost || !b.band.contains(point.exponent)) { continue; }
-        value += point.weight * expectedSaving(point.cost->us, entry.cost);
-      }
+      // Every probe of an entry is worth the same: what the gains this entry and the device have shown expect a move
+      // from the entry's best set to save.
+      double const value = expectedSaving(objective.points(), b.kind, b.band, entry.cost, gains.forEntry(key));
       if (value <= 0) { continue; }
 
       std::vector<UseConfig> const none;
@@ -446,9 +432,9 @@ public:
         } else if (f.phase == FamilyPhase::Held) {
           log("tune: bootstrap: %s cannot be measured at the built-in defaults, so it is not tuned\n", name.c_str());
         } else {
-          log("tune: bootstrap: %s is not tuned: at %.3f us/it no gain the prior allows would bring it level with the"
-              " cheapest family\n",
-              name.c_str(), f.reading);
+          log("tune: bootstrap: %s is not tuned: at %.3f us/it it would take more than a %.0f%% gain to bring it level"
+              " with the cheapest family\n",
+              name.c_str(), f.reading, 100 * RACE_GAIN);
         }
       }
 
@@ -481,7 +467,7 @@ private:
 [[nodiscard]] std::optional<std::string> bestOf(const TuneDB& db, u32 envId, const Env& env, const Defaults& defaults,
                                                 const Baseline& b) {
   std::vector<SelectionEntry> const candidates = candidatesFor(db, envId, defaults);
-  std::map<KernelKey, const SelectionEntry*> const best = bestEntries(candidates);
+  std::map<EntryKey, const SelectionEntry*> const best = bestEntries(candidates);
   auto const at = best.find({b.fft.spec(), b.kind, b.band.regime.label()});
   if (at == best.end()) { return {}; }
 
@@ -587,6 +573,14 @@ QueueReport runQueue(Scheduler& scheduler, TuneDB& db, u32 env, Bench& bench, co
 
   out.stopped = bench.stopped();
   out.endT = objective.T();
+
+  GainModel const gains = gainsOf(db, env);
+  GainDist const shown = gains.global();
+  double large = 0;
+  for (size_t i = 0; i < GAIN_BINS; ++i) { large += GAIN_AT[i] >= 0.16 ? shown.p[i] : 0; }
+  log("tune: %.0f gains observed; a move is expected to gain %.2f%% (the prior says %.2f%%), and 16%% or more %.1f%% "
+      "of the time\n",
+      gains.all().n(), 100 * shown.mean(), 100 * GAIN_PRIOR.mean(), 100 * large);
   return out;
 }
 

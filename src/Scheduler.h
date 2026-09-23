@@ -22,6 +22,7 @@
 #include "TuneDB.h"
 #include "Tuner.h"
 #include "UseResolve.h"
+#include "Value.h"
 
 #include <array>
 #include <functional>
@@ -46,28 +47,6 @@ inline constexpr double CALL_OVERHEAD_SEC = 1;
 
 // Blocks a call runs before the ones it times (Gpu::timeIters).
 inline constexpr u32 WARMUP_BLOCKS = 1;
-
-// The prior over the relative gain a configuration not yet measured turns out to have over the estimate it was scored
-// at.  A point estimate would silently prune: a candidate 40% off the pace scores exactly zero against any gain short
-// of 40%, which is exclusion in all but name.  The tail is what a badly-defaulted family looks like.
-struct GainBin {
-  double gain;
-  double p;
-};
-inline constexpr std::array<GainBin, 8> GAIN_PRIOR{{
-  {0.000, 0.40},
-  {0.005, 0.20},
-  {0.010, 0.15},
-  {0.020, 0.10},
-  {0.040, 0.07},
-  {0.080, 0.04},
-  {0.160, 0.03},
-  {0.320, 0.01},
-}};
-
-// The expected fall in cost at one exponent, in the cost's unit, from a configuration estimated at `estimate` where the
-// best available now costs `best`: the expectation over GAIN_PRIOR of max(0, best - estimate * (1 - g)).
-[[nodiscard]] double expectedSaving(double best, double estimate);
 
 // What a call is expected to take, in wall-clock seconds, learnt from the calls this process has made.
 class CallClock {

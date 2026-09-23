@@ -82,6 +82,9 @@ public:
   // aside.
   std::function<UseConfig(const UseConfig&)> builtAs = [](const UseConfig& asked) { return asked; };
 
+  // What a first build of a configuration costs on top of its call.
+  double compileSeconds = 12;
+
   // What an option set does to a configuration's cost, as a factor; none by default.
   std::function<double(const FFTConfig&, const UseConfig&)> optionFactor = [](const FFTConfig&, const UseConfig&) {
     return 1.0;
@@ -101,7 +104,7 @@ public:
 
     double const cost = pseudoCost(fft) * optionFactor(fft, options);
     bool const fresh = built_.insert(spec + " " + configText(options)).second;
-    double const seconds = 5 * 1000 * cost * 1e-6 + 1.5 + (fresh ? 12 : 0);
+    double const seconds = 5 * 1000 * cost * 1e-6 + 1.5 + (fresh ? compileSeconds : 0);
     clock_ += seconds;
 
     UseConfig const built = builtAs(options);
@@ -191,24 +194,6 @@ struct Dir {
 
 }  // namespace
 
-TEST(the_gain_prior_values_a_candidate_off_the_pace_above_zero) {
-  // At the frontier the saving is the expected gain itself: sum of p * g over the prior, times the cost.
-  double expected = 0;
-  for (const GainBin& bin : GAIN_PRIOR) { expected += bin.p * bin.gain; }
-  CHECK(near(expectedSaving(100, 100), 100 * expected));
-
-  // 40% off the pace: only the 32% bin reaches under the frontier, and a point estimate of the gain would give exactly
-  // zero here.
-  CHECK(near(expectedSaving(100, 140), 0.01 * (100 - 140 * 0.68)));
-  CHECK(expectedSaving(100, 140) > 0);
-
-  // Past the prior's tail nothing is expected.
-  CHECK_EQ(expectedSaving(100, 150), 0.0);
-
-  // Cheaper than the frontier as estimated: the whole difference, plus the gain on top of it.
-  CHECK(expectedSaving(100, 80) > 20);
-}
-
 TEST(a_call_is_expected_to_take_what_calls_have_taken) {
   CallClock clock{1000};
 
@@ -267,21 +252,21 @@ TEST(fixed_readings_give_a_fixed_schedule) {
   std::vector<std::string> const order = runAll(f, bench, &published);
 
   // Anchor first.  Then the shape the stated prior prices cheapest, 512:15:512, at its first variant (every variant of
-  // a shape is priced alike, and the order breaks the tie).  That is the broadcast digit, which reads above the prior,
-  // and once one FP64 reading exists the fit prices the rest of 512:15:512 at 90% of it, which puts the FFT3161
-  // hybrid's stated prior below them: the hybrid is next, ahead of even 000's second call.  From there each entry's
-  // second call comes straight after its first, because a configuration already built skips the compile and so costs
-  // a fraction of anything unbuilt.  The other seventeen variants follow, each needing a gain of 4% or more over the
-  // hybrid to pay, and the anchor falls due once among them and again as they end.  3:1K:8:512 (FFT61) is priced 35%
-  // above the hybrid, which only the prior's 32% bin comes near: worth little, but not nothing, so it is measured
-  // last.  1K:8:1K is never measured: at twice the size of a measured FP64 shape its fitted prior is past anything the
-  // gain prior reaches, and the queue stops with all eighteen of its variants unmeasured.
+  // a shape is priced alike, and the order breaks the tie); each entry's second call straight after its first, because
+  // a configuration already built skips the compile and so costs a fraction of anything unbuilt.  Once one FP64 reading
+  // exists the fit prices the rest of 512:15:512 at 90% of it, which puts the FFT3161 hybrid's stated prior below
+  // them, and it is next.  The other seventeen variants follow, each needing a gain of 4% or more over the hybrid to
+  // pay, and the anchor falls due once among them and again as they end.  3:1K:8:512 (FFT61) is priced 35% above the
+  // hybrid, which only the prior's 32% bin comes near: worth little, but not nothing, so it is measured next.  1K:8:1K
+  // comes last: at twice the size of a measured FP64 shape its fitted prior is about twice the hybrid's, which only the
+  // prior's 64% bin reaches under, and the queue stops once all eighteen of its variants are measured.  The anchor
+  // falls due twice more among them.
   std::vector<std::string> const expected{
     "anchor",
     "512:15:512:000@118063003",
-    "1:512:8:512:202@118063003",
-    "1:512:8:512:202@118063003",
     "512:15:512:000@118063003",
+    "1:512:8:512:202@118063003",
+    "1:512:8:512:202@118063003",
     "512:15:512:001@118063003",
     "512:15:512:001@118063003",
     "512:15:512:002@118063003",
@@ -320,6 +305,44 @@ TEST(fixed_readings_give_a_fixed_schedule) {
     "anchor",
     "3:1K:8:512:202@118063003",
     "3:1K:8:512:202@118063003",
+    "1K:8:1K:000@118063003",
+    "1K:8:1K:000@118063003",
+    "1K:8:1K:001@118063003",
+    "1K:8:1K:001@118063003",
+    "1K:8:1K:002@118063003",
+    "1K:8:1K:002@118063003",
+    "1K:8:1K:010@118063003",
+    "1K:8:1K:010@118063003",
+    "1K:8:1K:011@118063003",
+    "1K:8:1K:011@118063003",
+    "1K:8:1K:012@118063003",
+    "anchor",
+    "1K:8:1K:012@118063003",
+    "1K:8:1K:100@118063003",
+    "1K:8:1K:100@118063003",
+    "1K:8:1K:101@118063003",
+    "1K:8:1K:101@118063003",
+    "1K:8:1K:102@118063003",
+    "1K:8:1K:102@118063003",
+    "1K:8:1K:110@118063003",
+    "1K:8:1K:110@118063003",
+    "1K:8:1K:111@118063003",
+    "1K:8:1K:111@118063003",
+    "1K:8:1K:112@118063003",
+    "1K:8:1K:112@118063003",
+    "1K:8:1K:200@118063003",
+    "anchor",
+    "1K:8:1K:200@118063003",
+    "1K:8:1K:201@118063003",
+    "1K:8:1K:201@118063003",
+    "1K:8:1K:202@118063003",
+    "1K:8:1K:202@118063003",
+    "1K:8:1K:210@118063003",
+    "1K:8:1K:210@118063003",
+    "1K:8:1K:211@118063003",
+    "1K:8:1K:211@118063003",
+    "1K:8:1K:212@118063003",
+    "1K:8:1K:212@118063003",
   };
 
   CHECK(order == expected);
@@ -383,7 +406,7 @@ TEST(an_interrupted_run_leaves_a_valid_selection_file_and_a_rerun_resumes) {
   FakeBench wholeBench{whole.db, whole.sess};
   std::vector<std::string> const all = runAll(whole, wholeBench);
 
-  // Stopped in the middle of the fourth call: the hybrid is concluded, 512:15:512:000 has one call of two, and the call
+  // Stopped in the middle of the fourth call: 512:15:512:000 is concluded, the hybrid has one call of two, and the call
   // that was cut short recorded nothing.
   Fixture f;
   FakeBench first{f.db, f.sess, true, 3};
@@ -391,16 +414,16 @@ TEST(an_interrupted_run_leaves_a_valid_selection_file_and_a_rerun_resumes) {
   QueueReport const stopped = runQueue(one, f.db, f.env, first, publisher(f.db, f.env));
   CHECK(stopped.stopped);
   CHECK_EQ(stopped.items, 3u);
-  CHECK_EQ(callsOn(f.db, "512:15:512:000", 118'063'003), 1u);
+  CHECK_EQ(callsOn(f.db, "1:512:8:512:202", 118'063'003), 1u);
 
   // What was published is a file production reads, holding exactly what had concluded.
   std::optional<SelectionFile> const file = readSelection(out);
   CHECK(file.has_value());
   CHECK_EQ(file->entries.size(), size_t(1));
-  CHECK_EQ(file->entries.front().fft, std::string{"1:512:8:512:202"});
-  CHECK(file->provenance.find("T=1487.4") != std::string::npos);
+  CHECK_EQ(file->entries.front().fft, std::string{"512:15:512:000"});
+  CHECK(file->provenance.find("T=1788.1") != std::string::npos);
 
-  // A later process on the same database finishes 512:15:512:000 first -- one call left is the cheapest thing on offer,
+  // A later process on the same database finishes the hybrid first -- one call left is the cheapest thing on offer,
   // though this process has never built it -- at the exponent it was started at, and repeats nothing concluded.
   f.newSession();
   FakeBench second{f.db, f.sess};
@@ -408,9 +431,9 @@ TEST(an_interrupted_run_leaves_a_valid_selection_file_and_a_rerun_resumes) {
   QueueReport const resumed = runQueue(two, f.db, f.env, second, publisher(f.db, f.env));
   CHECK(!resumed.stopped);
   CHECK(second.order.size() >= 2);
-  CHECK_EQ(second.order[1], std::string{"512:15:512:000@118063003"});
-  CHECK(std::ranges::count(second.order, std::string{"1:512:8:512:202@118063003"}) == 0);
-  CHECK_EQ(callsOn(f.db, "512:15:512:000", 118'063'003), MIN_CALLS);
+  CHECK_EQ(second.order[1], std::string{"1:512:8:512:202@118063003"});
+  CHECK(std::ranges::count(second.order, std::string{"512:15:512:000@118063003"}) == 0);
+  CHECK_EQ(callsOn(f.db, "1:512:8:512:202", 118'063'003), MIN_CALLS);
 
   // Between them the two runs measured what one whole run does, each entry the calls it needs and no more.
   std::map<std::string, u32> split;
@@ -422,11 +445,16 @@ TEST(an_interrupted_run_leaves_a_valid_selection_file_and_a_rerun_resumes) {
   single.erase("anchor");
   CHECK(split == single);
 
-  // Every run republishes the whole frontier: the hybrid, which covers every exponent 512:15:512 does, for less.
+  // Every run republishes the whole frontier: the hybrid now covers every exponent 512:15:512:000 did, for less.
   std::optional<SelectionFile> const last = readSelection(out);
   CHECK(last.has_value());
-  CHECK_EQ(last->entries.size(), size_t(1));
+  // And 1K:8:1K:112, the cheapest of the variants the gain prior's tail was worth measuring at twice the hybrid's cost,
+  // for the exponents past the hybrid's reach that its long carry still serves.
+  CHECK(last.has_value());
+  CHECK_EQ(last->entries.size(), size_t(2));
   CHECK_EQ(last->entries.front().fft, std::string{"1:512:8:512:202"});
+  CHECK_EQ(last->entries.back().fft, std::string{"1K:8:1K:112"});
+  CHECK(last->entries.back().reach > last->entries.front().reach);
 }
 
 TEST(what_failed_or_what_an_earlier_generation_died_on_is_not_offered_again) {
@@ -866,4 +894,135 @@ TEST(a_probe_names_every_key_a_line_would_set_once_its_own_keys_are_in_place) {
   UseConfig const kept = besideLines(nvidia(), fft, TestKind::PRP, lines, {{"MULTI_Q", "1"}});
   CHECK_EQ(configText(kept), std::string{"MULTI_Q=1"});
   CHECK(!shadowedBy(lines, nvidia(), fft, TestKind::PRP, kept));
+}
+
+TEST(two_contested_entries_are_alternated_not_batched) {
+  // Two variants of 512:15:512, the shape the stated prior prices cheapest, 0.4% apart, on a device where a build costs
+  // no more than a call.  The prior prices a shape and not its variants, so the two are worth the same until both have
+  // concluded, and each is within INTERLEAVE_EPS of the other throughout.
+  std::vector<Baseline> pair;
+  for (const Baseline& b : baselines(nvidia(), scope(), {FFTShape{"512:15:512"}})) {
+    if (b.fft.variant == 101 || b.fft.variant == 102) { pair.push_back(b); }
+  }
+  CHECK_EQ(pair.size(), size_t(2));
+
+  auto run = [&](double compileSeconds) {
+    Fixture f;
+    FakeBench bench{f.db, f.sess, false};
+    bench.compileSeconds = compileSeconds;
+    Scheduler scheduler{scope(), pair};
+    (void)runQueue(scheduler, f.db, f.env, bench, [](const Objective&, const Defaults&) {});
+    return bench.order;
+  };
+
+  std::vector<std::string> const alternated{
+    "512:15:512:101@118063003",
+    "512:15:512:102@118063003",
+    "512:15:512:101@118063003",
+    "512:15:512:102@118063003",
+  };
+  CHECK(run(0) == alternated);
+
+  // Where a build costs 12 s, a configuration already built is cheaper to call again by more than INTERLEAVE_EPS: the
+  // two are no longer close, and value per second, not a tie-break, orders them.
+  std::vector<std::string> const batched{
+    "512:15:512:101@118063003",
+    "512:15:512:101@118063003",
+    "512:15:512:102@118063003",
+    "512:15:512:102@118063003",
+  };
+  CHECK(run(12) == batched);
+}
+
+TEST(an_entry_whose_moves_have_paid_is_probed_ahead_of_one_whose_have_not) {
+  Fixture f;
+  std::vector<FFTShape> const one{FFTShape{"512:15:512"}};
+  Scheduler scheduler{scope(), baselines(nvidia(), scope(), one), 1000, {}, Strategy{.kind = Strategy::Kind::Single}};
+
+  auto add = [&](const std::string& fft, const UseConfig& opts, double mean) {
+    CHECK(f.db.add(RunRow{.sess = f.sess,
+                          .fft = fft,
+                          .kind = TestKind::PRP,
+                          .exponent = 118'063'003,
+                          .regime = regimeOf(FFTConfig{fft}, 118'063'003),
+                          .cfg = f.db.internCfg(opts),
+                          .m = {.mean = mean,
+                                .stddev = 0.1,
+                                .blocks = 4 * MIN_CALLS,
+                                .calls = MIN_CALLS,
+                                .drift = 1,
+                                .status = Status::Ok,
+                                .ts = 0}}));
+  };
+
+  // Both end at 1700 us/it, so each probe of either would save the same were the gains they have shown not counted:
+  // one got there by a 9% move, the other has had two moves that found nothing.
+  add("512:15:512:211", {}, 1870);
+  add("512:15:512:211", {{"WMUL", "1"}}, 1700);
+  add("512:15:512:212", {}, 1700);
+  add("512:15:512:212", {{"ZEROHACK_W", "0"}}, 1710);
+  add("512:15:512:212", {{"LDSPAD_W", "0"}}, 1705);
+
+  Objective const objective{f.db, f.env, scheduler.scope()};
+  double paid = -1;
+  double flat = -1;
+  for (const Item& item : scheduler.admissible(f.db, f.env, objective)) {
+    if (item.kind != ItemKind::Probe) { continue; }
+    std::string const spec = scheduler.baselines()[item.index].fft.spec();
+    double& at = spec == "512:15:512:211" ? paid : flat;
+    CHECK(at < 0 || at == item.value);
+    at = item.value;
+  }
+
+  CHECK(flat > 0);
+  // Both are what production runs across the band, so each probe is worth W * c * the mean gain of its entry's
+  // distribution, and the two differ by exactly that.  One 9% move against the prior's 8 pseudo-observations, mixed
+  // half back into the device's, is worth ~30% more a probe than two moves that found nothing.
+  GainModel const gains = gainsOf(f.db, f.env);
+  double const own = gains.forEntry({"512:15:512:211", TestKind::PRP, "short32"}).mean();
+  double const other = gains.forEntry({"512:15:512:212", TestKind::PRP, "short32"}).mean();
+  CHECK(std::abs(paid / flat - own / other) < 1e-9);
+  CHECK(paid > 1.25 * flat);
+}
+
+TEST(an_unmeasured_entry_is_valued_under_the_gains_the_device_has_shown) {
+  Fixture f;
+  std::vector<FFTShape> const one{FFTShape{"512:15:512"}};
+  Scheduler scheduler{scope(), baselines(nvidia(), scope(), one)};
+
+  // One entry whose every move took 16% off: a device on which the defaults are badly placed.
+  double cost = 2400;
+  u32 moves = 0;
+  for (const UseConfig& opts :
+       std::vector<UseConfig>{{}, {{"WMUL", "1"}}, {{"LDSPAD_W", "0"}}, {{"ZEROHACK_W", "0"}}, {{"LOADS", "3"}}}) {
+    CHECK(f.db.add(RunRow{.sess = f.sess,
+                          .fft = "512:15:512:211",
+                          .kind = TestKind::PRP,
+                          .exponent = 118'063'003,
+                          .regime = regimeOf(FFTConfig{"512:15:512:211"}, 118'063'003),
+                          .cfg = f.db.internCfg(opts),
+                          .m = {.mean = cost,
+                                .stddev = 0.1,
+                                .blocks = 4 * MIN_CALLS,
+                                .calls = MIN_CALLS,
+                                .drift = 1,
+                                .status = Status::Ok,
+                                .ts = 0}}));
+    moves += !opts.empty();
+    cost *= 0.84;
+  }
+  GainDist const shown = gainsOf(f.db, f.env).global();
+  CHECK(near(gainsOf(f.db, f.env).all().n(), moves));
+  CHECK(shown.mean() > 2 * GAIN_PRIOR.mean());
+
+  Objective const objective{f.db, f.env, scheduler.scope()};
+  u32 checked = 0;
+  for (const Item& item : scheduler.admissible(f.db, f.env, objective)) {
+    const Baseline& b = scheduler.baselines()[item.index];
+    double const estimate = objective.priorModel().cost(b.fft.shape);
+    CHECK(near(item.value, expectedSaving(objective.points(), b.kind, b.band, estimate, shown)));
+    CHECK(item.value > expectedSaving(objective.points(), b.kind, b.band, estimate, GAIN_PRIOR));
+    ++checked;
+  }
+  CHECK(checked > 0);
 }

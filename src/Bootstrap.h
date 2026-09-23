@@ -41,6 +41,11 @@ inline constexpr u32 RACE_MAX_CALLS = 16;
 // backstop.
 inline constexpr u32 GROUP_ROUNDS = 8;
 
+// The largest gain a family is raced in the hope of.  Short of the gain prior's own tail: a race costs tens of minutes,
+// and the rare gain past this would not repay it for every family that far off the pace.  A family beyond it still has
+// its baselines measured, at the lines the others decide.
+inline constexpr double RACE_GAIN = 0.32;
+
 [[nodiscard]] const char* typeName(enum FFT_TYPES type);
 
 // The tunable part of `config` as the kernels would see it: a key that does not apply, that the kernels cannot read, or

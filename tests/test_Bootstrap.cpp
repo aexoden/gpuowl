@@ -292,8 +292,8 @@ TEST(a_reading_counts_for_its_candidate_however_its_options_were_spelled) {
 }
 
 TEST(a_family_is_judged_against_the_cheapest_as_tuned) {
-  // The A4000's FFT61 at 2257 us/it is within the prior's reach of FFT3261's defaults at 1576, and out of it once
-  // FFT3261 is tuned past 1535 (2257 x 0.68): racing it then could not change what production runs.
+  // The A4000's FFT61 at 2257 us/it is within RACE_GAIN of FFT3261's defaults at 1576, and out of it once FFT3261 is
+  // tuned past 1535 (2257 x 0.68): racing it then would be for a gain too rare to repay the race.
   Fixture f;
   Family const fp32 = familyOf("2:1K:8:256:212");
   Family const gf61 = familyOf("3:1K:16:256:202");

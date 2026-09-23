@@ -20,15 +20,11 @@ namespace {
 // An entry under construction, beside the row it is a transcript of.  The row is kept only for the tie-breaks: two
 // candidates that cost the same and reach the same distance are separated by how well each is supported, so that
 // re-emitting an unchanged database produces an unchanged file.
-struct Candidate {
-  SelectionEntry entry;
-  u32 calls = 0;
-  u64 ts = 0;
-};
+using Candidate = OptionSet;
 
 // Lower is better.
 bool better(const Candidate& a, const Candidate& b) {
-  return std::tuple{a.entry.cost, b.calls, b.ts} < std::tuple{b.entry.cost, a.calls, a.ts};
+  return std::tuple{a.entry.cost, b.m.calls, b.m.ts} < std::tuple{b.entry.cost, a.m.calls, a.m.ts};
 }
 
 // Whether `a` is at least as good as `b` everywhere and better somewhere: no more expensive, starting no higher, and
@@ -170,6 +166,14 @@ bool shadowedBy(const Defaults& defaults, const Env& env, const FFTConfig& fft, 
 namespace {
 
 std::vector<Candidate> identityFrontier(const TuneDB& db, u32 env, const Defaults& defaults) {
+  // A configuration that costs more but reaches further is kept, because nothing else may reach that far cheaply, and
+  // picking one option set per identity before the table is built would lose it.
+  return frontier(optionSetsFor(db, env, defaults), [](const Candidate& c) { return identityOf(c.entry); });
+}
+
+}  // namespace
+
+std::vector<OptionSet> optionSetsFor(const TuneDB& db, u32 env, const Defaults& defaults) {
   const DbEnv* const row = db.findEnv(env);
   if (!row) { return {}; }
 
@@ -219,8 +223,7 @@ std::vector<Candidate> identityFrontier(const TuneDB& db, u32 env, const Default
                                   .regime = span.regime,
                                   .evidence = evidence,
                                   .opts = *opts},
-                        .calls = row.m.calls,
-                        .ts = row.m.ts};
+                        .m = row.m};
 
     candidate.entry.id = entryId(candidate.entry.fft, candidate.entry.kind, candidate.entry.regime, *opts);
 
@@ -234,13 +237,8 @@ std::vector<Candidate> identityFrontier(const TuneDB& db, u32 env, const Default
 
   std::vector<Candidate> candidates;
   for (auto& [id, candidate] : byId) { candidates.push_back(std::move(candidate)); }
-
-  // A configuration that costs more but reaches further is kept, because nothing else may reach that far cheaply, and
-  // picking one option set per identity before the table is built would lose it.
-  return frontier(candidates, [](const Candidate& c) { return identityOf(c.entry); });
+  return candidates;
 }
-
-}  // namespace
 
 std::vector<SelectionEntry> candidatesFor(const TuneDB& db, u32 env, const Defaults& defaults) {
   std::vector<SelectionEntry> out;
