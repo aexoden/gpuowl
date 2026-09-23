@@ -124,6 +124,8 @@ TEST(each_subcommand_reads_its_own_settings) {
   CHECK_EQ(parsed("adopt,from=3,into=1").from, 3u);
   CHECK_EQ(parsed("adopt,from=3,into=1").env, 1u);
   CHECK_EQ(parsed("adopt,env=1").env, 1u);
+
+  CHECK_EQ(parsed("scope,env=2").env, 2u);
 }
 
 TEST(a_setting_that_belongs_to_another_subcommand_is_a_usage_error) {
@@ -282,6 +284,25 @@ TEST(a_database_that_is_not_there_is_an_empty_one) {
   CHECK(dir.has(TuneDB::DEFAULT_NAME));
 }
 
+TEST(scope_reports_the_objective_over_what_is_there) {
+  Dir const dir{"prpll-test-tuner-objective"};
+
+  // With no database the prior prices everything, and a directory checked before any run is left as it was found.
+  CHECK(runTuneCommand(parsed("scope,workload=100M-400M"), Args{}, dir.path));
+  CHECK(!dir.has(TuneDB::DEFAULT_NAME));
+  CHECK(!dir.has("tunedb.txt.lock"));
+
+  // With one, the env is chosen as every other subcommand chooses it: named, or refused where the kernels match none.
+  dir.write(TuneDB::DEFAULT_NAME, DB);
+  CHECK(runTuneCommand(parsed("scope,workload=100M-400M,env=1"), Args{}, dir.path));
+  CHECK(!runTuneCommand(parsed("scope,env=9"), Args{}, dir.path));
+  CHECK(!runTuneCommand(parsed("scope"), Args{}, dir.path));
+
+  // Naming an env where there is no database is a question about an env that is not there.
+  Dir const bare{"prpll-test-tuner-objective-bare"};
+  CHECK(!runTuneCommand(parsed("scope,env=1"), Args{}, bare.path));
+}
+
 // ---------------------------------------------------------------------------------------------------------------
 // Scope: the range, the probe, the grid and the weights.
 
@@ -342,7 +363,7 @@ TEST(a_scope_setting_that_cannot_describe_a_scope_is_a_usage_error) {
   CHECK(!refusal("scope,probeWeight=-1").empty());
   CHECK(!refusal("scope,kinds=cert").empty());
   CHECK(!refusal("scope,kinds=").empty());
-  CHECK(!refusal("scope,env=1").empty());
+  CHECK(!refusal("scope,env=0").empty());
 
   // The settings belong to `scope` alone, and the other subcommands' to theirs.
   CHECK(!refusal("emit,workload=100M-400M").empty());

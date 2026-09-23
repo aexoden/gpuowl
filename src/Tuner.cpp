@@ -6,6 +6,7 @@
 #include "BuildId.h"
 #include "Emit.h"
 #include "log.h"
+#include "Objective.h"
 #include "Primes.h"
 #include "Task.h"
 #include "TuneDB.h"
@@ -323,7 +324,8 @@ std::vector<PendingWork> scanWorktodo(const std::vector<fs::path>& files) {
   return out;
 }
 
-void reportScope(const RunScope& scope, const std::vector<fs::path>& files) {
+void reportScope(const RunScope& scope, const std::vector<fs::path>& files, const Objective& objective,
+                 const std::string& against) {
   std::string read;
   for (const fs::path& file : files) { read += (read.empty() ? "" : ", ") + file.filename().string(); }
   log("tune: pending work read from %s\n", read.empty() ? "no worktodo file" : read.c_str());
@@ -351,10 +353,23 @@ void reportScope(const RunScope& scope, const std::vector<fs::path>& files) {
       std::ranges::sort(shown, [](const GridPoint& a, const GridPoint& b) { return a.exponent < b.exponent; });
     }
     for (const GridPoint& point : shown) {
-      log("tune:   %" PRIu64 " %5.1f%%%s\n", point.exponent, point.weight * 100,
+      std::optional<Cost> const cost = objective.cStar(grid.kind, point.exponent);
+      std::string source = "no FFT can run it";
+      if (cost) {
+        char buf[64];
+        snprintf(buf, sizeof(buf), "%9.3f us/it  ", cost->us);
+        source = buf + (cost->measured() ? "entry " + cost->entry + ", " + cost->fft : "prior, from " + cost->fft);
+      }
+      log("tune:   %" PRIu64 " %5.1f%%  %s%s\n", point.exponent, point.weight * 100, source.c_str(),
           point.exponent == scope.probe ? "  (probe)" : "");
     }
     if (!all) { log("tune:   ... and %zu more\n", grid.points.size() - shown.size()); }
+  }
+
+  log("tune: T = %.3f us/it %s, %.1f%% of the weight on measured entries\n", objective.T(), against.c_str(),
+      objective.measured() * 100);
+  if (double const lost = objective.unservable(); lost > 0) {
+    log("tune: %.1f%% of the weight is on exponents no FFT can run, and is left out of T\n", lost * 100);
   }
 }
 
@@ -401,7 +416,7 @@ std::optional<TuneCommand> parseTuneCommand(std::string_view text) {
     std::string_view const key = token.substr(0, eq);
     std::string_view const val = token.substr(eq + 1);
 
-    bool const wantsEnv = out.verb != TuneVerb::Compact && out.verb != TuneVerb::Scope;
+    bool const wantsEnv = out.verb != TuneVerb::Compact;
 
     if (key == "env" && wantsEnv) {
       out.env = asEnvId(val, "env=");
@@ -429,7 +444,9 @@ std::optional<TuneCommand> parseTuneCommand(std::string_view text) {
       case TuneVerb::Reset: accepted = "env=<id>, fft=<spec>"; break;
       case TuneVerb::Adopt: accepted = "into=<id> (or env=<id>), from=<id>"; break;
       case TuneVerb::Compact: break;
-      case TuneVerb::Scope: accepted = "workload=<lo>-<hi>, probe=<E>, probeWeight=<0..1>, kinds=prp|ll|prp+ll"; break;
+      case TuneVerb::Scope:
+        accepted = "workload=<lo>-<hi>, probe=<E>, probeWeight=<0..1>, kinds=prp|ll|prp+ll, env=<id>";
+        break;
       }
       throw "-tune " + std::string{verb} + ": '" + std::string{key} + "=' is not understood. Accepted: " + accepted;
     }
@@ -484,7 +501,7 @@ bool rewriteFor(TuneDB& db, const TuneCommand& command, u32 env) {
   switch (command.verb) {
   case TuneVerb::Emit: return true;
 
-  // Answered before the database is opened, and here only so that the switch is complete.
+  // Reads and reports, and is here only so that the switch is complete.
   case TuneVerb::Scope: return false;
 
   case TuneVerb::Compact: return db.compact();
@@ -512,13 +529,20 @@ bool rewriteFor(TuneDB& db, const TuneCommand& command, u32 env) {
 }
 
 bool runTuneCommand(const TuneCommand& command, const Args& args, const fs::path& dir) {
-  if (command.verb == TuneVerb::Scope) {
-    std::vector<fs::path> const files = worktodoFiles(args, dir);
-    reportScope(makeScope(command.scope, scanWorktodo(files)), files);
-    return true;
-  }
-
   fs::path const dbPath = dir / TuneDB::DEFAULT_NAME;
+
+  std::vector<fs::path> files;
+  std::optional<RunScope> scope;
+  if (command.verb == TuneVerb::Scope) {
+    files = worktodoFiles(args, dir);
+    scope = makeScope(command.scope, scanWorktodo(files));
+
+    // Nothing to read, so nothing to lock: a scope checked before the first run leaves the directory as it found it.
+    if (!command.env && !fs::exists(dbPath)) {
+      reportScope(*scope, files, Objective{Env{}, *scope}, "with nothing measured");
+      return true;
+    }
+  }
 
   TuneDB db;
   // Before the load and held for the rest of the command: a session appending beside this would be writing rows into
@@ -530,6 +554,11 @@ bool runTuneCommand(const TuneCommand& command, const Args& args, const fs::path
   if (command.verb != TuneVerb::Compact) {
     env = commandEnv(db, command, buildFingerprint());
     if (!env) { return false; }
+  }
+
+  if (command.verb == TuneVerb::Scope) {
+    reportScope(*scope, files, Objective{db, env, *scope}, "against env " + std::to_string(env));
+    return true;
   }
 
   if (command.verb == TuneVerb::Emit) {
