@@ -687,3 +687,183 @@ TEST(baselines_measured_under_earlier_defaults_are_measured_again_under_new_ones
   CHECK(std::ranges::count(on.order, std::string{"512:15:512:101@118063003 TAIL_KERNELS=3,WMUL=1"}) == MIN_CALLS);
   CHECK(std::ranges::count(on.order, std::string{"3:1K:8:512:202@118063003 WMUL=1"}) == MIN_CALLS);
 }
+
+namespace {
+
+constexpr const char* PROBED = "512:15:512:212";
+
+// WMUL=1 saves 5%.  LDSPAD_W=0 costs 2% at the default WMUL and saves 3% at WMUL=1, so it only pays once WMUL has
+// moved -- and LDSPAD_W depends on WMUL, so its probe is owed again once WMUL=1 is the best set.  Every other key
+// costs 1%.
+double interacting(const FFTConfig&, const UseConfig& options) {
+  bool const wmul1 = useValue(options, "WMUL", 2) == 1;
+  double factor = wmul1 ? 0.95 : 1;
+  if (useValue(options, "LDSPAD_W", 1) == 0) { factor *= wmul1 ? 0.97 : 1.02; }
+  for (const auto& [key, value] : options) {
+    if (key != "WMUL" && key != "LDSPAD_W") { factor *= 1.01; }
+  }
+  return factor;
+}
+
+struct ProbeRun {
+  std::vector<std::string> order;
+  QueueReport report;
+  std::string best;
+};
+
+ProbeRun runProbed(Fixture& f, u32 stopAfter = ~0u, const std::function<UseConfig(const UseConfig&)>& builtAs = {}) {
+  FakeBench bench{f.db, f.sess, false, stopAfter};
+  bench.optionFactor = interacting;
+  if (builtAs) { bench.builtAs = builtAs; }
+
+  std::vector<Baseline> one;
+  for (const Baseline& b : baselines(nvidia(), scope(), {FFTShape{"512:15:512"}})) {
+    if (b.fft.spec() == PROBED) { one.push_back(b); }
+  }
+  CHECK_EQ(one.size(), size_t(1));
+
+  Scheduler scheduler{scope(), one, 1000, Bootstrap{nvidia(), 118'063'003, {}, false},
+                      Strategy{.kind = Strategy::Kind::Single}};
+  ProbeRun out;
+  out.report = runQueue(scheduler, f.db, f.env, bench, [&](const Objective& objective, const Defaults&) {
+    for (const SelectionEntry& e : objective.entries()) {
+      if (e.fft == PROBED) {
+        out.best = configText(canonicalConfig(nvidia(), FFTConfig{PROBED}, e.opts));
+        break;
+      }
+    }
+  });
+  out.order = bench.order;
+  return out;
+}
+
+std::map<std::string, u32> tally(const std::vector<std::string>& order) {
+  std::map<std::string, u32> out;
+  for (const std::string& s : order) { ++out[s]; }
+  return out;
+}
+
+}  // namespace
+
+TEST(a_measured_entry_is_probed_until_no_step_improves_it) {
+  Fixture f;
+  ProbeRun const run = runProbed(f);
+  CHECK(!run.report.stopped);
+
+  // WMUL=1 wins the first round of one-step probes, which re-offers LDSPAD_W=0 (it depends on WMUL) and nothing
+  // else; that wins too, and opens LDSSWIZ_W, which does not.
+  CHECK_EQ(run.best, std::string{"LDSPAD_W=0,WMUL=1"});
+
+  std::string const at = std::string{PROBED} + "@118063003";
+  std::map<std::string, u32> const calls = tally(run.order);
+  CHECK_EQ(calls.at(at), MIN_CALLS);
+  CHECK_EQ(calls.at(at + " WMUL=1"), MIN_CALLS);
+  CHECK_EQ(calls.at(at + " LDSPAD_W=0"), MIN_CALLS);
+  CHECK_EQ(calls.at(at + " LDSPAD_W=0,WMUL=1"), MIN_CALLS);
+  CHECK_EQ(calls.at(at + " LDSPAD_W=0,LDSSWIZ_W=1,WMUL=1"), MIN_CALLS);
+
+  // ZEROHACK_W depends on nothing that moved, so its first reading stands.
+  CHECK_EQ(calls.at(at + " ZEROHACK_W=0"), MIN_CALLS);
+  CHECK(!calls.contains(at + " WMUL=1,ZEROHACK_W=0"));
+
+  // Every configuration is measured exactly as often as a row needs: the baseline, the first round's one-step moves,
+  // and one probe in each of the two rounds after it.
+  ProbeList const first = probesOf(nvidia(), FFTConfig{PROBED}, {}, {.kind = Strategy::Kind::Single});
+  CHECK_EQ(calls.size(), 1 + first.probes.size() + 2);
+  for (const auto& [call, n] : calls) { CHECK_EQ(n, MIN_CALLS); }
+}
+
+TEST(probing_interrupted_carries_on_from_its_rows) {
+  Fixture whole;
+  ProbeRun const all = runProbed(whole);
+
+  Fixture f;
+  ProbeRun const first = runProbed(f, 31);
+  CHECK(first.report.stopped);
+  f.newSession();
+  ProbeRun const second = runProbed(f);
+  CHECK(!second.report.stopped);
+
+  std::map<std::string, u32> split = tally(first.order);
+  for (const auto& [call, n] : tally(second.order)) { split[call] += n; }
+  CHECK(split == tally(all.order));
+  CHECK_EQ(second.best, all.best);
+}
+
+TEST(a_probe_the_host_builds_otherwise_is_given_up) {
+  // A host that sets every WMUL aside: those probes' rows land on other configurations, so they are tried at most
+  // MAX_ATTEMPTS times and the search carries on without them.  Bounded, so that a probe asked for for ever fails here
+  // rather than hangs.
+  Fixture f;
+  ProbeRun const run = runProbed(f, 3000, [](const UseConfig& asked) {
+    UseConfig built = asked;
+    built.erase("WMUL");
+    return built;
+  });
+  CHECK(!run.report.stopped);
+
+  u32 wmul = 0;
+  for (const auto& [call, n] : tally(run.order)) {
+    if (call.find("WMUL=") == std::string::npos) { continue; }
+    ++wmul;
+    CHECK(n <= 2 * MIN_CALLS);
+  }
+  CHECK(wmul > 0);
+  CHECK(run.best.find("WMUL") == std::string::npos);
+}
+
+TEST(the_bootstrap_still_runs_first_when_entries_are_probed) {
+  Fixture plain;
+  BootstrapRun const without = runBootstrapped(plain);
+  auto const firstBaseline = std::ranges::find_if(without.order, [](const std::string& s) { return !isFamilyCall(s); });
+  size_t const bootstrapCalls = size_t(firstBaseline - without.order.begin());
+
+  Fixture f;
+  FakeBench bench{f.db, f.sess, false, u32(bootstrapCalls + 60)};
+  bench.optionFactor = planted;
+  Scheduler scheduler{scope(), baselines(nvidia(), scope(), shapes()), 1000, twoFamilies(),
+                      Strategy{.kind = Strategy::Kind::Single}};
+  Defaults lines;
+  (void)runQueue(scheduler, f.db, f.env, bench, [&](const Objective&, const Defaults& d) { lines = d; });
+
+  // Call for call the same bootstrap, and probes only after it: a probe measures a step from what the bootstrap
+  // decides, so one taken earlier measures a step from something production is not going to run.
+  CHECK(bench.order.size() > bootstrapCalls);
+  CHECK(std::equal(without.order.begin(), firstBaseline, bench.order.begin()));
+
+  // Once it is complete, entries are probed: some call runs at neither the lines nor the family's own line.
+  CHECK(std::any_of(bench.order.begin() + ptrdiff_t(bootstrapCalls), bench.order.end(), [](const std::string& s) {
+    std::string const opts = s.substr(s.find(' ') + 1);
+    return s.find(' ') != std::string::npos && opts != "WMUL=1" && opts != "TAIL_KERNELS=3,WMUL=1";
+  }));
+
+  // A probe that moves a key back to its built-in value beside a line that sets it otherwise names it, since a row
+  // that left it out would be one the line shadows, and emission would never publish it.
+  CHECK_EQ(configText(lines.global), std::string{"WMUL=1"});
+  std::vector<Item> const items = scheduler.admissible(f.db, f.env, Objective{f.db, f.env, scope(), lines});
+  bool wmulBack = false;
+  for (const Item& item : items) {
+    if (item.kind != ItemKind::Probe) { continue; }
+    const Baseline& b = scheduler.baselines()[item.index];
+    CHECK(!shadowedBy(lines, nvidia(), b.fft, b.kind, item.options));
+    wmulBack = wmulBack || (item.what.ends_with("WMUL=2") && item.options.at("WMUL") == "2");
+  }
+  CHECK(wmulBack);
+}
+
+TEST(a_probe_names_every_key_a_line_would_set_once_its_own_keys_are_in_place) {
+  // FFT3161 at width 512 offers L2_STRIPING up to 512/64 = 8 alone and 512/128 = 4 beside MULTI_Q=1, so under these
+  // lines L2_STRIPING=8 is fitted away.  A probe back to MULTI_Q=0 makes it legal again: the probe must name
+  // L2_STRIPING at its own value, or the line shadows its row and emission never publishes it.
+  FFTConfig const fft{"1:512:8:512:202"};
+  Defaults const lines{.global = {{"L2_STRIPING", "8"}, {"MULTI_Q", "1"}}, .family = {}};
+
+  UseConfig const probe = besideLines(nvidia(), fft, TestKind::PRP, lines, {});
+  CHECK_EQ(configText(probe), std::string{"L2_STRIPING=0,MULTI_Q=0"});
+  CHECK(!shadowedBy(lines, nvidia(), fft, TestKind::PRP, probe));
+
+  // Beside MULTI_Q=1 the line is fitted away, and nothing needs naming but the probe's own key.
+  UseConfig const kept = besideLines(nvidia(), fft, TestKind::PRP, lines, {{"MULTI_Q", "1"}});
+  CHECK_EQ(configText(kept), std::string{"MULTI_Q=1"});
+  CHECK(!shadowedBy(lines, nvidia(), fft, TestKind::PRP, kept));
+}

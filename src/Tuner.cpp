@@ -506,6 +506,8 @@ std::optional<TuneCommand> parseTuneCommand(std::string_view text) {
     } else if (key == "bootstrap" && isRun) {
       if (val != "0" && val != "1") { throw std::string{"-tune: bootstrap= takes 0 or 1"}; }
       out.bootstrap = val == "1";
+    } else if (key == "strategy" && isRun) {
+      out.strategy = parseStrategy(val);
     } else {
       std::string accepted = "nothing";
       switch (out.verb) {
@@ -519,8 +521,10 @@ std::optional<TuneCommand> parseTuneCommand(std::string_view text) {
         accepted = "workload=<lo>-<hi>, probe=<E>, probeWeight=<0..1>, kinds=prp|ll|prp+ll, env=<id>";
         break;
       case TuneVerb::Run:
-        accepted = "workload=<lo>-<hi>, probe=<E>, probeWeight=<0..1>, kinds=prp, bootstrap=0|1, or a subcommand: emit,"
-                   " reset, adopt, compact, scope";
+        accepted =
+          "workload=<lo>-<hi>, probe=<E>, probeWeight=<0..1>, kinds=prp, bootstrap=0|1,"
+          " strategy=hybrid|single|groups|permute:<KEY>+<KEY>..., or a subcommand: emit, reset, adopt, compact,"
+          " scope";
         break;
       }
       throw who + ": '" + std::string{key} + "=' is not understood. Accepted: " + accepted;
@@ -697,8 +701,9 @@ MeasureOutcome runTune(const GpuCommon& shared, const TuneCommand& command) {
 
   std::vector<Baseline> entries = baselines(env, scope);
   Bootstrap bootstrap = bootstrapFor(env, scope, entries, command.bootstrap);
-  Scheduler scheduler{scope, std::move(entries), args.blockSize, std::move(bootstrap)};
-  log("tune: %zu entries could serve the workload\n", scheduler.baselines().size());
+  Scheduler scheduler{scope, std::move(entries), args.blockSize, std::move(bootstrap), command.strategy};
+  log("tune: %zu entries could serve the workload; each measured one is searched by strategy=%s\n",
+      scheduler.baselines().size(), command.strategy.text().c_str());
   if (command.bootstrap) {
     std::string names;
     for (const Family& f : scheduler.bootstrap().families()) {

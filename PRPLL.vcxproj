@@ -76,6 +76,7 @@
     <ClCompile Include=".\src\Objective.cpp" />
     <ClCompile Include=".\src\Scheduler.cpp" />
     <ClCompile Include=".\src\Bootstrap.cpp" />
+    <ClCompile Include=".\src\Probe.cpp" />
     <ClCompile Include=".\src\UseResolve.cpp" />
     <ClCompile Include=".\src\version.cpp" />
     <ClCompile Include=".\src\Worktodo.cpp" />

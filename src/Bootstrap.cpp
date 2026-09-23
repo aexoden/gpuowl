@@ -6,6 +6,7 @@
 #include "Args.h"
 #include "Eligibility.h"
 #include "FFTVariants.h"
+#include "Probe.h"
 #include "Scheduler.h"
 #include "UseResolve.h"
 
@@ -49,8 +50,6 @@ struct Readings {
   }
   return out;
 }
-
-[[nodiscard]] std::string pairText(const std::string& key, u32 value) { return key + "=" + std::to_string(value); }
 
 [[nodiscard]] double seOf(const RaceEntry& e) { return e.m ? standardError(*e.m) : 0; }
 
@@ -140,59 +139,26 @@ UseConfig canonicalConfig(const Env& env, const FFTConfig& fft, const UseConfig&
 
 std::vector<Move> movesWithin(const Env& env, const FFTConfig& fft, const UseConfig& background, Group group) {
   UseConfig const from = canonicalConfig(env, fft, background);
-  std::string const fromText = configText(from);
 
   std::vector<Move> out;
-  std::set<std::string> seen{fromText};
-  auto offer = [&](UseConfig config, std::string key, std::string text) {
-    config = canonicalConfig(env, fft, config);
-    if (seen.insert(configText(config)).second) {
-      out.push_back({.config = std::move(config), .key = std::move(key), .text = std::move(text)});
-    }
-  };
+  std::set<std::string> seen{configText(from)};
+  for (const Axis& axis : axesOf(env, fft, from)) {
+    if (axis.option->group != group) { continue; }
 
-  for (const Option* const option : applicableOptions(env, fft, from)) {
-    if (option->group != group) { continue; }
+    for (size_t i = 0; i < axis.values.size(); ++i) {
+      if (i == axis.current) { continue; }
+      UseConfig moved = from;
+      place(moved, axis, i);
 
-    if (!option->compound) {
-      int const current = useValue(from, option->key, option->defaultFor(env, fft, from));
-      for (int const value : option->valuesFor(env, fft, from)) {
-        if (value == current) { continue; }
-        UseConfig moved = from;
-        moved[option->key] = std::to_string(value);
-        offer(std::move(moved), option->key, option->key + "=" + std::to_string(value));
-      }
-      continue;
-    }
+      std::string text;
+      for (const std::string& key : axis.keys()) { text += (text.empty() ? "" : ",") + key + "=" + moved[key]; }
 
-    // One access class at a time.  A coupled class moves its load and store digits together, which is two keys, so a
-    // build failure there is not pinned on either.
-    u32 const loads = u32(useValue(from, "LOADS", 0));
-    u32 const stores = u32(useValue(from, "STORES", 0));
-    bool const isLoads = option->key == "LOADS";
-
-    for (const AccessClass& cls : accessClasses()) {
-      if (!cls.pairs.empty()) {
-        if (!isLoads) { continue; }
-        for (auto const& [load, store] : usablePairs(env, cls)) {
-          if (u32(load) == getDigit(loads, cls.digit) && u32(store) == getDigit(stores, cls.digit)) { continue; }
-          u32 const l = setDigit(loads, cls.digit, load);
-          u32 const s = setDigit(stores, cls.digit, store);
-          UseConfig moved = from;
-          moved["LOADS"] = std::to_string(l);
-          moved["STORES"] = std::to_string(s);
-          offer(std::move(moved), "", pairText("LOADS", l) + "," + pairText("STORES", s));
-        }
-        continue;
-      }
-
-      u32 const packed = isLoads ? loads : stores;
-      for (int const mode : isLoads ? usableLoadModes(env, cls) : usableStoreModes(env, cls)) {
-        if (u32(mode) == getDigit(packed, cls.digit)) { continue; }
-        u32 const value = setDigit(packed, cls.digit, mode);
-        UseConfig moved = from;
-        moved[option->key] = std::to_string(value);
-        offer(std::move(moved), option->key, pairText(option->key, value));
+      // A coupled class moves two keys, so a build failure there is not pinned on either.
+      UseConfig config = canonicalConfig(env, fft, moved);
+      if (seen.insert(configText(config)).second) {
+        out.push_back({.config = std::move(config),
+                       .key = axis.coupled ? std::string{} : axis.option->key,
+                       .text = std::move(text)});
       }
     }
   }

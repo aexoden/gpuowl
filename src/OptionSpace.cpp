@@ -857,10 +857,14 @@ const vector<Option>& allOptions() {
 }
 
 const Option* findOption(const string& key) {
-  for (const Option& o : allOptions()) {
-    if (o.key == key) { return &o; }
-  }
-  return nullptr;
+  // Called for every key of every option set the tuner compares, several times over on each re-score.
+  static const std::map<string, const Option*, std::less<>> byKey = [] {
+    std::map<string, const Option*, std::less<>> out;
+    for (const Option& o : allOptions()) { out.emplace(o.key, &o); }
+    return out;
+  }();
+  auto const it = byKey.find(key);
+  return it == byKey.end() ? nullptr : it->second;
 }
 
 bool isKnownKey(const string& key) { return findOption(key) != nullptr; }

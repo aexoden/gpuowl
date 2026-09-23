@@ -12,6 +12,7 @@
 #pragma once
 
 #include "common.h"
+#include "Probe.h"
 #include "UseResolve.h"
 
 #include <filesystem>
@@ -93,6 +94,9 @@ struct TuneCommand {
 
   // `run` only: false to leave every family at the built-in defaults rather than racing its options first.
   bool bootstrap = true;
+
+  // `run` only: what counts as one step from an entry's best option set.
+  Strategy strategy{};
 };
 
 // One pending assignment, reduced to what the scope cares about.
