@@ -167,7 +167,9 @@ bool shadowedBy(const Defaults& defaults, const Env& env, const FFTConfig& fft, 
   return !shadowedKeys(defaults, env, fft, entry).empty();
 }
 
-std::vector<SelectionEntry> entriesFor(const TuneDB& db, u32 env, const Defaults& defaults) {
+namespace {
+
+std::vector<Candidate> identityFrontier(const TuneDB& db, u32 env, const Defaults& defaults) {
   const DbEnv* const row = db.findEnv(env);
   if (!row) { return {}; }
 
@@ -233,11 +235,24 @@ std::vector<SelectionEntry> entriesFor(const TuneDB& db, u32 env, const Defaults
   std::vector<Candidate> candidates;
   for (auto& [id, candidate] : byId) { candidates.push_back(std::move(candidate)); }
 
-  // Within an identity first: a configuration that costs more but reaches further is kept, because nothing else may
-  // reach that far cheaply, and picking one option set per identity before the table is built would lose it.  Then
-  // across the table, per kind, since an entry no exponent would ever choose is one production would only walk past.
-  candidates = frontier(candidates, [](const Candidate& c) { return identityOf(c.entry); });
-  candidates = frontier(candidates, [](const Candidate& c) { return c.entry.kind; });
+  // A configuration that costs more but reaches further is kept, because nothing else may reach that far cheaply, and
+  // picking one option set per identity before the table is built would lose it.
+  return frontier(candidates, [](const Candidate& c) { return identityOf(c.entry); });
+}
+
+}  // namespace
+
+std::vector<SelectionEntry> candidatesFor(const TuneDB& db, u32 env, const Defaults& defaults) {
+  std::vector<SelectionEntry> out;
+  for (Candidate& c : identityFrontier(db, env, defaults)) { out.push_back(std::move(c.entry)); }
+  return out;
+}
+
+std::vector<SelectionEntry> entriesFor(const TuneDB& db, u32 env, const Defaults& defaults) {
+  // Then across the table, per kind, since an entry no exponent would ever choose is one production would only walk
+  // past.
+  std::vector<Candidate> candidates =
+    frontier(identityFrontier(db, env, defaults), [](const Candidate& c) { return c.entry.kind; });
 
   std::ranges::sort(candidates, [](const Candidate& a, const Candidate& b) {
     return std::tuple{a.entry.cost, a.entry.id} < std::tuple{b.entry.cost, b.entry.id};

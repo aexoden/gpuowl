@@ -52,6 +52,10 @@ struct Provenance {
 // set does not name a key they set would run differently from the way it was measured, and is not published.
 [[nodiscard]] std::vector<SelectionEntry> entriesFor(const TuneDB& db, u32 env, const Defaults& defaults = {});
 
+// What entriesFor() chooses the table from: every option set of every identity that no other of the same identity
+// dominates, including those that another identity's entry would keep out of the table.
+[[nodiscard]] std::vector<SelectionEntry> candidatesFor(const TuneDB& db, u32 env, const Defaults& defaults = {});
+
 // Whether `defaults` would change what a row measured under `opts` builds on `fft`, so that emission would not publish
 // it beside them.
 [[nodiscard]] bool shadowedBy(const Defaults& defaults, const Env& env, const FFTConfig& fft, TestKind kind,

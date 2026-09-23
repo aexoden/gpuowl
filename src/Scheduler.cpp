@@ -2,6 +2,7 @@
 
 #include "Scheduler.h"
 
+#include "Args.h"
 #include "FFTVariants.h"
 #include "log.h"
 #include "Primes.h"
@@ -52,6 +53,10 @@ struct Progress {
 
   // By the canonical option set as well: calls under other options do not pool with the ones a baseline will make.
   std::map<std::pair<KernelKey, std::string>, Partial> partial;
+
+  // Every option set a row has concluded, canonical, shadowed or not: what a probe asks may already be answered by a
+  // row the lines have since withdrawn from publication.
+  std::map<KernelKey, std::vector<UseConfig>> concluded;
 };
 
 // Where each entry stands, from the rows `env` has.  A row the device lost under is not recorded, so it says nothing
@@ -67,16 +72,18 @@ struct Progress {
     if (!opts || !fft) { continue; }
 
     KernelKey const key{row.fft, row.kind, row.regime.label()};
+    UseConfig const canonical = canonicalConfig(device, *fft, *opts);
     if (row.m.status != Status::Ok) {
-      out.failed.insert({key, configText(canonicalConfig(device, *fft, *opts))});
+      out.failed.insert({key, configText(canonical)});
       continue;
     }
     if (concluded(row.m)) {
       if (!shadowedBy(defaults, device, *fft, row.kind, *opts)) { out.settled.insert(key); }
+      out.concluded[key].push_back(canonical);
       continue;
     }
 
-    Partial& p = out.partial[{key, configText(canonicalConfig(device, *fft, *opts))}];
+    Partial& p = out.partial[{key, configText(canonical)}];
     if (row.m.calls > p.calls || (row.m.calls == p.calls && row.exponent < p.exponent)) {
       p.exponent = row.exponent;
       p.calls = row.m.calls;
@@ -86,7 +93,47 @@ struct Progress {
   return out;
 }
 
+// The cheapest option set of each identity emission could publish -- whether or not another identity keeps it out of
+// the table, since tuning it is how it might get in.
+[[nodiscard]] std::map<KernelKey, const SelectionEntry*> bestEntries(const std::vector<SelectionEntry>& candidates) {
+  std::map<KernelKey, const SelectionEntry*> out;
+  for (const SelectionEntry& e : candidates) {
+    auto const [at, fresh] = out.try_emplace({e.fft, e.kind, e.regime.label()}, &e);
+    if (!fresh && std::tuple{e.cost, e.id} < std::tuple{at->second->cost, at->second->id}) { at->second = &e; }
+  }
+  return out;
+}
+
 }  // namespace
+
+UseConfig besideLines(const Env& env, const FFTConfig& fft, TestKind kind, const Defaults& defaults, UseConfig config) {
+  UseConfig const canonical = config;
+
+  // Fitted against the set as it stands, as emission fits them: whether a line's value is one the table offers can
+  // turn on the set's own keys -- a probe back to MULTI_Q=0 makes an L2_STRIPING line legal again -- and each key named
+  // here can do the same to another.
+  for (bool changed = true; changed;) {
+    changed = false;
+    SelectionLayers const layers = fittedTo({.global = {defaults.global.begin(), defaults.global.end()},
+                                             .family = defaults.family,
+                                             .entry = {config.begin(), config.end()}},
+                                            env, fft, kind);
+
+    for (const auto& [key, value] : resolveConfig(Args{true}, fft, kind, layers)) {
+      const Option* const option = findOption(key);
+      if (config.contains(key) || !option || option->kind != Kind::Tunable || !option->appliesTo(env, fft, canonical) ||
+          option->isInert(env, fft, canonical)) {
+        continue;
+      }
+      int const own = option->defaultFor(env, fft, canonical);
+      if (parseInt<int>(value) != own) {
+        config[key] = std::to_string(own);
+        changed = true;
+      }
+    }
+  }
+  return config;
+}
 
 double expectedSaving(double best, double estimate) {
   double out = 0;
@@ -149,17 +196,38 @@ const char* toString(ItemKind kind) {
   case ItemKind::Anchor: return "anchor";
   case ItemKind::Bootstrap: return "bootstrap";
   case ItemKind::Baseline: return "baseline";
+  case ItemKind::Probe: return "probe";
   }
   return "?";
 }
 
-Scheduler::Scheduler(RunScope scope, std::vector<Baseline> baselines, u32 blockSize, Bootstrap bootstrap) :
-  scope_{std::move(scope)}, baselines_{std::move(baselines)}, clock_{blockSize}, bootstrap_{std::move(bootstrap)} {}
+Scheduler::Scheduler(RunScope scope, std::vector<Baseline> baselines, u32 blockSize, Bootstrap bootstrap,
+                     std::optional<Strategy> strategy) :
+  scope_{std::move(scope)},
+  baselines_{std::move(baselines)},
+  clock_{blockSize},
+  bootstrap_{std::move(bootstrap)},
+  strategy_{std::move(strategy)} {}
+
+std::string Scheduler::builtKey(const FFTConfig& fft, const UseConfig& options) const {
+  return fft.spec() + " " + configText(canonicalConfig(bootstrap_.env(), fft, options));
+}
+
+const ProbeList& Scheduler::probeList(const FFTConfig& fft, const UseConfig& best) const {
+  const Env& env = bootstrap_.env();
+  UseConfig const canonical = canonicalConfig(env, fft, best);
+  auto const [at, fresh] = probeLists_.try_emplace(fft.spec() + " " + configText(canonical));
+  if (fresh) { at->second = probesOf(env, fft, canonical, *strategy_); }
+  return at->second;
+}
 
 std::string Scheduler::keyOf(const Item& item) const {
   switch (item.kind) {
   case ItemKind::Anchor: return "anchor";
   case ItemKind::Bootstrap: return bootstrap_.families()[item.index].fft.spec() + " " + configText(item.options);
+  case ItemKind::Probe:
+    return baselines_[item.index].label() + " " +
+      configText(canonicalConfig(bootstrap_.env(), baselines_[item.index].fft, item.options));
   case ItemKind::Baseline: break;
   }
   return baselines_[item.index].label() + "@" + std::to_string(item.exponent);
@@ -241,7 +309,7 @@ std::vector<Item> Scheduler::admissible(const TuneDB& db, u32 env, const Objecti
       value += point.weight * expectedSaving(point.cost->us, estimate);
     }
 
-    bool const fresh = !built_.contains(spec + " " + configText(options));
+    bool const fresh = !built_.contains(builtKey(b.fft, options));
     out.push_back({.kind = ItemKind::Baseline,
                    .index = i,
                    .options = std::move(options),
@@ -252,6 +320,73 @@ std::vector<Item> Scheduler::admissible(const TuneDB& db, u32 env, const Objecti
                    .seconds = clock_.seconds(estimate / PRIOR_OPTIMISM, fresh),
                    .fresh = fresh,
                    .calls = p.calls});
+  }
+
+  if (strategy_) {
+    std::vector<SelectionEntry> const candidates = candidatesFor(db, env, state.defaults);
+    std::map<KernelKey, const SelectionEntry*> const best = bestEntries(candidates);
+    for (size_t i = 0; i < baselines_.size(); ++i) {
+      const Baseline& b = baselines_[i];
+      KernelKey const key{b.fft.spec(), b.kind, b.band.regime.label()};
+      auto const at = best.find(key);
+      if (at == best.end()) { continue; }
+      const SelectionEntry& entry = *at->second;
+
+      // Every probe of an entry is worth the same until the gains it has shown are learnt from: what the gain prior
+      // expects a configuration of the entry's own cost to save.
+      double value = 0;
+      for (const ObjectivePoint& point : objective.points()) {
+        if (point.kind != b.kind || !point.cost || !b.band.contains(point.exponent)) { continue; }
+        value += point.weight * expectedSaving(point.cost->us, entry.cost);
+      }
+      if (value <= 0) { continue; }
+
+      std::vector<UseConfig> const none;
+      auto const rows = progress.concluded.find(key);
+      const std::vector<UseConfig>& concluded = rows != progress.concluded.end() ? rows->second : none;
+
+      const ProbeList& list = probeList(b.fft, entry.opts);
+      for (const Probe& probe : list.probes) {
+        std::string const text = configText(probe.config);
+        if (progress.failed.contains({key, text})) { continue; }
+        if (std::ranges::any_of(concluded,
+                                [&](const UseConfig& row) { return answeredBy(device, b.fft, list, probe, row); })) {
+          continue;
+        }
+
+        UseConfig options = besideLines(device, b.fft, b.kind, state.defaults, probe.config);
+        if (shadowedBy(state.defaults, device, b.fft, b.kind, options)) { continue; }
+
+        Item item{.kind = ItemKind::Probe,
+                  .index = i,
+                  .options = std::move(options),
+                  .moved = probe.key,
+                  .what = probe.stage + " " + probe.text,
+                  .exponent = b.exponent,
+                  .value = value,
+                  .seconds = 0,
+                  .fresh = true,
+                  .calls = 0};
+        if (auto const n = probeAttempts_.find(keyOf(item)); n != probeAttempts_.end() && n->second >= MAX_ATTEMPTS) {
+          continue;
+        }
+        if (auto const p = progress.partial.find({key, text});
+            p != progress.partial.end() && b.band.contains(p->second.exponent)) {
+          item.exponent = p->second.exponent;
+          item.calls = p->second.calls;
+        }
+
+        if (db.isNogo(env, b.fft.spec(), item.options)) { continue; }
+        if (u32 const cfg = db.findCfgId(item.options);
+            cfg && db.diedOn(env, cfg, b.kind, b.fft.spec(), item.exponent)) {
+          continue;
+        }
+
+        item.fresh = !built_.contains(builtKey(b.fft, item.options));
+        item.seconds = clock_.seconds(entry.cost, item.fresh);
+        out.push_back(std::move(item));
+      }
+    }
   }
 
   std::ranges::stable_sort(out, [](const Item& a, const Item& b) { return a.rate() > b.rate(); });
@@ -287,7 +422,11 @@ void Scheduler::ran(const Item& item, double seconds, double usPerIt, bool recor
     return;
   }
 
-  built_.insert(baselines_[item.index].fft.spec() + " " + configText(item.options));
+  built_.insert(builtKey(baselines_[item.index].fft, item.options));
+  if (item.kind == ItemKind::Probe) {
+    ++probeAttempts_[last_];
+    return;
+  }
   ++attempts_[item.index];
 }
 
@@ -338,6 +477,20 @@ private:
   bool complete_ = false;
 };
 
+// The best option set of the entry `b`, canonical, and its cost; nothing where no row of it could be published.
+[[nodiscard]] std::optional<std::string> bestOf(const TuneDB& db, u32 envId, const Env& env, const Defaults& defaults,
+                                                const Baseline& b) {
+  std::vector<SelectionEntry> const candidates = candidatesFor(db, envId, defaults);
+  std::map<KernelKey, const SelectionEntry*> const best = bestEntries(candidates);
+  auto const at = best.find({b.fft.spec(), b.kind, b.band.regime.label()});
+  if (at == best.end()) { return {}; }
+
+  char cost[32];
+  snprintf(cost, sizeof(cost), "%.3f us/it", at->second->cost);
+  std::string const opts = configText(canonicalConfig(env, b.fft, at->second->opts));
+  return (opts.empty() ? std::string{"the built-in defaults"} : opts) + ", " + cost;
+}
+
 }  // namespace
 
 QueueReport runQueue(Scheduler& scheduler, TuneDB& db, u32 env, Bench& bench, const Publisher& publish) {
@@ -377,22 +530,28 @@ QueueReport runQueue(Scheduler& scheduler, TuneDB& db, u32 env, Bench& bench, co
       break;
     }
 
-    const Baseline* const baseline = item->kind == ItemKind::Baseline ? &scheduler.baselines()[item->index] : nullptr;
+    const Baseline* const baseline = item->kind != ItemKind::Bootstrap ? &scheduler.baselines()[item->index] : nullptr;
     const FFTConfig& fft = baseline ? baseline->fft : scheduler.bootstrap().families()[item->index].fft;
     TestKind const kind = baseline ? baseline->kind : TestKind::PRP;
-    std::string const label = baseline ? baseline->label() : item->what;
+    std::string const label = !baseline ? item->what
+      : item->kind == ItemKind::Probe   ? baseline->label() + " " + item->what
+                                        : baseline->label();
+    bool const probing = item->kind == ItemKind::Probe;
+    std::optional<std::string> const bestBefore =
+      probing ? bestOf(db, env, scheduler.bootstrap().env(), state.defaults, *baseline) : std::nullopt;
 
     Bench::Result const result = bench.run(fft, kind, item->exponent, item->options, item->moved);
 
     // A call cut short by a stop recorded nothing, so there is nothing to account for.
     if (!result.completed && bench.stopped()) { break; }
 
-    // A race candidate's calls count for it only if its kernels were built as asked.  Where the host sets a value aside
-    // the row lands on another candidate, and without this the race would ask for the same one for ever.
+    // A race candidate's or a probe's calls count for it only if its kernels were built as asked.  Where the host sets
+    // a value aside the row lands on another configuration, and without this the same one would be asked for for ever.
     bool recorded = result.completed;
-    if (item->kind == ItemKind::Bootstrap && recorded) {
-      UseConfig const built = canonicalConfig(scheduler.bootstrap().env(), fft, result.ran);
-      if (built != item->options) {
+    if ((item->kind == ItemKind::Bootstrap || item->kind == ItemKind::Probe) && recorded) {
+      const Env& device = scheduler.bootstrap().env();
+      UseConfig const built = canonicalConfig(device, fft, result.ran);
+      if (built != canonicalConfig(device, fft, item->options)) {
         recorded = false;
         log("tune: %s was built as %s, so its calls cannot count for it\n", label.c_str(), configText(built).c_str());
       }
@@ -415,6 +574,14 @@ QueueReport runQueue(Scheduler& scheduler, TuneDB& db, u32 env, Bench& bench, co
     } else {
       log("tune: %u. %s %s at %" PRIu64 "%s gave no reading\n", out.items, toString(item->kind), label.c_str(),
           item->exponent, call.c_str());
+    }
+
+    if (probing) {
+      std::optional<std::string> const bestAfter =
+        bestOf(db, env, scheduler.bootstrap().env(), state.defaults, *baseline);
+      if (bestAfter && bestAfter != bestBefore) {
+        log("tune: %s is now best at %s\n", baseline->label().c_str(), bestAfter->c_str());
+      }
     }
   }
 

@@ -299,6 +299,9 @@ its reach.
                      measurement, and stops cleanly on Ctrl-C; a re-run resumes. It tunes prp only (kinds=prp).
                      It first races the -use options of each FFT type worth tuning on one FFT at the probe, and
                      publishes the winners as selection.txt's default lines; bootstrap=0 skips that.
+                     Then each FFT it has measured is searched one step at a time from its best option set, where
+                     strategy= says what a step is: groups of related options together (hybrid, groups), one
+                     option at a time (single), or every combination of named options (permute:PAD+IN_SIZEX).
                      The option words above (noconfig, fp64, quick=, ...) still select the previous tuner.
 -device <N>        : select the GPU at position N in the list of devices
 -uid    <UID>      : select the GPU with the given UID (on ROCm/AMDGPU, Linux)

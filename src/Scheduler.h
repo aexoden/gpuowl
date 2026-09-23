@@ -18,6 +18,7 @@
 #include "FFTConfig.h"
 #include "Objective.h"
 #include "OptionSpace.h"
+#include "Probe.h"
 #include "TuneDB.h"
 #include "Tuner.h"
 #include "UseResolve.h"
@@ -108,25 +109,33 @@ struct Baseline {
   [[nodiscard]] std::string label() const;
 };
 
+// `config`, canonical, with every key the lines would set to something else named at the value `config` runs it at,
+// so that the row it records is one emission can publish beside them: a probe that moves a key back to its built-in
+// value drops it from the canonical set, and a line setting it would then shadow the row.
+[[nodiscard]] UseConfig besideLines(const Env& env, const FFTConfig& fft, TestKind kind, const Defaults& defaults,
+                                    UseConfig config);
+
 // Every entry `env` could publish that the workload gives any weight to: each shape, at each variant `env` can compile,
 // in each regime band of the automatic carry that holds a grid point.
 [[nodiscard]] std::vector<Baseline> baselines(const Env& env, const RunScope& scope,
                                               const std::vector<FFTShape>& shapes = FFTShape::allShapes());
 
-enum class ItemKind : u8 { Anchor, Bootstrap, Baseline };
+enum class ItemKind : u8 { Anchor, Bootstrap, Baseline, Probe };
 
 [[nodiscard]] const char* toString(ItemKind kind);
 
 struct Item {
   ItemKind kind = ItemKind::Baseline;
 
-  // Into Scheduler::baselines(), or for a bootstrap call into the bootstrap's families.
+  // Into Scheduler::baselines() -- for a probe, the baseline of the entry it probes -- or for a bootstrap call into the
+  // bootstrap's families.
   size_t index = 0;
 
-  // What the configuration is built with: a bootstrap candidate, or for a baseline the defaults the bootstrap decided.
+  // What the configuration is built with: a bootstrap candidate, for a baseline the defaults the bootstrap decided, or
+  // for a probe its option set with every key the lines would set otherwise named at its own value.
   UseConfig options{};
 
-  // A bootstrap call's: the key it moved, and what it is, for the log.
+  // A bootstrap call's or a probe's: the key it moved, and what it is, for the log.
   std::string moved{};
   std::string what{};
 
@@ -147,21 +156,24 @@ struct Item {
 class Scheduler {
 public:
   // With the default `bootstrap`, which is turned off, every baseline is admissible at once and runs at the built-in
-  // defaults.
-  Scheduler(RunScope scope, std::vector<Baseline> baselines, u32 blockSize = 1000, Bootstrap bootstrap = {});
+  // defaults.  Without a `strategy` nothing measured is probed further.
+  Scheduler(RunScope scope, std::vector<Baseline> baselines, u32 blockSize = 1000, Bootstrap bootstrap = {},
+            std::optional<Strategy> strategy = {});
 
   [[nodiscard]] const RunScope& scope() const { return scope_; }
   [[nodiscard]] const std::vector<Baseline>& baselines() const { return baselines_; }
   [[nodiscard]] const Bootstrap& bootstrap() const { return bootstrap_; }
+  [[nodiscard]] const std::optional<Strategy>& strategy() const { return strategy_; }
 
   [[nodiscard]] BootstrapState bootstrapState(const TuneDB& db, u32 env) const;
 
   // Every item that may run now, scored against what `env` has measured.  While a family still has a bootstrap call to
   // make, those calls are all there is, most wanted first: every other configuration runs at what the bootstrap
   // decides, so measuring one earlier would measure something production is not going to run.  After that the
-  // baselines, best rate first; an entry is left out once a row has concluded it or recorded a failure of it, while an
-  // earlier generation's death or an unbuildable key holds it, and once this process has tried it more often than any
-  // entry needs.
+  // baselines and the probes of every entry with a row emission could publish, together, best rate first.  A baseline
+  // is left out once a row has concluded it or recorded a failure of it, and a probe once a row answers it
+  // (answeredBy()) or recorded a failure of it; either while an earlier generation's death or an unbuildable key holds
+  // it, and once this process has tried it more often than any entry needs.
   [[nodiscard]] std::vector<Item> admissible(const TuneDB& db, u32 env, const Objective& objective) const;
 
   // The item to run next from a ranking admissible() gave, or nothing where none is worth anything.  The top item,
@@ -180,15 +192,25 @@ private:
 
   [[nodiscard]] std::vector<Item> bootstrapItems(const BootstrapState& state, const Objective& objective) const;
 
+  // "<spec> <canonical options>", which is what makes a later build of the same configuration find it compiled.
+  [[nodiscard]] std::string builtKey(const FFTConfig& fft, const UseConfig& options) const;
+
+  // probesOf(), which is pure, for each (FFT, best set) asked about; an entry's best set changes rarely, and each
+  // re-score asks again for every entry.
+  [[nodiscard]] const ProbeList& probeList(const FFTConfig& fft, const UseConfig& best) const;
+
   RunScope scope_;
   std::vector<Baseline> baselines_;
   CallClock clock_;
   Bootstrap bootstrap_;
+  std::optional<Strategy> strategy_;
 
   // The configurations this process has built, whose next build finds its kernels compiled.
   std::set<std::string> built_;
 
   std::map<size_t, u32> attempts_;
+  std::map<std::string, u32> probeAttempts_;
+  mutable std::map<std::string, ProbeList> probeLists_;
 
   // Bootstrap candidates by keyOf(), and how often a call of one recorded nothing; past MAX_ATTEMPTS they are out.
   std::map<std::string, u32> unrecorded_;
