@@ -204,9 +204,13 @@ public:
 
   void timeAnchor() override { session_.keepAnchor(); }
 
-  [[nodiscard]] Result run(const FFTConfig& fft, TestKind kind, u64 exponent) override {
-    Call const c = session_.run(fft, kind, exponent, {}, BLOCKS_PER_CALL, blockSize_);
-    return {.completed = c.measurement.ok(), .seconds = c.buildSec + c.timedSec, .usPerIt = c.measurement.mean};
+  [[nodiscard]] Result run(const FFTConfig& fft, TestKind kind, u64 exponent, const UseConfig& options,
+                           const std::string& moved) override {
+    session_.varying(moved.empty() ? std::vector<std::string>{} : std::vector<std::string>{moved});
+    Call const c = session_.run(fft, kind, exponent, options, BLOCKS_PER_CALL, blockSize_);
+    session_.varying({});
+    return {
+      .completed = c.measurement.ok(), .seconds = c.buildSec + c.timedSec, .usPerIt = c.measurement.mean, .ran = c.ran};
   }
 
   [[nodiscard]] bool stopped() const override { return session_.stopped() || Signal::stopRequested(); }
@@ -215,6 +219,22 @@ private:
   Session& session_;
   u32 blockSize_;
 };
+
+// The bootstrap a run over `scope` on `device` works through: one family per FFT type the workload reaches.
+[[nodiscard]] Bootstrap bootstrapFor(const Env& device, const RunScope& scope, const std::vector<Baseline>& entries,
+                                     bool enabled) {
+  std::vector<FFTConfig> inScope;
+  for (const Baseline& b : entries) { inScope.push_back(b.fft); }
+  return Bootstrap{device, scope.probe, bootstrapFamilies(device, scope.probe, inScope), enabled};
+}
+
+// The lines what `env` has measured supports, for a command that has no run of its own to take them from.
+[[nodiscard]] Defaults defaultsOf(const TuneDB& db, u32 env, const RunScope& scope) {
+  const DbEnv* const row = db.findEnv(env);
+  if (!row) { return {}; }
+  Env const device = row->toEnv();
+  return bootstrapFor(device, scope, baselines(device, scope), true).state(db, env).defaults;
+}
 
 }  // namespace
 
@@ -444,7 +464,7 @@ std::optional<TuneCommand> parseTuneCommand(std::string_view text) {
 
   bool const isRun = out.verb == TuneVerb::Run;
   std::string const who = isRun ? "-tune" : "-tune " + std::string{verb};
-  bool const takesScope = out.verb == TuneVerb::Scope || isRun;
+  bool const takesScope = out.verb == TuneVerb::Scope || out.verb == TuneVerb::Emit || isRun;
 
   size_t const settingsFrom = isRun ? 0 : firstComma == std::string_view::npos ? text.size() + 1 : firstComma + 1;
   for (size_t at = settingsFrom; at <= text.size();) {
@@ -483,10 +503,15 @@ std::optional<TuneCommand> parseTuneCommand(std::string_view text) {
       out.scope.probeWeight = *weight;
     } else if (key == "kinds" && takesScope) {
       parseKinds(val, out.scope);
+    } else if (key == "bootstrap" && isRun) {
+      if (val != "0" && val != "1") { throw std::string{"-tune: bootstrap= takes 0 or 1"}; }
+      out.bootstrap = val == "1";
     } else {
       std::string accepted = "nothing";
       switch (out.verb) {
-      case TuneVerb::Emit: accepted = "env=<id>"; break;
+      case TuneVerb::Emit:
+        accepted = "env=<id>, and the run's workload=<lo>-<hi>, probe=<E>, probeWeight=<0..1>, kinds=prp|ll|prp+ll";
+        break;
       case TuneVerb::Reset: accepted = "env=<id>, fft=<spec>"; break;
       case TuneVerb::Adopt: accepted = "into=<id> (or env=<id>), from=<id>"; break;
       case TuneVerb::Compact: break;
@@ -494,8 +519,8 @@ std::optional<TuneCommand> parseTuneCommand(std::string_view text) {
         accepted = "workload=<lo>-<hi>, probe=<E>, probeWeight=<0..1>, kinds=prp|ll|prp+ll, env=<id>";
         break;
       case TuneVerb::Run:
-        accepted = "workload=<lo>-<hi>, probe=<E>, probeWeight=<0..1>, kinds=prp, or a subcommand: emit, reset, adopt,"
-                   " compact, scope";
+        accepted = "workload=<lo>-<hi>, probe=<E>, probeWeight=<0..1>, kinds=prp, bootstrap=0|1, or a subcommand: emit,"
+                   " reset, adopt, compact, scope";
         break;
       }
       throw who + ": '" + std::string{key} + "=' is not understood. Accepted: " + accepted;
@@ -590,12 +615,12 @@ bool runTuneCommand(const TuneCommand& command, const Args& args, const fs::path
 
   std::vector<fs::path> files;
   std::optional<RunScope> scope;
-  if (command.verb == TuneVerb::Scope) {
+  if (command.verb == TuneVerb::Scope || command.verb == TuneVerb::Emit) {
     files = worktodoFiles(args, dir);
     scope = makeScope(command.scope, scanWorktodo(files));
 
     // Nothing to read, so nothing to lock: a scope checked before the first run leaves the directory as it found it.
-    if (!command.env && !fs::exists(dbPath)) {
+    if (command.verb == TuneVerb::Scope && !command.env && !fs::exists(dbPath)) {
       reportScope(*scope, files, Objective{Env{}, *scope}, "with nothing measured");
       return true;
     }
@@ -614,14 +639,15 @@ bool runTuneCommand(const TuneCommand& command, const Args& args, const fs::path
   }
 
   if (command.verb == TuneVerb::Scope) {
-    reportScope(*scope, files, Objective{db, env, *scope}, "against env " + std::to_string(env));
+    reportScope(*scope, files, Objective{db, env, *scope, defaultsOf(db, env, *scope)},
+                "against env " + std::to_string(env));
     return true;
   }
 
   if (command.verb == TuneVerb::Emit) {
     Provenance const from{.ts = u64(time(nullptr)), .db = TuneDB::DEFAULT_NAME, .env = env};
 
-    std::optional<SelectionFile> const file = emit(db, {}, from);
+    std::optional<SelectionFile> const file = emit(db, defaultsOf(db, env, *scope), from);
     if (!file) {
       log("tune: emit: the database gave nothing that could be published\n");
       return false;
@@ -669,18 +695,27 @@ MeasureOutcome runTune(const GpuCommon& shared, const TuneCommand& command) {
   u32 const envId = session.envId();
   reportScope(scope, files, Objective{db, envId, scope}, "against env " + std::to_string(envId));
 
-  Scheduler scheduler{scope, baselines(env, scope), args.blockSize};
+  std::vector<Baseline> entries = baselines(env, scope);
+  Bootstrap bootstrap = bootstrapFor(env, scope, entries, command.bootstrap);
+  Scheduler scheduler{scope, std::move(entries), args.blockSize, std::move(bootstrap)};
   log("tune: %zu entries could serve the workload\n", scheduler.baselines().size());
+  if (command.bootstrap) {
+    std::string names;
+    for (const Family& f : scheduler.bootstrap().families()) {
+      names += (names.empty() ? "" : ", ") + std::string{typeName(f.type)} + " " + f.fft.spec();
+    }
+    log("tune: bootstrap at %" PRIu64 " over %s\n", scope.probe, names.empty() ? "no family" : names.c_str());
+  }
 
   fs::path const out = dir / SELECTION_NAME;
-  auto publishNow = [&](const Objective& objective) {
+  auto publishNow = [&](const Objective& objective, const Defaults& defaults) {
     Provenance const from{.ts = u64(time(nullptr)),
                           .db = TuneDB::DEFAULT_NAME,
                           .env = envId,
                           .T = objective.T(),
                           .workloadLo = scope.lo,
                           .workloadHi = scope.hi};
-    if (!publish(out, db, {}, from)) { log("tune: %s could not be published\n", out.string().c_str()); }
+    if (!publish(out, db, defaults, from)) { log("tune: %s could not be published\n", out.string().c_str()); }
   };
 
   SessionBench bench{session, args.blockSize};

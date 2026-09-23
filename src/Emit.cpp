@@ -83,17 +83,24 @@ std::set<Configuration> condemned(const TuneDB& db, u32 env, const std::vector<R
 // left the entry's cost is a reading of settings other than the ones production would resolve.
 std::vector<std::string> shadowedKeys(const Defaults& defaults, const Env& env, const FFTConfig& fft,
                                       const SelectionEntry& entry) {
-  SelectionLayers const layers{.global = {defaults.global.begin(), defaults.global.end()},
-                               .family = defaults.family,
-                               .entry = {entry.opts.begin(), entry.opts.end()}};
+  SelectionLayers const layers = fittedTo({.global = {defaults.global.begin(), defaults.global.end()},
+                                           .family = defaults.family,
+                                           .entry = {entry.opts.begin(), entry.opts.end()}},
+                                          env, fft, entry.kind);
 
   std::vector<std::string> out;
   for (const auto& [key, value] : resolveConfig(Args{true}, fft, entry.kind, layers)) {
     if (entry.opts.contains(key)) { continue; }
 
-    // A key the table does not know is one nothing here can call inert, so it counts.
+    // A key the table does not know is one nothing here can call inert, so it counts.  One the lines only set to the
+    // value the entry ran at anyway, its default, changes nothing the kernels see.
     const Option* const option = findOption(key);
-    if (!option || option->appliesTo(env, fft, entry.opts)) { out.push_back(key); }
+    if (!option) {
+      out.push_back(key);
+      continue;
+    }
+    if (!option->appliesTo(env, fft, entry.opts) || option->isInert(env, fft, entry.opts)) { continue; }
+    if (parseInt<int>(value) != option->defaultFor(env, fft, entry.opts)) { out.push_back(key); }
   }
 
   return out;
@@ -153,6 +160,13 @@ std::string provenanceOf(const Provenance& from) {
   return out;
 }
 
+bool shadowedBy(const Defaults& defaults, const Env& env, const FFTConfig& fft, TestKind kind, const UseConfig& opts) {
+  SelectionEntry entry;
+  entry.kind = kind;
+  entry.opts = opts;
+  return !shadowedKeys(defaults, env, fft, entry).empty();
+}
+
 std::vector<SelectionEntry> entriesFor(const TuneDB& db, u32 env, const Defaults& defaults) {
   const DbEnv* const row = db.findEnv(env);
   if (!row) { return {}; }
@@ -208,13 +222,9 @@ std::vector<SelectionEntry> entriesFor(const TuneDB& db, u32 env, const Defaults
 
     candidate.entry.id = entryId(candidate.entry.fft, candidate.entry.kind, candidate.entry.regime, *opts);
 
-    if (auto const shadowed = shadowedKeys(defaults, built, *fft, candidate.entry); !shadowed.empty()) {
-      std::string keys;
-      for (const std::string& key : shadowed) { keys += (keys.empty() ? "" : ", ") + key; }
-      log("emit: dropping %s, measured without %s, which this file's own default lines set\n", row.fft.c_str(),
-          keys.c_str());
-      continue;
-    }
+    // Not reported: every row a bootstrap race took before its later races moved the background is one of these, so it
+    // is how the database ordinarily looks rather than something wrong with it.
+    if (!shadowedKeys(defaults, built, *fft, candidate.entry).empty()) { continue; }
 
     auto const [at, fresh] = byId.emplace(candidate.entry.id, candidate);
     if (!fresh && better(candidate, at->second)) { at->second = candidate; }

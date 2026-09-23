@@ -9,6 +9,7 @@
 
 #include "test.h"
 
+#include <algorithm>
 #include <string>
 
 using namespace tune;
@@ -235,7 +236,18 @@ TEST(emit_drops_an_entry_its_own_default_lines_would_change) {
   TuneDB const db =
     loaded(withRecord("run   4 1K:8:1K:202 prp 200000000 short32 21 ", "run   4 1K:8:1K:202 prp 200000000 short32 1 "));
 
-  CHECK(!publishes(db, "1K:8:1K:202", TestKind::PRP));
+  auto publishedUnder = [&](const Defaults& lines) {
+    return std::ranges::any_of(entriesFor(db, 1, lines),
+                               [](const SelectionEntry& e) { return e.fft == "1K:8:1K:202"; });
+  };
+
+  // A line that moves a key the row left at its default changes what production would build.
+  CHECK(!publishedUnder({.global = {{"TAIL_KERNELS", "3"}}, .family = {}}));
+  CHECK(!publishedUnder({.global = {}, .family = {parseUseLine("! 0 WMUL=1")}}));
+
+  // Lines that only name what the row ran anyway -- INPLACE=1 is NVIDIA's default, and PAD does nothing in place --
+  // change nothing, so the row is published under them as it is under none.
+  CHECK(publishes(db, "1K:8:1K:202", TestKind::PRP));
 
   // With nothing to shadow it, the same row is published.
   CHECK_EQ(entriesFor(db, 1).size(), entriesFor(loaded(DB), 1, defaults()).size());

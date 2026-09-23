@@ -88,8 +88,11 @@ struct TuneCommand {
   // `reset` only: one shape of the env rather than all of it.
   std::string fft;
 
-  // `scope` and `run`.
+  // `scope`, `run` and `emit`: the scope the bootstrap's races were run at the probe of.
   ScopeArgs scope;
+
+  // `run` only: false to leave every family at the built-in defaults rather than racing its options first.
+  bool bootstrap = true;
 };
 
 // One pending assignment, reduced to what the scope cares about.

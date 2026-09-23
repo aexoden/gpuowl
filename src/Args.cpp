@@ -288,7 +288,8 @@ its reach.
                          compact                       - fold duplicate rows, and drop option sets nothing names
                          scope[,env=<id>]              - report the exponents a tuning run would work over, and the
                                                          expected iteration time over them that the database supports
-                     scope takes the settings that bound a run, each defaulting from the pending worktodo:
+                     scope and emit take the settings that bound a run, each defaulting from the pending worktodo
+                     (emit, so that it finds the races a run held at the probe and writes the lines they decided):
                          workload=<lo>-<hi>  - the exponents worth covering, e.g. workload=100M-400M
                          probe=<E>           - the exponent that matters most, rounded to the prime at or below it
                          probeWeight=<0..1>  - how much of the weight the probe carries on its own (0.5)
@@ -296,6 +297,8 @@ its reach.
                      Given only those settings, or nothing, -tune runs the new tuner on the device instead: it
                      times what is worth timing for the workload into tunedb.txt, publishes selection.txt after every
                      measurement, and stops cleanly on Ctrl-C; a re-run resumes. It tunes prp only (kinds=prp).
+                     It first races the -use options of each FFT type worth tuning on one FFT at the probe, and
+                     publishes the winners as selection.txt's default lines; bootstrap=0 skips that.
                      The option words above (noconfig, fp64, quick=, ...) still select the previous tuner.
 -device <N>        : select the GPU at position N in the list of devices
 -uid    <UID>      : select the GPU with the given UID (on ROCm/AMDGPU, Linux)

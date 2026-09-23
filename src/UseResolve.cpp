@@ -225,6 +225,38 @@ UseLine parseUseLine(std::string_view line) {
   return out;
 }
 
+SelectionLayers fittedTo(const SelectionLayers& layers, const Env& env, const FFTConfig& fft, TestKind kind) {
+  UseConfig lines{layers.global.begin(), layers.global.end()};
+  applyLines(layers.family, fft, kind, lines);
+
+  UseConfig all = lines;
+  for (const auto& [k, v] : layers.entry) { all[k] = v; }
+
+  // One key at a time, since what one key may take can depend on another's value.
+  for (bool changed = true; changed;) {
+    changed = false;
+    for (auto it = lines.begin(); it != lines.end(); ++it) {
+      const std::string key = it->first;
+      const Option* const option = findOption(key);
+      if (!option || option->kind != Kind::Tunable || option->compound || !option->appliesTo(env, fft, all)) {
+        continue;
+      }
+      if (std::ranges::any_of(layers.entry, [&](const auto& kv) { return kv.first == key; })) { continue; }
+
+      // Read as the host reads it.
+      std::vector<int> const offered = option->valuesFor(env, fft, all);
+      if (std::ranges::find(offered, useValue(all, key, 0)) != offered.end()) { continue; }
+
+      all.erase(key);
+      lines.erase(it);
+      changed = true;
+      break;
+    }
+  }
+
+  return {.global = {lines.begin(), lines.end()}, .family = {}, .entry = layers.entry};
+}
+
 UseConfig resolveConfig(const Args& args, const FFTConfig& fft, TestKind kind, const SelectionLayers& selection) {
   UseConfig config;
 

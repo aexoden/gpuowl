@@ -52,6 +52,11 @@ struct Provenance {
 // set does not name a key they set would run differently from the way it was measured, and is not published.
 [[nodiscard]] std::vector<SelectionEntry> entriesFor(const TuneDB& db, u32 env, const Defaults& defaults = {});
 
+// Whether `defaults` would change what a row measured under `opts` builds on `fft`, so that emission would not publish
+// it beside them.
+[[nodiscard]] bool shadowedBy(const Defaults& defaults, const Env& env, const FFTConfig& fft, TestKind kind,
+                              const UseConfig& opts);
+
 // The file as it would be published.  Empty of entries where the database holds none for the env, which is a fact
 // about the database and is published as such.
 [[nodiscard]] std::optional<SelectionFile> emit(const TuneDB& db, const Defaults& defaults, const Provenance& from);
