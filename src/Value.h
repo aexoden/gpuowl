@@ -19,9 +19,11 @@
 
 #include <array>
 #include <map>
+#include <set>
 #include <span>
 #include <string>
 #include <tuple>
+#include <utility>
 #include <vector>
 
 namespace tune {
@@ -78,7 +80,8 @@ private:
 // What the gains a device has shown say about the next one.
 class GainModel {
 public:
-  void observe(const EntryKey& entry, double gain);
+  // `device` false for a gain that says something about its entry but not about the moves the device rewards.
+  void observe(const EntryKey& entry, double gain, bool device = true);
 
   // For a configuration of no entry in particular.
   [[nodiscard]] GainDist global() const { return all_.posterior(GAIN_PRIOR); }
@@ -93,10 +96,17 @@ private:
   std::map<EntryKey, GainCounts> entries_;
 };
 
+// An option set of an entry, as its canonical text.
+using EntrySet = std::pair<EntryKey, std::string>;
+
 // Every gain `env`'s rows show, entry by entry and in the order the rows were first taken: each option set of an entry
 // after its first is a move tried against the entry's best so far, and gained max(0, 1 - cost / best), its cost pooled
 // over every concluded row of it.  A race's calls are that as much as a probe's are.  A failure gained nothing it could
 // be measured by, so is not one.
+//
+// An option set a jump row declares was a random restart rather than a move, and almost all of them gain nothing: it
+// teaches its own entry, whose search it says is exhausted, but not the device's distribution, which values every
+// other entry.
 [[nodiscard]] GainModel gainsOf(const TuneDB& db, u32 env);
 
 // The fall in T, in microseconds per iteration, were a configuration eligible over `band` to cost `cost`:
@@ -130,5 +140,13 @@ struct Contest {
 
 // What one more call on `sets[side]`, one of the contest's two, is worth.
 [[nodiscard]] double refineValue(const Contest& contest, std::span<const OptionSet> sets, size_t side);
+
+// Whether the contest still needs calls, by the rule a bootstrap race is decided by: not while the two intervals,
+// RACE_CONFIDENCE standard errors either side, are apart, nor while the two are within RACE_MARGIN of each other.
+[[nodiscard]] bool undecided(const Contest& contest, std::span<const OptionSet> sets);
+
+// What one more call on each of `sets` is worth, summed over every undecided contest it is one side of; 0 for a set in
+// none, and for a side that has had RACE_MAX_CALLS calls, which is tied rather than unresolved.
+[[nodiscard]] std::vector<double> refineValues(std::span<const OptionSet> sets, std::span<const ObjectivePoint> points);
 
 }  // namespace tune

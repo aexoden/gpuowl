@@ -56,6 +56,9 @@ struct Provenance {
 struct OptionSet {
   SelectionEntry entry;
   Measurement m;
+
+  // Where the row was taken, which is where another call pools with it.
+  u64 exponent = 0;
 };
 
 // Every option set of every identity that could be published beside `defaults`, one per option set, before any is

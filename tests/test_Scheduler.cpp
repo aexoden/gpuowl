@@ -78,6 +78,16 @@ public:
     clock_ += 5;
   }
 
+  void declareRestart(const FFTConfig& fft, TestKind kind, u64 exponent, const UseConfig& options, u32 k) override {
+    CHECK(db_.add(JumpRow{.sess = sess_,
+                          .fft = fft.spec(),
+                          .kind = kind,
+                          .regime = regimeOf(fft, exponent),
+                          .cfg = db_.internCfg(options),
+                          .k = k,
+                          .ts = u64(clock_)}));
+  }
+
   // What the device builds when asked for an option set: what was asked, unless a test says the host sets part of it
   // aside.
   std::function<UseConfig(const UseConfig&)> builtAs = [](const UseConfig& asked) { return asked; };
@@ -733,25 +743,33 @@ double interacting(const FFTConfig&, const UseConfig& options) {
   return factor;
 }
 
-struct ProbeRun {
-  std::vector<std::string> order;
-  QueueReport report;
-  std::string best;
-};
-
-ProbeRun runProbed(Fixture& f, u32 stopAfter = ~0u, const std::function<UseConfig(const UseConfig&)>& builtAs = {}) {
-  FakeBench bench{f.db, f.sess, false, stopAfter};
-  bench.optionFactor = interacting;
-  if (builtAs) { bench.builtAs = builtAs; }
-
+// The one entry PROBED, searched one axis at a time with the bootstrap off.
+Scheduler probedScheduler(bool restarts) {
   std::vector<Baseline> one;
   for (const Baseline& b : baselines(nvidia(), scope(), {FFTShape{"512:15:512"}})) {
     if (b.fft.spec() == PROBED) { one.push_back(b); }
   }
   CHECK_EQ(one.size(), size_t(1));
 
-  Scheduler scheduler{scope(), one, 1000, Bootstrap{nvidia(), 118'063'003, {}, false},
-                      Strategy{.kind = Strategy::Kind::Single}};
+  return Scheduler{
+    scope(), one, 1000, Bootstrap{nvidia(), 118'063'003, {}, false}, Strategy{.kind = Strategy::Kind::Single},
+    restarts};
+}
+
+struct ProbeRun {
+  std::vector<std::string> order;
+  QueueReport report;
+  std::string best;
+  GainModel gains;
+};
+
+ProbeRun runProbed(Fixture& f, u32 stopAfter = ~0u, const std::function<UseConfig(const UseConfig&)>& builtAs = {},
+                   bool restarts = false) {
+  FakeBench bench{f.db, f.sess, false, stopAfter};
+  bench.optionFactor = interacting;
+  if (builtAs) { bench.builtAs = builtAs; }
+
+  Scheduler scheduler = probedScheduler(restarts);
   ProbeRun out;
   out.report = runQueue(scheduler, f.db, f.env, bench, [&](const Objective& objective, const Defaults&) {
     for (const SelectionEntry& e : objective.entries()) {
@@ -762,6 +780,7 @@ ProbeRun runProbed(Fixture& f, u32 stopAfter = ~0u, const std::function<UseConfi
     }
   });
   out.order = bench.order;
+  out.gains = gainsOf(f.db, f.env);
   return out;
 }
 
@@ -1025,4 +1044,227 @@ TEST(an_unmeasured_entry_is_valued_under_the_gains_the_device_has_shown) {
     ++checked;
   }
   CHECK(checked > 0);
+}
+
+TEST(a_restart_is_offered_only_once_no_probe_is_left) {
+  Fixture plain;
+  ProbeRun const descent = runProbed(plain);
+
+  // Restarts never run dry, so the run is stopped four restarts past the end of the descent.
+  Fixture f;
+  u32 const calls = u32(descent.order.size()) + 4 * MIN_CALLS;
+  ProbeRun const run = runProbed(f, calls, {}, true);
+  CHECK(run.report.stopped);
+  CHECK_EQ(run.order.size(), size_t(calls));
+
+  // Call for call the same descent, and only then jumps: the next draw of the entry's own sequence, each measured as
+  // a row needs, none of them cheaper than where the descent ended, so the best set stays put.
+  CHECK(std::equal(descent.order.begin(), descent.order.end(), run.order.begin()));
+  CHECK_EQ(run.best, descent.best);
+
+  FFTConfig const fft{PROBED};
+  std::string const at = std::string{PROBED} + "@118063003 ";
+  for (u32 k = 0; k < 4; ++k) {
+    std::string const drawn = at + configText(restartOf(nvidia(), fft, std::string{PROBED} + " prp short32", k));
+    for (u32 c = 0; c < MIN_CALLS; ++c) { CHECK_EQ(run.order[descent.order.size() + k * MIN_CALLS + c], drawn); }
+  }
+
+  // Each jump taught the entry that its search is spent, and the device nothing.
+  EntryKey const entry{PROBED, TestKind::PRP, "short32"};
+  CHECK(near(run.gains.all().n(), descent.gains.all().n()));
+  CHECK(run.gains.forEntry(entry).mean() < descent.gains.forEntry(entry).mean());
+}
+
+TEST(no_restart_is_offered_while_a_probe_is_left) {
+  Fixture plain;
+  u32 const descent = u32(runProbed(plain).order.size());
+
+  auto offered = [](Fixture& f) {
+    std::map<ItemKind, u32> out;
+    for (const Item& item : probedScheduler(true).admissible(f.db, f.env, Objective{f.db, f.env, scope()})) {
+      ++out[item.kind];
+    }
+    return out;
+  };
+
+  // Partway through the first round, the entry has probes left and so no jump; once the last is answered, one jump
+  // and nothing else.
+  Fixture f;
+  (void)runProbed(f, 10, {}, true);
+  std::map<ItemKind, u32> const midway = offered(f);
+  CHECK(midway.contains(ItemKind::Probe));
+  CHECK(!midway.contains(ItemKind::Restart));
+
+  f.newSession();
+  (void)runProbed(f, descent - 10, {}, true);
+  std::map<ItemKind, u32> const spent = offered(f);
+  CHECK(!spent.contains(ItemKind::Probe));
+  CHECK_EQ(spent.at(ItemKind::Restart), 1u);
+}
+
+TEST(restarting_interrupted_draws_the_same_sequence) {
+  Fixture plain;
+  u32 const descent = u32(runProbed(plain).order.size());
+  u32 const calls = descent + 3 * MIN_CALLS;
+
+  Fixture whole;
+  ProbeRun const all = runProbed(whole, calls, {}, true);
+
+  // Stopped between a restart's two calls, and resumed by a later process.
+  Fixture f;
+  ProbeRun const first = runProbed(f, descent + MIN_CALLS + 1, {}, true);
+  f.newSession();
+  ProbeRun const second = runProbed(f, calls - (descent + MIN_CALLS + 1), {}, true);
+
+  std::vector<std::string> joined = first.order;
+  joined.insert(joined.end(), second.order.begin(), second.order.end());
+  CHECK(joined == all.order);
+}
+
+namespace {
+
+// Two pairs of FP64 variants, each pair 0.3% apart: 512:15:512 reaches ~142M, and 1K:8:1K serves what lies past it up
+// to 160M.  Each pair's rows already hold two calls, whose intervals overlap -- one more call on each side separates
+// them -- and neither pair is within RACE_MARGIN.
+constexpr u64 TIE_LO = 110'000'000;
+constexpr u64 TIE_HI = 160'000'000;
+
+// 0 for a variant outside the pairs.
+double tieCost(const FFTConfig& fft) {
+  static const std::map<std::string, double> bySpec{
+    {"512:15:512:201", 1700}, {"512:15:512:202", 1705.1}, {"1K:8:1K:202", 3000}, {"1K:8:1K:212", 3009}};
+  auto const at = bySpec.find(fft.spec());
+  return at != bySpec.end() ? at->second : 0;
+}
+
+// The order the refines are called in, as specs, with the probe exponent at `probe`.
+std::vector<std::string> refineOrder(u64 probe) {
+  RunScope const tied = makeScope(ScopeArgs{.lo = TIE_LO, .hi = TIE_HI, .probe = probe}, {});
+
+  std::vector<Baseline> pairs;
+  for (const Baseline& b : baselines(nvidia(), tied, {FFTShape{"512:15:512"}, FFTShape{"1K:8:1K"}})) {
+    if (tieCost(b.fft) > 0) { pairs.push_back(b); }
+  }
+  CHECK_EQ(pairs.size(), size_t(4));
+
+  Fixture f;
+  for (const Baseline& b : pairs) {
+    double const cost = tieCost(b.fft);
+    CHECK(f.db.add(RunRow{.sess = f.sess,
+                          .fft = b.fft.spec(),
+                          .kind = b.kind,
+                          .exponent = 118'063'003,
+                          .regime = regimeOf(b.fft, 118'063'003),
+                          .cfg = f.db.internCfg({}),
+                          .m = {.mean = cost,
+                                .stddev = cost * 0.001,
+                                .blocks = 2 * BLOCKS_PER_CALL,
+                                .calls = MIN_CALLS,
+                                .drift = 1,
+                                .status = Status::Ok,
+                                .ts = 1}}));
+  }
+
+  FakeBench bench{f.db, f.sess, false};
+  bench.optionFactor = [](const FFTConfig& fft, const UseConfig&) { return tieCost(fft) / pseudoCost(fft); };
+
+  // A strategy with no step to offer an FP64 entry, so that nothing competes with the refines.
+  Scheduler scheduler{tied, pairs, 1000, {}, Strategy{.kind = Strategy::Kind::Permute, .keys = {"MULTI_Q"}}};
+  QueueReport const report = runQueue(scheduler, f.db, f.env, bench, [](const Objective&, const Defaults&) {});
+  CHECK(!report.stopped);
+
+  // Dry because every contest is decided, not because anything gave up.
+  std::vector<OptionSet> const sets = optionSetsFor(f.db, f.env);
+  for (const Contest& c : contests(sets, Objective{f.db, f.env, tied}.points())) { CHECK(!undecided(c, sets)); }
+
+  std::vector<std::string> out;
+  for (const std::string& call : bench.order) { out.push_back(call.substr(0, call.find('@'))); }
+  return out;
+}
+
+}  // namespace
+
+TEST(a_near_tie_at_a_high_traffic_boundary_is_resolved_before_a_low_traffic_one) {
+  // With the probe at 118M, half the workload's weight and every point below ~142M decide between the 512:15:512
+  // pair; the 1K:8:1K pair decides only the twenty points above.  Each side of the heavy contest is called, which
+  // settles it, before either side of the light one.  Within a pair the dearer side first: its error bar, being a
+  // fraction of its cost, is the wider.
+  std::vector<std::string> const probeLow{"512:15:512:202", "512:15:512:201", "1K:8:1K:212", "1K:8:1K:202"};
+  CHECK(refineOrder(118'063'003) == probeLow);
+
+  // The same rows with the probe at 150M, where only the 1K:8:1K pair is eligible: the traffic has moved, and the
+  // order with it -- though that pair's calls take longer.
+  std::vector<std::string> const probeHigh{"1K:8:1K:212", "1K:8:1K:202", "512:15:512:202", "512:15:512:201"};
+  CHECK(refineOrder(150'000'001) == probeHigh);
+}
+
+TEST(a_restart_is_found_past_a_long_stretch_of_draws_that_cannot_run) {
+  Fixture f;
+  (void)runProbed(f);
+  FFTConfig const fft{PROBED};
+  std::string const entry = std::string{PROBED} + " prp short32";
+
+  // Every value but the default of these keys will not build, which rules out nearly every draw.
+  for (const char* key : {"TAIL_KERNELS", "TAIL_TRIGS", "SHUFL_BYTES_W", "SHUFL_BYTES_H", "WMUL", "INPLACE"}) {
+    const Option* const option = findOption(key);
+    int const fallback = option->defaultFor(nvidia(), fft, {});
+    for (int const value : option->valuesFor(nvidia(), fft, {})) {
+      if (value == fallback) { continue; }
+      CHECK(f.db.add(NogoRow{.sess = f.sess, .fft = PROBED, .key = key, .val = std::to_string(value), .ts = 2}));
+    }
+  }
+  u32 first = 0;
+  while (f.db.isNogo(f.env, PROBED, restartOf(nvidia(), fft, entry, first))) { ++first; }
+
+  // Far past the entry's measured sets and a stage's worth of draws beyond them, which is where a bounded walk from
+  // the start of the sequence gave up.
+  CHECK(first > 256);
+
+  std::vector<Item> const items = probedScheduler(true).admissible(f.db, f.env, Objective{f.db, f.env, scope()});
+  auto const restart = std::ranges::find_if(items, [](const Item& i) { return i.kind == ItemKind::Restart; });
+  CHECK(restart != items.end() && restart->draw == first);
+}
+
+TEST(a_restart_is_known_by_its_declaration_not_by_the_workload) {
+  Fixture plain;
+  ProbeRun const descent = runProbed(plain);
+
+  Fixture f;
+  (void)runProbed(f, u32(descent.order.size()) + 4 * MIN_CALLS, {}, true);
+  // Four measured, and a fifth declared before the call the stop cut short, which the next process resumes.
+  CHECK_EQ(f.db.jumps().size(), size_t(5));
+
+  // What the device learns is a function of the rows alone -- no workload, no baselines -- and the jump rows are what
+  // keep the four restarts out of it.  Without them the same readings would count as four moves that found nothing.
+  CHECK(near(gainsOf(f.db, f.env).all().n(), descent.gains.all().n()));
+
+  std::string undeclared;
+  for (const std::string& line : split(f.db.text(), '\n')) {
+    if (!line.empty() && !line.starts_with("jump")) { undeclared += line + '\n'; }
+  }
+  TuneDB stripped;
+  CHECK(stripped.parse(undeclared, "stripped"));
+  CHECK(near(gainsOf(stripped, f.env).all().n(), descent.gains.all().n() + 4));
+}
+
+TEST(a_restart_space_is_spent_only_once_its_draws_keep_repeating) {
+  auto nothingRuns = [](u32) { return false; };
+
+  // Three configurations, none runnable: the scan stops, RESTART_REPEATS draws past the last new one, and stays
+  // stopped.
+  RestartScan small;
+  CHECK(!nextRunnable(small, [](u32 k) { return std::to_string(k % 3); }, nothingRuns));
+  CHECK(small.exhausted);
+  CHECK_EQ(small.next, 3 + RESTART_REPEATS);
+  CHECK(!nextRunnable(small, [](u32) { return std::string{"new"}; }, [](u32) { return true; }));
+
+  // A thousand new configurations that cannot run are the space still being explored, not a spent one.
+  RestartScan large;
+  auto const found = nextRunnable(large, [](u32 k) { return std::to_string(k); }, [](u32 k) { return k == 999; });
+  CHECK(found && *found == 999u);
+  CHECK(!large.exhausted);
+
+  // And the scan resumes from where it stood, not from the start.
+  CHECK(nextRunnable(large, [](u32 k) { return std::to_string(k); }, [](u32 k) { return k >= 999; }) == 999u);
+  CHECK(nextRunnable(large, [](u32 k) { return std::to_string(k); }, [](u32 k) { return k > 999; }) == 1000u);
 }

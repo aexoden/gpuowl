@@ -37,6 +37,7 @@ const char* const FIXTURE =
   "anchor 5 512:15:512:212 143400073 1 1792.000 1.0100 1753481410\n"
   "reach 4 512:15:512:212 prp short32 17 148000000 confirmed 1753471460\n"
   "ref   5 512:15:512:212 1000151 2000 171f3662c332472f 1753471480\n"
+  "jump  4 512:15:512:212 prp short32 17 3 1753471490\n"
   "try   4 512:15:512:212 prp 143400073 17 1753471250\n"
   "try   5 512:15:512:212 prp 143400073 1 1753481250\n"
   "done  4 1753471500\n"
@@ -148,6 +149,11 @@ TEST(rows_are_read) {
   CHECK_EQ(db.refs().size(), size_t{1});
   CHECK_EQ(db.refs().at(0).res64, u64{0x171f3662c332472f});
   CHECK_EQ(db.refs().at(0).iters, u64{2000});
+
+  CHECK_EQ(db.jumps().size(), size_t{1});
+  CHECK_EQ(db.jumps().at(0).cfg, 17u);
+  CHECK_EQ(db.jumps().at(0).k, 3u);
+  CHECK(db.jumps().at(0).regime.label() == "short32");
 }
 
 TEST(unknown_rows_pass_through) {
@@ -186,6 +192,9 @@ TEST(malformed_rows_are_rejected) {
   rejects("env   1 gpu=", "env   1 cc=eight-oh-six gpu=");
   rejects("nogo  4 512:15:512:212 SHUFL_BYTES_W=16", "nogo  4 512:15:512:212 SHUFL_BYTES_W");
   rejects("ref   5 512:15:512:212 1000151 2000 171f3662c332472f", "ref   5 512:15:512:212 1000151 2000 nonsense");
+  rejects("jump  4 512:15:512:212 prp short32 17 3", "jump  4 512:15:512:212 prp short32 17 third");
+  rejects("jump  4 512:15:512:212 prp short32 17 3", "jump  4 512:15:512:212 prp short32 99 3");
+  rejects("jump  4 512:15:512:212 prp short32 17 3", "jump  4 512:15:512:212 prp sideways 17 3");
   rejects("sess  5 env=1 start=1753481200 gen=1 anchor=- alarmed=1",
           "sess  5 env=1 start=1753481200 gen=1 anchor=- alarmed=banana");
 

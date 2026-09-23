@@ -255,3 +255,41 @@ TEST(a_probe_is_answered_by_a_row_that_agrees_on_what_it_depends_on) {
     CHECK(!answeredBy(nvidia(), fft, list, *trig, {{"LOADS", "40000"}}));
   }
 }
+
+TEST(a_restart_is_a_fixed_draw_of_every_axis_the_table_offers) {
+  FFTConfig const fft{"512:15:512:212"};
+  std::string const entry = "512:15:512:212 prp short32";
+
+  for (const Env& env : {nvidia(), amd()}) {
+    // The same sequence however often it is asked for, and another for another entry.
+    CHECK(restartOf(env, fft, entry, 0) == restartOf(env, fft, entry, 0));
+    CHECK(restartOf(env, fft, entry, 0) != restartOf(env, fft, "512:15:512:212 prp long32", 0));
+
+    constexpr u32 DRAWS = 1000;
+    std::set<std::string> distinct;
+    std::map<std::string, std::set<std::pair<int, int>>> offered;
+    std::map<std::string, std::set<std::pair<int, int>>> drawn;
+    for (u32 k = 0; k < DRAWS; ++k) {
+      UseConfig const config = restartOf(env, fft, entry, k);
+      distinct.insert(configText(config));
+
+      // Canonical, and every key at a value the table offers it beside the rest.
+      CHECK(canonicalConfig(env, fft, config) == config);
+      for (const auto& [key, value] : config) {
+        const Option* const option = findOption(key);
+        if (option->compound) { continue; }
+        std::vector<int> const values = option->valuesFor(env, fft, config);
+        CHECK(std::ranges::find(values, parseInt<int>(value).value_or(-1)) != values.end());
+      }
+
+      for (const Axis& axis : axesOf(env, fft, config)) {
+        offered[axis.name].insert(axis.values.begin(), axis.values.end());
+        drawn[axis.name].insert(axis.values[axis.current]);
+      }
+    }
+
+    // Nearly every draw a new point, and every position of every axis drawn somewhere: no assignment is out of reach.
+    CHECK(distinct.size() > DRAWS * 99 / 100);
+    CHECK(offered == drawn);
+  }
+}

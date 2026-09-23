@@ -123,4 +123,11 @@ struct ProbeList {
 [[nodiscard]] bool answeredBy(const Env& env, const FFTConfig& fft, const ProbeList& list, const Probe& probe,
                               const UseConfig& row);
 
+// The `k`th draw of the restart sequence of the entry named `entry`: a joint assignment of every axis, each drawn
+// uniformly over its positions, canonical.  Structural axes are drawn first and every other axis after the keys it
+// depends on, against what has been drawn so far, so every assignment the table offers has a chance of being drawn.
+// A fixed sequence per entry, so that a resumed run draws what the first one would have, and a row can be recognised
+// as a restart's by drawing again.
+[[nodiscard]] UseConfig restartOf(const Env& env, const FFTConfig& fft, std::string_view entry, u32 k);
+
 }  // namespace tune

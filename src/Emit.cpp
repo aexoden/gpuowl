@@ -223,7 +223,8 @@ std::vector<OptionSet> optionSetsFor(const TuneDB& db, u32 env, const Defaults& 
                                   .regime = span.regime,
                                   .evidence = evidence,
                                   .opts = *opts},
-                        .m = row.m};
+                        .m = row.m,
+                        .exponent = row.exponent};
 
     candidate.entry.id = entryId(candidate.entry.fft, candidate.entry.kind, candidate.entry.regime, *opts);
 

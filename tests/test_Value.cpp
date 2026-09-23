@@ -6,8 +6,11 @@
 
 #include "Value.h"
 
+#include "Bootstrap.h"
+
 #include "test.h"
 
+#include <algorithm>
 #include <cmath>
 #include <numbers>
 #include <numeric>
@@ -368,4 +371,95 @@ TEST(the_pair_contested_at_each_point_is_the_cheapest_two_eligible_there) {
   CHECK_EQ(out[1].chosen, size_t(1));
   CHECK_EQ(out[1].runnerUp, size_t(2));
   CHECK(near(out[1].weight, 0.5));
+}
+
+TEST(a_contest_is_refined_only_while_the_race_rule_leaves_it_undecided) {
+  std::vector<ObjectivePoint> const points{point(E0, 1, 100)};
+  auto worthless = [](const std::vector<double>& worth) {
+    return std::ranges::all_of(worth, [](double w) { return w == 0; });
+  };
+  auto contested = [&](const std::vector<OptionSet>& sets) {
+    std::vector<Contest> const out = contests(sets, points);
+    CHECK_EQ(out.size(), size_t(1));
+    return out.front();
+  };
+
+  // 1% apart, their two-standard-error intervals overlapping: undecided, and a call on either side is worth something.
+  std::vector<OptionSet> const close{optionSet("a", 100, 0.4, 2), optionSet("b", 101, 0.4, 2)};
+  CHECK(undecided(contested(close), close));
+  std::vector<double> const worth = refineValues(close, points);
+  CHECK(worth[0] > 0 && worth[1] > 0);
+  CHECK(near(worth[0], refineValue(contested(close), close, 0)));
+
+  // Apart at two standard errors: decided, and worth nothing more.
+  std::vector<OptionSet> const apart{optionSet("a", 100, 0.2, 2), optionSet("b", 101, 0.2, 2)};
+  CHECK(!undecided(contested(apart), apart));
+  CHECK(worthless(refineValues(apart, points)));
+
+  // Within RACE_MARGIN of each other: not worth the calls it would take to say which.
+  std::vector<OptionSet> const tied{optionSet("a", 100, 1, 2), optionSet("b", 100.2, 1, 2)};
+  CHECK(!undecided(contested(tied), tied));
+  CHECK(worthless(refineValues(tied, points)));
+
+  // A side that has had RACE_MAX_CALLS calls is tied by exhaustion; the other can still be called.
+  std::vector<OptionSet> const spent{optionSet("a", 100, 0.4, RACE_MAX_CALLS), optionSet("b", 101, 0.4, 2)};
+  std::vector<double> const left = refineValues(spent, points);
+  CHECK_EQ(left[0], 0.0);
+  CHECK(left[1] > 0);
+}
+
+TEST(a_set_in_two_contests_is_worth_both) {
+  // b is the runner-up to a over the low band and the choice over c over the high one.
+  std::vector<OptionSet> const sets{optionSet("a", 100, 0.4, 2, 1, 150), optionSet("b", 100.8, 0.4, 2),
+                                    optionSet("c", 101.6, 0.4, 2, 151, 1000)};
+  std::vector<ObjectivePoint> const low{point(100, 0.3, 100)};
+  std::vector<ObjectivePoint> const high{point(200, 0.7, 100.8)};
+  std::vector<ObjectivePoint> both = low;
+  both.push_back(high.front());
+
+  CHECK(near(refineValues(sets, both)[1], refineValues(sets, low)[1] + refineValues(sets, high)[1]));
+  CHECK(refineValues(sets, high)[1] > refineValues(sets, low)[1]);
+}
+
+TEST(a_restart_teaches_its_entry_but_not_the_device) {
+  TuneDB db;
+  Env const device{.isNvidia = true, .computeCapability = 806};
+  u32 const env = db.internEnv(dbEnvOf(device));
+  u32 const sess = db.beginSession(env, "", 0, 1'753'471'200);
+
+  std::string const x = "512:15:512:202";
+  auto add = [&](const UseConfig& opts, double mean) {
+    CHECK(
+      db.add(RunRow{.sess = sess,
+                    .fft = x,
+                    .kind = TestKind::PRP,
+                    .exponent = E0,
+                    .regime = regimeOf(FFTConfig{x}, E0),
+                    .cfg = db.internCfg(opts),
+                    .m = {.mean = mean, .stddev = 0.1, .blocks = 8, .calls = 2, .drift = 1, .status = Status::Ok}}));
+  };
+  add({}, 100);
+  add({{"WMUL", "1"}}, 98);
+  add({{"LDSPAD_W", "0"}, {"LOADS", "3"}, {"ZEROHACK_W", "0"}}, 120);
+
+  EntryKey const entry{x, TestKind::PRP, regimeOf(FFTConfig{x}, E0).label()};
+  GainModel const moves = gainsOf(db, env);
+
+  // Declared as a restart, spelt otherwise than its row (a key at its default): the set is what is recognised.
+  CHECK(db.add(JumpRow{.sess = sess,
+                       .fft = x,
+                       .kind = TestKind::PRP,
+                       .regime = regimeOf(FFTConfig{x}, E0),
+                       .cfg = db.internCfg({{"LDSPAD_W", "0"}, {"LOADS", "3"}, {"ZEROHACK_W", "0"}, {"WMUL", "2"}}),
+                       .k = 0,
+                       .ts = 1}));
+  GainModel const jumped = gainsOf(db, env);
+
+  // Both see the entry's two observations; only the moves teach the device, so the restart's nothing costs every other
+  // entry nothing.
+  CHECK(near(moves.all().n(), 2));
+  CHECK(near(jumped.all().n(), 1));
+  CHECK(near(jumped.all().counts()[3], 1));
+  CHECK(jumped.forEntry(entry).mean() < jumped.global().mean());
+  CHECK(jumped.global().mean() > moves.global().mean());
 }
