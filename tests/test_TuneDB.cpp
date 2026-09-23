@@ -1003,3 +1003,27 @@ TEST(a_rewrite_is_refused_while_a_session_is_appending) {
 
   fs::remove(path);
 }
+
+TEST(an_env_whose_sessions_raced_is_pinned_by_its_first_anchor_reading) {
+  // A session that races for its anchor writes its own row before it knows the winner, so the env's anchor is the one
+  // its first reading names -- and a later session, which does name it, agrees.
+  TuneDB db;
+  CHECK(db.parse(std::string{TuneDB::HEADER} +
+                   "\n"
+                   "env   1 gpu=\"a card\" name=\"a card\" drv=1 vendor=nvidia be=ocl cc=806 noasm=0 pdl=0 machine=-"
+                   " build=0000000000000001\n"
+                   "cfg   1 -\n"
+                   "sess  1 env=1 start=1753471200 gen=0 anchor=-\n"
+                   "sess  2 env=1 start=1753471300 gen=0 anchor=-\n"
+                   "anchor 2 51:1K:8:256:202 118063003 1 5173.448 1.0000 1753471350\n"
+                   "anchor 1 3:1K:8:512:202 118063003 1 2250.055 1.0000 1753471250\n",
+                 "fixture"));
+
+  CHECK_EQ(db.envAnchor(1), std::string{"3:1K:8:512:202@118063003"});
+  CHECK(db.envBaseline(1) != nullptr);
+  CHECK_EQ(db.envBaseline(1)->mean, 2250.055);
+
+  // A session row that names one still decides, as before.
+  CHECK(db.add(SessRow{.id = 3, .env = 1, .start = 1'753'471'400, .gen = 0, .anchor = "1K:13:256:212@118063003"}));
+  CHECK_EQ(db.envAnchor(1), std::string{"1K:13:256:212@118063003"});
+}

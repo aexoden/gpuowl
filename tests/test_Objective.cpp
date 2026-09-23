@@ -181,11 +181,11 @@ TEST(rows_that_conclude_nothing_or_belong_elsewhere_count_for_nothing) {
   CHECK(at100M.has_value());
   CHECK_EQ(at100M->entry, entryOf(objective, "512:15:512:212").id);
 
-  // The single call at 1K:8:1K is not a concluded row, so 200M is still the prior's -- and that prior is not fitted
-  // to its 100 us/it, which would put FP64 near nothing at all.
+  // The single call at 1K:8:1K is not a concluded row, so no entry covers 200M and it is still the prior's -- though
+  // the prior, which only orders what is measured next, has learnt from that call.
   std::optional<Cost> const at200M = objective.cStar(TestKind::PRP, 200'000'000);
   CHECK(at200M && !at200M->measured());
-  CHECK(at200M->us > 1000);
+  CHECK(at200M->us < 1000);
 }
 
 TEST(a_point_no_fft_can_run_is_left_out_of_T) {
@@ -286,11 +286,14 @@ TEST(the_prior_is_fitted_from_the_env_it_is_asked_about) {
   CHECK(one.fitted(FFT61));
   CHECK(!one.fitted(FFT3161));
 
-  // The cheapest concluded FP64 reading on env 1 is the LL one at 512:15:512, 1760 -- a prior prices a shape, whichever
-  // kind runs on it.  Neither the one-call 100 at 1K:8:1K nor the failed 100 at 4K:8:1K is a cost, so they fit
-  // nothing, even at their own sizes.
+  // The cheapest FP64 reading at 512:15:512 on env 1 is the LL one, 1760 -- a prior prices a shape, whichever kind
+  // runs on it.  The one-call 100 at 1K:8:1K is a reading too, so it fits its own size and 4K:8:1K, its nearest; the
+  // failed 100 at 4K:8:1K is not a cost and fits nothing, even at its own size.
   double const k = 1760 * 1e6 / priorWork(FFTShape{"512:15:512"}.size());
-  for (const char* shape : {"512:15:512", "1K:8:1K", "4K:8:1K"}) { CHECK(near(one.k(FFTShape{shape}), k)); }
+  double const one1K = 100 * 1e6 / priorWork(FFTShape{"1K:8:1K"}.size());
+  CHECK(near(one.k(FFTShape{"512:15:512"}), k));
+  CHECK(near(one.k(FFTShape{"1K:8:1K"}), one1K));
+  CHECK(near(one.k(FFTShape{"4K:8:1K"}), one1K));
 
   Prior const two{db, 2};
   CHECK(near(two.k(FFTShape{"512:15:512"}), 900 * 1e6 / priorWork(FFTShape{"512:15:512"}.size())));

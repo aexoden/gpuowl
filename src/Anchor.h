@@ -11,6 +11,7 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <vector>
 
 namespace tune {
 
@@ -54,10 +55,21 @@ struct AnchorSpec {
 
 [[nodiscard]] std::optional<AnchorSpec> parseAnchorSpec(std::string_view text);
 
-// The anchor for a session probing `exponent`: the smallest FP64 shape whose default variant is eligible there, at that
-// variant and the automatic carry.  Smallest-that-fits is the cheapest thing in the family to re-time, and being FP64
-// it exists on every device the tuner runs on.  Nothing for an exponent no FP64 shape can hold.
-[[nodiscard]] std::optional<AnchorSpec> chooseAnchor(u64 exponent);
+// What an env's anchor is chosen among at `exponent`: for each FFT type production chooses among, the smallest shape
+// whose default variant is eligible there, at that variant and the automatic carry.  Smallest-that-fits is the cheapest
+// thing in a family to re-time.  In type order, FP64 first; empty for an exponent nothing can hold.
+[[nodiscard]] std::vector<AnchorSpec> anchorCandidates(u64 exponent);
+
+// One candidate's reading, in microseconds per iteration.
+struct AnchorReading {
+  AnchorSpec anchor;
+  double us = 0;
+};
+
+// The anchor a race of the candidates gives: the cheapest reading, the earlier candidate on a tie.  A card is anchored
+// on what it is good at -- one whose FP64 runs at a thirty-second of its FP32 has no use for an FP64 anchor that costs
+// a sixth of the run to re-time.  Nothing where no candidate gave a reading.
+[[nodiscard]] std::optional<AnchorSpec> raceWinner(const std::vector<AnchorReading>& readings);
 
 // The anchor's readings, against the first one taken for this env.
 struct AnchorState {

@@ -9,7 +9,9 @@
 #include "FFTVariants.h"
 
 #include <cmath>
+#include <set>
 #include <string>
+#include <vector>
 
 using namespace tune;
 
@@ -55,41 +57,63 @@ TEST(anchor_spec_refuses_what_is_not_one) {
   CHECK(!parseAnchorSpec("not-an-fft@118063003"));
 }
 
-TEST(anchor_is_the_smallest_eligible_fp64_shape) {
+TEST(anchor_candidates_are_the_smallest_eligible_shape_of_each_type) {
   u64 const E = 118'063'003;
-  auto const chosen = chooseAnchor(E);
-  CHECK(chosen.has_value());
-  CHECK_EQ(chosen->exponent, E);
+  std::vector<AnchorSpec> const candidates = anchorCandidates(E);
 
-  FFTConfig const fft{chosen->fft};
-  CHECK(fft.shape.fft_type == FFT64);
-  CHECK(!interval(fft, E).empty());
-  CHECK_EQ(fft.variant, defaultVariant(fft.shape));
-  CHECK(fft.carry == CARRY_AUTO);
+  // Every type production chooses among holds 118M somewhere, so each is raced, FP64 first.
+  CHECK_EQ(candidates.size(), size_t(6));
+  CHECK(FFTConfig{candidates.front().fft}.shape.fft_type == FFT64);
 
-  // Nothing FP64 and eligible there is smaller.
-  for (const FFTShape& shape : FFTShape::allShapes()) {
-    if (shape.fft_type != FFT64 || shape.size() >= fft.size()) { continue; }
-    CHECK(interval(FFTConfig{shape, defaultVariant(shape), CARRY_AUTO}, E).empty());
+  std::set<int> types;
+  for (const AnchorSpec& c : candidates) {
+    CHECK_EQ(c.exponent, E);
+    FFTConfig const fft{c.fft};
+    CHECK(types.insert(fft.shape.fft_type).second);
+    CHECK(!interval(fft, E).empty());
+    CHECK_EQ(fft.variant, defaultVariant(fft.shape));
+    CHECK(fft.carry == CARRY_AUTO);
+
+    // Nothing of the same type and eligible there is smaller.
+    for (const FFTShape& shape : FFTShape::allShapes()) {
+      if (shape.fft_type != fft.shape.fft_type || shape.size() >= fft.size()) { continue; }
+      CHECK(interval(FFTConfig{shape, defaultVariant(shape), CARRY_AUTO}, E).empty());
+    }
   }
 }
 
-TEST(anchor_grows_with_the_exponent) {
-  // A larger probe needs at least as large an anchor, and the choice is deterministic.
+TEST(anchor_candidates_grow_with_the_exponent) {
+  // A larger probe needs at least as large a shape of each type, and the choice is deterministic.
   u64 const small = 10'000'019;
   u64 const large = 400'000'009;
-  auto const a = chooseAnchor(small);
-  auto const b = chooseAnchor(large);
-  CHECK(a.has_value());
-  CHECK(b.has_value());
-  CHECK(FFTConfig{a->fft}.size() <= FFTConfig{b->fft}.size());
-  CHECK_EQ(chooseAnchor(small)->text(), a->text());
+  std::vector<AnchorSpec> const a = anchorCandidates(small);
+  std::vector<AnchorSpec> const b = anchorCandidates(large);
+  CHECK(!a.empty());
+  CHECK(!b.empty());
+  CHECK(FFTConfig{a.front().fft}.size() <= FFTConfig{b.front().fft}.size());
+  CHECK(anchorCandidates(small) == a);
 
-  // An exponent no FP64 shape can hold -- too large for the largest, or below the bits-per-word floor of the smallest
-  // -- has no anchor, and neither has no exponent at all.
-  CHECK(!chooseAnchor(0));
-  CHECK(!chooseAnchor(1));
-  CHECK(!chooseAnchor(u64(1) << 62));
+  // An exponent nothing can hold -- too large for the largest shape, or below every bits-per-word floor -- has no
+  // candidates, and neither has no exponent at all.
+  CHECK(anchorCandidates(0).empty());
+  CHECK(anchorCandidates(1).empty());
+  CHECK(anchorCandidates(u64(1) << 62).empty());
+}
+
+TEST(the_race_anchors_on_the_cheapest_reading) {
+  AnchorSpec const fp64{.fft = "1K:13:256:212", .exponent = 118'063'003};
+  AnchorSpec const hybrid{.fft = "51:1K:8:256:202", .exponent = 118'063'003};
+  AnchorSpec const ntt{.fft = "3:1K:8:512:202", .exponent = 118'063'003};
+
+  // A card slow at FP64 is anchored on something it is good at, and one good at FP64 on FP64.
+  CHECK(raceWinner({{fp64, 8088}, {hybrid, 5173}, {ntt, 2250}}) == ntt);
+  CHECK(raceWinner({{fp64, 957}, {hybrid, 1284}, {ntt, 3450}}) == fp64);
+
+  // A tie goes to the earlier candidate, and a candidate with no reading is not in the race.
+  CHECK(raceWinner({{fp64, 1000}, {hybrid, 1000}}) == fp64);
+  CHECK(raceWinner({{fp64, 0}, {hybrid, 1200}}) == hybrid);
+  CHECK(!raceWinner({{fp64, 0}}).has_value());
+  CHECK(!raceWinner({}).has_value());
 }
 
 TEST(anchor_state_establishes_its_own_baseline) {

@@ -102,11 +102,35 @@ struct Dir {
 }  // namespace
 
 TEST(a_subcommand_of_another_tuner_is_not_one_of_these) {
-  // Upstream's own -tune takes the same flag, and none of its option words is a subcommand here.
-  CHECK(!parseTuneCommand("").has_value());
+  // Upstream's own -tune takes the same flag, and is known by its own option words.
   CHECK(!parseTuneCommand("noconfig,fp64").has_value());
   CHECK(!parseTuneCommand("quick=5").has_value());
-  CHECK(!parseTuneCommand("emitter").has_value());
+  CHECK(!parseTuneCommand("minexp=100000000,maxexp=200000000").has_value());
+  CHECK(!parseTuneCommand("fp6431").has_value());
+}
+
+TEST(settings_alone_or_nothing_at_all_is_a_tuning_run) {
+  CHECK(parsed("").verb == TuneVerb::Run);
+  CHECK(parsed("workload=100M-400M").verb == TuneVerb::Run);
+  CHECK_EQ(parsed("workload=100M-400M,probe=136279841").scope.probe, u64(136'279'841));
+  CHECK_EQ(parsed("probeWeight=0.25").scope.probeWeight, 0.25);
+  CHECK(parsed("kinds=prp").scope.kinds == std::vector<TestKind>{TestKind::PRP});
+
+  // Anything else is a mistyped command rather than a word for the other tuner.
+  CHECK(!refusal("emitter").empty());
+  CHECK(!refusal("worklaod=100M-400M").empty());
+  CHECK(!refusal("workload=100M-400M,verbose").empty());
+
+  // The env of a run is the device it opens.
+  CHECK(!refusal("env=1").empty());
+
+  // LL is not timed, so a run for it could record only failures; scope still reports its grid.
+  CHECK(!refusal("kinds=prp+ll").empty());
+  CHECK(!refusal("kinds=ll").empty());
+  CHECK(refusal("scope,kinds=prp+ll").empty());
+
+  // The two settings still have to agree.
+  CHECK(!refusal("workload=100M-400M,probe=500000003").empty());
 }
 
 TEST(each_subcommand_reads_its_own_settings) {

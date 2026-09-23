@@ -204,12 +204,12 @@ int main(int argc, char **argv) {
     // The device-free -tune subcommands read and rewrite tunedb.txt, publish selection.txt from it, or report the
     // scope a run would work within, and never build a kernel -- so they are answered here, before a device is
     // opened, and work where there is none.
-    if (args.doTune) {
-      if (std::optional<tune::TuneCommand> const command = tune::parseTuneCommand(args.tune)) {
-        exitCode = tune::runTuneCommand(*command, args, fs::current_path()) ? EXIT_OK : EXIT_FAILED;
-        log("Bye\n");
-        return exitCode;
-      }
+    std::optional<tune::TuneCommand> const tuneCommand =
+      args.doTune ? tune::parseTuneCommand(args.tune) : std::optional<tune::TuneCommand>{};
+    if (tuneCommand && tuneCommand->verb != tune::TuneVerb::Run) {
+      exitCode = tune::runTuneCommand(*tuneCommand, args, fs::current_path()) ? EXIT_OK : EXIT_FAILED;
+      log("Bye\n");
+      return exitCode;
     }
 
     args.setDefaults();
@@ -233,6 +233,12 @@ int main(int argc, char **argv) {
       if (tune::dumpOptionSpace(tune::detectEnv(context, args), FFTConfig{args.optionsFft})) { exitCode = EXIT_FAILED; }
     } else if (args.doMeasure) {
       switch (tune::runMeasure(shared, tune::parseMeasureArgs(args.measureSpec))) {
+        case tune::MeasureOutcome::Ok: break;
+        case tune::MeasureOutcome::Failed: exitCode = EXIT_FAILED; break;
+        case tune::MeasureOutcome::DeviceLost: exitCode = restartOrReport(); break;
+      }
+    } else if (tuneCommand) {
+      switch (tune::runTune(shared, *tuneCommand)) {
         case tune::MeasureOutcome::Ok: break;
         case tune::MeasureOutcome::Failed: exitCode = EXIT_FAILED; break;
         case tune::MeasureOutcome::DeviceLost: exitCode = restartOrReport(); break;

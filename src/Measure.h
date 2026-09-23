@@ -99,13 +99,27 @@ class Session {
 public:
   Session(GpuCommon shared, TuneDB& db, const Env& env);
 
-  // `probe` is the exponent the session is measuring around, which is where its drift anchor is timed when the env
-  // does not already have one pinned. Zero leaves the session unanchored: its rows are recorded as measured.
+  // `probe` is the exponent the session is measuring around. Where the env has no anchor pinned yet, the candidates
+  // for one are raced there when the anchor is first due, and the winner is pinned for the env's life. Zero leaves the
+  // session unanchored: its rows are recorded as measured.
   [[nodiscard]] bool begin(u64 probe = 0);
   void end();
 
   // What every row of this session is divided by to compare it with a row of another one.
   [[nodiscard]] double drift() const { return anchorState_.ratio; }
+
+  // Whether the session has an anchor -- or a race for one -- that has not been timed yet, or not for
+  // ANCHOR_EVERY_SEC.
+  [[nodiscard]] bool anchorDue() const;
+
+  // Settles a pending race: one recorded call of each candidate the env has no reading of yet, at the production block
+  // size, and the cheapest reading becomes the anchor.  Those calls are baselines like any other, so the race costs
+  // nothing a tuning run would not spend anyway.
+  void raceAnchor();
+
+  // Times the anchor if it is due, and updates the drift the rows carry.  A recorded call does this itself, so calling
+  // it is only a way of choosing when.
+  void keepAnchor();
 
   [[nodiscard]] const AnchorSpec& anchor() const { return anchor_; }
 
@@ -116,7 +130,8 @@ public:
   [[nodiscard]] std::string held(const FFTConfig& fft, TestKind kind, u64 exponent, const UseConfig& options) const;
 
   // Runs one configuration and discards the reading.  The first Gpu of a process is slow everywhere it has been
-  // measured, and a session that does not absorb that charges it to whichever configuration it happens to run first.
+  // measured, and a session that does not absorb that charges it to whichever configuration it happens to run first,
+  // so the first call a session makes is preceded by SESSION_WARM_CALLS of these unless one was asked for already.
   Call warmUp(const FFTConfig& fft, TestKind kind, u64 exponent, const UseConfig& options,
               u32 nBlocks = BLOCKS_PER_CALL, u32 blockSize = 1000);
 
@@ -154,9 +169,6 @@ private:
   // Records `options` value for the known bad configuration.
   void noteNogo(const FFTConfig& fft, const UseConfig& options);
 
-  // Times the anchor if the session has one and it is due, and updates the drift the rows carry.
-  void keepAnchor();
-
   // Stops anchoring this session, keeping whatever ratio the anchor last gave: a reading already taken against the
   // env's baseline is still the best thing its rows have.
   void unanchor() { anchor_ = {}; }
@@ -179,6 +191,9 @@ private:
   AnchorSpec anchor_{};
   AnchorState anchorState_{};
 
+  // The candidates still to be raced for the env's anchor; empty once one is pinned.
+  std::vector<AnchorSpec> race_;
+
   // The options the env's baseline reading was taken under; 0 when there is no baseline yet.
   u32 baselineCfg_ = 0;
 
@@ -187,6 +202,7 @@ private:
 
   u32 envId_ = 0;
   u32 session_ = 0;
+  bool warmed_ = false;
   bool stopped_ = false;
   bool deviceLost_ = false;
   bool cannotRecord_ = false;

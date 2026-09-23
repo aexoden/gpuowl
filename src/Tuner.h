@@ -1,10 +1,10 @@
 // Copyright (C) Jason Lynch
 
-// The -tune command line, and the scope a tuning run works within.
+// The -tune command line, the scope a tuning run works within, and the run itself.
 //
 // Five of its subcommands open no device, build no kernels and take no readings: four read and rewrite the measurement
 // database, and the fifth reports the scope. They run wherever the files are rather than only on the card that was
-// measured.
+// measured.  Everything else -- settings alone, or nothing at all -- is a tuning run on the device.
 //
 // The scope is two things: the exponent range the user's work covers, and the one exponent within it that matters
 // most. Everything downstream is weighted by them, so a configuration nobody will run is never paid for.
@@ -21,8 +21,11 @@
 #include <vector>
 
 class Args;
+class GpuCommon;
 
 namespace tune {
+
+enum class MeasureOutcome : u8;
 
 class Objective;
 class TuneDB;
@@ -56,6 +59,7 @@ enum class TuneVerb : u8 {
   Adopt,    // restamp another env's rows as this one's
   Compact,  // fold duplicate rows and drop the option sets nothing names
   Scope,    // report the range, the probe and the grid a tuning run would work within
+  Run,      // tune: measure what is worth measuring, publishing after every item
 };
 
 [[nodiscard]] const char* toString(TuneVerb verb);
@@ -84,7 +88,7 @@ struct TuneCommand {
   // `reset` only: one shape of the env rather than all of it.
   std::string fft;
 
-  // `scope` only.
+  // `scope` and `run`.
   ScopeArgs scope;
 };
 
@@ -149,9 +153,9 @@ struct RunScope {
 void reportScope(const RunScope& scope, const std::vector<fs::path>& files, const Objective& objective,
                  const std::string& against);
 
-// The device-free subcommand `text` asks for, or nothing where it asks for something else -- upstream's own tuner
-// takes the same flag, and its option words are not these.  Throws a message for a subcommand it recognises and then
-// cannot read, so a mistyped setting is a usage error rather than a silent fall-through to the other tuner.
+// What `text` asks this tuner for, or nothing where it is upstream's own tuner's -- that one takes the same flag, and
+// is known by its own option words.  Throws a message for anything else it cannot read, so a mistyped setting is a
+// usage error rather than a silent fall-through to the other tuner.
 [[nodiscard]] std::optional<TuneCommand> parseTuneCommand(std::string_view text);
 
 // Which env the command runs on: the one it names, or the single env whose rows were measured against `build`.  0
@@ -164,5 +168,10 @@ void reportScope(const RunScope& scope, const std::vector<fs::path>& files, cons
 
 // Runs one device-free subcommand against the files in `dir`, reporting whether it did what it was asked.
 [[nodiscard]] bool runTuneCommand(const TuneCommand& command, const Args& args, const fs::path& dir);
+
+// The tuning run, in the current directory: every -use setting the config files and the command line make is set
+// aside, and the queue measures what is worth measuring until nothing is or it is stopped, publishing the selection
+// file after every item.
+[[nodiscard]] MeasureOutcome runTune(const GpuCommon& shared, const TuneCommand& command);
 
 }  // namespace tune
