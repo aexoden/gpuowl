@@ -279,13 +279,19 @@ its reach.
                                         -tune minexp=10000000,maxexp=20000000
                          fp6431       - Time FP64+M31 FFTs for tune.txt.  Only GPUs with great FP64 performance will find this beneficial.
                          quick=<val>  - Use higher values for a quicker, potentially less accurate tune.  Val ranges from 1 to 10.
-                     These subcommands work on the measurement database alone.  They open no device, so they run on a
-                     machine that has none, and without an env= (into= for adopt) they act on the one env whose rows
-                     were measured against the kernels this binary carries.
+                     These subcommands open no device, so they run on a machine that has none.  The four working on
+                     the measurement database, without an env= (into= for adopt), act on the one env whose rows were
+                     measured against the kernels this binary carries.
                          emit[,env=<id>]               - write selection.txt from what the database supports
                          reset[,env=<id>][,fft=<spec>] - drop what was measured, for an env or for one of its FFTs
                          adopt[,into=<id>][,from=<id>] - take an earlier env's rows as the current kernels' own
                          compact                       - fold duplicate rows, and drop option sets nothing names
+                         scope                         - report the exponents a tuning run would work over
+                     scope takes the settings that bound a run, each defaulting from the pending worktodo:
+                         workload=<lo>-<hi>  - the exponents worth covering, e.g. workload=100M-400M
+                         probe=<E>           - the exponent that matters most, rounded to the prime at or below it
+                         probeWeight=<0..1>  - how much of the weight the probe carries on its own (0.5)
+                         kinds=prp|ll|prp+ll - which test kinds to tune for (prp)
 -device <N>        : select the GPU at position N in the list of devices
 -uid    <UID>      : select the GPU with the given UID (on ROCm/AMDGPU, Linux)
 -pci    <BDF>      : select the GPU with the given PCI BDF, e.g. "0c:00.0"
@@ -395,7 +401,7 @@ void Args::parse(const string& line, bool fromConfigFile) {
       if (!s.empty()) { tune = s; }
       // The database-only subcommands are dispatched by main() before a device exists; validated here, so a mistyped
       // setting is a usage error rather than a silent fall-through to the tuner that takes the same flag.
-      if (!tune::parseDbCommand(tune)) { checkTuneOptions(tune); }
+      if (!tune::parseTuneCommand(tune)) { checkTuneOptions(tune); }
     } else if (key == "-measure") {
       // Resolving the options and building a Gpu need the device, so main() does this once a
       // context exists.
