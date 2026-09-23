@@ -133,6 +133,31 @@ TEST(settings_alone_or_nothing_at_all_is_a_tuning_run) {
   CHECK(!refusal("workload=100M-400M,probe=500000003").empty());
 }
 
+TEST(the_combo_settings_shape_hybrid_in_either_order) {
+  Strategy const byDefault = parsed("").strategy;
+  CHECK(byDefault.kind == Strategy::Kind::Hybrid);
+  CHECK_EQ(byDefault.comboTop, COMBO_TOP);
+  CHECK_EQ(byDefault.comboTiers, COMBO_TIERS);
+
+  Strategy const set = parsed("comboTop=2,comboTiers=1").strategy;
+  CHECK_EQ(set.comboTop, 2u);
+  CHECK_EQ(set.comboTiers, 1u);
+
+  // Given before the strategy they belong to, they still shape it.
+  Strategy const before = parsed("comboTiers=2,strategy=hybrid").strategy;
+  CHECK_EQ(before.comboTiers, 2u);
+  CHECK_EQ(before.comboTop, COMBO_TOP);
+
+  // Only hybrid combines, so for any other strategy they are a mistyped command.
+  CHECK(!refusal("strategy=groups,comboTiers=1").empty());
+  CHECK(!refusal("comboTop=4,strategy=single").empty());
+  CHECK(!refusal("comboTiers=0").empty());
+  CHECK(!refusal("comboTiers=4").empty());
+  CHECK(!refusal("comboTop=0").empty());
+  CHECK(!refusal("comboTop=three").empty());
+  CHECK(!refusal("emit,comboTop=3").empty());
+}
+
 TEST(each_subcommand_reads_its_own_settings) {
   CHECK(parsed("emit").verb == TuneVerb::Emit);
   CHECK_EQ(parsed("emit").env, 0u);
