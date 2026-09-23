@@ -261,7 +261,7 @@ BootstrapState Bootstrap::state(const TuneDB& db, u32 env, const std::set<std::s
   }
   if (anyUnread) { return out; }
 
-  // Worth tuning while the gain prior leaves any chance that tuning it overtakes the cheapest family -- at its defaults
+  // Worth tuning while a gain of RACE_GAIN would let it overtake the cheapest family -- at its defaults
   // until that family has been tuned, and then as tuned, so that a family which only came close to the defaults is not
   // raced once the cheapest has pulled away.
   double best = 0;
@@ -279,7 +279,7 @@ BootstrapState Bootstrap::state(const TuneDB& db, u32 env, const std::set<std::s
   bool racing = false;
   for (size_t const f : order) {
     FamilyState& s = out.families[f];
-    if (expectedSaving(best, s.reading) <= 0) {
+    if (s.reading * (1 - RACE_GAIN) >= best) {
       s.phase = FamilyPhase::Skipped;
       continue;
     }
