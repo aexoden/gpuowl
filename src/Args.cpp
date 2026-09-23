@@ -302,6 +302,8 @@ its reach.
                      Then each FFT it has measured is searched one step at a time from its best option set, where
                      strategy= says what a step is: groups of related options together (hybrid, groups), one
                      option at a time (single), or every combination of named options (permute:PAD+IN_SIZEX).
+                     hybrid then combines the best comboTop=<N> (3) answers of each group, over comboTiers=<1..3>
+                     (3) tiers: groups alone, groups that share kernels, everything; comboTiers=1 is groups.
                      The option words above (noconfig, fp64, quick=, ...) still select the previous tuner.
 -device <N>        : select the GPU at position N in the list of devices
 -uid    <UID>      : select the GPU with the given UID (on ROCm/AMDGPU, Linux)

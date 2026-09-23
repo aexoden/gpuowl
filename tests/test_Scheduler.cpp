@@ -1268,3 +1268,195 @@ TEST(a_restart_space_is_spent_only_once_its_draws_keep_repeating) {
   CHECK(nextRunnable(large, [](u32 k) { return std::to_string(k); }, [](u32 k) { return k >= 999; }) == 999u);
   CHECK(nextRunnable(large, [](u32 k) { return std::to_string(k); }, [](u32 k) { return k > 999; }) == 1000u);
 }
+
+namespace {
+
+// Every key set away from its default costs 1%, as in interacting(), except at the values named.
+double offDefault(const UseConfig& options, const UseConfig& planted) {
+  double factor = 1;
+  for (const auto& [key, value] : options) {
+    if (auto const at = planted.find(key); at == planted.end() || at->second != value) { factor *= 1.01; }
+  }
+  return factor;
+}
+
+// SHUFL_BYTES_W=16 costs 1% at the default WMUL but saves 3% at WMUL=1, which alone costs 1%: the structural step
+// loses, and only a search of its own branch finds what it opens.
+double structuralPair(const FFTConfig&, const UseConfig& options) {
+  UseConfig const planted{{"SHUFL_BYTES_W", "16"}, {"WMUL", "1"}};
+  bool const wide = useValue(options, "SHUFL_BYTES_W", 8) == 16;
+  bool const wmul1 = useValue(options, "WMUL", 2) == 1;
+  double const pair = wide && wmul1 ? 0.97 : wide || wmul1 ? 1.01 : 1;
+  return pair * offDefault(options, planted);
+}
+
+// TAIL_KERNELS=3 and ZEROHACK_H=0, in two groups that share the tail kernels, each cost a little alone -- less than
+// anything else in their groups does -- and save 3% together.
+double crossGroupPair(const FFTConfig&, const UseConfig& options) {
+  UseConfig const planted{{"TAIL_KERNELS", "3"}, {"ZEROHACK_H", "0"}};
+  bool const tail = useValue(options, "TAIL_KERNELS", 2) == 3;
+  bool const height = useValue(options, "ZEROHACK_H", 1) == 0;
+  double const pair = tail && height ? 0.97 : tail ? 1.004 : height ? 1.002 : 1;
+  return pair * offDefault(options, planted);
+}
+
+struct SearchRun {
+  std::vector<std::string> order;
+  std::string best;
+};
+
+SearchRun runSearched(const Strategy& strategy, double (*factor)(const FFTConfig&, const UseConfig&),
+                      u32 stopAfter = ~0u) {
+  Fixture f;
+  FakeBench bench{f.db, f.sess, false, stopAfter};
+  bench.optionFactor = factor;
+
+  std::vector<Baseline> one;
+  for (const Baseline& b : baselines(nvidia(), scope(), {FFTShape{"512:15:512"}})) {
+    if (b.fft.spec() == PROBED) { one.push_back(b); }
+  }
+  Scheduler scheduler{scope(), one, 1000, Bootstrap{nvidia(), 118'063'003, {}, false}, strategy};
+
+  SearchRun out;
+  QueueReport const report = runQueue(scheduler, f.db, f.env, bench, [&](const Objective& objective, const Defaults&) {
+    for (const SelectionEntry& e : objective.entries()) {
+      if (e.fft == PROBED) { out.best = configText(canonicalConfig(nvidia(), FFTConfig{PROBED}, e.opts)); }
+    }
+  });
+  CHECK(report.stopped == (stopAfter != ~0u));
+  out.order = bench.order;
+  return out;
+}
+
+// Enough calls for the first 152 probes of the entry and the first combination above them, a little over 300 calls
+// in; searching it until nothing is left takes several hundred more.
+constexpr u32 SEARCH_CALLS = 350;
+
+// Groups over crossGroupPair, which two tests read.
+SearchRun groupsSearched() {
+  static SearchRun const run = runSearched({.kind = Strategy::Kind::Groups}, crossGroupPair, SEARCH_CALLS);
+  return run;
+}
+
+}  // namespace
+
+TEST(combo_tiers_1_schedules_exactly_what_groups_does) {
+  SearchRun const groups = groupsSearched();
+  SearchRun const one = runSearched({.kind = Strategy::Kind::Hybrid, .comboTiers = 1}, crossGroupPair, SEARCH_CALLS);
+  CHECK_EQ(groups.order.size(), size_t(SEARCH_CALLS));
+  CHECK(groups.order == one.order);
+}
+
+TEST(a_cross_group_pair_is_found_by_hybrid_and_not_by_groups) {
+  SearchRun const groups = groupsSearched();
+  SearchRun const hybrid = runSearched({.kind = Strategy::Kind::Hybrid}, crossGroupPair, SEARCH_CALLS);
+  CHECK_EQ(groups.best, std::string{"-"});
+  CHECK_EQ(hybrid.best, std::string{"TAIL_KERNELS=3,ZEROHACK_H=0"});
+
+  // Found by the combination of the two groups' best answers, measured as any configuration is.  No stage of groups
+  // moves two groups at once, so it never offers the pair.
+  std::string const at = std::string{PROBED} + "@118063003";
+  CHECK(std::ranges::count(hybrid.order, at + " TAIL_KERNELS=3,ZEROHACK_H=0") == MIN_CALLS);
+  CHECK(std::ranges::count(groups.order, at + " TAIL_KERNELS=3,ZEROHACK_H=0") == 0);
+}
+
+TEST(a_structural_value_that_loses_its_step_is_searched_in_its_own_branch) {
+  // Single steps from the best set alone, as before branches: SHUFL_BYTES_W=16 loses, so WMUL is never tried beside
+  // it.  Groups searches that branch too, and WMUL depends on SHUFL_BYTES_W, so the readings at the default width
+  // shuffle do not answer for it there.
+  SearchRun const single = runSearched({.kind = Strategy::Kind::Single}, structuralPair);
+  SearchRun const groups = runSearched({.kind = Strategy::Kind::Groups}, structuralPair, SEARCH_CALLS);
+  CHECK_EQ(single.best, std::string{"-"});
+  CHECK_EQ(groups.best, std::string{"SHUFL_BYTES_W=16,WMUL=1"});
+
+  // A key that depends on nothing structural is answered in every branch by its one reading in the first, so no
+  // configuration of another branch sets one.  Nothing is measured more than a row needs.
+  auto const structural = {"INPLACE", "SHUFL_BYTES_W", "LDSPAD_W", "SHUFL_BYTES_H", "LDSPAD_H"};
+  auto const free = {"TAIL_KERNELS", "TAIL_TRIGS", "LOADS",          "STORES",
+                     "FAST_BARRIER", "OLD_FENCE",  "ENABLE_BARSYNC", "L2_STRIPING"};
+  auto const has = [](const std::string& call, auto keys) {
+    return std::ranges::any_of(keys, [&](const char* key) { return call.find(std::string{key} + "=") != call.npos; });
+  };
+  for (const auto& [call, n] : tally(groups.order)) {
+    CHECK(n <= MIN_CALLS);
+    CHECK(!(has(call, structural) && has(call, free)));
+
+    // Only the best set steps into another branch, so every branch searched is one structural step from a best set:
+    // the defaults, or SHUFL_BYTES_W=16 once it has won.  A step out of any other branch would be a second.
+    auto const moved = std::ranges::count_if(
+      structural, [&](const char* key) { return call.find(std::string{key} + "=") != call.npos; });
+    CHECK(moved <= (call.find("SHUFL_BYTES_W=16") != call.npos ? 2 : 1));
+  }
+}
+
+TEST(only_the_best_set_steps_into_another_branch) {
+  // The defaults and SHUFL_BYTES_W=16, each read twice: two branches, the second searched from its own best set but
+  // never stepped out of.
+  Fixture f;
+  FakeBench bench{f.db, f.sess, false};
+  bench.optionFactor = structuralPair;
+  FFTConfig const fft{PROBED};
+  for (const UseConfig& options : {UseConfig{}, UseConfig{{"SHUFL_BYTES_W", "16"}}}) {
+    for (u32 call = 0; call < MIN_CALLS; ++call) { (void)bench.run(fft, TestKind::PRP, 118'063'003, options, {}); }
+  }
+
+  std::vector<Baseline> one;
+  for (const Baseline& b : baselines(nvidia(), scope(), {FFTShape{"512:15:512"}})) {
+    if (b.fft.spec() == PROBED) { one.push_back(b); }
+  }
+  Scheduler const scheduler{scope(), one, 1000, Bootstrap{nvidia(), 118'063'003, {}, false},
+                            Strategy{.kind = Strategy::Kind::Groups}};
+  std::vector<Item> const items = scheduler.admissible(f.db, f.env, Objective{f.db, f.env, scope()});
+
+  // What an item sets, not branchOf(): WMUL=4 beside SHUFL_BYTES_W=16 fills the LDS, so LDSPAD_W no longer applies.
+  // Each branch's items are worth what a move from its own best set is, and this one's is 1% dearer.
+  u32 inBranch = 0;
+  double const best = items.empty() ? 0 : items.front().value;
+  for (const Item& item : items) {
+    if (useValue(item.options, "SHUFL_BYTES_W", 8) != 16) {
+      CHECK_EQ(item.value, best);
+      continue;
+    }
+    ++inBranch;
+    CHECK(item.value < best);
+    for (const auto& [key, value] : item.options) { CHECK(key == "SHUFL_BYTES_W" || !findOption(key)->structural); }
+  }
+
+  // Its WMUL and LDSSWIZ_W probes, which depend on SHUFL_BYTES_W; and nothing else, the rest being answered.
+  CHECK(inBranch > 0);
+  CHECK(std::ranges::any_of(items, [](const Item& i) { return i.what == "Width WMUL=1" && i.options.size() == 2; }));
+}
+
+TEST(a_probe_answered_in_one_regime_is_still_owed_in_another) {
+  // The same FFT in two regimes is two entries with the same best set.  WMUL=1 measured in one says nothing about the
+  // other, however often admissible() is asked.
+  RunScope const wide = makeScope(ScopeArgs{.lo = 70'000'000, .hi = 90'000'000, .probe = 80'000'023}, {});
+  std::vector<Baseline> both;
+  for (const Baseline& b : baselines(nvidia(), wide, {FFTShape{"512:15:512"}})) {
+    if (b.fft.spec() == PROBED) { both.push_back(b); }
+  }
+  CHECK_EQ(both.size(), size_t(2));
+  if (both.size() != 2) { return; }
+
+  Fixture f;
+  FakeBench bench{f.db, f.sess, false};
+  bench.optionFactor = [](const FFTConfig&, const UseConfig& options) { return options.empty() ? 1.0 : 1.01; };
+  for (const Baseline& b : both) {
+    for (u32 call = 0; call < MIN_CALLS; ++call) { (void)bench.run(b.fft, b.kind, b.exponent, {}, {}); }
+  }
+  for (u32 call = 0; call < MIN_CALLS; ++call) {
+    (void)bench.run(both[1].fft, both[1].kind, both[1].exponent, {{"WMUL", "1"}}, {});
+  }
+
+  Scheduler const scheduler{wide, both, 1000, Bootstrap{nvidia(), 80'000'023, {}, false},
+                            Strategy{.kind = Strategy::Kind::Single}};
+  Objective const objective{f.db, f.env, wide};
+  for (int round = 0; round < 2; ++round) {
+    std::vector<Item> const items = scheduler.admissible(f.db, f.env, objective);
+    auto owed = [&](size_t index) {
+      return std::ranges::any_of(items, [&](const Item& i) { return i.index == index && i.what == "single WMUL=1"; });
+    };
+    CHECK(owed(0));
+    CHECK(!owed(1));
+  }
+}

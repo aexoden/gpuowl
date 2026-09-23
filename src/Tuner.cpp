@@ -470,6 +470,10 @@ std::optional<TuneCommand> parseTuneCommand(std::string_view text) {
   std::string const who = isRun ? "-tune" : "-tune " + std::string{verb};
   bool const takesScope = out.verb == TuneVerb::Scope || out.verb == TuneVerb::Emit || isRun;
 
+  // Applied once the strategy they belong to is known, whichever order the settings come in.
+  std::optional<u32> comboTop;
+  std::optional<u32> comboTiers;
+
   size_t const settingsFrom = isRun ? 0 : firstComma == std::string_view::npos ? text.size() + 1 : firstComma + 1;
   for (size_t at = settingsFrom; at <= text.size();) {
     size_t const comma = text.find(',', at);
@@ -512,6 +516,14 @@ std::optional<TuneCommand> parseTuneCommand(std::string_view text) {
       out.bootstrap = val == "1";
     } else if (key == "strategy" && isRun) {
       out.strategy = parseStrategy(val);
+    } else if (key == "comboTop" && isRun) {
+      comboTop = parseInt<u32>(val);
+      if (!comboTop || *comboTop < 1) { throw std::string{"-tune: comboTop= takes a count of 1 or more"}; }
+    } else if (key == "comboTiers" && isRun) {
+      comboTiers = parseInt<u32>(val);
+      if (!comboTiers || *comboTiers < 1 || *comboTiers > COMBO_TIERS) {
+        throw std::string{"-tune: comboTiers= takes 1, 2 or 3"};
+      }
     } else {
       std::string accepted = "nothing";
       switch (out.verb) {
@@ -527,12 +539,21 @@ std::optional<TuneCommand> parseTuneCommand(std::string_view text) {
       case TuneVerb::Run:
         accepted =
           "workload=<lo>-<hi>, probe=<E>, probeWeight=<0..1>, kinds=prp, bootstrap=0|1,"
-          " strategy=hybrid|single|groups|permute:<KEY>+<KEY>..., or a subcommand: emit, reset, adopt, compact,"
-          " scope";
+          " strategy=hybrid|single|groups|permute:<KEY>+<KEY>..., comboTop=<N>, comboTiers=1|2|3, or a subcommand:"
+          " emit, reset, adopt, compact, scope";
         break;
       }
       throw who + ": '" + std::string{key} + "=' is not understood. Accepted: " + accepted;
     }
+  }
+
+  if (comboTop || comboTiers) {
+    if (out.strategy.kind != Strategy::Kind::Hybrid) {
+      throw "-tune: comboTop= and comboTiers= combine the groups of strategy=hybrid, not of strategy=" +
+        out.strategy.text();
+    }
+    out.strategy.comboTop = comboTop.value_or(COMBO_TOP);
+    out.strategy.comboTiers = comboTiers.value_or(COMBO_TIERS);
   }
 
   // Both named and contradictory is a mistyped command rather than a scope: caught here, so that it is refused
@@ -706,9 +727,13 @@ MeasureOutcome runTune(const GpuCommon& shared, const TuneCommand& command) {
   std::vector<Baseline> entries = baselines(env, scope);
   Bootstrap bootstrap = bootstrapFor(env, scope, entries, command.bootstrap);
   Scheduler scheduler{scope, std::move(entries), args.blockSize, std::move(bootstrap), command.strategy, true};
-  log("tune: %zu entries could serve the workload; each measured one is searched by strategy=%s, then by random "
+  std::string const combo = command.strategy.kind == Strategy::Kind::Hybrid
+    ? " (comboTop=" + std::to_string(command.strategy.comboTop) +
+      ", comboTiers=" + std::to_string(command.strategy.comboTiers) + ")"
+    : "";
+  log("tune: %zu entries could serve the workload; each measured one is searched by strategy=%s%s, then by random "
       "restarts, which run until stopped\n",
-      scheduler.baselines().size(), command.strategy.text().c_str());
+      scheduler.baselines().size(), command.strategy.text().c_str(), combo.c_str());
   if (command.bootstrap) {
     std::string names;
     for (const Family& f : scheduler.bootstrap().families()) {

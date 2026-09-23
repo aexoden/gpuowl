@@ -29,6 +29,7 @@
 #include <map>
 #include <optional>
 #include <set>
+#include <span>
 #include <string>
 #include <vector>
 
@@ -99,20 +100,20 @@ struct Baseline {
 [[nodiscard]] std::vector<Baseline> baselines(const Env& env, const RunScope& scope,
                                               const std::vector<FFTShape>& shapes = FFTShape::allShapes());
 
-enum class ItemKind : u8 { Anchor, Bootstrap, Baseline, Probe, Refine, Restart };
+enum class ItemKind : u8 { Anchor, Bootstrap, Baseline, Probe, Combo, Refine, Restart };
 
 [[nodiscard]] const char* toString(ItemKind kind);
 
 struct Item {
   ItemKind kind = ItemKind::Baseline;
 
-  // Into Scheduler::baselines() -- for a probe, a refine or a restart, the baseline of the entry it measures -- or for
-  // a bootstrap call into the bootstrap's families.
+  // Into Scheduler::baselines() -- for a probe, a combo, a refine or a restart, the baseline of the entry it measures
+  // -- or for a bootstrap call into the bootstrap's families.
   size_t index = 0;
 
   // What the configuration is built with: a bootstrap candidate, for a baseline the defaults the bootstrap decided, for
-  // a probe or a restart its option set with every key the lines would set otherwise named at its own value, and for a
-  // refine the option set its row was recorded under.
+  // a probe, a combo or a restart its option set with every key the lines would set otherwise named at its own value,
+  // and for a refine the option set its row was recorded under.
   UseConfig options{};
 
   // A bootstrap call's or a probe's: the key it moved; and what it is, for the log.
@@ -182,12 +183,14 @@ public:
   // Every item that may run now, scored against what `env` has measured.  While a family still has a bootstrap call to
   // make, those calls are all there is, most wanted first: every other configuration runs at what the bootstrap
   // decides, so measuring one earlier would measure something production is not going to run.  After that, together
-  // and best rate first: the baselines; the probes of every entry with a row emission could publish; one more call on
-  // each side of every contest production decides that the race rule leaves undecided (refineValues()); and for an
-  // entry with no probe left, the next draw of its restart sequence.  A baseline is left out once a row has concluded
-  // it or recorded a failure of it, and a probe or a restart once a row answers it or recorded a failure of it; any of
-  // them while an earlier generation's death or an unbuildable key holds it, and once this process has tried it more
-  // often than any entry needs.
+  // and best rate first: the baselines; the probes and combos of every entry with a row emission could publish, from
+  // its best set or, under a strategy that searches by group, from the best set of each of its cheapest MAX_BRANCHES
+  // structural branches, each valued at that branch's cost; one more call on each side of every contest production
+  // decides that the race rule leaves undecided (refineValues()); and for an entry with no probe or combo left, the
+  // next draw of its restart sequence.  A baseline is left out once a row has concluded it or recorded a failure of
+  // it, and a probe, a combo or a restart once a row answers it or recorded a failure of it; any of them while an
+  // earlier generation's death or an unbuildable key holds it, and once this process has tried it more often than any
+  // entry needs.
   [[nodiscard]] std::vector<Item> admissible(const TuneDB& db, u32 env, const Objective& objective) const;
 
 
@@ -210,9 +213,21 @@ private:
   // "<spec> <canonical options>", which is what makes a later build of the same configuration find it compiled.
   [[nodiscard]] std::string builtKey(const FFTConfig& fft, const UseConfig& options) const;
 
-  // probesOf(), which is pure, for each (FFT, best set) asked about; an entry's best set changes rarely, and each
-  // re-score asks again for every entry.
-  [[nodiscard]] const ProbeList& probeList(const FFTConfig& fft, const UseConfig& best) const;
+  // probesOf(), which is pure, for one (entry, best set, whether it steps into other branches), and which of its probes
+  // the entry's rows checked against it so far answer.  A row that answers a probe always will, so each is checked
+  // once.  Per entry, not per FFT: another regime or kind of the same FFT has rows of its own.
+  struct ListMemo {
+    std::string from;
+    ProbeList list;
+    std::vector<bool> answered;
+    std::set<std::string> checked;
+  };
+
+  // The memo for `best`, rebuilt when `from` -- what the readings of its branch say, which only the combo tiers read
+  // -- changes: a best set changes rarely, and each re-score asks again for every entry.  A probe the rebuilt list
+  // shares with the old one keeps what the rows answered it.
+  [[nodiscard]] ListMemo& probeList(const Baseline& entry, const UseConfig& best, std::span<const Reading> readings,
+                                    bool structuralSteps, std::string from) const;
 
   // restartOf() for the entry of `baselines_[index]`, canonical, likewise: a draw takes one enumeration of the axes per
   // axis.
@@ -234,7 +249,7 @@ private:
 
   std::map<size_t, u32> attempts_;
   std::map<std::string, u32> probeAttempts_;
-  mutable std::map<std::string, ProbeList> probeLists_;
+  mutable std::map<std::string, ListMemo> probeLists_;
   mutable std::map<std::pair<size_t, u32>, UseConfig> draws_;
 
   // How far each entry's restart sequence has been read in this process.

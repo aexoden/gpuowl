@@ -114,9 +114,29 @@ namespace {
   return out;
 }
 
+// Every option set of each entry that emission could publish, canonical, cheapest first: by pessimistic cost, then as
+// emission breaks a tie, so that the first is the entry's best set.
+[[nodiscard]] std::map<EntryKey, std::vector<Reading>> readingsOf(const std::vector<OptionSet>& sets, const Env& env) {
+  std::vector<const SelectionEntry*> order;
+  for (const OptionSet& s : sets) { order.push_back(&s.entry); }
+  std::ranges::stable_sort(order, [](const SelectionEntry* a, const SelectionEntry* b) {
+    return std::tuple{a->cost, a->id} < std::tuple{b->cost, b->id};
+  });
+
+  std::map<EntryKey, std::vector<Reading>> out;
+  for (const SelectionEntry* e : order) {
+    auto const fft = parseFft(e->fft);
+    if (!fft) { continue; }
+    out[{e->fft, e->kind, e->regime.label()}].push_back(
+      {.config = canonicalConfig(env, *fft, e->opts), .cost = e->cost});
+  }
+  return out;
+}
+
 }  // namespace
 
 UseConfig besideLines(const Env& env, const FFTConfig& fft, TestKind kind, const Defaults& defaults, UseConfig config) {
+  if (defaults.global.empty() && defaults.family.empty()) { return config; }
   UseConfig const canonical = config;
 
   // Fitted against the set as it stands, as emission fits them: whether a line's value is one the table offers can
@@ -201,6 +221,7 @@ const char* toString(ItemKind kind) {
   case ItemKind::Bootstrap: return "bootstrap";
   case ItemKind::Baseline: return "baseline";
   case ItemKind::Probe: return "probe";
+  case ItemKind::Combo: return "combo";
   case ItemKind::Refine: return "refine";
   case ItemKind::Restart: return "restart";
   }
@@ -220,12 +241,36 @@ std::string Scheduler::builtKey(const FFTConfig& fft, const UseConfig& options) 
   return fft.spec() + " " + configText(canonicalConfig(bootstrap_.env(), fft, options));
 }
 
-const ProbeList& Scheduler::probeList(const FFTConfig& fft, const UseConfig& best) const {
+Scheduler::ListMemo& Scheduler::probeList(const Baseline& entry, const UseConfig& best,
+                                          std::span<const Reading> readings, bool structuralSteps,
+                                          std::string from) const {
   const Env& env = bootstrap_.env();
+  const FFTConfig& fft = entry.fft;
   UseConfig const canonical = canonicalConfig(env, fft, best);
-  auto const [at, fresh] = probeLists_.try_emplace(fft.spec() + " " + configText(canonical));
-  if (fresh) { at->second = probesOf(env, fft, canonical, *strategy_); }
-  return at->second;
+  auto const [at, fresh] =
+    probeLists_.try_emplace(entry.label() + " " + configText(canonical) + (structuralSteps ? "" : " within"));
+  ListMemo& memo = at->second;
+  if (!fresh && memo.from == from) { return memo; }
+
+  // Against the same background, so over the same axes.
+  auto identity = [](const Probe& p) {
+    std::string out = configText(p.config);
+    for (auto const& [axis, position] : p.moves) { out += " " + std::to_string(axis) + ":" + std::to_string(position); }
+    return out;
+  };
+  std::set<std::string> answered;
+  for (size_t p = 0; p < memo.list.probes.size(); ++p) {
+    if (memo.answered[p]) { answered.insert(identity(memo.list.probes[p])); }
+  }
+
+  memo.from = std::move(from);
+  memo.list = probesOf(env, fft, canonical, *strategy_, readings, structuralSteps);
+  memo.answered.assign(memo.list.probes.size(), false);
+  for (size_t p = 0; p < memo.list.probes.size(); ++p) {
+    memo.answered[p] = answered.contains(identity(memo.list.probes[p]));
+  }
+  memo.checked.clear();
+  return memo;
 }
 
 const UseConfig& Scheduler::draw(size_t index, u32 k) const {
@@ -308,6 +353,7 @@ std::string Scheduler::keyOf(const Item& item) const {
   case ItemKind::Anchor: return "anchor";
   case ItemKind::Bootstrap: return bootstrap_.families()[item.index].fft.spec() + " " + configText(item.options);
   case ItemKind::Probe:
+  case ItemKind::Combo:
   case ItemKind::Refine:
   case ItemKind::Restart:
     return baselines_[item.index].label() + " " +
@@ -405,76 +451,113 @@ std::vector<Item> Scheduler::admissible(const TuneDB& db, u32 env, const Objecti
   }
 
   if (strategy_) {
-    std::vector<SelectionEntry> const candidates = candidatesFor(db, env, state.defaults);
-    std::map<EntryKey, const SelectionEntry*> const best = bestEntries(candidates);
+    // The option sets of each entry, which also say how much each option set costs where it was measured.
+    std::vector<OptionSet> const sets = optionSetsFor(db, env, state.defaults);
+    std::map<EntryKey, std::vector<Reading>> const readings = readingsOf(sets, device);
+
     for (size_t i = 0; i < baselines_.size(); ++i) {
       const Baseline& b = baselines_[i];
       EntryKey const key{b.fft.spec(), b.kind, b.band.regime.label()};
-      auto const at = best.find(key);
-      if (at == best.end()) { continue; }
-      const SelectionEntry& entry = *at->second;
+      auto const at = readings.find(key);
+      if (at == readings.end()) { continue; }
+      const std::vector<Reading>& ofEntry = at->second;
 
-      // Every probe of an entry is worth the same: what the gains this entry and the device have shown expect a move
-      // from the entry's best set to save.
-      double const value = expectedSaving(objective.points(), b.kind, b.band, entry.cost, gains.forEntry(key));
-      if (value <= 0) { continue; }
+      // Each structural branch is searched from its own best set, and only the entry's best set steps into others.
+      std::vector<Branch> branches;
+      if (strategy_->branches()) {
+        branches = branchesOf(device, b.fft, ofEntry);
+      } else {
+        branches.push_back({.structure = {}, .best = ofEntry.front().config, .cost = ofEntry.front().cost});
+      }
 
       std::vector<UseConfig> const none;
       auto const rows = progress.concluded.find(key);
       const std::vector<UseConfig>& concluded = rows != progress.concluded.end() ? rows->second : none;
+      std::vector<std::string> texts;
+      for (const UseConfig& row : concluded) { texts.push_back(configText(row)); }
 
-      size_t const before = out.size();
-      const ProbeList& list = probeList(b.fft, entry.opts);
-      for (const Probe& probe : list.probes) {
-        std::string const text = configText(probe.config);
-        if (progress.failed.contains({key, text})) { continue; }
-        if (std::ranges::any_of(concluded,
-                                [&](const UseConfig& row) { return answeredBy(device, b.fft, list, probe, row); })) {
-          continue;
+      // What each branch's readings say, which is all its combo tiers read.
+      std::vector<std::string> from(branches.size());
+      if (strategy_->combines()) {
+        for (const Reading& r : ofEntry) {
+          UseConfig const structure = branchOf(device, b.fft, r.config);
+          auto const in = std::ranges::find_if(branches, [&](const Branch& br) { return br.structure == structure; });
+          if (in != branches.end()) {
+            from[size_t(in - branches.begin())] += configText(r.config) + " " + std::to_string(r.cost) + ";";
+          }
         }
-
-        UseConfig options = besideLines(device, b.fft, b.kind, state.defaults, probe.config);
-        if (shadowedBy(state.defaults, device, b.fft, b.kind, options)) { continue; }
-
-        Item item{.kind = ItemKind::Probe,
-                  .index = i,
-                  .options = std::move(options),
-                  .moved = probe.key,
-                  .what = probe.stage + " " + probe.text,
-                  .exponent = b.exponent,
-                  .value = value,
-                  .seconds = 0,
-                  .fresh = true,
-                  .calls = 0};
-        if (auto const n = probeAttempts_.find(keyOf(item)); n != probeAttempts_.end() && n->second >= MAX_ATTEMPTS) {
-          continue;
-        }
-        if (auto const p = progress.partial.find({key, text});
-            p != progress.partial.end() && b.band.contains(p->second.exponent)) {
-          item.exponent = p->second.exponent;
-          item.calls = p->second.calls;
-        }
-
-        if (db.isNogo(env, b.fft.spec(), item.options)) { continue; }
-        if (u32 const cfg = db.findCfgId(item.options);
-            cfg && db.diedOn(env, cfg, b.kind, b.fft.spec(), item.exponent)) {
-          continue;
-        }
-
-        item.fresh = !built_.contains(builtKey(b.fft, item.options));
-        item.seconds = clock_.seconds(entry.cost, item.fresh);
-        out.push_back(std::move(item));
       }
 
-      // At a local optimum of the declared moves, and only there, a jump: worth what a move is, since it is one, but
-      // offered only once no probe is left rather than left to a score to rank below them.
-      std::optional<Item> next =
-        restarts_ && out.size() == before ? nextRestart(db, env, progress, state.defaults, i) : std::nullopt;
+      GainDist const entryGains = gains.forEntry(key);
+      size_t const before = out.size();
+      std::set<std::string> offered;
+      for (size_t branch = 0; branch < branches.size(); ++branch) {
+        // Every probe of a branch is worth the same: what the gains this entry and the device have shown expect a move
+        // from the branch's best set to save.
+        double const value = expectedSaving(objective.points(), b.kind, b.band, branches[branch].cost, entryGains);
+        if (value <= 0) { continue; }
+
+        ListMemo& memo = probeList(b, branches[branch].best, ofEntry, branch == 0, std::move(from[branch]));
+        const ProbeList& list = memo.list;
+        for (size_t r = 0; r < concluded.size(); ++r) {
+          if (!memo.checked.insert(texts[r]).second) { continue; }
+          for (size_t p = 0; p < list.probes.size(); ++p) {
+            if (!memo.answered[p]) { memo.answered[p] = answeredBy(device, b.fft, list, list.probes[p], concluded[r]); }
+          }
+        }
+
+        for (size_t p = 0; p < list.probes.size(); ++p) {
+          if (memo.answered[p]) { continue; }
+          const Probe& probe = list.probes[p];
+          std::string const text = configText(probe.config);
+          if (progress.failed.contains({key, text})) { continue; }
+
+          UseConfig options = besideLines(device, b.fft, b.kind, state.defaults, probe.config);
+          if (shadowedBy(state.defaults, device, b.fft, b.kind, options)) { continue; }
+
+          Item item{.kind = probe.tier > 1 ? ItemKind::Combo : ItemKind::Probe,
+                    .index = i,
+                    .options = std::move(options),
+                    .moved = probe.key,
+                    .what = probe.stage + " " + probe.text,
+                    .exponent = b.exponent,
+                    .value = value,
+                    .seconds = 0,
+                    .fresh = true,
+                    .calls = 0};
+          if (auto const n = probeAttempts_.find(keyOf(item)); n != probeAttempts_.end() && n->second >= MAX_ATTEMPTS) {
+            continue;
+          }
+          if (auto const p = progress.partial.find({key, text});
+              p != progress.partial.end() && b.band.contains(p->second.exponent)) {
+            item.exponent = p->second.exponent;
+            item.calls = p->second.calls;
+          }
+
+          if (db.isNogo(env, b.fft.spec(), item.options)) { continue; }
+          if (u32 const cfg = db.findCfgId(item.options);
+              cfg && db.diedOn(env, cfg, b.kind, b.fft.spec(), item.exponent)) {
+            continue;
+          }
+          if (!offered.insert(text).second) { continue; }
+
+          item.fresh = !built_.contains(builtKey(b.fft, item.options));
+          item.seconds = clock_.seconds(branches[branch].cost, item.fresh);
+          out.push_back(std::move(item));
+        }
+      }
+
+      // At a local optimum of the declared moves, and only there, a jump: worth what a move from the entry's best set
+      // is, since it is one, but offered only once no probe is left rather than left to a score to rank below them.
+      double const value = expectedSaving(objective.points(), b.kind, b.band, ofEntry.front().cost, entryGains);
+      std::optional<Item> next = restarts_ && value > 0 && out.size() == before
+        ? nextRestart(db, env, progress, state.defaults, i)
+        : std::nullopt;
       if (next) {
         Item item = std::move(*next);
         item.value = value;
         item.fresh = !built_.contains(builtKey(b.fft, item.options));
-        item.seconds = clock_.seconds(entry.cost, item.fresh);
+        item.seconds = clock_.seconds(ofEntry.front().cost, item.fresh);
         out.push_back(std::move(item));
       }
     }
@@ -485,7 +568,6 @@ std::vector<Item> Scheduler::admissible(const TuneDB& db, u32 env, const Objecti
     }
 
     // At the exponent and under the options its row was recorded at, so that the call pools with it.
-    std::vector<OptionSet> const sets = optionSetsFor(db, env, state.defaults);
     std::vector<double> const worth = refineValues(sets, objective.points());
     for (size_t s = 0; s < sets.size(); ++s) {
       if (worth[s] <= 0) { continue; }
@@ -556,6 +638,7 @@ void Scheduler::ran(const Item& item, double seconds, double usPerIt, bool recor
   built_.insert(builtKey(baselines_[item.index].fft, item.options));
   switch (item.kind) {
   case ItemKind::Probe:
+  case ItemKind::Combo:
   case ItemKind::Restart: ++probeAttempts_[last_]; return;
   case ItemKind::Refine:
     if (!recorded || usPerIt <= 0) { ++unrecordedRefines_[last_]; }

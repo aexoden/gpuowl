@@ -75,6 +75,44 @@ namespace {
   return out;
 }
 
+// One answer a group -- or a cluster, taken whole -- has given in a branch: the moves from the background that put
+// its axes where that answer has them, and what the answer gained against the branch's best.
+struct Seed {
+  std::vector<std::pair<size_t, size_t>> moves;
+  double gain = 0;
+};
+
+// The best `top` distinct projections of `readings` onto the axes `unit`, the background's own first.  `readings` are
+// the branch's, cheapest first, the background first of all.  A projection this background cannot place -- a value
+// that a dependent's list, as the background has it, does not offer -- is passed over.
+[[nodiscard]] std::vector<Seed> seedsOf(const Env& env, const FFTConfig& fft, const std::vector<Axis>& axes,
+                                        const std::vector<size_t>& unit, std::span<const Reading> readings, u32 top) {
+  std::vector<Seed> out{Seed{}};
+  std::set<std::vector<size_t>> seen;
+  std::vector<size_t> origin;
+  for (size_t const i : unit) { origin.push_back(axes[i].current); }
+  seen.insert(std::move(origin));
+
+  for (const Reading& reading : readings) {
+    if (out.size() >= top) { break; }
+
+    std::vector<size_t> at;
+    for (size_t const i : unit) {
+      auto const it = std::ranges::find(axes[i].values, positionOf(env, fft, reading.config, axes[i]));
+      if (it == axes[i].values.end()) { break; }
+      at.push_back(size_t(it - axes[i].values.begin()));
+    }
+    if (at.size() != unit.size() || !seen.insert(at).second) { continue; }
+
+    Seed seed{.moves = {}, .gain = 1 - reading.cost / readings.front().cost};
+    for (size_t j = 0; j < unit.size(); ++j) {
+      if (at[j] != axes[unit[j]].current) { seed.moves.emplace_back(unit[j], at[j]); }
+    }
+    out.push_back(std::move(seed));
+  }
+  return out;
+}
+
 class Enumerator {
 public:
   Enumerator(const Env& env, const FFTConfig& fft, const UseConfig& best, ProbeList& out) :
@@ -91,6 +129,49 @@ public:
         if (!positions(axes, pick, stage, limit, taken)) { return; }
         if (!nextCombination(pick, axes.size())) { break; }
       }
+    }
+  }
+
+  // Every choice of one seed per dimension other than the background, highest summed gain first, ties by the seeds
+  // chosen, earlier dimensions first.  Stops once MAX_POINTS probes have been offered.  Each dimension's seeds fall in
+  // gain, so a choice never outranks the one with any of its seeds moved back a place, and the choices can be taken
+  // from a frontier in order without counting out the cross product, which with seven dimensions of eight seeds
+  // would be millions.
+  void combine(const std::vector<std::vector<Seed>>& dims, const std::string& stage, u32 tier) {
+    using Point = std::pair<double, std::vector<size_t>>;
+    auto const before = [](const Point& a, const Point& b) {
+      return a.first != b.first ? a.first > b.first : a.second < b.second;
+    };
+    std::set<Point, decltype(before)> frontier{before};
+    std::set<std::vector<size_t>> reached;
+
+    auto push = [&](std::vector<size_t> pick) {
+      if (!reached.insert(pick).second) { return; }
+      double gain = 0;
+      for (size_t d = 0; d < dims.size(); ++d) { gain += dims[d][pick[d]].gain; }
+      frontier.emplace(gain, std::move(pick));
+    };
+    push(std::vector<size_t>(dims.size(), 0));
+
+    u32 taken = 0;
+    while (!frontier.empty()) {
+      std::vector<size_t> const pick = frontier.begin()->second;
+      frontier.erase(frontier.begin());
+      for (size_t d = 0; d < dims.size(); ++d) {
+        if (pick[d] + 1 < dims[d].size()) {
+          std::vector<size_t> next = pick;
+          ++next[d];
+          push(std::move(next));
+        }
+      }
+
+      std::vector<std::pair<size_t, size_t>> moves;
+      for (size_t d = 0; d < dims.size(); ++d) {
+        const std::vector<std::pair<size_t, size_t>>& seed = dims[d][pick[d]].moves;
+        moves.insert(moves.end(), seed.begin(), seed.end());
+      }
+      // The background itself has no moves, and is not a point.
+      if (!moves.empty() && offer(std::move(moves), stage, tier) && ++taken >= MAX_POINTS) { return; }
     }
   }
 
@@ -117,7 +198,7 @@ private:
         const Axis& axis = out_.axes[axes[pick[j]]];
         moves.emplace_back(axes[pick[j]], at[j] < axis.current ? at[j] : at[j] + 1);
       }
-      if (offer(std::move(moves), stage) && ++taken >= limit) { return false; }
+      if (offer(std::move(moves), stage, 1) && ++taken >= limit) { return false; }
 
       size_t j = pick.size();
       while (j-- > 0) {
@@ -128,7 +209,7 @@ private:
     }
   }
 
-  bool offer(std::vector<std::pair<size_t, size_t>> moves, const std::string& stage) {
+  bool offer(std::vector<std::pair<size_t, size_t>> moves, const std::string& stage, u32 tier) {
     UseConfig raw = from_;
     for (auto const& [axis, index] : moves) { place(raw, out_.axes[axis], index); }
     UseConfig const config = fitted(env_, fft_, raw);
@@ -151,6 +232,7 @@ private:
 
     out_.probes.push_back({.config = config,
                            .stage = stage,
+                           .tier = tier,
                            .moves = std::move(moves),
                            .key = changed.size() == 1 ? changed.front().first : std::string{},
                            .text = std::move(text),
@@ -280,7 +362,83 @@ void place(UseConfig& config, const Axis& axis, size_t index) {
   }
 }
 
-ProbeList probesOf(const Env& env, const FFTConfig& fft, const UseConfig& best, const Strategy& strategy) {
+UseConfig branchOf(const Env& env, const FFTConfig& fft, const UseConfig& config) {
+  UseConfig out;
+  for (const Option& option : allOptions()) {
+    if (option.kind != Kind::Tunable || !option.structural) { continue; }
+    if (std::optional<int> const value = effectiveValue(env, fft, config, option.key)) {
+      out[option.key] = std::to_string(*value);
+    }
+  }
+  return out;
+}
+
+std::vector<Branch> branchesOf(const Env& env, const FFTConfig& fft, std::span<const Reading> readings) {
+  std::vector<Branch> out;
+  for (const Reading& reading : readings) {
+    UseConfig structure = branchOf(env, fft, reading.config);
+    if (std::ranges::none_of(out, [&](const Branch& b) { return b.structure == structure; })) {
+      out.push_back({.structure = std::move(structure), .best = reading.config, .cost = reading.cost});
+    }
+  }
+  if (out.size() > MAX_BRANCHES) { out.resize(MAX_BRANCHES); }
+  return out;
+}
+
+namespace {
+
+// The combo tiers above the groups of `best`'s branch.  Within a branch the structural keys are the same everywhere,
+// so a group is combined by its other axes.
+void combos(const Env& env, const FFTConfig& fft, const UseConfig& best, const Strategy& strategy,
+            std::span<const Reading> readings, Enumerator& enumerator, ProbeList& out) {
+  UseConfig const structure = branchOf(env, fft, best);
+  std::vector<Reading> inBranch;
+  for (const Reading& r : readings) {
+    if (branchOf(env, fft, r.config) == structure) { inBranch.push_back(r); }
+  }
+  if (inBranch.empty()) { return; }
+
+  auto seedsIn = [&](const std::vector<Group>& groups) {
+    std::vector<size_t> unit;
+    for (size_t i = 0; i < out.axes.size(); ++i) {
+      const Option& option = *out.axes[i].option;
+      if (!option.structural && std::ranges::find(groups, option.group) != groups.end()) { unit.push_back(i); }
+    }
+    return seedsOf(env, fft, out.axes, unit, inBranch, strategy.comboTop);
+  };
+
+  // A dimension with no answer but the background's own adds nothing to a cross product.
+  auto combine = [&](const std::vector<std::vector<Seed>>& dims, const std::string& stage, u32 tier) {
+    std::vector<std::vector<Seed>> useful;
+    for (const std::vector<Seed>& seeds : dims) {
+      if (seeds.size() > 1) { useful.push_back(seeds); }
+    }
+    if (!useful.empty()) { enumerator.combine(useful, stage, tier); }
+  };
+
+  ClusterGraph const graph = clusterGraph(env, fft, canonicalConfig(env, fft, best));
+  for (const std::vector<Group>& cluster : graph.clusters) {
+    if (cluster.size() < 2) { continue; }
+    std::vector<std::vector<Seed>> dims;
+    std::string stage;
+    for (Group const group : cluster) {
+      dims.push_back(seedsIn({group}));
+      stage += (stage.empty() ? "" : "+") + std::string{toString(group)};
+    }
+    combine(dims, stage, 2);
+  }
+
+  if (strategy.comboTiers < 3) { return; }
+  std::vector<std::vector<Seed>> dims;
+  for (Group const group : graph.topTier) { dims.push_back(seedsIn({group})); }
+  for (const std::vector<Group>& cluster : graph.clusters) { dims.push_back(seedsIn(cluster)); }
+  combine(dims, "all", 3);
+}
+
+}  // namespace
+
+ProbeList probesOf(const Env& env, const FFTConfig& fft, const UseConfig& best, const Strategy& strategy,
+                   std::span<const Reading> readings, bool structuralSteps) {
   ProbeList out{.axes = axesOf(env, fft, best), .probes = {}};
   Enumerator enumerator{env, fft, best, out};
 
@@ -311,9 +469,11 @@ ProbeList probesOf(const Env& env, const FFTConfig& fft, const UseConfig& best, 
   case Strategy::Kind::Groups:
     for (Group const group : allGroups()) {
       std::string const name = toString(group);
-      for (size_t const i :
-           axesWhere([&](const Axis& a) { return a.option->group == group && a.option->structural; })) {
-        enumerator.enumerate({i}, name, ~0u);
+      if (structuralSteps) {
+        for (size_t const i :
+             axesWhere([&](const Axis& a) { return a.option->group == group && a.option->structural; })) {
+          enumerator.enumerate({i}, name, ~0u);
+        }
       }
 
       std::vector<size_t> const rest =
@@ -328,6 +488,7 @@ ProbeList probesOf(const Env& env, const FFTConfig& fft, const UseConfig& best, 
     for (size_t const i : axesWhere([](const Axis& a) { return a.option->group == Group::None; })) {
       enumerator.enumerate({i}, "single", ~0u);
     }
+    if (strategy.combines()) { combos(env, fft, best, strategy, readings, enumerator, out); }
     break;
   }
   return out;
