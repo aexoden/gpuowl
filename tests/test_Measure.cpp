@@ -11,6 +11,7 @@
 
 #include <cmath>
 #include <cstdio>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -268,15 +269,16 @@ TuneDB dbOf(const std::string& rows) {
 
 }  // namespace
 
-TEST(a_session_picks_an_anchor_at_the_exponent_it_probes) {
+TEST(a_fresh_env_races_for_its_anchor) {
+  // Nothing is known about the card yet, so nothing is pinned: the candidates are raced when the anchor is first due,
+  // and the session row, written before that, names none.
   TuneDB db;
   Session session{GpuCommon{}, db, NVIDIA};
   CHECK(session.begin(118'063'003));
 
-  auto const want = chooseAnchor(118'063'003);
-  CHECK(want.has_value());
-  CHECK_EQ(session.anchor().text(), want->text());
-  CHECK_EQ(db.sessions().at(0).anchor, want->text());
+  CHECK(!session.anchor().valid());
+  CHECK(session.anchorDue());
+  CHECK_EQ(db.sessions().at(0).anchor, std::string{});
   CHECK_EQ(session.drift(), 1.0);
 }
 
@@ -327,7 +329,8 @@ TEST(an_env_of_other_kernels_is_not_this_ones_anchor) {
 
   CHECK_EQ(db.envs().size(), size_t{2});
   CHECK_EQ(session.envId(), 2u);
-  CHECK_EQ(session.anchor().text(), chooseAnchor(118'063'003)->text());
+  CHECK(!session.anchor().valid());
+  CHECK(session.anchorDue());
 }
 
 TEST(an_anchor_a_generation_died_on_is_not_built_again) {
@@ -338,8 +341,9 @@ TEST(an_anchor_a_generation_died_on_is_not_built_again) {
     snprintf(b, sizeof(b), "%016llx", (unsigned long long)buildFingerprint());
     return std::string{b};
   }();
-  auto const anchor = chooseAnchor(118'063'003);
-  CHECK(anchor.has_value());
+  std::vector<AnchorSpec> const candidates = anchorCandidates(118'063'003);
+  CHECK(!candidates.empty());
+  std::optional<AnchorSpec> const anchor = candidates.front();
 
   TuneDB db = dbOf("env   1 gpu=\"a card\" name=\"a card\" drv=1 vendor=nvidia be=ocl cc=806 noasm=0 pdl=0 machine=-"
                    " build=" +
@@ -355,4 +359,88 @@ TEST(an_anchor_a_generation_died_on_is_not_built_again) {
   Session session{GpuCommon{}, db, NVIDIA};
   CHECK(session.begin(118'063'003));
   CHECK(!session.held(FFTConfig{anchor->fft}, TestKind::PRP, anchor->exponent, {}).empty());
+
+  // Nor is it built to warm the device: a warm-up is a build like any other.  This session has no device, so building
+  // anything at all would fail here, and no attempt is declared for it.
+  size_t const tries = db.tries().size();
+  Call const warm = session.warmUp(FFTConfig{anchor->fft}, TestKind::PRP, anchor->exponent, {});
+  CHECK(!warm.measurement.ok());
+  CHECK_EQ(db.tries().size(), tries);
+}
+
+TEST(a_race_the_env_has_readings_for_builds_nothing_and_pins_the_cheapest) {
+  // Every candidate already read at the built-in defaults, by a session whose race a stop cut short before it pinned
+  // anything: the race is settled from the record, so this session, with no device, builds nothing.
+  std::string const build = [] {
+    char b[32];
+    snprintf(b, sizeof(b), "%016llx", (unsigned long long)buildFingerprint());
+    return std::string{b};
+  }();
+  u64 const E = 118'063'003;
+  std::vector<AnchorSpec> const candidates = anchorCandidates(E);
+  CHECK(candidates.size() >= 3);
+
+  // Dearest first, so the last is the cheapest; the second-last is dearer only by a little.
+  std::string rows = "env   1 gpu=\"a card\" name=\"a card\" drv=1 vendor=nvidia be=ocl cc=806 noasm=0 pdl=0 machine=-"
+                     " build=" +
+    build +
+    "\n"
+    "cfg   1 -\n"
+    "cfg   2 TAIL_KERNELS=0\n"
+    "sess  1 env=1 start=1753471200 gen=0 anchor=-\n";
+  for (size_t i = 0; i < candidates.size(); ++i) {
+    double const us = 9000 - 1000.0 * double(i);
+    FFTConfig const fft{candidates[i].fft};
+    rows += "run   1 " + candidates[i].fft + " prp " + to_string(E) + " " + regimeOf(fft, E).label() + " 1 " +
+      std::to_string(us) + " 1.0 4 1 1.0000 ok 1753471300\n";
+  }
+  // A reading of the dearest under a searched option is not a reading of the configuration that would be anchored,
+  // however cheap.
+  FFTConfig const dearest{candidates.front().fft};
+  rows += "run   1 " + candidates.front().fft + " prp " + to_string(E) + " " + regimeOf(dearest, E).label() +
+    " 2 10.0 1.0 4 1 1.0000 ok 1753471310\n";
+
+  TuneDB db = dbOf(rows);
+  Session session{GpuCommon{}, db, NVIDIA};
+  CHECK(session.begin(E));
+  CHECK(session.anchorDue());
+
+  session.raceAnchor();
+  CHECK(session.anchor() == candidates.back());
+  CHECK_EQ(db.tries().size(), size_t{0});
+
+  // The race is over: a second call has nothing to do.
+  session.raceAnchor();
+  CHECK(session.anchor() == candidates.back());
+}
+
+TEST(a_race_passes_over_a_candidate_an_earlier_generation_died_on) {
+  std::string const build = [] {
+    char b[32];
+    snprintf(b, sizeof(b), "%016llx", (unsigned long long)buildFingerprint());
+    return std::string{b};
+  }();
+  u64 const E = 118'063'003;
+  std::vector<AnchorSpec> const candidates = anchorCandidates(E);
+  CHECK(candidates.size() >= 2);
+
+  // The cheapest reading's configuration later took the device down; the next cheapest is the anchor.
+  std::string rows = "env   1 gpu=\"a card\" name=\"a card\" drv=1 vendor=nvidia be=ocl cc=806 noasm=0 pdl=0 machine=-"
+                     " build=" +
+    build +
+    "\n"
+    "cfg   1 -\n"
+    "sess  1 env=1 start=1753471200 gen=0 anchor=-\n";
+  for (size_t i = 0; i < candidates.size(); ++i) {
+    FFTConfig const fft{candidates[i].fft};
+    rows += "run   1 " + candidates[i].fft + " prp " + to_string(E) + " " + regimeOf(fft, E).label() + " 1 " +
+      std::to_string(9000 - 1000.0 * double(i)) + " 1.0 4 1 1.0000 ok 1753471300\n";
+  }
+  rows += "try   1 " + candidates.back().fft + " prp " + to_string(E) + " 1 1753471400\n";
+
+  TuneDB db = dbOf(rows);
+  Session session{GpuCommon{}, db, NVIDIA};
+  CHECK(session.begin(E));
+  session.raceAnchor();
+  CHECK(session.anchor() == candidates[candidates.size() - 2]);
 }

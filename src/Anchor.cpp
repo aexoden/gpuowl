@@ -7,6 +7,7 @@
 
 #include <cmath>
 #include <cstdlib>
+#include <map>
 #include <string>
 
 namespace tune {
@@ -49,22 +50,32 @@ std::optional<AnchorSpec> parseAnchorSpec(std::string_view text) {
   return out;
 }
 
-std::optional<AnchorSpec> chooseAnchor(u64 exponent) {
+std::vector<AnchorSpec> anchorCandidates(u64 exponent) {
   if (!exponent) { return {}; }
 
-  std::optional<FFTConfig> best;
+  // allShapes() is in ascending size, so the first eligible shape of a type is its smallest.
+  std::map<enum FFT_TYPES, FFTConfig> smallest;
   for (const FFTShape& shape : FFTShape::allShapes()) {
-    if (shape.fft_type != FFT64) { continue; }
-    if (best && shape.size() >= best->size()) { continue; }
+    if (smallest.contains(shape.fft_type)) { continue; }
 
     // Both ends: isEligible() answers only the bits-per-word floor the Gpu constructor enforces, and an anchor above
     // the top of its own range is not a configuration anything would run.
     FFTConfig const fft{shape, defaultVariant(shape), CARRY_AUTO};
-    if (!interval(fft, exponent).empty()) { best = fft; }
+    if (!interval(fft, exponent).empty()) { smallest.emplace(shape.fft_type, fft); }
   }
 
+  std::vector<AnchorSpec> out;
+  for (const auto& [type, fft] : smallest) { out.push_back({.fft = fft.spec(), .exponent = exponent}); }
+  return out;
+}
+
+std::optional<AnchorSpec> raceWinner(const std::vector<AnchorReading>& readings) {
+  const AnchorReading* best = nullptr;
+  for (const AnchorReading& r : readings) {
+    if (r.us > 0 && (!best || r.us < best->us)) { best = &r; }
+  }
   if (!best) { return {}; }
-  return AnchorSpec{.fft = best->spec(), .exponent = exponent};
+  return best->anchor;
 }
 
 DriftLevel AnchorState::observe(double mean) {

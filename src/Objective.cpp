@@ -46,7 +46,7 @@ double statedPriorK(enum FFT_TYPES type) {
 
 Prior::Prior(const TuneDB& db, u32 env) {
   for (const RunRow& row : db.mergedRuns()) {
-    if (db.envOf(row.sess) != env || !concluded(row.m)) { continue; }
+    if (db.envOf(row.sess) != env || !row.m.ok()) { continue; }
     if (auto const fft = parseFft(row.fft)) { add(fft->shape, row.m.cost()); }
   }
 }

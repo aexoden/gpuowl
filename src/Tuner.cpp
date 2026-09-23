@@ -5,9 +5,14 @@
 #include "Args.h"
 #include "BuildId.h"
 #include "Emit.h"
+#include "GpuCommon.h"
 #include "log.h"
+#include "Measure.h"
 #include "Objective.h"
 #include "Primes.h"
+#include "Restart.h"
+#include "Scheduler.h"
+#include "Signal.h"
 #include "Task.h"
 #include "TuneDB.h"
 #include "Worktodo.h"
@@ -28,6 +33,16 @@ constexpr const char* SELECTION_NAME = "selection.txt";
 
 // How many grid points a report prints in full before it falls back to the heaviest few.
 constexpr size_t GRID_SHOWN = 12;
+
+// Upstream's own tuner is known by its option words (tune.cpp), and a -tune whose first word is one of them is its.
+[[nodiscard]] bool isUpstreamWord(std::string_view token) {
+  std::string_view const key = token.substr(0, token.find('='));
+  for (std::string_view const word :
+       {"noconfig", "inplace", "fp64", "ntt", "nofp32", "fp6431", "quick", "minexp", "maxexp"}) {
+    if (key == word) { return true; }
+  }
+  return false;
+}
 
 [[nodiscard]] u32 asEnvId(std::string_view text, const char* what) {
   std::optional<u32> const id = parseInt<u32>(text);
@@ -56,7 +71,7 @@ void listEnvs(const std::vector<const DbEnv*>& envs) {
 // Everything the scope is expressed in has to be an exponent the rest of it can work with: one a primality test is
 // answered for, since the probe is a prime, and one a worktodo could carry.
 [[nodiscard]] std::string outsideBand(const char* what, const std::string& shown) {
-  return "-tune scope: " + std::string{what} + shown + " is outside the exponents this can work with (" +
+  return "-tune: " + std::string{what} + shown + " is outside the exponents this can work with (" +
     std::to_string(MIN_EXPONENT) + " to " + std::to_string(MAX_EXPONENT) + ")";
 }
 
@@ -79,9 +94,7 @@ void requireExponent(u64 E, const char* what) {
     }
   }
   std::optional<u64> const value = parseInt<u64>(text.substr(0, text.size() - (scale > 1)));
-  if (!value || *value == 0) {
-    throw "-tune scope: " + std::string{what} + " takes an exponent, such as 400M or 400000000";
-  }
+  if (!value || *value == 0) { throw "-tune: " + std::string{what} + " takes an exponent, such as 400M or 400000000"; }
   // Checked before the multiplication rather than after it, which would wrap and land back in range.
   if (*value > MAX_EXPONENT / scale) { throw outsideBand(what, std::string{text}); }
 
@@ -94,7 +107,7 @@ void parseWorkload(std::string_view text, ScopeArgs& out) {
   size_t const dash = text.find('-');
   out.lo = asExponent(text.substr(0, dash), "workload=");
   out.hi = dash == std::string_view::npos ? out.lo : asExponent(text.substr(dash + 1), "workload=");
-  if (out.hi < out.lo) { throw std::string{"-tune scope: workload= is empty: its first exponent is the larger"}; }
+  if (out.hi < out.lo) { throw std::string{"-tune: workload= is empty: its first exponent is the larger"}; }
 }
 
 void parseKinds(std::string_view text, ScopeArgs& out) {
@@ -105,10 +118,10 @@ void parseKinds(std::string_view text, ScopeArgs& out) {
     at = plus == std::string_view::npos ? text.size() + 1 : plus + 1;
 
     std::optional<TestKind> const kind = parseTestKind(one);
-    if (!kind) { throw "-tune scope: kinds= does not know '" + std::string{one} + "'. Accepted: prp, ll, prp+ll"; }
+    if (!kind) { throw "-tune: kinds= does not know '" + std::string{one} + "'. Accepted: prp, ll, prp+ll"; }
     if (std::ranges::find(out.kinds, *kind) == out.kinds.end()) { out.kinds.push_back(*kind); }
   }
-  if (out.kinds.empty()) { throw std::string{"-tune scope: kinds= takes at least one test kind"}; }
+  if (out.kinds.empty()) { throw std::string{"-tune: kinds= takes at least one test kind"}; }
 }
 
 // The prime at or below `E`, which is what the tuner can actually time, raised back into the range where there is no
@@ -181,6 +194,28 @@ void parseKinds(std::string_view text, ScopeArgs& out) {
   return out;
 }
 
+// The queue's items, run through a measurement session, which warms the device on whatever it builds first and races
+// the env's anchor where it has none.
+class SessionBench final : public Bench {
+public:
+  SessionBench(Session& session, u32 blockSize) : session_{session}, blockSize_{blockSize} {}
+
+  [[nodiscard]] bool anchorDue() const override { return session_.anchorDue(); }
+
+  void timeAnchor() override { session_.keepAnchor(); }
+
+  [[nodiscard]] Result run(const FFTConfig& fft, TestKind kind, u64 exponent) override {
+    Call const c = session_.run(fft, kind, exponent, {}, BLOCKS_PER_CALL, blockSize_);
+    return {.completed = c.measurement.ok(), .seconds = c.buildSec + c.timedSec, .usPerIt = c.measurement.mean};
+  }
+
+  [[nodiscard]] bool stopped() const override { return session_.stopped() || Signal::stopRequested(); }
+
+private:
+  Session& session_;
+  u32 blockSize_;
+};
+
 }  // namespace
 
 bool ScopeArgs::wantsKind(TestKind kind) const { return std::ranges::find(kinds, kind) != kinds.end(); }
@@ -196,7 +231,7 @@ const Grid* RunScope::grid(TestKind kind) const {
 }
 
 RunScope makeScope(const ScopeArgs& args, const std::vector<PendingWork>& pending) {
-  if (args.kinds.empty()) { throw std::string{"-tune scope: there is no test kind to tune for"}; }
+  if (args.kinds.empty()) { throw std::string{"-tune: there is no test kind to tune for"}; }
 
   // The settings the command line validates, validated again: this is the entry point, and not everything reaching it
   // has been through the parser.
@@ -261,7 +296,7 @@ RunScope makeScope(const ScopeArgs& args, const std::vector<PendingWork>& pendin
   if (args.probe) {
     asked = args.probe;
     if (asked < out.lo || asked > out.hi) {
-      throw "-tune scope: probe=" + std::to_string(asked) + " is outside workload=" + std::to_string(out.lo) + "-" +
+      throw "-tune: probe=" + std::to_string(asked) + " is outside workload=" + std::to_string(out.lo) + "-" +
         std::to_string(out.hi);
     }
     out.probeSource = "named on the command line";
@@ -275,7 +310,7 @@ RunScope makeScope(const ScopeArgs& args, const std::vector<PendingWork>& pendin
 
   std::optional<u64> const probe = primeAtOrBelow(primes, asked, out.lo, out.hi);
   if (!probe) {
-    throw "-tune scope: workload=" + std::to_string(out.lo) + "-" + std::to_string(out.hi) +
+    throw "-tune: workload=" + std::to_string(out.lo) + "-" + std::to_string(out.hi) +
       " holds no prime, so there is no exponent in it the tuner could time";
   }
 
@@ -380,6 +415,7 @@ const char* toString(TuneVerb verb) {
   case TuneVerb::Adopt: return "adopt";
   case TuneVerb::Compact: return "compact";
   case TuneVerb::Scope: return "scope";
+  case TuneVerb::Run: return "run";
   }
   return "?";
 }
@@ -387,6 +423,7 @@ const char* toString(TuneVerb verb) {
 std::optional<TuneCommand> parseTuneCommand(std::string_view text) {
   size_t const firstComma = text.find(',');
   std::string_view const verb = text.substr(0, firstComma);
+  if (isUpstreamWord(verb)) { return {}; }
 
   TuneCommand out;
   if (verb == "emit") {
@@ -400,23 +437,32 @@ std::optional<TuneCommand> parseTuneCommand(std::string_view text) {
   } else if (verb == "scope") {
     out.verb = TuneVerb::Scope;
   } else {
-    return {};
+    // Settings alone, or none: the first word is one of them rather than a subcommand.
+    out.verb = TuneVerb::Run;
+    if (text.empty()) { return out; }
   }
 
-  for (size_t at = firstComma == std::string_view::npos ? text.size() + 1 : firstComma + 1; at <= text.size();) {
+  bool const isRun = out.verb == TuneVerb::Run;
+  std::string const who = isRun ? "-tune" : "-tune " + std::string{verb};
+  bool const takesScope = out.verb == TuneVerb::Scope || isRun;
+
+  size_t const settingsFrom = isRun ? 0 : firstComma == std::string_view::npos ? text.size() + 1 : firstComma + 1;
+  for (size_t at = settingsFrom; at <= text.size();) {
     size_t const comma = text.find(',', at);
     std::string_view const token = text.substr(at, comma == std::string_view::npos ? comma : comma - at);
     at = comma == std::string_view::npos ? text.size() + 1 : comma + 1;
 
     size_t const eq = token.find('=');
     if (eq == std::string_view::npos) {
-      throw "-tune " + std::string{verb} + ": '" + std::string{token} + "' is not a <key>=<value> setting";
+      throw who + ": '" + std::string{token} + "' is not " + (isRun ? "a subcommand or " : "") +
+        "a <key>=<value> setting";
     }
 
     std::string_view const key = token.substr(0, eq);
     std::string_view const val = token.substr(eq + 1);
 
-    bool const wantsEnv = out.verb != TuneVerb::Compact;
+    // A run's env is the device it opens.
+    bool const wantsEnv = out.verb != TuneVerb::Compact && !isRun;
 
     if (key == "env" && wantsEnv) {
       out.env = asEnvId(val, "env=");
@@ -427,15 +473,15 @@ std::optional<TuneCommand> parseTuneCommand(std::string_view text) {
     } else if (key == "fft" && out.verb == TuneVerb::Reset) {
       if (val.empty()) { throw std::string{"-tune reset: fft= takes an FFT specification"}; }
       out.fft = std::string{val};
-    } else if (key == "workload" && out.verb == TuneVerb::Scope) {
+    } else if (key == "workload" && takesScope) {
       parseWorkload(val, out.scope);
-    } else if (key == "probe" && out.verb == TuneVerb::Scope) {
+    } else if (key == "probe" && takesScope) {
       out.scope.probe = asExponent(val, "probe=");
-    } else if (key == "probeWeight" && out.verb == TuneVerb::Scope) {
+    } else if (key == "probeWeight" && takesScope) {
       std::optional<double> const weight = parseNonNegative(val);
-      if (!weight || *weight > 1) { throw std::string{"-tune scope: probeWeight= takes a fraction between 0 and 1"}; }
+      if (!weight || *weight > 1) { throw std::string{"-tune: probeWeight= takes a fraction between 0 and 1"}; }
       out.scope.probeWeight = *weight;
-    } else if (key == "kinds" && out.verb == TuneVerb::Scope) {
+    } else if (key == "kinds" && takesScope) {
       parseKinds(val, out.scope);
     } else {
       std::string accepted = "nothing";
@@ -447,18 +493,28 @@ std::optional<TuneCommand> parseTuneCommand(std::string_view text) {
       case TuneVerb::Scope:
         accepted = "workload=<lo>-<hi>, probe=<E>, probeWeight=<0..1>, kinds=prp|ll|prp+ll, env=<id>";
         break;
+      case TuneVerb::Run:
+        accepted = "workload=<lo>-<hi>, probe=<E>, probeWeight=<0..1>, kinds=prp, or a subcommand: emit, reset, adopt,"
+                   " compact, scope";
+        break;
       }
-      throw "-tune " + std::string{verb} + ": '" + std::string{key} + "=' is not understood. Accepted: " + accepted;
+      throw who + ": '" + std::string{key} + "=' is not understood. Accepted: " + accepted;
     }
   }
 
   // Both named and contradictory is a mistyped command rather than a scope: caught here, so that it is refused
   // before anything else happens.  A probe named against a range derived from the worktodo is not contradictory --
   // it says where the user is going, and makeScope widens the range to it.
-  if (out.verb == TuneVerb::Scope && out.scope.lo && out.scope.probe &&
+  if (takesScope && out.scope.lo && out.scope.probe &&
       (out.scope.probe < out.scope.lo || out.scope.probe > out.scope.hi)) {
-    throw "-tune scope: probe=" + std::to_string(out.scope.probe) +
-      " is outside workload=" + std::to_string(out.scope.lo) + "-" + std::to_string(out.scope.hi);
+    throw "-tune: probe=" + std::to_string(out.scope.probe) + " is outside workload=" + std::to_string(out.scope.lo) +
+      "-" + std::to_string(out.scope.hi);
+  }
+
+  // The LL kernels are not timed yet, so a run for them could only record failures.  `scope` still reports an LL grid,
+  // which costs nothing.
+  if (isRun && out.scope.wantsKind(TestKind::LL)) {
+    throw std::string{"-tune: kinds= takes only prp for a tuning run; LL configurations are not timed yet"};
   }
 
   return out;
@@ -501,8 +557,9 @@ bool rewriteFor(TuneDB& db, const TuneCommand& command, u32 env) {
   switch (command.verb) {
   case TuneVerb::Emit: return true;
 
-  // Reads and reports, and is here only so that the switch is complete.
-  case TuneVerb::Scope: return false;
+  // Neither rewrites anything, and they are here only so that the switch is complete.
+  case TuneVerb::Scope:
+  case TuneVerb::Run: return false;
 
   case TuneVerb::Compact: return db.compact();
 
@@ -582,6 +639,61 @@ bool runTuneCommand(const TuneCommand& command, const Args& args, const fs::path
   db.save(dbPath);
   log("tune: %s rewrote %s\n", toString(command.verb), dbPath.string().c_str());
   return true;
+}
+
+MeasureOutcome runTune(const GpuCommon& shared, const TuneCommand& command) {
+  Args& args = *shared.args;
+  fs::path const dir = fs::current_path();
+
+  // Before anything is built, so that every measurement depends on the built-in defaults and the tuner's own choices.
+  log("tune: %s\n", describe(takeOverConfig(args)).c_str());
+  if (!args.fftSpec.empty()) { log("tune: -fft is not used by the tuner, which chooses among every FFT itself\n"); }
+
+  std::vector<fs::path> const files = worktodoFiles(args, dir);
+  RunScope const scope = makeScope(command.scope, scanWorktodo(files));
+  Env const env = detectEnv(*shared.context, args);
+
+  fs::path const dbPath = dir / TuneDB::DEFAULT_NAME;
+  TuneDB db;
+  // Before the load, and held for the rest of the run: every id this writes is allocated from what it read.
+  if (!db.lockForWriting(dbPath) || !db.load(dbPath)) { return MeasureOutcome::Failed; }
+  db.attach(dbPath);
+
+  Session session{shared, db, env};
+  if (!session.begin(scope.probe)) {
+    log("tune: '%s' would not take a session\n", dbPath.string().c_str());
+    return MeasureOutcome::Failed;
+  }
+  if (u32 const gen = restart::generation()) { log("tune: generation %u\n", gen); }
+
+  u32 const envId = session.envId();
+  reportScope(scope, files, Objective{db, envId, scope}, "against env " + std::to_string(envId));
+
+  Scheduler scheduler{scope, baselines(env, scope), args.blockSize};
+  log("tune: %zu entries could serve the workload\n", scheduler.baselines().size());
+
+  fs::path const out = dir / SELECTION_NAME;
+  auto publishNow = [&](const Objective& objective) {
+    Provenance const from{.ts = u64(time(nullptr)),
+                          .db = TuneDB::DEFAULT_NAME,
+                          .env = envId,
+                          .T = objective.T(),
+                          .workloadLo = scope.lo,
+                          .workloadHi = scope.hi};
+    if (!publish(out, db, {}, from)) { log("tune: %s could not be published\n", out.string().c_str()); }
+  };
+
+  SessionBench bench{session, args.blockSize};
+  QueueReport const report = runQueue(scheduler, db, envId, bench, publishNow);
+
+  log("tune: %u %s and %u anchor %s; T %.3f -> %.3f us/it%s\n", report.items, report.items == 1 ? "item" : "items",
+      report.anchors, report.anchors == 1 ? "reading" : "readings", report.startT, report.endT,
+      report.stopped ? ", stopped before the queue ran dry" : "");
+  log("tune: published %s\n", out.string().c_str());
+
+  if (session.deviceLost()) { return MeasureOutcome::DeviceLost; }
+  session.end();
+  return session.cannotRecord() ? MeasureOutcome::Failed : MeasureOutcome::Ok;
 }
 
 }  // namespace tune

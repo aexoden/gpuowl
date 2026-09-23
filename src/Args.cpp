@@ -293,6 +293,10 @@ its reach.
                          probe=<E>           - the exponent that matters most, rounded to the prime at or below it
                          probeWeight=<0..1>  - how much of the weight the probe carries on its own (0.5)
                          kinds=prp|ll|prp+ll - which test kinds to tune for (prp)
+                     Given only those settings, or nothing, -tune runs the new tuner on the device instead: it
+                     times what is worth timing for the workload into tunedb.txt, publishes selection.txt after every
+                     measurement, and stops cleanly on Ctrl-C; a re-run resumes. It tunes prp only (kinds=prp).
+                     The option words above (noconfig, fp64, quick=, ...) still select the previous tuner.
 -device <N>        : select the GPU at position N in the list of devices
 -uid    <UID>      : select the GPU with the given UID (on ROCm/AMDGPU, Linux)
 -pci    <BDF>      : select the GPU with the given PCI BDF, e.g. "0c:00.0"

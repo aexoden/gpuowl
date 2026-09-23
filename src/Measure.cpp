@@ -12,10 +12,12 @@
 #include "Restart.h"
 #include "timeutil.h"
 
+#include <algorithm>
 #include <cinttypes>
 #include <cmath>
 #include <ctime>
 #include <optional>
+#include <utility>
 #include <vector>
 
 namespace tune {
@@ -137,12 +139,13 @@ bool Session::begin(u64 probe) {
     // movement of the same thing.
     if (auto const pinned = parseAnchorSpec(db_.envAnchor(envId_))) {
       anchor_ = *pinned;
-    } else if (auto const chosen = chooseAnchor(probe)) {
-      anchor_ = *chosen;
     } else {
-      log("measure: no FP64 configuration is eligible at %" PRIu64 ", so this session has no drift anchor and its\n"
-          "measure:   rows are recorded as measured\n",
-          probe);
+      race_ = anchorCandidates(probe);
+      if (race_.empty()) {
+        log("measure: no configuration is eligible at %" PRIu64 ", so this session has no drift anchor and its rows\n"
+            "measure:   are recorded as measured\n",
+            probe);
+      }
     }
 
     if (const AnchorRow* const baseline = db_.envBaseline(envId_)) {
@@ -257,9 +260,71 @@ void Session::cannotDeclare(const FFTConfig& fft, const UseConfig& options) {
       fft.spec().c_str(), configText(options).c_str());
 }
 
+bool Session::anchorDue() const {
+  if ((!anchor_.valid() && race_.empty()) || inAnchor_ || stopped_) { return false; }
+  return !anchorState_.readings || sinceAnchor_.at() >= ANCHOR_EVERY_SEC;
+}
+
+void Session::raceAnchor() {
+  if (race_.empty() || inAnchor_ || stopped_) { return; }
+  std::vector<AnchorSpec> const candidates = std::exchange(race_, {});
+
+  // What the env already has of each, at the built-in defaults: a race cut short by a stop picks up where it was.
+  auto recorded = [&](const AnchorSpec& c) {
+    double best = 0;
+    for (const RunRow& row : db_.mergedRuns()) {
+      if (db_.envOf(row.sess) != envId_ || row.fft != c.fft || row.kind != TestKind::PRP ||
+          row.exponent != c.exponent || !row.m.ok()) {
+        continue;
+      }
+      const UseConfig* const opts = db_.findCfg(row.cfg);
+      bool const defaults = opts && std::ranges::none_of(*opts, [](const auto& kv) {
+                              const Option* const option = findOption(kv.first);
+                              return option && option->kind == Kind::Tunable;
+                            });
+      if (defaults && (!best || row.m.cost() < best)) { best = row.m.cost(); }
+    }
+    return best;
+  };
+
+  u32 const blockSize = shared_.args ? shared_.args->blockSize : ANCHOR_BLOCK_SIZE;
+
+  // The race's own calls are recorded, and a recorded call would otherwise ask for the anchor it is choosing.
+  inAnchor_ = true;
+  std::vector<AnchorReading> readings;
+  for (const AnchorSpec& c : candidates) {
+    FFTConfig const fft{c.fft};
+    if (!held(fft, TestKind::PRP, c.exponent, {}).empty()) { continue; }
+
+    double us = recorded(c);
+    if (!us) {
+      Call const call = runCall(fft, TestKind::PRP, c.exponent, {}, BLOCKS_PER_CALL, blockSize, true);
+      if (stopped_) { break; }
+      if (call.measurement.ok()) { us = call.measurement.cost(); }
+    }
+    if (us > 0) {
+      readings.push_back({.anchor = c, .us = us});
+      log("measure: anchor race at %" PRIu64 ": %s %.3f us/it\n", c.exponent, c.fft.c_str(), us);
+    }
+  }
+  inAnchor_ = false;
+
+  // Nothing is pinned, so the next session races again, from the readings this one recorded.
+  if (stopped_) { return; }
+
+  if (auto const winner = raceWinner(readings)) {
+    anchor_ = *winner;
+    log("measure: anchoring this env on %s, the cheapest of the %zu raced\n", anchor_.text().c_str(), readings.size());
+  } else {
+    log("measure: no anchor candidate gave a reading, so this session is unanchored and its rows are recorded as"
+        " measured\n");
+  }
+}
+
 void Session::keepAnchor() {
-  if (!anchor_.valid() || inAnchor_ || stopped_) { return; }
-  if (anchorState_.readings && sinceAnchor_.at() < ANCHOR_EVERY_SEC) { return; }
+  if (!anchorDue()) { return; }
+  raceAnchor();
+  if (!anchorDue()) { return; }
 
   FFTConfig const fft{anchor_.fft};
 
@@ -356,6 +421,7 @@ void Session::keepAnchor() {
 
 Call Session::warmUp(const FFTConfig& fft, TestKind kind, u64 exponent, const UseConfig& options, u32 nBlocks,
                      u32 blockSize) {
+  warmed_ = true;
   return runCall(fft, kind, exponent, options, nBlocks, blockSize, false);
 }
 
@@ -371,6 +437,26 @@ Call Session::runCall(const FFTConfig& fft, TestKind kind, u64 exponent, const U
   if (stopped_) {
     out.measurement.status = Status::Lost;
     return out;
+  }
+
+  // Whatever asked for it, a warm-up included: a configuration an earlier generation died on would otherwise be built
+  // again by every generation the restart limit allows.
+  if (std::string const why = held(fft, kind, exponent, options); !why.empty()) {
+    log("measure: %s -use %s is not built again here: %s\n", fft.spec().c_str(), configText(options).c_str(),
+        why.c_str());
+    out.measurement.status = Status::Unsupported;
+    return out;
+  }
+
+  if (!warmed_) {
+    warmed_ = true;
+    for (u32 w = 0; w < SESSION_WARM_CALLS && !stopped_; ++w) {
+      (void)runCall(fft, kind, exponent, options, nBlocks, blockSize, false);
+    }
+    if (stopped_) {
+      out.measurement.status = Status::Lost;
+      return out;
+    }
   }
 
   u32 const cfg = db_.internCfg(options);

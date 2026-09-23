@@ -602,7 +602,16 @@ std::string TuneDB::envAnchor(u32 env) const {
     if (s.env != env || s.anchor.empty()) { continue; }
     if (!first || s.id < first->id) { first = &s; }
   }
-  return first ? first->anchor : std::string{};
+  if (first) { return first->anchor; }
+
+  // A session that raced for its anchor wrote its own row before it knew the winner, so the winner is named by the
+  // first reading it took.
+  const AnchorRow* reading = nullptr;
+  for (const AnchorRow& r : anchors_) {
+    if (envOf(r.sess) != env) { continue; }
+    if (!reading || r.sess < reading->sess) { reading = &r; }
+  }
+  return reading ? AnchorSpec{.fft = reading->fft, .exponent = reading->exponent}.text() : std::string{};
 }
 
 const AnchorRow* TuneDB::envBaseline(u32 env) const {

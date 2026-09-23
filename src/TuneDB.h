@@ -277,9 +277,9 @@ public:
   // Opens a session on `env`. `start` is its wall-clock time, or 0 for now.
   [[nodiscard]] u32 beginSession(u32 env, const std::string& anchor, u32 gen = 0, u64 start = 0);
 
-  // The anchor this env is pinned to, as its earliest session that named one spells it; empty when it has none. An
-  // env compares its rows against readings of one configuration at one exponent, so the first session to time an
-  // anchor fixes it for the rest of the env's life.
+  // The anchor this env is pinned to, as its earliest session that named one spells it, or else as its earliest anchor
+  // reading does; empty when it has none. An env compares its rows against readings of one configuration at one
+  // exponent, so the first session to time an anchor fixes it for the rest of the env's life.
   [[nodiscard]] std::string envAnchor(u32 env) const;
 
   // The first anchor reading taken for this env under the anchor it is pinned to; nullptr when there is none.

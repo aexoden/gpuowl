@@ -46,7 +46,9 @@ class Prior {
 public:
   Prior() = default;
 
-  // Fitted to every concluded row `env` measured.
+  // Fitted to every reading `env` took that is a cost, concluded or not: the prior only orders what is measured next,
+  // so one call is evidence enough, and waiting for a second would leave a type priced by the stated constant after
+  // the card has already said otherwise.
   Prior(const TuneDB& db, u32 env);
 
   // One measured cost, in microseconds per iteration.  At a size measured more than once the cheapest reading is what

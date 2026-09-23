@@ -35,6 +35,7 @@ add_executable(prpll
   Production.cpp
   Tuner.cpp
   Objective.cpp
+  Scheduler.cpp
   fs.cpp
   )
 
