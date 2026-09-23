@@ -279,14 +279,15 @@ its reach.
                                         -tune minexp=10000000,maxexp=20000000
                          fp6431       - Time FP64+M31 FFTs for tune.txt.  Only GPUs with great FP64 performance will find this beneficial.
                          quick=<val>  - Use higher values for a quicker, potentially less accurate tune.  Val ranges from 1 to 10.
-                     These subcommands open no device, so they run on a machine that has none.  The four working on
+                     These subcommands open no device, so they run on a machine that has none.  Those working on
                      the measurement database, without an env= (into= for adopt), act on the one env whose rows were
                      measured against the kernels this binary carries.
                          emit[,env=<id>]               - write selection.txt from what the database supports
                          reset[,env=<id>][,fft=<spec>] - drop what was measured, for an env or for one of its FFTs
                          adopt[,into=<id>][,from=<id>] - take an earlier env's rows as the current kernels' own
                          compact                       - fold duplicate rows, and drop option sets nothing names
-                         scope                         - report the exponents a tuning run would work over
+                         scope[,env=<id>]              - report the exponents a tuning run would work over, and the
+                                                         expected iteration time over them that the database supports
                      scope takes the settings that bound a run, each defaulting from the pending worktodo:
                          workload=<lo>-<hi>  - the exponents worth covering, e.g. workload=100M-400M
                          probe=<E>           - the exponent that matters most, rounded to the prime at or below it

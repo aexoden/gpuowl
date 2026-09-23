@@ -34,6 +34,7 @@ add_executable(prpll
   Emit.cpp
   Production.cpp
   Tuner.cpp
+  Objective.cpp
   fs.cpp
   )
 

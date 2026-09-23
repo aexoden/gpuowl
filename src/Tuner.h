@@ -24,6 +24,7 @@ class Args;
 
 namespace tune {
 
+class Objective;
 class TuneDB;
 
 // The exponent range used where there is no worktodo to derive one from: the span current Mersenne work covers.
@@ -143,8 +144,10 @@ struct RunScope {
 // what the PRP grid already says.
 [[nodiscard]] std::vector<PendingWork> scanWorktodo(const std::vector<fs::path>& files);
 
-// What the scope is, in the log, before anything is spent against it.
-void reportScope(const RunScope& scope, const std::vector<fs::path>& files);
+// What the scope is, in the log, before anything is spent against it, and what the objective over it stands at.
+// `against` says what that objective was taken over.
+void reportScope(const RunScope& scope, const std::vector<fs::path>& files, const Objective& objective,
+                 const std::string& against);
 
 // The device-free subcommand `text` asks for, or nothing where it asks for something else -- upstream's own tuner
 // takes the same flag, and its option words are not these.  Throws a message for a subcommand it recognises and then
