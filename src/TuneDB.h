@@ -175,6 +175,18 @@ struct AlarmRow {
   u64 ts = 0;
 };
 
+// A restart: the `k`th draw of an entry's restart sequence, declared before its first call, so that its rows can be
+// told apart from the moves of the search whatever the workload and the defaults are later.
+struct JumpRow {
+  u32 sess = 0;
+  std::string fft;
+  TestKind kind = TestKind::PRP;
+  Regime regime{};
+  u32 cfg = 0;
+  u32 k = 0;
+  u64 ts = 0;
+};
+
 // One LL residue reading.
 struct RefRow {
   u32 sess = 0;
@@ -221,6 +233,7 @@ public:
   [[nodiscard]] const std::vector<AnchorRow>& anchors() const { return anchors_; }
   [[nodiscard]] const std::vector<ReachRow>& reaches() const { return reaches_; }
   [[nodiscard]] const std::vector<RefRow>& refs() const { return refs_; }
+  [[nodiscard]] const std::vector<JumpRow>& jumps() const { return jumps_; }
   [[nodiscard]] const std::vector<std::string>& unknownRows() const { return unknown_; }
 
   // One row per distinct measurement, duplicates folded as a running mean and pooled variance with the calls summed
@@ -265,6 +278,7 @@ public:
   [[nodiscard]] bool add(const AlarmRow& row);
   [[nodiscard]] bool add(const ReachRow& row);
   [[nodiscard]] bool add(const RefRow& row);
+  [[nodiscard]] bool add(const JumpRow& row);
   [[nodiscard]] bool add(const DoneRow& row);
 
   // The id an identical entry already has, or a fresh one.
@@ -333,6 +347,7 @@ private:
   std::vector<AnchorRow> anchors_;
   std::vector<ReachRow> reaches_;
   std::vector<RefRow> refs_;
+  std::vector<JumpRow> jumps_;
   std::vector<std::string> unknown_;
 
   std::map<u32, TryRow> open_;
@@ -354,6 +369,7 @@ private:
 [[nodiscard]] std::string formatRow(const AlarmRow& row);
 [[nodiscard]] std::string formatRow(const ReachRow& row);
 [[nodiscard]] std::string formatRow(const RefRow& row);
+[[nodiscard]] std::string formatRow(const JumpRow& row);
 [[nodiscard]] std::string formatRow(const DoneRow& row);
 
 [[nodiscard]] std::string configText(const UseConfig& config);

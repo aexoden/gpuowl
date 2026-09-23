@@ -321,6 +321,16 @@ void Session::raceAnchor() {
   }
 }
 
+void Session::declareRestart(const FFTConfig& fft, TestKind kind, u64 exponent, const UseConfig& options, u32 k) {
+  (void)db_.add(JumpRow{.sess = session_,
+                        .fft = fft.spec(),
+                        .kind = kind,
+                        .regime = regimeOf(fft, exponent),
+                        .cfg = db_.internCfg(options),
+                        .k = k,
+                        .ts = now()});
+}
+
 void Session::keepAnchor() {
   if (!anchorDue()) { return; }
   raceAnchor();

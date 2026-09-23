@@ -99,22 +99,23 @@ struct Baseline {
 [[nodiscard]] std::vector<Baseline> baselines(const Env& env, const RunScope& scope,
                                               const std::vector<FFTShape>& shapes = FFTShape::allShapes());
 
-enum class ItemKind : u8 { Anchor, Bootstrap, Baseline, Probe };
+enum class ItemKind : u8 { Anchor, Bootstrap, Baseline, Probe, Refine, Restart };
 
 [[nodiscard]] const char* toString(ItemKind kind);
 
 struct Item {
   ItemKind kind = ItemKind::Baseline;
 
-  // Into Scheduler::baselines() -- for a probe, the baseline of the entry it probes -- or for a bootstrap call into the
-  // bootstrap's families.
+  // Into Scheduler::baselines() -- for a probe, a refine or a restart, the baseline of the entry it measures -- or for
+  // a bootstrap call into the bootstrap's families.
   size_t index = 0;
 
-  // What the configuration is built with: a bootstrap candidate, for a baseline the defaults the bootstrap decided, or
-  // for a probe its option set with every key the lines would set otherwise named at its own value.
+  // What the configuration is built with: a bootstrap candidate, for a baseline the defaults the bootstrap decided, for
+  // a probe or a restart its option set with every key the lines would set otherwise named at its own value, and for a
+  // refine the option set its row was recorded under.
   UseConfig options{};
 
-  // A bootstrap call's or a probe's: the key it moved, and what it is, for the log.
+  // A bootstrap call's or a probe's: the key it moved; and what it is, for the log.
   std::string moved{};
   std::string what{};
 
@@ -129,15 +130,47 @@ struct Item {
   // Calls already recorded against the entry, which is what makes this item a resumption.
   u32 calls = 0;
 
+  // A restart's: which draw of its entry's sequence it is.
+  u32 draw = 0;
+
   [[nodiscard]] double rate() const { return seconds > 0 ? value / seconds : 0; }
 };
+
+// Where each entry stands, from the rows of an env.
+struct Progress;
+
+// Draws in a row that repeat a configuration already seen, after which a restart space is taken to be spent.  A space
+// with one point left unseen among n survives this many draws with probability (1 - 1/n)^256: for n = 64, under 2%,
+// and the next process starts the count again.
+inline constexpr u32 RESTART_REPEATS = 256;
+
+// How far one entry's restart sequence has been read.  Only what can never become runnable again is passed -- a draw a
+// row answers, a hold, a draw given up on, one the lines shadow, which once the bootstrap is complete they keep doing
+// -- so the cursor never goes back, and a long stretch of such draws is read once rather than on every re-score.
+struct RestartScan {
+  u32 next = 0;
+  u32 repeats = 0;
+  bool exhausted = false;
+
+  // The configurations drawn or measured so far, as their canonical text.
+  std::set<std::string> seen;
+};
+
+// Moves `scan` to the first draw from where it stands that `runnable` accepts, and returns it; `text` names the
+// configuration a draw is.  Nothing once RESTART_REPEATS draws in a row have repeated configurations in `seen`, which
+// is what a space whose every point has been measured or ruled out looks like: a long run of new configurations that
+// cannot run is the space still being explored, however long it is.
+[[nodiscard]] std::optional<u32> nextRunnable(RestartScan& scan, const std::function<std::string(u32)>& text,
+                                              const std::function<bool(u32)>& runnable);
 
 class Scheduler {
 public:
   // With the default `bootstrap`, which is turned off, every baseline is admissible at once and runs at the built-in
-  // defaults.  Without a `strategy` nothing measured is probed further.
+  // defaults.  Without a `strategy` nothing measured is measured further: no probes, and no refines.  Without
+  // `restarts` an entry whose probes are all answered is left there, so the queue can run dry; with them it never
+  // does, since a jump is always worth a little.
   Scheduler(RunScope scope, std::vector<Baseline> baselines, u32 blockSize = 1000, Bootstrap bootstrap = {},
-            std::optional<Strategy> strategy = {});
+            std::optional<Strategy> strategy = {}, bool restarts = false);
 
   [[nodiscard]] const RunScope& scope() const { return scope_; }
   [[nodiscard]] const std::vector<Baseline>& baselines() const { return baselines_; }
@@ -148,12 +181,15 @@ public:
 
   // Every item that may run now, scored against what `env` has measured.  While a family still has a bootstrap call to
   // make, those calls are all there is, most wanted first: every other configuration runs at what the bootstrap
-  // decides, so measuring one earlier would measure something production is not going to run.  After that the
-  // baselines and the probes of every entry with a row emission could publish, together, best rate first.  A baseline
-  // is left out once a row has concluded it or recorded a failure of it, and a probe once a row answers it
-  // (answeredBy()) or recorded a failure of it; either while an earlier generation's death or an unbuildable key holds
-  // it, and once this process has tried it more often than any entry needs.
+  // decides, so measuring one earlier would measure something production is not going to run.  After that, together
+  // and best rate first: the baselines; the probes of every entry with a row emission could publish; one more call on
+  // each side of every contest production decides that the race rule leaves undecided (refineValues()); and for an
+  // entry with no probe left, the next draw of its restart sequence.  A baseline is left out once a row has concluded
+  // it or recorded a failure of it, and a probe or a restart once a row answers it or recorded a failure of it; any of
+  // them while an earlier generation's death or an unbuildable key holds it, and once this process has tried it more
+  // often than any entry needs.
   [[nodiscard]] std::vector<Item> admissible(const TuneDB& db, u32 env, const Objective& objective) const;
+
 
   // The item to run next from a ranking admissible() gave, or nothing where none is worth anything.  The top item,
   // unless it would repeat the previous one while another is within INTERLEAVE_EPS of it -- or for a bootstrap call,
@@ -178,11 +214,20 @@ private:
   // re-score asks again for every entry.
   [[nodiscard]] const ProbeList& probeList(const FFTConfig& fft, const UseConfig& best) const;
 
+  // restartOf() for the entry of `baselines_[index]`, canonical, likewise: a draw takes one enumeration of the axes per
+  // axis.
+  [[nodiscard]] const UseConfig& draw(size_t index, u32 k) const;
+
+  // The restart `baselines_[index]` would make next, if its space has anything left to offer.
+  [[nodiscard]] std::optional<Item> nextRestart(const TuneDB& db, u32 env, const Progress& progress,
+                                                const Defaults& defaults, size_t index) const;
+
   RunScope scope_;
   std::vector<Baseline> baselines_;
   CallClock clock_;
   Bootstrap bootstrap_;
   std::optional<Strategy> strategy_;
+  bool restarts_;
 
   // The configurations this process has built, whose next build finds its kernels compiled.
   std::set<std::string> built_;
@@ -190,6 +235,13 @@ private:
   std::map<size_t, u32> attempts_;
   std::map<std::string, u32> probeAttempts_;
   mutable std::map<std::string, ProbeList> probeLists_;
+  mutable std::map<std::pair<size_t, u32>, UseConfig> draws_;
+
+  // How far each entry's restart sequence has been read in this process.
+  mutable std::map<size_t, RestartScan> scans_;
+
+  // Refine calls by keyOf() that recorded nothing; a refine is bounded by its row's calls otherwise.
+  std::map<std::string, u32> unrecordedRefines_;
 
   // Bootstrap candidates by keyOf(), and how often a call of one recorded nothing; past MAX_ATTEMPTS they are out.
   std::map<std::string, u32> unrecorded_;
@@ -213,6 +265,9 @@ public:
   // Always false for a session with no anchor.
   [[nodiscard]] virtual bool anchorDue() const = 0;
   virtual void timeAnchor() = 0;
+
+  // Declares that the next call is the `k`th draw of its entry's restart sequence, before it is made.
+  virtual void declareRestart(const FFTConfig& fft, TestKind kind, u64 exponent, const UseConfig& options, u32 k) = 0;
 
   // Records its own rows.  `moved` is the one key that differs from the configuration this one is compared with, if
   // there is one, so that a build failure can be pinned on it.

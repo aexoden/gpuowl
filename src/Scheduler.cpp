@@ -40,6 +40,8 @@ struct Partial {
   u32 calls = 0;
 };
 
+}  // namespace
+
 struct Progress {
   // Settled by a concluded row emission would publish beside the current lines -- the baseline is the first
   // measurement, and whatever measured it second is not one -- but not by one the lines have since shadowed, whose
@@ -55,7 +57,13 @@ struct Progress {
   // Every option set a row has concluded, canonical, shadowed or not: what a probe asks may already be answered by a
   // row the lines have since withdrawn from publication.
   std::map<EntryKey, std::vector<UseConfig>> concluded;
+
+  // The option sets a row has concluded or failed, and how many sets each entry has rows of at all.
+  std::set<EntrySet> answered;
+  std::map<EntryKey, std::set<std::string>> sets;
 };
+
+namespace {
 
 // Where each entry stands, from the rows `env` has.  A row the device lost under is not recorded, so it says nothing
 // either way.
@@ -71,13 +79,17 @@ struct Progress {
 
     EntryKey const key{row.fft, row.kind, row.regime.label()};
     UseConfig const canonical = canonicalConfig(device, *fft, *opts);
+    std::string const text = configText(canonical);
+    out.sets[key].insert(text);
     if (row.m.status != Status::Ok) {
-      out.failed.insert({key, configText(canonical)});
+      out.failed.insert({key, text});
+      out.answered.insert({key, text});
       continue;
     }
     if (concluded(row.m)) {
       if (!shadowedBy(defaults, device, *fft, row.kind, *opts)) { out.settled.insert(key); }
       out.concluded[key].push_back(canonical);
+      out.answered.insert({key, text});
       continue;
     }
 
@@ -189,17 +201,20 @@ const char* toString(ItemKind kind) {
   case ItemKind::Bootstrap: return "bootstrap";
   case ItemKind::Baseline: return "baseline";
   case ItemKind::Probe: return "probe";
+  case ItemKind::Refine: return "refine";
+  case ItemKind::Restart: return "restart";
   }
   return "?";
 }
 
 Scheduler::Scheduler(RunScope scope, std::vector<Baseline> baselines, u32 blockSize, Bootstrap bootstrap,
-                     std::optional<Strategy> strategy) :
+                     std::optional<Strategy> strategy, bool restarts) :
   scope_{std::move(scope)},
   baselines_{std::move(baselines)},
   clock_{blockSize},
   bootstrap_{std::move(bootstrap)},
-  strategy_{std::move(strategy)} {}
+  strategy_{std::move(strategy)},
+  restarts_{restarts} {}
 
 std::string Scheduler::builtKey(const FFTConfig& fft, const UseConfig& options) const {
   return fft.spec() + " " + configText(canonicalConfig(bootstrap_.env(), fft, options));
@@ -213,11 +228,88 @@ const ProbeList& Scheduler::probeList(const FFTConfig& fft, const UseConfig& bes
   return at->second;
 }
 
+const UseConfig& Scheduler::draw(size_t index, u32 k) const {
+  auto const [at, fresh] = draws_.try_emplace({index, k});
+  if (fresh) {
+    const Baseline& b = baselines_[index];
+    at->second = canonicalConfig(bootstrap_.env(), b.fft, restartOf(bootstrap_.env(), b.fft, b.label(), k));
+  }
+  return at->second;
+}
+
+std::optional<Item> Scheduler::nextRestart(const TuneDB& db, u32 env, const Progress& progress,
+                                           const Defaults& defaults, size_t index) const {
+  const Env& device = bootstrap_.env();
+  const Baseline& b = baselines_[index];
+  std::string const spec = b.fft.spec();
+  std::string const regime = b.band.regime.label();
+  EntryKey const key{spec, b.kind, regime};
+
+  // From the last draw declared, which a stop may have left partly measured, so that it is resumed rather than skipped.
+  RestartScan& scan = scans_[index];
+  for (const JumpRow& row : db.jumps()) {
+    if (db.envOf(row.sess) == env && row.fft == spec && row.kind == b.kind && row.regime.label() == regime) {
+      scan.next = std::max(scan.next, row.k);
+    }
+  }
+  if (auto const sets = progress.sets.find(key); sets != progress.sets.end()) {
+    scan.seen.insert(sets->second.begin(), sets->second.end());
+  }
+
+  auto itemOf = [&](u32 k) {
+    const UseConfig& drawn = draw(index, k);
+    Item item{.kind = ItemKind::Restart,
+              .index = index,
+              .options = besideLines(device, b.fft, b.kind, defaults, drawn),
+              .moved = {},
+              .what = "#" + std::to_string(k + 1) + " " + (drawn.empty() ? "the built-in defaults" : configText(drawn)),
+              .exponent = b.exponent,
+              .value = 0,
+              .seconds = 0,
+              .fresh = true,
+              .calls = 0,
+              .draw = k};
+    if (auto const p = progress.partial.find({key, configText(drawn)});
+        p != progress.partial.end() && b.band.contains(p->second.exponent)) {
+      item.exponent = p->second.exponent;
+      item.calls = p->second.calls;
+    }
+    return item;
+  };
+
+  auto runnable = [&](u32 k) {
+    if (progress.answered.contains({key, configText(draw(index, k))})) { return false; }
+    Item const item = itemOf(k);
+    u32 const cfg = db.findCfgId(item.options);
+    auto const attempts = probeAttempts_.find(keyOf(item));
+    return !shadowedBy(defaults, device, b.fft, b.kind, item.options) &&
+      (attempts == probeAttempts_.end() || attempts->second < MAX_ATTEMPTS) && !db.isNogo(env, spec, item.options) &&
+      !(cfg && db.diedOn(env, cfg, b.kind, spec, item.exponent));
+  };
+
+  std::optional<u32> const k = nextRunnable(scan, [&](u32 k) { return configText(draw(index, k)); }, runnable);
+  if (!k) { return {}; }
+  return itemOf(*k);
+}
+
+std::optional<u32> nextRunnable(RestartScan& scan, const std::function<std::string(u32)>& text,
+                                const std::function<bool(u32)>& runnable) {
+  while (!scan.exhausted) {
+    if (runnable(scan.next)) { return scan.next; }
+    scan.repeats = scan.seen.insert(text(scan.next)).second ? 0 : scan.repeats + 1;
+    scan.exhausted = scan.repeats >= RESTART_REPEATS;
+    ++scan.next;
+  }
+  return {};
+}
+
 std::string Scheduler::keyOf(const Item& item) const {
   switch (item.kind) {
   case ItemKind::Anchor: return "anchor";
   case ItemKind::Bootstrap: return bootstrap_.families()[item.index].fft.spec() + " " + configText(item.options);
   case ItemKind::Probe:
+  case ItemKind::Refine:
+  case ItemKind::Restart:
     return baselines_[item.index].label() + " " +
       configText(canonicalConfig(bootstrap_.env(), baselines_[item.index].fft, item.options));
   case ItemKind::Baseline: break;
@@ -331,6 +423,7 @@ std::vector<Item> Scheduler::admissible(const TuneDB& db, u32 env, const Objecti
       auto const rows = progress.concluded.find(key);
       const std::vector<UseConfig>& concluded = rows != progress.concluded.end() ? rows->second : none;
 
+      size_t const before = out.size();
       const ProbeList& list = probeList(b.fft, entry.opts);
       for (const Probe& probe : list.probes) {
         std::string const text = configText(probe.config);
@@ -372,6 +465,58 @@ std::vector<Item> Scheduler::admissible(const TuneDB& db, u32 env, const Objecti
         item.seconds = clock_.seconds(entry.cost, item.fresh);
         out.push_back(std::move(item));
       }
+
+      // At a local optimum of the declared moves, and only there, a jump: worth what a move is, since it is one, but
+      // offered only once no probe is left rather than left to a score to rank below them.
+      std::optional<Item> next =
+        restarts_ && out.size() == before ? nextRestart(db, env, progress, state.defaults, i) : std::nullopt;
+      if (next) {
+        Item item = std::move(*next);
+        item.value = value;
+        item.fresh = !built_.contains(builtKey(b.fft, item.options));
+        item.seconds = clock_.seconds(entry.cost, item.fresh);
+        out.push_back(std::move(item));
+      }
+    }
+
+    std::map<EntryKey, size_t> indexOf;
+    for (size_t i = 0; i < baselines_.size(); ++i) {
+      indexOf.try_emplace({baselines_[i].fft.spec(), baselines_[i].kind, baselines_[i].band.regime.label()}, i);
+    }
+
+    // At the exponent and under the options its row was recorded at, so that the call pools with it.
+    std::vector<OptionSet> const sets = optionSetsFor(db, env, state.defaults);
+    std::vector<double> const worth = refineValues(sets, objective.points());
+    for (size_t s = 0; s < sets.size(); ++s) {
+      if (worth[s] <= 0) { continue; }
+      const SelectionEntry& e = sets[s].entry;
+      auto const at = indexOf.find({e.fft, e.kind, e.regime.label()});
+      if (at == indexOf.end()) { continue; }
+      const Baseline& b = baselines_[at->second];
+
+      UseConfig const canonical = canonicalConfig(device, b.fft, e.opts);
+      Item item{.kind = ItemKind::Refine,
+                .index = at->second,
+                .options = e.opts,
+                .moved = {},
+                .what = canonical.empty() ? "the built-in defaults" : configText(canonical),
+                .exponent = sets[s].exponent,
+                .value = worth[s],
+                .seconds = 0,
+                .fresh = true,
+                .calls = sets[s].m.calls};
+      if (auto const n = unrecordedRefines_.find(keyOf(item));
+          n != unrecordedRefines_.end() && n->second >= MAX_ATTEMPTS) {
+        continue;
+      }
+      if (db.isNogo(env, e.fft, item.options)) { continue; }
+      if (u32 const cfg = db.findCfgId(item.options); cfg && db.diedOn(env, cfg, e.kind, e.fft, item.exponent)) {
+        continue;
+      }
+
+      item.fresh = !built_.contains(builtKey(b.fft, item.options));
+      item.seconds = clock_.seconds(sets[s].m.cost(), item.fresh);
+      out.push_back(std::move(item));
     }
   }
 
@@ -409,11 +554,16 @@ void Scheduler::ran(const Item& item, double seconds, double usPerIt, bool recor
   }
 
   built_.insert(builtKey(baselines_[item.index].fft, item.options));
-  if (item.kind == ItemKind::Probe) {
-    ++probeAttempts_[last_];
+  switch (item.kind) {
+  case ItemKind::Probe:
+  case ItemKind::Restart: ++probeAttempts_[last_]; return;
+  case ItemKind::Refine:
+    if (!recorded || usPerIt <= 0) { ++unrecordedRefines_[last_]; }
     return;
+  case ItemKind::Baseline: ++attempts_[item.index]; return;
+  case ItemKind::Anchor:
+  case ItemKind::Bootstrap: return;
   }
-  ++attempts_[item.index];
 }
 
 namespace {
@@ -519,22 +669,26 @@ QueueReport runQueue(Scheduler& scheduler, TuneDB& db, u32 env, Bench& bench, co
     const Baseline* const baseline = item->kind != ItemKind::Bootstrap ? &scheduler.baselines()[item->index] : nullptr;
     const FFTConfig& fft = baseline ? baseline->fft : scheduler.bootstrap().families()[item->index].fft;
     TestKind const kind = baseline ? baseline->kind : TestKind::PRP;
+    bool const probing = baseline && item->kind != ItemKind::Baseline;
     std::string const label = !baseline ? item->what
-      : item->kind == ItemKind::Probe   ? baseline->label() + " " + item->what
+      : probing                         ? baseline->label() + " " + item->what
                                         : baseline->label();
-    bool const probing = item->kind == ItemKind::Probe;
     std::optional<std::string> const bestBefore =
       probing ? bestOf(db, env, scheduler.bootstrap().env(), state.defaults, *baseline) : std::nullopt;
 
+    // Once, before its first call; a resumed one was declared by the process that started it.
+    if (item->kind == ItemKind::Restart && item->calls == 0) {
+      bench.declareRestart(fft, kind, item->exponent, item->options, item->draw);
+    }
     Bench::Result const result = bench.run(fft, kind, item->exponent, item->options, item->moved);
 
     // A call cut short by a stop recorded nothing, so there is nothing to account for.
     if (!result.completed && bench.stopped()) { break; }
 
-    // A race candidate's or a probe's calls count for it only if its kernels were built as asked.  Where the host sets
+    // A call other than a baseline's counts for its item only if its kernels were built as asked.  Where the host sets
     // a value aside the row lands on another configuration, and without this the same one would be asked for for ever.
     bool recorded = result.completed;
-    if ((item->kind == ItemKind::Bootstrap || item->kind == ItemKind::Probe) && recorded) {
+    if (item->kind != ItemKind::Baseline && recorded) {
       const Env& device = scheduler.bootstrap().env();
       UseConfig const built = canonicalConfig(device, fft, result.ran);
       if (built != canonicalConfig(device, fft, item->options)) {
@@ -550,9 +704,11 @@ QueueReport runQueue(Scheduler& scheduler, TuneDB& db, u32 env, Bench& bench, co
     rescore();
     publish(objective, state.defaults);
 
-    std::string const call = item->kind == ItemKind::Bootstrap ? " (call " + std::to_string(item->calls + 1) + ")"
-      : item->calls ? " (resumed at call " + std::to_string(item->calls + 1) + ")"
-                    : "";
+    // A refine is the next call of a row that is already concluded, not a resumption of one that was interrupted.
+    bool const counted = item->kind == ItemKind::Bootstrap || item->kind == ItemKind::Refine;
+    std::string const call = counted ? " (call " + std::to_string(item->calls + 1) + ")"
+      : item->calls                  ? " (resumed at call " + std::to_string(item->calls + 1) + ")"
+                                     : "";
     if (result.completed) {
       log("tune: %u. %s %s at %" PRIu64 "%s: %.3f us/it, %.1f s; T %.3f -> %.3f us/it\n", out.items,
           toString(item->kind), label.c_str(), item->exponent, call.c_str(), result.usPerIt, result.seconds, before,

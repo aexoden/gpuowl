@@ -344,4 +344,47 @@ bool answeredBy(const Env& env, const FFTConfig& fft, const ProbeList& list, con
   });
 }
 
+UseConfig restartOf(const Env& env, const FFTConfig& fft, std::string_view entry, u32 k) {
+  // FNV-1a then splitmix64: the same sequence on every platform and standard library, which std::hash and the
+  // standard distributions do not promise.
+  u64 state = 0xcbf29ce484222325;
+  for (char const c : entry) { state = (state ^ u8(c)) * 0x100000001b3; }
+  state ^= (u64(k) + 1) * 0x9e3779b97f4a7c15;
+  auto next = [&state] {
+    u64 z = (state += 0x9e3779b97f4a7c15);
+    z = (z ^ (z >> 30)) * 0xbf58476d1ce4e5b9;
+    z = (z ^ (z >> 27)) * 0x94d049bb133111eb;
+    return z ^ (z >> 31);
+  };
+
+  UseConfig config;
+  std::set<std::string> drawn;
+  while (true) {
+    std::vector<Axis> const axes = axesOf(env, fft, config);
+
+    std::set<std::string> pending;
+    for (const Axis& axis : axes) {
+      if (drawn.contains(axis.name)) { continue; }
+      for (const std::string& key : axis.keys()) { pending.insert(key); }
+    }
+
+    // A dependee drawn after its dependent would draw the dependent from a list that no longer applies; a structural
+    // key changes which axes there are at all.
+    auto ready = [&](const Axis& axis) {
+      return !drawn.contains(axis.name) && std::ranges::none_of(axis.keys(), [&](const std::string& key) {
+        return std::ranges::any_of(findOption(key)->dependsOn,
+                                   [&](const std::string& d) { return d != key && pending.contains(d); });
+      });
+    };
+    auto at = std::ranges::find_if(axes, [&](const Axis& a) { return a.option->structural && ready(a); });
+    if (at == axes.end()) { at = std::ranges::find_if(axes, ready); }
+    if (at == axes.end()) { break; }
+
+    drawn.insert(at->name);
+    place(config, *at, size_t(next() % at->values.size()));
+    config = canonicalConfig(env, fft, config);
+  }
+  return fitted(env, fft, config);
+}
+
 }  // namespace tune

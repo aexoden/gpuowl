@@ -47,8 +47,8 @@ GainDist GainCounts::posterior(const GainDist& prior) const {
   return out;
 }
 
-void GainModel::observe(const EntryKey& entry, double gain) {
-  all_.observe(gain);
+void GainModel::observe(const EntryKey& entry, double gain, bool device) {
+  if (device) { all_.observe(gain); }
   entries_[entry].observe(gain);
 }
 
@@ -68,16 +68,25 @@ GainModel gainsOf(const TuneDB& db, u32 env) {
   if (!dbEnv) { return {}; }
   Env const device = dbEnv->toEnv();
 
+  std::set<EntrySet> restarts;
+  for (const JumpRow& row : db.jumps()) {
+    const UseConfig* const opts = db.findCfg(row.cfg);
+    auto const fft = parseFft(row.fft);
+    if (db.envOf(row.sess) != env || !opts || !fft) { continue; }
+    restarts.insert({{row.fft, row.kind, row.regime.label()}, configText(canonicalConfig(device, *fft, *opts))});
+  }
+
   // One option set is one move however many rows it has: rows at other exponents, or spelt otherwise, are more readings
   // of it, and counting them again would read as moves that found nothing.  Pooled by calls, in the place its first
   // concluded row gives it.
   struct Pooled {
     EntryKey entry;
+    bool restart = false;
     double weighted = 0;
     double calls = 0;
   };
   std::vector<Pooled> sets;
-  std::map<std::pair<EntryKey, std::string>, size_t> index;
+  std::map<EntrySet, size_t> index;
 
   for (const RunRow& row : db.mergedRuns()) {
     if (db.envOf(row.sess) != env || !concluded(row.m)) { continue; }
@@ -87,8 +96,9 @@ GainModel gainsOf(const TuneDB& db, u32 env) {
     if (!opts || !fft) { continue; }
 
     EntryKey const entry{row.fft, row.kind, row.regime.label()};
-    auto const [at, fresh] = index.try_emplace({entry, configText(canonicalConfig(device, *fft, *opts))}, sets.size());
-    if (fresh) { sets.push_back({.entry = entry}); }
+    EntrySet const key{entry, configText(canonicalConfig(device, *fft, *opts))};
+    auto const [at, fresh] = index.try_emplace(key, sets.size());
+    if (fresh) { sets.push_back({.entry = entry, .restart = restarts.contains(key)}); }
 
     Pooled& set = sets[at->second];
     set.weighted += row.m.cost() * row.m.calls;
@@ -102,7 +112,7 @@ GainModel gainsOf(const TuneDB& db, u32 env) {
     auto const [at, first] = best.try_emplace(set.entry, cost);
     if (first) { continue; }
 
-    out.observe(set.entry, 1 - cost / at->second);
+    out.observe(set.entry, 1 - cost / at->second, !set.restart);
     at->second = std::min(at->second, cost);
   }
   return out;
@@ -178,6 +188,27 @@ double refineValue(const Contest& contest, std::span<const OptionSet> sets, size
   const Measurement& refined = side == contest.chosen ? chosen : runnerUp;
 
   return refineValue(contest.weight, chosen.cost() - runnerUp.cost(), standardError(refined), refined.calls);
+}
+
+bool undecided(const Contest& contest, std::span<const OptionSet> sets) {
+  const Measurement& a = sets[contest.chosen].m;
+  const Measurement& b = sets[contest.runnerUp].m;
+  const Measurement& lo = a.cost() <= b.cost() ? a : b;
+  const Measurement& hi = a.cost() <= b.cost() ? b : a;
+
+  bool const apart = lo.cost() + RACE_CONFIDENCE * standardError(lo) < hi.cost() - RACE_CONFIDENCE * standardError(hi);
+  return !apart && hi.cost() - lo.cost() > RACE_MARGIN * lo.cost();
+}
+
+std::vector<double> refineValues(std::span<const OptionSet> sets, std::span<const ObjectivePoint> points) {
+  std::vector<double> out(sets.size(), 0.0);
+  for (const Contest& contest : contests(sets, points)) {
+    if (!undecided(contest, sets)) { continue; }
+    for (size_t const side : {contest.chosen, contest.runnerUp}) {
+      if (sets[side].m.calls < RACE_MAX_CALLS) { out[side] += refineValue(contest, sets, side); }
+    }
+  }
+  return out;
 }
 
 }  // namespace tune

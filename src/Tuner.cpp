@@ -204,6 +204,10 @@ public:
 
   void timeAnchor() override { session_.keepAnchor(); }
 
+  void declareRestart(const FFTConfig& fft, TestKind kind, u64 exponent, const UseConfig& options, u32 k) override {
+    session_.declareRestart(fft, kind, exponent, options, k);
+  }
+
   [[nodiscard]] Result run(const FFTConfig& fft, TestKind kind, u64 exponent, const UseConfig& options,
                            const std::string& moved) override {
     session_.varying(moved.empty() ? std::vector<std::string>{} : std::vector<std::string>{moved});
@@ -701,8 +705,9 @@ MeasureOutcome runTune(const GpuCommon& shared, const TuneCommand& command) {
 
   std::vector<Baseline> entries = baselines(env, scope);
   Bootstrap bootstrap = bootstrapFor(env, scope, entries, command.bootstrap);
-  Scheduler scheduler{scope, std::move(entries), args.blockSize, std::move(bootstrap), command.strategy};
-  log("tune: %zu entries could serve the workload; each measured one is searched by strategy=%s\n",
+  Scheduler scheduler{scope, std::move(entries), args.blockSize, std::move(bootstrap), command.strategy, true};
+  log("tune: %zu entries could serve the workload; each measured one is searched by strategy=%s, then by random "
+      "restarts, which run until stopped\n",
       scheduler.baselines().size(), command.strategy.text().c_str());
   if (command.bootstrap) {
     std::string names;
