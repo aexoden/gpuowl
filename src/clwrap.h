@@ -209,6 +209,11 @@ struct CudaSmLimits {
   int reservedSharedPerBlock;
 };
 CudaSmLimits cudaSmLimits();
+
+// Undo cudaSetL2PersistLimit once every caller of it is done: return the persisting L2 lines to normal and restore the
+// context's limit. Both belong to the context rather than to the stream whose window marked the lines, so otherwise
+// they outlive the Gpu that asked for them and crowd whatever the next one runs out of the cache.
+void cudaReleaseL2Persist();
 #endif
 
 

@@ -866,6 +866,10 @@ unique_ptr<Gpu> Gpu::make(u64 E, GpuCommon shared, FFTConfig fftConfig, const ve
 Gpu::~Gpu() {
   // Background tasks may have captured *this*, so wait until those are complete before destruction
   background->waitEmpty();
+
+#if CUDA_BACKEND
+  if (args.value("L2PERSIST", 0)) { cudaReleaseL2Persist(); }
+#endif
 }
 
 // Each important kernel's register usage can be limited with a REGxxxx -use option, normally set per FFT on its tune.txt line.
