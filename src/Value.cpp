@@ -47,15 +47,13 @@ GainDist GainCounts::posterior(const GainDist& prior) const {
   return out;
 }
 
-void GainModel::observe(const EntryKey& entry, double gain, bool device) {
-  if (device) { all_.observe(gain); }
-  entries_[entry].observe(gain);
-}
+namespace {
 
-GainDist GainModel::forEntry(const EntryKey& entry) const {
-  GainDist const device = global();
-  auto const at = entries_.find(entry);
-  if (at == entries_.end()) { return device; }
+// An entry's own counts over the device's posterior, mixed back with it.
+[[nodiscard]] GainDist mixed(const GainDist& device, const std::map<EntryKey, GainCounts>& entries,
+                             const EntryKey& entry) {
+  auto const at = entries.find(entry);
+  if (at == entries.end()) { return device; }
 
   GainDist const own = at->second.posterior(device);
   GainDist out;
@@ -63,25 +61,45 @@ GainDist GainModel::forEntry(const EntryKey& entry) const {
   return out;
 }
 
+}  // namespace
+
+void GainModel::observe(const EntryKey& entry, double gain, GainSource source) {
+  switch (source) {
+  case GainSource::Move: all_.observe(gain); [[fallthrough]];
+  case GainSource::Restart: entries_[entry].observe(gain); return;
+  case GainSource::Combo:
+    combos_.observe(gain);
+    entryCombos_[entry].observe(gain);
+    return;
+  }
+}
+
+GainDist GainModel::forEntry(const EntryKey& entry) const { return mixed(global(), entries_, entry); }
+
+GainDist GainModel::comboForEntry(const EntryKey& entry) const { return mixed(globalCombo(), entryCombos_, entry); }
+
 GainModel gainsOf(const TuneDB& db, u32 env) {
   const DbEnv* const dbEnv = db.findEnv(env);
   if (!dbEnv) { return {}; }
   Env const device = dbEnv->toEnv();
 
-  std::set<EntrySet> restarts;
-  for (const JumpRow& row : db.jumps()) {
+  std::map<EntrySet, GainSource> declared;
+  auto declare = [&](const auto& row, GainSource source) {
     const UseConfig* const opts = db.findCfg(row.cfg);
     auto const fft = parseFft(row.fft);
-    if (db.envOf(row.sess) != env || !opts || !fft) { continue; }
-    restarts.insert({{row.fft, row.kind, row.regime.label()}, configText(canonicalConfig(device, *fft, *opts))});
-  }
+    if (db.envOf(row.sess) != env || !opts || !fft) { return; }
+    declared.try_emplace({{row.fft, row.kind, row.regime.label()}, configText(canonicalConfig(device, *fft, *opts))},
+                         source);
+  };
+  for (const JumpRow& row : db.jumps()) { declare(row, GainSource::Restart); }
+  for (const ComboRow& row : db.combos()) { declare(row, GainSource::Combo); }
 
   // One option set is one move however many rows it has: rows at other exponents, or spelt otherwise, are more readings
   // of it, and counting them again would read as moves that found nothing.  Pooled by calls, in the place its first
   // concluded row gives it.
   struct Pooled {
     EntryKey entry;
-    bool restart = false;
+    GainSource source = GainSource::Move;
     double weighted = 0;
     double calls = 0;
   };
@@ -98,7 +116,10 @@ GainModel gainsOf(const TuneDB& db, u32 env) {
     EntryKey const entry{row.fft, row.kind, row.regime.label()};
     EntrySet const key{entry, configText(canonicalConfig(device, *fft, *opts))};
     auto const [at, fresh] = index.try_emplace(key, sets.size());
-    if (fresh) { sets.push_back({.entry = entry, .restart = restarts.contains(key)}); }
+    if (fresh) {
+      auto const source = declared.find(key);
+      sets.push_back({.entry = entry, .source = source != declared.end() ? source->second : GainSource::Move});
+    }
 
     Pooled& set = sets[at->second];
     set.weighted += row.m.cost() * row.m.calls;
@@ -112,7 +133,7 @@ GainModel gainsOf(const TuneDB& db, u32 env) {
     auto const [at, first] = best.try_emplace(set.entry, cost);
     if (first) { continue; }
 
-    out.observe(set.entry, 1 - cost / at->second, !set.restart);
+    out.observe(set.entry, 1 - cost / at->second, set.source);
     at->second = std::min(at->second, cost);
   }
   return out;

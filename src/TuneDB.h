@@ -187,6 +187,18 @@ struct JumpRow {
   u64 ts = 0;
 };
 
+// A combination of the tier below's best answers (tier 2 or 3), declared before its first call, so that what the device
+// learns from combinations is kept apart from what it learns from single moves.
+struct ComboRow {
+  u32 sess = 0;
+  std::string fft;
+  TestKind kind = TestKind::PRP;
+  Regime regime{};
+  u32 cfg = 0;
+  u32 tier = 0;
+  u64 ts = 0;
+};
+
 // One LL residue reading.
 struct RefRow {
   u32 sess = 0;
@@ -234,6 +246,7 @@ public:
   [[nodiscard]] const std::vector<ReachRow>& reaches() const { return reaches_; }
   [[nodiscard]] const std::vector<RefRow>& refs() const { return refs_; }
   [[nodiscard]] const std::vector<JumpRow>& jumps() const { return jumps_; }
+  [[nodiscard]] const std::vector<ComboRow>& combos() const { return combos_; }
   [[nodiscard]] const std::vector<std::string>& unknownRows() const { return unknown_; }
 
   // One row per distinct measurement, duplicates folded as a running mean and pooled variance with the calls summed
@@ -279,6 +292,7 @@ public:
   [[nodiscard]] bool add(const ReachRow& row);
   [[nodiscard]] bool add(const RefRow& row);
   [[nodiscard]] bool add(const JumpRow& row);
+  [[nodiscard]] bool add(const ComboRow& row);
   [[nodiscard]] bool add(const DoneRow& row);
 
   // The id an identical entry already has, or a fresh one.
@@ -348,6 +362,7 @@ private:
   std::vector<ReachRow> reaches_;
   std::vector<RefRow> refs_;
   std::vector<JumpRow> jumps_;
+  std::vector<ComboRow> combos_;
   std::vector<std::string> unknown_;
 
   std::map<u32, TryRow> open_;
@@ -370,6 +385,7 @@ private:
 [[nodiscard]] std::string formatRow(const ReachRow& row);
 [[nodiscard]] std::string formatRow(const RefRow& row);
 [[nodiscard]] std::string formatRow(const JumpRow& row);
+[[nodiscard]] std::string formatRow(const ComboRow& row);
 [[nodiscard]] std::string formatRow(const DoneRow& row);
 
 [[nodiscard]] std::string configText(const UseConfig& config);

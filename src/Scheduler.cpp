@@ -385,7 +385,9 @@ std::vector<Item> Scheduler::bootstrapItems(const BootstrapState& state, const O
               .value = 1,
               .seconds = 0,
               .fresh = true,
-              .calls = turn.calls};
+              .calls = turn.calls,
+              .draw = 0,
+              .tier = turn.tier};
     item.fresh = !built_.contains(keyOf(item));
     item.seconds = clock_.seconds(estimate / PRIOR_OPTIMISM, item.fresh);
     out.push_back(std::move(item));
@@ -489,13 +491,15 @@ std::vector<Item> Scheduler::admissible(const TuneDB& db, u32 env, const Objecti
       }
 
       GainDist const entryGains = gains.forEntry(key);
+      GainDist const comboGains = gains.comboForEntry(key);
       size_t const before = out.size();
       std::set<std::string> offered;
       for (size_t branch = 0; branch < branches.size(); ++branch) {
         // Every probe of a branch is worth the same: what the gains this entry and the device have shown expect a move
-        // from the branch's best set to save.
+        // from the branch's best set to save.  Every combo likewise, by the gains combinations have shown.
         double const value = expectedSaving(objective.points(), b.kind, b.band, branches[branch].cost, entryGains);
-        if (value <= 0) { continue; }
+        double const comboValue = expectedSaving(objective.points(), b.kind, b.band, branches[branch].cost, comboGains);
+        if (value <= 0 && comboValue <= 0) { continue; }
 
         ListMemo& memo = probeList(b, branches[branch].best, ofEntry, branch == 0, std::move(from[branch]));
         const ProbeList& list = memo.list;
@@ -506,9 +510,14 @@ std::vector<Item> Scheduler::admissible(const TuneDB& db, u32 env, const Objecti
           }
         }
 
+        // The list is in tier order, and a combination waits for the tiers below it to be answered.
+        std::optional<u32> lowest;
         for (size_t p = 0; p < list.probes.size(); ++p) {
           if (memo.answered[p]) { continue; }
           const Probe& probe = list.probes[p];
+          if (lowest && probe.tier > *lowest) { break; }
+          double const worth = probe.tier > 1 ? comboValue : value;
+          if (worth <= 0) { continue; }
           std::string const text = configText(probe.config);
           if (progress.failed.contains({key, text})) { continue; }
 
@@ -521,10 +530,12 @@ std::vector<Item> Scheduler::admissible(const TuneDB& db, u32 env, const Objecti
                     .moved = probe.key,
                     .what = probe.stage + " " + probe.text,
                     .exponent = b.exponent,
-                    .value = value,
+                    .value = worth,
                     .seconds = 0,
                     .fresh = true,
-                    .calls = 0};
+                    .calls = 0,
+                    .draw = 0,
+                    .tier = probe.tier};
           if (auto const n = probeAttempts_.find(keyOf(item)); n != probeAttempts_.end() && n->second >= MAX_ATTEMPTS) {
             continue;
           }
@@ -540,6 +551,7 @@ std::vector<Item> Scheduler::admissible(const TuneDB& db, u32 env, const Objecti
             continue;
           }
           if (!offered.insert(text).second) { continue; }
+          lowest = std::min(lowest.value_or(probe.tier), probe.tier);
 
           item.fresh = !built_.contains(builtKey(b.fft, item.options));
           item.seconds = clock_.seconds(branches[branch].cost, item.fresh);
@@ -672,10 +684,10 @@ public:
       }
 
       for (const Decision& d : f.decisions) {
-        std::string const key = name + " " + toString(d.group) + " " + std::to_string(d.round);
+        std::string const key = name + " " + d.stage + " " + std::to_string(d.round);
         if (!said_.insert(key).second) { continue; }
         std::string const round = d.round ? " (round " + std::to_string(d.round + 1) + ")" : "";
-        log("tune: bootstrap: %s %s%s decided %s among %u: %s, %.3f +- %.3f us/it\n", name.c_str(), toString(d.group),
+        log("tune: bootstrap: %s %s%s decided %s among %u: %s, %.3f +- %.3f us/it\n", name.c_str(), d.stage.c_str(),
             round.c_str(), toString(d.how), d.candidates, d.winner.c_str(), d.cost, d.se);
       }
     }
@@ -695,6 +707,19 @@ private:
   std::set<std::string> said_;
   bool complete_ = false;
 };
+
+// Whether a combo row already declares this configuration: a stop can cut the first call short after its declaration.
+[[nodiscard]] bool declaredCombo(const TuneDB& db, u32 envId, const Env& env, const FFTConfig& fft, TestKind kind,
+                                 u64 exponent, const UseConfig& options) {
+  std::string const spec = fft.spec();
+  std::string const regime = regimeOf(fft, exponent).label();
+  UseConfig const canonical = canonicalConfig(env, fft, options);
+  return std::ranges::any_of(db.combos(), [&](const ComboRow& row) {
+    const UseConfig* const opts = db.findCfg(row.cfg);
+    return opts && db.envOf(row.sess) == envId && row.fft == spec && row.kind == kind && row.regime.label() == regime &&
+      canonicalConfig(env, fft, *opts) == canonical;
+  });
+}
 
 // The best option set of the entry `b`, canonical, and its cost; nothing where no row of it could be published.
 [[nodiscard]] std::optional<std::string> bestOf(const TuneDB& db, u32 envId, const Env& env, const Defaults& defaults,
@@ -763,6 +788,10 @@ QueueReport runQueue(Scheduler& scheduler, TuneDB& db, u32 env, Bench& bench, co
     if (item->kind == ItemKind::Restart && item->calls == 0) {
       bench.declareRestart(fft, kind, item->exponent, item->options, item->draw);
     }
+    if (item->tier > 1 && item->calls == 0 &&
+        !declaredCombo(db, env, scheduler.bootstrap().env(), fft, kind, item->exponent, item->options)) {
+      bench.declareCombo(fft, kind, item->exponent, item->options, item->tier);
+    }
     Bench::Result const result = bench.run(fft, kind, item->exponent, item->options, item->moved);
 
     // A call cut short by a stop recorded nothing, so there is nothing to account for.
@@ -820,6 +849,8 @@ QueueReport runQueue(Scheduler& scheduler, TuneDB& db, u32 env, Bench& bench, co
   log("tune: %.0f gains observed; a move is expected to gain %.2f%% (the prior says %.2f%%), and 16%% or more %.1f%% "
       "of the time\n",
       gains.all().n(), 100 * shown.mean(), 100 * GAIN_PRIOR.mean(), 100 * large);
+  log("tune: %.0f combinations measured; one is expected to gain %.2f%% (the prior says %.2f%%)\n", gains.combos().n(),
+      100 * gains.globalCombo().mean(), 100 * GAIN_COMBO_PRIOR.mean());
   return out;
 }
 

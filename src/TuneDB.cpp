@@ -323,6 +323,11 @@ std::string formatRow(const JumpRow& row) {
     to_string(row.cfg) + ' ' + to_string(row.k) + ' ' + to_string(row.ts);
 }
 
+std::string formatRow(const ComboRow& row) {
+  return "combo " + to_string(row.sess) + ' ' + row.fft + ' ' + toString(row.kind) + ' ' + row.regime.label() + ' ' +
+    to_string(row.cfg) + ' ' + to_string(row.tier) + ' ' + to_string(row.ts);
+}
+
 std::string formatRow(const NogoRow& row) {
   return "nogo  " + to_string(row.sess) + ' ' + row.fft + ' ' + row.key + '=' + row.val + ' ' + to_string(row.ts);
 }
@@ -502,6 +507,14 @@ bool TuneDB::add(const JumpRow& row) {
   if (!findSession(row.sess) || !findCfg(row.cfg) || isSealed(row.sess)) { return false; }
   u64 const ts = row.ts;
   if (!record(jumps_, row)) { return false; }
+  noteRow(row.sess, ts);
+  return true;
+}
+
+bool TuneDB::add(const ComboRow& row) {
+  if (!findSession(row.sess) || !findCfg(row.cfg) || isSealed(row.sess) || row.tier < 2) { return false; }
+  u64 const ts = row.ts;
+  if (!record(combos_, row)) { return false; }
   noteRow(row.sess, ts);
   return true;
 }
@@ -754,6 +767,7 @@ bool TuneDB::compact() {
   for (const AnchorRow& r : anchors_) { named.insert(r.cfg); }
   for (const TryRow& r : tries_) { named.insert(r.cfg); }
   for (const JumpRow& r : jumps_) { named.insert(r.cfg); }
+  for (const ComboRow& r : combos_) { named.insert(r.cfg); }
 
   std::erase_if(cfgs_, [&named](const auto& entry) { return !named.contains(entry.first); });
   return true;
@@ -811,6 +825,7 @@ bool TuneDB::reset(u32 env, std::string_view fft) {
   std::erase_if(refs_, drop);
   std::erase_if(nogos_, drop);
   std::erase_if(jumps_, drop);
+  std::erase_if(combos_, drop);
   std::erase_if(tries_, drop);
 
   std::vector<std::pair<u32, u64>> orphaned;
@@ -914,6 +929,7 @@ void TuneDB::clear() {
   reaches_.clear();
   refs_.clear();
   jumps_.clear();
+  combos_.clear();
   unknown_.clear();
 }
 
@@ -967,7 +983,7 @@ bool TuneDB::parse(std::string_view text, std::string_view name) {
     std::string const& tag = f[0];
 
     auto const known = tag == "env" || tag == "cfg" || tag == "sess" || tag == "run" || tag == "try" || tag == "done" ||
-      tag == "nogo" || tag == "roe" || tag == "reach" || tag == "ref" || tag == "jump";
+      tag == "nogo" || tag == "roe" || tag == "reach" || tag == "ref" || tag == "jump" || tag == "combo";
     if (known && f.size() < 2) {
       refuse(tag + " row has no fields");
       continue;
@@ -1171,15 +1187,15 @@ bool TuneDB::parse(std::string_view text, std::string_view name) {
       if (!sess || !ts) { continue; }
       if (!add(AlarmRow{.sess = *sess, .ts = *ts})) { refuse("alarm row names a session that is not declared"); }
     } else if (tag == "run" || tag == "try" || tag == "nogo" || tag == "roe" || tag == "anchor" || tag == "reach" ||
-               tag == "ref" || tag == "jump") {
-      size_t const want = tag == "run" ? 14
-        : tag == "jump"                ? 8
-        : tag == "try"                 ? 7
-        : tag == "nogo"                ? 5
-        : tag == "roe"                 ? 10
-        : tag == "anchor"              ? 8
-        : tag == "reach"               ? 9
-                                       : 7;
+               tag == "ref" || tag == "jump" || tag == "combo") {
+      size_t const want = tag == "run"    ? 14
+        : tag == "jump" || tag == "combo" ? 8
+        : tag == "try"                    ? 7
+        : tag == "nogo"                   ? 5
+        : tag == "roe"                    ? 10
+        : tag == "anchor"                 ? 8
+        : tag == "reach"                  ? 9
+                                          : 7;
       if (f.size() != want) {
         refuse(tag + " row has " + to_string(f.size()) + " fields, expected " + to_string(want));
         continue;
@@ -1325,6 +1341,21 @@ bool TuneDB::parse(std::string_view text, std::string_view name) {
         JumpRow const row{
           .sess = *sess, .fft = *fft, .kind = *kind, .regime = *regime, .cfg = *cfg, .k = *k, .ts = *ts};
         if (!add(row)) { refuse("jump row holds a value this format cannot write back"); }
+      } else if (tag == "combo") {
+        auto const kind = parseTestKind(f[3]);
+        auto const regime = parseRegime(f[4]);
+        std::optional<u32> cfg;
+        cfgOf(f[5], cfg);
+        auto const tier = parseInt<u32>(f[6]);
+        auto const ts = parseInt<u64>(f[7]);
+        if (!kind) { refuse("'" + f[3] + "' is not a test kind"); }
+        if (!regime) { refuse("'" + f[4] + "' is not a regime"); }
+        if (!tier || *tier < 2) { refuse("'" + f[6] + "' is not a combination tier"); }
+        if (!ts) { refuse("'" + f[7] + "' is not a timestamp"); }
+        if (!kind || !regime || !cfg || !tier || *tier < 2 || !ts) { continue; }
+        ComboRow const row{
+          .sess = *sess, .fft = *fft, .kind = *kind, .regime = *regime, .cfg = *cfg, .tier = *tier, .ts = *ts};
+        if (!add(row)) { refuse("combo row holds a value this format cannot write back"); }
       } else {
         auto const exponent = parseInt<u64>(f[3]);
         auto const iters = parseInt<u64>(f[4]);
@@ -1374,6 +1405,7 @@ std::string TuneDB::text() const {
   for (const ReachRow& r : reaches_) { out += formatRow(r) + '\n'; }
   for (const RefRow& r : refs_) { out += formatRow(r) + '\n'; }
   for (const JumpRow& r : jumps_) { out += formatRow(r) + '\n'; }
+  for (const ComboRow& r : combos_) { out += formatRow(r) + '\n'; }
   for (const TryRow& r : tries_) { out += formatRow(r) + '\n'; }
   for (const auto& [sess, ts] : answered_) { out += formatRow(DoneRow{.sess = sess, .ts = ts}) + '\n'; }
   for (const std::string& line : unknown_) { out += line + '\n'; }

@@ -83,7 +83,7 @@ struct Seed {
 };
 
 // The best `top` distinct projections of `readings` onto the axes `unit`, the background's own first.  `readings` are
-// the branch's, cheapest first, the background first of all.  A projection this background cannot place -- a value
+// the branch's, the background first and the rest cheapest first.  A projection this background cannot place -- a value
 // that a dependent's list, as the background has it, does not offer -- is passed over.
 [[nodiscard]] std::vector<Seed> seedsOf(const Env& env, const FFTConfig& fft, const std::vector<Axis>& axes,
                                         const std::vector<size_t>& unit, std::span<const Reading> readings, u32 top) {
@@ -104,7 +104,9 @@ struct Seed {
     }
     if (at.size() != unit.size() || !seen.insert(at).second) { continue; }
 
-    Seed seed{.moves = {}, .gain = 1 - reading.cost / readings.front().cost};
+    // An answer cheaper than the background's own, which a race can leave behind a winner it decided by margin, counts
+    // as no gain: the background's answer is first in every dimension, and the enumeration needs each to fall.
+    Seed seed{.moves = {}, .gain = std::min(0.0, 1 - reading.cost / readings.front().cost)};
     for (size_t j = 0; j < unit.size(); ++j) {
       if (at[j] != axes[unit[j]].current) { seed.moves.emplace_back(unit[j], at[j]); }
     }

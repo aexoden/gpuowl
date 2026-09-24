@@ -331,6 +331,16 @@ void Session::declareRestart(const FFTConfig& fft, TestKind kind, u64 exponent, 
                         .ts = now()});
 }
 
+void Session::declareCombo(const FFTConfig& fft, TestKind kind, u64 exponent, const UseConfig& options, u32 tier) {
+  (void)db_.add(ComboRow{.sess = session_,
+                         .fft = fft.spec(),
+                         .kind = kind,
+                         .regime = regimeOf(fft, exponent),
+                         .cfg = db_.internCfg(options),
+                         .tier = tier,
+                         .ts = now()});
+}
+
 void Session::keepAnchor() {
   if (!anchorDue()) { return; }
   raceAnchor();

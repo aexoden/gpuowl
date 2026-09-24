@@ -134,6 +134,9 @@ struct Item {
   // A restart's: which draw of its entry's sequence it is.
   u32 draw = 0;
 
+  // 2 or 3 for a point of a combination, a combo's or a bootstrap race's, and 1 for anything else.
+  u32 tier = 1;
+
   [[nodiscard]] double rate() const { return seconds > 0 ? value / seconds : 0; }
 };
 
@@ -185,12 +188,13 @@ public:
   // decides, so measuring one earlier would measure something production is not going to run.  After that, together
   // and best rate first: the baselines; the probes and combos of every entry with a row emission could publish, from
   // its best set or, under a strategy that searches by group, from the best set of each of its cheapest MAX_BRANCHES
-  // structural branches, each valued at that branch's cost; one more call on each side of every contest production
-  // decides that the race rule leaves undecided (refineValues()); and for an entry with no probe or combo left, the
-  // next draw of its restart sequence.  A baseline is left out once a row has concluded it or recorded a failure of
-  // it, and a probe, a combo or a restart once a row answers it or recorded a failure of it; any of them while an
-  // earlier generation's death or an unbuildable key holds it, and once this process has tried it more often than any
-  // entry needs.
+  // structural branches, each valued at that branch's cost -- a probe under the entry's move gains and a combo under
+  // its combination gains -- and a combo only once its branch has nothing of a lower tier left to offer, since it
+  // combines what those found; one more call on each side of every contest production decides that the race rule leaves
+  // undecided (refineValues()); and for an entry with no probe or combo left, the next draw of its restart sequence.  A
+  // baseline is left out once a row has concluded it or recorded a failure of it, and a probe, a combo or a restart
+  // once a row answers it or recorded a failure of it; any of them while an earlier generation's death or an
+  // unbuildable key holds it, and once this process has tried it more often than any entry needs.
   [[nodiscard]] std::vector<Item> admissible(const TuneDB& db, u32 env, const Objective& objective) const;
 
 
@@ -283,6 +287,9 @@ public:
 
   // Declares that the next call is the `k`th draw of its entry's restart sequence, before it is made.
   virtual void declareRestart(const FFTConfig& fft, TestKind kind, u64 exponent, const UseConfig& options, u32 k) = 0;
+
+  // Declares that the next call is a point of a combination of tier `tier`, before it is made.
+  virtual void declareCombo(const FFTConfig& fft, TestKind kind, u64 exponent, const UseConfig& options, u32 tier) = 0;
 
   // Records its own rows.  `moved` is the one key that differs from the configuration this one is compared with, if
   // there is one, so that a build failure can be pinned on it.
