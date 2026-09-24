@@ -40,6 +40,7 @@ add_executable(prpll
   Probe.cpp
   Value.cpp
   Gate.cpp
+  Summary.cpp
   fs.cpp
   )
 

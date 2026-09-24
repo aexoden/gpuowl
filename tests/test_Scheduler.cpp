@@ -11,13 +11,16 @@
 #include "FFTVariants.h"
 #include "Primes.h"
 #include "Selection.h"
+#include "Summary.h"
 
 #include "test.h"
 
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <functional>
 #include <map>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -435,6 +438,23 @@ TEST(the_same_configuration_is_not_run_twice_while_another_is_close) {
   CHECK(!scheduler.pick({item(0, 0, 10)}).has_value());
   CHECK(!scheduler.pick({}).has_value());
 
+  // Nor is anything worth less than the floor, however quickly it would be done; what is worth the floor runs in its
+  // place, and interleaves only with what is worth the floor as well.
+  std::vector<Item> const cheap{item(0, 2, 1), item(1, 10, 100), item(2, 9, 100)};
+  std::optional<Item> const worth = scheduler.pick(cheap, 5);
+  CHECK(worth && worth->index == 1);
+  CHECK(!scheduler.pick(cheap, 20).has_value());
+
+  // A gate reading and a bootstrap call run by rule, whatever they are valued at.
+  Item gate = item(0, 1, 10);
+  gate.kind = ItemKind::Gate;
+  std::optional<Item> const next = scheduler.pick({gate}, 1000);
+  CHECK(next && next->kind == ItemKind::Gate);
+  Item call = item(0, 1, 10);
+  call.kind = ItemKind::Bootstrap;
+  CHECK(worthRunning(call, 1000));
+  CHECK(!worthRunning(item(0, 1, 10), 1000));
+
   // The anchor is not an entry, so it does not count as the one just run.
   scheduler.ran({.kind = ItemKind::Anchor}, 0, 0);
   CHECK_EQ(picked(ranked), size_t(0));
@@ -805,7 +825,7 @@ struct ProbeRun {
 };
 
 ProbeRun runProbed(Fixture& f, u32 stopAfter = ~0u, const std::function<UseConfig(const UseConfig&)>& builtAs = {},
-                   bool restarts = false) {
+                   bool restarts = false, double stop = 0) {
   FakeBench bench{f.db, f.sess, false, stopAfter};
   bench.optionFactor = interacting;
   if (builtAs) { bench.builtAs = builtAs; }
@@ -813,14 +833,17 @@ ProbeRun runProbed(Fixture& f, u32 stopAfter = ~0u, const std::function<UseConfi
   Scheduler scheduler = probedScheduler(restarts);
   ProbeRun out;
   // As the search sees it: with the gate turned off nothing is published but what rounds nothing.
-  out.report = runQueue(scheduler, f.db, f.env, bench, [&](const Objective&, const Defaults& defaults) {
-    for (const SelectionEntry& e : entriesFor(f.db, f.env, defaults, Gating::Assumed)) {
-      if (e.fft == PROBED) {
-        out.best = configText(canonicalConfig(nvidia(), FFTConfig{PROBED}, e.opts));
-        break;
+  out.report = runQueue(
+    scheduler, f.db, f.env, bench,
+    [&](const Objective&, const Defaults& defaults) {
+      for (const SelectionEntry& e : entriesFor(f.db, f.env, defaults, Gating::Assumed)) {
+        if (e.fft == PROBED) {
+          out.best = configText(canonicalConfig(nvidia(), FFTConfig{PROBED}, e.opts));
+          break;
+        }
       }
-    }
-  });
+    },
+    stop);
   out.order = bench.order;
   out.gains = gainsOf(f.db, f.env);
   return out;
@@ -1795,4 +1818,244 @@ TEST(a_set_that_spends_accuracy_has_its_defaults_read_as_well) {
   CHECK(owed.at(0).subject == moved);
   CHECK(!movesAccuracy(env, entry->fft, owed.at(0).options));
   CHECK(canonicalConfig(env, entry->fft, owed.at(0).options).empty());
+}
+
+
+TEST(a_run_that_restarts_stops_once_nothing_is_worth_the_stop_fraction) {
+  Fixture plain;
+  ProbeRun const descent = runProbed(plain);
+
+  // Restarts are always worth something, so without a stop fraction only their space running out ends the run.
+  Fixture forever;
+  ProbeRun const unstopped = runProbed(forever, u32(descent.order.size()) + 40 * MIN_CALLS, {}, true, 0);
+  CHECK(unstopped.report.stopped);
+  CHECK(unstopped.report.end == QueueEnd::Stopped);
+
+  // With one, the run ends by itself: the descent, then jumps until the ones that keep finding nothing have taught the
+  // entry that its next is worth less than 0.1% of T.
+  Fixture f;
+  ProbeRun const run = runProbed(f, ~0u, {}, true, STOP);
+  CHECK(!run.report.stopped);
+  CHECK(run.report.end == QueueEnd::BelowStop);
+  CHECK(std::equal(descent.order.begin(), descent.order.end(), run.order.begin()));
+  CHECK(run.report.spent.contains(ItemKind::Restart));
+  CHECK(run.order.size() < unstopped.order.size());
+
+  CHECK(near(run.report.floor, STOP * run.report.valuedT));
+  CHECK(!run.report.left.empty());
+  for (const Item& item : run.report.left) {
+    CHECK(item.value > 0);
+    CHECK(item.value < run.report.floor);
+  }
+}
+
+TEST(a_run_with_nothing_worth_the_stop_fraction_reads_no_anchor) {
+  Fixture f;
+  ProbeRun const done = runProbed(f, ~0u, {}, true, STOP);
+  CHECK(done.report.end == QueueEnd::BelowStop);
+
+  // A later process on the same database finds nothing to do, and so nothing to divide by an anchor reading.
+  f.newSession();
+  FakeBench bench{f.db, f.sess, true};
+  Scheduler scheduler = probedScheduler(true);
+  QueueReport const again = runQueue(scheduler, f.db, f.env, bench, [](const Objective&, const Defaults&) {}, STOP);
+  CHECK(again.end == QueueEnd::BelowStop);
+  CHECK_EQ(again.items, 0u);
+  CHECK_EQ(again.anchors, 0u);
+  CHECK(bench.order.empty());
+}
+
+namespace {
+
+// Everything shapes() offers, searched one key at a time, jumping once searched, and gated, the way a run is.
+struct SummaryRun {
+  Fixture f;
+  Scheduler scheduler{scope(),
+                      baselines(nvidia(), scope(), shapes()),
+                      1000,
+                      Bootstrap{nvidia(), 118'063'003, {}, false},
+                      Strategy{.kind = Strategy::Kind::Single},
+                      true,
+                      true};
+  QueueReport report;
+  RunSummary summary;
+
+  SummaryRun(u32 stopAfter, double stop) {
+    FakeBench bench{f.db, f.sess, true, stopAfter};
+    bench.optionFactor = interacting;
+    bench.race = {{"512:15:512:212", 1700}};
+    report = runQueue(scheduler, f.db, f.env, bench, [](const Objective&, const Defaults&) {}, stop);
+    summary = summarize(scheduler, f.db, f.env, f.sess, report, stop);
+  }
+};
+
+// What the summary says about a run, checked against the queue's own ranking of what it left, taken again.
+void checkSummary(SummaryRun& run, double stop) {
+  const RunSummary& s = run.summary;
+  const TuneDB& db = run.f.db;
+  u32 const env = run.f.env;
+
+  BootstrapState const state = run.scheduler.bootstrapState(db, env);
+  Objective const valuing{db, env, scope(), state.defaults, Gating::Assumed};
+  std::vector<Item> const left = run.scheduler.admissible(db, env, valuing);
+  CHECK(!left.empty());
+
+  CHECK(near(s.T, valuing.T()));
+  CHECK(near(s.floor, stop * valuing.T()));
+  CHECK_EQ(s.items, run.report.items);
+
+  // Every kind the queue still offers, how many, and the most any one of them is worth.
+  std::map<ItemKind, std::pair<u32, double>> byKind;
+  for (const Item& item : left) {
+    auto& [n, best] = byKind[item.kind];
+    ++n;
+    best = std::max(best, item.value);
+  }
+  CHECK_EQ(s.remaining.size(), byKind.size());
+  for (const RunSummary::Remaining& r : s.remaining) {
+    CHECK(byKind.contains(r.kind));
+    CHECK_EQ(r.count, byKind[r.kind].first);
+    CHECK(near(r.value, byKind[r.kind].second));
+  }
+
+  // Each type's entries, and of those the queue still offers a first measurement of, the one the least gain would
+  // justify: a baseline the queue values at what the summary says, whose saving at that gain is exactly what an item
+  // had to be worth, and which no other baseline of its type needs less gain than.
+  std::map<enum FFT_TYPES, u32> entries;
+  std::set<std::string> seen;
+  for (const Baseline& b : run.scheduler.baselines()) {
+    if (seen.insert(b.label()).second) { ++entries[b.fft.shape.fft_type]; }
+  }
+  u32 unmeasured = 0;
+  for (const RunSummary::Family& fam : s.families) {
+    CHECK_EQ(fam.entries, entries[fam.type]);
+    CHECK(fam.measured + fam.unmeasured <= fam.entries);
+    unmeasured += fam.unmeasured;
+    if (!fam.unmeasured) { continue; }
+
+    std::optional<double> least;
+    const Item* closest = nullptr;
+    for (const Item& item : left) {
+      const Baseline& b = run.scheduler.baselines()[item.index];
+      if (item.kind != ItemKind::Baseline || b.fft.shape.fft_type != fam.type) { continue; }
+      std::optional<double> const g = requiredGain(valuing.points(), b.kind, b.band, item.cost, s.floor);
+      if (g && (!least || *g < *least)) { least = g; }
+      if (b.label() == fam.closest) { closest = &item; }
+    }
+    CHECK(closest != nullptr);
+    if (!closest) { continue; }
+    CHECK(near(fam.closestValue, closest->value));
+    CHECK_EQ(fam.gain.has_value(), least.has_value());
+    if (!fam.gain) { continue; }
+
+    const Baseline& b = run.scheduler.baselines()[closest->index];
+    CHECK(near(*fam.gain, *least));
+    double const saved = saving(valuing.points(), b.kind, b.band, closest->cost * (1 - *fam.gain));
+    CHECK(*fam.gain == 0 || std::abs(saved - s.floor) <= 1e-9 * std::max(1.0, s.floor));
+    CHECK(near(fam.chance, gainsOf(db, env).global().chanceOfAtLeast(*fam.gain)));
+  }
+  CHECK_EQ(unmeasured, byKind.contains(ItemKind::Baseline) ? byKind[ItemKind::Baseline].first : 0u);
+
+  GainModel const gains = gainsOf(db, env);
+  CHECK(near(s.moves, gains.all().n()));
+  CHECK(near(s.combos, gains.combos().n()));
+  for (size_t i = 0; i < GAIN_BINS; ++i) {
+    CHECK(near(s.moveGains.p[i], gains.global().p[i]));
+    CHECK(near(s.comboGains.p[i], gains.globalCombo().p[i]));
+  }
+
+  CHECK_EQ(s.anchors, run.report.anchors);
+}
+
+}  // namespace
+
+TEST(the_summary_numbers_are_the_queues_own_scores) {
+  // Stopped part-way, with baselines, probes and refines all still offered.
+  SummaryRun early{60, STOP};
+  CHECK(early.summary.end == QueueEnd::Stopped);
+  checkSummary(early, STOP);
+  CHECK(std::ranges::any_of(early.summary.families, [](const RunSummary::Family& f) { return f.unmeasured > 0; }));
+
+  // And run to its own end, where everything left is worth less than the stop fraction.
+  SummaryRun done{~0u, STOP};
+  CHECK(done.summary.end == QueueEnd::BelowStop);
+  checkSummary(done, STOP);
+  for (const RunSummary::Remaining& r : done.summary.remaining) { CHECK(r.value < done.summary.floor); }
+
+  // With no stop fraction, the gain a family needed is the gain at which it would save anything at all.
+  SummaryRun zero{60, 0};
+  checkSummary(zero, 0);
+}
+
+TEST(the_drift_record_is_the_sessions_own_anchor_readings) {
+  Fixture f;
+  u32 const cfg = f.db.internCfg({});
+  auto anchor = [&](u32 sess, double ratio, u64 ts) {
+    CHECK(f.db.add(AnchorRow{.sess = sess,
+                             .fft = "512:15:512:212",
+                             .exponent = 118'063'003,
+                             .cfg = cfg,
+                             .mean = 1700 * ratio,
+                             .ratio = ratio,
+                             .ts = ts}));
+  };
+  anchor(f.sess, 1.0, 1);
+  anchor(f.sess, 1.03, 2);
+  anchor(f.sess, 0.975, 3);
+  u32 const first = f.sess;
+  f.newSession();
+  anchor(f.sess, 1.12, 4);
+  anchor(first, 1.01, 5);
+
+  Scheduler const scheduler{scope(), {}};
+  RunSummary const s = summarize(scheduler, f.db, f.env, first, QueueReport{}, STOP);
+  CHECK_EQ(s.drift.anchor, std::string{"512:15:512:212@118063003"});
+  CHECK_EQ(s.drift.readings, 4u);
+  CHECK(near(s.drift.first, 1.0));
+  CHECK(near(s.drift.last, 1.01));
+  CHECK(near(s.drift.lo, 0.975));
+  CHECK(near(s.drift.hi, 1.03));
+  CHECK(s.drift.level == DriftLevel::Warn);
+  CHECK(!s.drift.alarmed);
+
+  RunSummary const later = summarize(scheduler, f.db, f.env, f.sess, QueueReport{}, STOP);
+  CHECK_EQ(later.drift.readings, 1u);
+  CHECK(later.drift.level == DriftLevel::Alarm);
+  CHECK(f.db.add(AlarmRow{.sess = f.sess, .ts = 6}));
+  CHECK(summarize(scheduler, f.db, f.env, f.sess, QueueReport{}, STOP).drift.alarmed);
+
+  f.newSession();
+  CHECK_EQ(summarize(scheduler, f.db, f.env, f.sess, QueueReport{}, STOP).drift.readings, 0u);
+}
+
+TEST(entries_held_back_by_rule_are_waiting_not_ruled_out) {
+  // Stopped before the bootstrap's first call: nothing is measured, and nothing is ruled out either.
+  Fixture f;
+  Scheduler scheduler{scope(), baselines(nvidia(), scope(), shapes()), 1000, twoFamilies(), {}, false, true};
+  FakeBench bench{f.db, f.sess, false, 0};
+  QueueReport const report = runQueue(scheduler, f.db, f.env, bench, [](const Objective&, const Defaults&) {}, STOP);
+  RunSummary const s = summarize(scheduler, f.db, f.env, f.sess, report, STOP);
+  CHECK(!s.families.empty());
+  CHECK_EQ(s.heldBy, std::string{"the bootstrap"});
+  for (const RunSummary::Family& fam : s.families) {
+    CHECK_EQ(fam.measured, 0u);
+    CHECK_EQ(fam.unmeasured, 0u);
+    CHECK_EQ(fam.waiting, fam.entries);
+    CHECK(!fam.gain.has_value());
+  }
+
+  // Stopped with a gate reading owed: the entry it reads is measured, and every other is waiting on the gate.
+  Fixture g;
+  Scheduler gated{scope(), baselines(nvidia(), scope(), shapes()), 1000, {}, {}, false, true};
+  FakeBench first{g.db, g.sess, false, MIN_CALLS};
+  QueueReport const held = runQueue(gated, g.db, g.env, first, [](const Objective&, const Defaults&) {}, STOP);
+  CHECK(std::ranges::all_of(held.left, [](const Item& i) { return i.kind == ItemKind::Gate; }));
+  RunSummary const t = summarize(gated, g.db, g.env, g.sess, held, STOP);
+  CHECK_EQ(t.heldBy, std::string{"the accuracy gate"});
+  u32 measured = 0;
+  for (const RunSummary::Family& fam : t.families) {
+    CHECK_EQ(fam.measured + fam.waiting, fam.entries);
+    measured += fam.measured;
+  }
+  CHECK_EQ(measured, 1u);
 }

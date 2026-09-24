@@ -19,6 +19,7 @@
 
 #include <array>
 #include <map>
+#include <optional>
 #include <set>
 #include <span>
 #include <string>
@@ -53,6 +54,9 @@ struct GainDist {
   [[nodiscard]] double expectedSaving(double best, double estimate) const;
 
   [[nodiscard]] double mean() const;
+
+  // The probability of a gain of at least `gain`.
+  [[nodiscard]] double chanceOfAtLeast(double gain) const;
 };
 
 // Mostly nothing, with a genuine right tail: gains of 30-60% are rare, but they are what a badly-defaulted family looks
@@ -103,6 +107,12 @@ public:
   [[nodiscard]] GainDist globalCombo() const { return combos_.posterior(GAIN_COMBO_PRIOR); }
   [[nodiscard]] GainDist comboForEntry(const EntryKey& entry) const;
 
+  // For a restart of `entry`: its own restarts over forEntry(), with no floor.  The floor forEntry() keeps is what
+  // lets an entry whose moves found nothing be floated again, but a jump is drawn from the same space however often
+  // that space has come up empty, so an entry whose jumps keep finding nothing is worth jumping from less and less --
+  // and a run that is to stop on its own must be able to stop jumping.
+  [[nodiscard]] GainDist restartForEntry(const EntryKey& entry) const;
+
   [[nodiscard]] const GainCounts& all() const { return all_; }
   [[nodiscard]] const GainCounts& combos() const { return combos_; }
 
@@ -111,6 +121,7 @@ private:
   std::map<EntryKey, GainCounts> entries_;
   GainCounts combos_;
   std::map<EntryKey, GainCounts> entryCombos_;
+  std::map<EntryKey, GainCounts> restarts_;
 };
 
 // An option set of an entry, as its canonical text.
@@ -136,6 +147,12 @@ using EntrySet = std::pair<EntryKey, std::string>;
 // Its expectation over `gains`, for a configuration valued at `cost` before it is measured.
 [[nodiscard]] double expectedSaving(std::span<const ObjectivePoint> points, TestKind kind, const Interval& band,
                                     double cost, const GainDist& gains);
+
+// The smallest relative gain on `cost` at which saving() reaches `worth`: 0 where it already does, and nothing where
+// no gain could, since even a configuration costing nothing would save less.  With `worth` 0, the gain at which it
+// would start to save anything at all.
+[[nodiscard]] std::optional<double> requiredGain(std::span<const ObjectivePoint> points, TestKind kind,
+                                                 const Interval& band, double cost, double worth);
 
 // The expected cost of deciding now between two configurations whose difference in cost is distributed N(mu, sigma^2):
 // sigma * phi(mu / sigma) - |mu| * Phi(-|mu| / sigma).

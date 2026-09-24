@@ -54,6 +54,11 @@ inline constexpr u32 GRID_POINTS = 64;
 // The width of the bins the worktodo mode is the most populated of, as a fraction of the exponent.
 inline constexpr double PROBE_BIN = 0.02;
 
+// A run stops once nothing it could measure is expected to lower T by this fraction of it.  Measured against what is
+// left to gain rather than against a clock, so that a run ends where the next hour would buy little, however long the
+// last one took.
+inline constexpr double STOP = 0.001;
+
 enum class TuneVerb : u8 {
   Emit,     // publish the selection file the database supports
   Reset,    // drop what was measured on an env, or on one shape of it
@@ -97,6 +102,9 @@ struct TuneCommand {
 
   // `run` only: what counts as one step from an entry's best option set.
   Strategy strategy{};
+
+  // `run` only: the fraction of T an item has to be expected to remove to be worth running; 0 to run until stopped.
+  double stop = STOP;
 };
 
 // One pending assignment, reduced to what the scope cares about.

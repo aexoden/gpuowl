@@ -521,3 +521,67 @@ TEST(the_combination_prior_is_rarer_with_a_tail_as_long) {
   CHECK_EQ(GAIN_COMBO_PRIOR.p.back(), GAIN_PRIOR.p.back());
   CHECK(near(GainModel{}.globalCombo().mean(), GAIN_COMBO_PRIOR.mean()));
 }
+
+TEST(an_entry_whose_jumps_keep_finding_nothing_is_worth_jumping_from_less_and_less) {
+  EntryKey const entry{"512:15:512:202", TestKind::PRP, "short32"};
+  GainModel model;
+  for (int i = 0; i < 20; ++i) { model.observe(entry, 0.004); }
+
+  // With no jump of its own yet, a jump is worth what a move is.
+  GainDist const before = model.restartForEntry(entry);
+  for (size_t i = 0; i < GAIN_BINS; ++i) { CHECK(near(before.p[i], model.forEntry(entry).p[i])); }
+
+  double previous = before.expectedSaving(100, 100);
+  for (int n = 1; n <= 200; ++n) {
+    model.observe(entry, 0, GainSource::Restart);
+    double const now = model.restartForEntry(entry).expectedSaving(100, 100);
+    CHECK(now < previous);
+    previous = now;
+  }
+  CHECK(near(total(model.restartForEntry(entry)), 1));
+
+  // The moves keep their floor, and the jumps do not: a jump is drawn from the same space however often it came up
+  // empty, so there is nothing to float it again, and past the floor is where a run can stop jumping.
+  GainDist const moves = model.forEntry(entry);
+  CHECK(moves.expectedSaving(100, 100) >= (1 - ENTRY_MIX) * model.global().expectedSaving(100, 100));
+  CHECK(previous < 0.1 * moves.expectedSaving(100, 100));
+}
+
+TEST(the_chance_of_a_gain_is_the_weight_at_or_past_it) {
+  CHECK(near(GAIN_PRIOR.chanceOfAtLeast(0), total(GAIN_PRIOR)));
+  CHECK(near(GAIN_PRIOR.chanceOfAtLeast(0.16), 0.03 + 0.01 + 0.002));
+  CHECK(near(GAIN_PRIOR.chanceOfAtLeast(0.10), 0.03 + 0.01 + 0.002));
+  CHECK(near(GAIN_PRIOR.chanceOfAtLeast(0.64), 0.002));
+  CHECK_EQ(GAIN_PRIOR.chanceOfAtLeast(0.65), 0.0);
+}
+
+TEST(the_gain_an_item_needs_is_where_its_saving_reaches_what_it_has_to_be_worth) {
+  // Three points in the band, one dear point outside it that must not count.
+  std::vector<ObjectivePoint> const points{point(E0, 0.5, 100), point(E0 + 2, 0.3, 90), point(E0 + 4, 0.2, 80),
+                                           point(E0 + 100, 0.9, 500)};
+  Interval const band{.lo = E0, .hi = E0 + 10, .regime = {}};
+  double const cost = 120;
+
+  for (double const worth : {0.01, 1.0, 4.0, 12.0, 25.0, 60.0}) {
+    std::optional<double> const g = requiredGain(points, TestKind::PRP, band, cost, worth);
+    CHECK(g.has_value());
+    CHECK(near(saving(points, TestKind::PRP, band, cost * (1 - *g)), worth, 1e-9));
+    CHECK(saving(points, TestKind::PRP, band, cost * (1 - *g + 1e-6)) < worth);
+  }
+
+  // Everything in the band costing nothing would save 0.5*100 + 0.3*90 + 0.2*80 = 93, and no more.
+  CHECK(near(*requiredGain(points, TestKind::PRP, band, cost, 93), 1, 1e-9));
+  CHECK(!requiredGain(points, TestKind::PRP, band, cost, 93.01));
+
+  // Worth nothing in particular: the gain at which it starts to save anything, which is where it undercuts the
+  // dearest point of its band.
+  CHECK(near(*requiredGain(points, TestKind::PRP, band, cost, 0), 1 - 100.0 / 120));
+  CHECK_EQ(saving(points, TestKind::PRP, band, 100), 0.0);
+
+  // Already cheaper than enough of the band: no gain is needed.
+  CHECK_EQ(*requiredGain(points, TestKind::PRP, band, 50, 1), 0.0);
+
+  // Nothing weighs the band, or another kind's grid.
+  CHECK(!requiredGain(points, TestKind::PRP, {.lo = 1, .hi = 2, .regime = {}}, cost, 1));
+  CHECK(!requiredGain(points, TestKind::LL, band, cost, 1));
+}

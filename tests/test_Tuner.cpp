@@ -160,6 +160,23 @@ TEST(the_combo_settings_shape_hybrid_in_either_order) {
   CHECK(!refusal("emit,comboTop=3").empty());
 }
 
+TEST(stop_is_a_percentage_of_T_or_nothing) {
+  CHECK_EQ(parsed("").stop, STOP);
+  CHECK_EQ(parsed("stop=0.1%").stop, 0.001);
+  CHECK_EQ(parsed("stop=2%,workload=100M-400M").stop, 0.02);
+  CHECK_EQ(parsed("stop=0").stop, 0.0);
+  CHECK_EQ(parsed("stop=0%").stop, 0.0);
+
+  // A bare fraction could be read either way, so it is refused rather than guessed at.
+  CHECK(!refusal("stop=0.1").empty());
+  CHECK(!refusal("stop=1").empty());
+  CHECK(!refusal("stop=100%").empty());
+  CHECK(!refusal("stop=-1%").empty());
+  CHECK(!refusal("stop=%").empty());
+  CHECK(!refusal("stop=a%").empty());
+  CHECK(!refusal("emit,stop=0.1%").empty());
+}
+
 TEST(each_subcommand_reads_its_own_settings) {
   CHECK(parsed("emit").verb == TuneVerb::Emit);
   CHECK_EQ(parsed("emit").env, 0u);

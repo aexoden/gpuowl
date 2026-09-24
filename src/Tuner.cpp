@@ -13,6 +13,7 @@
 #include "Restart.h"
 #include "Scheduler.h"
 #include "Signal.h"
+#include "Summary.h"
 #include "Task.h"
 #include "TuneDB.h"
 #include "Worktodo.h"
@@ -122,6 +123,17 @@ void parseKinds(std::string_view text, ScopeArgs& out) {
     if (std::ranges::find(out.kinds, *kind) == out.kinds.end()) { out.kinds.push_back(*kind); }
   }
   if (out.kinds.empty()) { throw std::string{"-tune: kinds= takes at least one test kind"}; }
+}
+
+// A percentage of T, or a bare 0.  A bare fraction is refused rather than guessed at: 0.1 could mean either 0.1% or
+// 10%.
+[[nodiscard]] double parseStop(std::string_view text) {
+  bool const percent = text.ends_with('%');
+  std::optional<double> const value = parseNonNegative(percent ? text.substr(0, text.size() - 1) : text);
+  if (!value || *value >= 100 || (!percent && *value != 0)) {
+    throw std::string{"-tune: stop= takes a percentage of T below 100%, such as stop=0.1%, or 0 to run until stopped"};
+  }
+  return *value / 100;
 }
 
 // The prime at or below `E`, which is what the tuner can actually time, raised back into the range where there is no
@@ -531,6 +543,8 @@ std::optional<TuneCommand> parseTuneCommand(std::string_view text) {
       out.bootstrap = val == "1";
     } else if (key == "strategy" && isRun) {
       out.strategy = parseStrategy(val);
+    } else if (key == "stop" && isRun) {
+      out.stop = parseStop(val);
     } else if (key == "comboTop" && isRun) {
       comboTop = parseInt<u32>(val);
       if (!comboTop || *comboTop < 1) { throw std::string{"-tune: comboTop= takes a count of 1 or more"}; }
@@ -552,10 +566,9 @@ std::optional<TuneCommand> parseTuneCommand(std::string_view text) {
         accepted = "workload=<lo>-<hi>, probe=<E>, probeWeight=<0..1>, kinds=prp|ll|prp+ll, env=<id>";
         break;
       case TuneVerb::Run:
-        accepted =
-          "workload=<lo>-<hi>, probe=<E>, probeWeight=<0..1>, kinds=prp, bootstrap=0|1,"
-          " strategy=hybrid|single|groups|permute:<KEY>+<KEY>..., comboTop=<N>, comboTiers=1|2|3, or a subcommand:"
-          " emit, reset, adopt, compact, scope";
+        accepted = "workload=<lo>-<hi>, probe=<E>, probeWeight=<0..1>, kinds=prp, bootstrap=0|1,"
+                   " strategy=hybrid|single|groups|permute:<KEY>+<KEY>..., comboTop=<N>, comboTiers=1|2|3, stop=<P>%|0,"
+                   " or a subcommand: emit, reset, adopt, compact, scope";
         break;
       }
       throw who + ": '" + std::string{key} + "=' is not understood. Accepted: " + accepted;
@@ -716,7 +729,8 @@ MeasureOutcome runTune(const GpuCommon& shared, const TuneCommand& command) {
   fs::path const dir = fs::current_path();
 
   // Before anything is built, so that every measurement depends on the built-in defaults and the tuner's own choices.
-  log("tune: %s\n", describe(takeOverConfig(args)).c_str());
+  Takeover const takeover = takeOverConfig(args);
+  log("tune: %s\n", describe(takeover).c_str());
   if (!args.fftSpec.empty()) { log("tune: -fft is not used by the tuner, which chooses among every FFT itself\n"); }
 
   std::vector<fs::path> const files = worktodoFiles(args, dir);
@@ -746,9 +760,15 @@ MeasureOutcome runTune(const GpuCommon& shared, const TuneCommand& command) {
     ? " (comboTop=" + std::to_string(command.strategy.comboTop) +
       ", comboTiers=" + std::to_string(command.strategy.comboTiers) + ")"
     : "";
+  char until[96];
+  if (command.stop > 0) {
+    snprintf(until, sizeof(until), "until nothing is expected to lower T by %g%% of it", command.stop * 100);
+  } else {
+    snprintf(until, sizeof(until), "until stopped (stop=0)");
+  }
   log("tune: %zu entries could serve the workload; each measured one is searched by strategy=%s%s, then by random "
-      "restarts, which run until stopped\n",
-      scheduler.baselines().size(), command.strategy.text().c_str(), combo.c_str());
+      "restarts; the run goes on %s\n",
+      scheduler.baselines().size(), command.strategy.text().c_str(), combo.c_str(), until);
   if (command.bootstrap) {
     std::string names;
     for (const Family& f : scheduler.bootstrap().families()) {
@@ -769,12 +789,18 @@ MeasureOutcome runTune(const GpuCommon& shared, const TuneCommand& command) {
   };
 
   SessionBench bench{session, args.blockSize};
-  QueueReport const report = runQueue(scheduler, db, envId, bench, publishNow);
+  QueueReport const report = runQueue(scheduler, db, envId, bench, publishNow, command.stop);
 
-  log("tune: %u %s and %u anchor %s; T %.3f -> %.3f us/it%s\n", report.items, report.items == 1 ? "item" : "items",
-      report.anchors, report.anchors == 1 ? "reading" : "readings", report.startT, report.endT,
-      report.stopped ? ", stopped before the queue ran dry" : "");
+  logSummary(summarize(scheduler, db, envId, session.id(), report, command.stop));
+  log("tune: T %.3f -> %.3f us/it%s\n", report.startT, report.endT,
+      report.stopped ? ", stopped before the queue was done" : "");
   log("tune: published %s\n", out.string().c_str());
+  if (!takeover.configKeys.empty()) {
+    std::string keys;
+    for (const std::string& k : takeover.configKeys) { keys += (keys.empty() ? "" : ", ") + k; }
+    log("tune: the config files set %s, which production puts ahead of %s; remove them to run what was tuned\n",
+        keys.c_str(), out.filename().string().c_str());
+  }
 
   if (session.deviceLost()) { return MeasureOutcome::DeviceLost; }
   session.end();

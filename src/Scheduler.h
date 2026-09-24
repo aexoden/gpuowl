@@ -130,8 +130,14 @@ struct Item {
 
   u64 exponent = 0;
 
-  // The expected fall in T, in microseconds per iteration, and what the item is expected to take.
+  // The expected fall in T, in microseconds per iteration.
   double value = 0;
+
+  // For a baseline, a probe, a combo or a restart, the cost the gain it is valued by is a gain on: what the entry is
+  // estimated or measured to cost now.
+  double cost = 0;
+
+  // What the item is expected to take.
   double seconds = 0;
 
   bool fresh = true;
@@ -175,6 +181,11 @@ struct RestartScan {
 [[nodiscard]] std::optional<u32> nextRunnable(RestartScan& scan, const std::function<std::string(u32)>& text,
                                               const std::function<bool(u32)>& runnable);
 
+// Whether `item` is worth a call where anything expected to lower T by less than `floor` is not: a bootstrap call or a
+// gate reading always is, since those run by rule rather than by value; anything else once it is worth something and at
+// least `floor`.
+[[nodiscard]] bool worthRunning(const Item& item, double floor);
+
 class Scheduler {
 public:
   // With the default `bootstrap`, which is turned off, every baseline is admissible at once and runs at the built-in
@@ -211,10 +222,15 @@ public:
   [[nodiscard]] std::vector<Item> admissible(const TuneDB& db, u32 env, const Objective& objective) const;
 
 
-  // The item to run next from a ranking admissible() gave, or nothing where none is worth anything.  The top item,
-  // unless it would repeat the previous one while another is within INTERLEAVE_EPS of it -- or for a bootstrap call,
-  // unless it would repeat the previous one at all while the race has another candidate to call.
-  [[nodiscard]] std::optional<Item> pick(const std::vector<Item>& ranked) const;
+  // The first measurements admissible() offers once nothing runs ahead of them by rule, whether or not a bootstrap
+  // call or a gate reading is holding them back now.
+  [[nodiscard]] std::vector<Item> baselineItems(const TuneDB& db, u32 env, const Objective& objective) const;
+
+  // The item to run next from a ranking admissible() gave, or nothing where none is worth running (worthRunning()).
+  // The top item worth running, unless it would repeat the previous one while another is within INTERLEAVE_EPS of it
+  // -- or for a bootstrap call, unless it would repeat the previous one at all while the race has another candidate to
+  // call.
+  [[nodiscard]] std::optional<Item> pick(const std::vector<Item>& ranked, double floor = 0) const;
 
   // Records that `item` ran, taking `seconds` and measuring `usPerIt` (0 where it measured nothing).  `recorded` is
   // false where the call completed but its row cannot count for the item, because its kernels were built otherwise.
@@ -226,6 +242,10 @@ private:
   [[nodiscard]] std::string keyOf(const Item& item) const;
 
   [[nodiscard]] std::vector<Item> bootstrapItems(const BootstrapState& state, const Objective& objective) const;
+
+  [[nodiscard]] std::vector<Item> baselineItems(const TuneDB& db, u32 env, const BootstrapState& state,
+                                                const Progress& progress, const GainModel& gains,
+                                                const Objective& objective) const;
 
   [[nodiscard]] std::vector<Item> gateItems(const TuneDB& db, u32 env, const Defaults& defaults) const;
 
@@ -334,22 +354,45 @@ public:
   [[nodiscard]] virtual bool stopped() const = 0;
 };
 
+// Why a run ended.
+enum class QueueEnd : u8 {
+  Stopped,    // on request, or because the device could do nothing more
+  BelowStop,  // something was still worth a little, but nothing the stop fraction of T
+  Dry,        // nothing was worth anything
+};
+
 struct QueueReport {
   u32 items = 0;
   u32 anchors = 0;
   bool stopped = false;
+  QueueEnd end = QueueEnd::Dry;
 
   // What T stood at before the first item and after the last.
   double startT = 0;
   double endT = 0;
+
+  // The items run, and the seconds they took, by kind.
+  struct Spent {
+    u32 items = 0;
+    double seconds = 0;
+  };
+  std::map<ItemKind, Spent> spent;
+
+  // Where the run was left: what admissible() gave against the last objective items were valued by, the T of that
+  // objective, and what an item had to be worth to run.
+  std::vector<Item> left;
+  double valuedT = 0;
+  double floor = 0;
 };
 
 // What a run publishes: the objective the entries give, and the default lines the bootstrap has decided so far.
 using Publisher = std::function<void(const Objective&, const Defaults&)>;
 
-// Runs items until none is worth anything or the bench stops, re-scoring from the database after each.  `publish`
-// is given the objective of what is published once before the first item and again after every one, so that whatever
-// interrupts the run finds a selection file describing everything measured and gated before it.
-QueueReport runQueue(Scheduler& scheduler, TuneDB& db, u32 env, Bench& bench, const Publisher& publish);
+// Runs items until none is worth `stop` of T, or none is worth anything where `stop` is 0, or the bench stops,
+// re-scoring from the database after each.  `publish` is given the objective of what is published once before the
+// first item and again after every one, so that whatever interrupts the run finds a selection file describing
+// everything measured and gated before it.
+QueueReport runQueue(Scheduler& scheduler, TuneDB& db, u32 env, Bench& bench, const Publisher& publish,
+                     double stop = 0);
 
 }  // namespace tune
