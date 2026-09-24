@@ -1472,12 +1472,24 @@ void cudaSetL2Persistent(cl_command_queue, const std::vector<cl_mem>&) {}
 // much smaller) default applies, silently capping how much of a "persisting" window actually
 // gets persisting treatment. pct is clamped to [0, 100].
 #if CUDA_VERSION >= 11000
+// Workers share the context, so the limit is restored only once the last of them has let go of it.
+static std::mutex l2PersistMutex;
+static int l2PersistHolders = 0;
+static bool l2PersistSaved = false;
+static size_t l2PersistSavedLimit = 0;
+
 void cudaSetL2PersistLimit(int pct) {
   ensureContextCurrent();
+  std::lock_guard lock{l2PersistMutex};
+  ++l2PersistHolders;
 
   int maxPersist = 0;
   cuDeviceGetAttribute(&maxPersist, CU_DEVICE_ATTRIBUTE_MAX_PERSISTING_L2_CACHE_SIZE, 0);
   if (maxPersist <= 0) return;
+
+  if (!l2PersistSaved && cuCtxGetLimit(&l2PersistSavedLimit, CU_LIMIT_PERSISTING_L2_CACHE_SIZE) == CUDA_SUCCESS) {
+    l2PersistSaved = true;
+  }
 
   pct = std::clamp(pct, 0, 100);
   size_t const target = (size_t)maxPersist * pct / 100;
@@ -1490,8 +1502,22 @@ void cudaSetL2PersistLimit(int pct) {
             target / (1024*1024), maxPersist / (1024*1024), pct);
   }
 }
+
+void cudaReleaseL2Persist() {
+  std::lock_guard lock{l2PersistMutex};
+  if (l2PersistHolders == 0 || --l2PersistHolders > 0 || !l2PersistSaved) return;
+  l2PersistSaved = false;
+
+  ensureContextCurrent();
+  CUresult r = cuCtxResetPersistingL2Cache();
+  if (r == CUDA_SUCCESS) { r = cuCtxSetLimit(CU_LIMIT_PERSISTING_L2_CACHE_SIZE, l2PersistSavedLimit); }
+  if (r != CUDA_SUCCESS) {
+    fprintf(stderr, "L2 persist release failed (%d)\n", (int)r);
+  }
+}
 #else
 void cudaSetL2PersistLimit(int) {}
+void cudaReleaseL2Persist() {}
 #endif
 
 

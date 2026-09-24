@@ -164,6 +164,11 @@ void cudaSetL2Persistent(cl_command_queue q, const std::vector<cl_mem>& buffers)
 // Without this call the driver uses its own (usually small) default, which limits how much of an
 // access-policy window's "persisting" hint actually takes effect.
 void cudaSetL2PersistLimit(int pct);
+
+// Undo cudaSetL2PersistLimit once every caller of it is done: return the persisting L2 lines to normal and restore the
+// context's limit. Both belong to the context rather than to the stream whose window marked the lines, so otherwise
+// they outlive the Gpu that asked for them and crowd whatever the next one runs out of the cache.
+void cudaReleaseL2Persist();
 #endif
 
 
