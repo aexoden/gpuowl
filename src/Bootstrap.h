@@ -1,7 +1,9 @@
 // Copyright (C) Jason Lynch
 
 // The global bootstrap: for each FFT type worth tuning, the option set every configuration of that type runs at until
-// it has been tuned itself, found by racing the option groups on one configuration at the exponent that matters most.
+// it has been tuned itself, found by racing the option groups on one configuration at the exponent that matters most,
+// and then combinations of the groups' best answers.  The whole combination tree, whatever the run searches its
+// entries with: every entry not yet tuned inherits this answer, so an interaction missed here is missed everywhere.
 //
 // Nothing here is remembered between items.  Where every family stands -- which race it is in, what each candidate has
 // read, which races are decided and what they decided -- is recomputed from the database each time it is asked for, so
@@ -16,9 +18,11 @@
 #include "Emit.h"
 #include "FFTConfig.h"
 #include "OptionSpace.h"
+#include "Probe.h"
 #include "Stats.h"
 #include "TuneDB.h"
 
+#include <map>
 #include <optional>
 #include <set>
 #include <string>
@@ -125,7 +129,8 @@ enum class FamilyPhase : u8 {
 
 // One decided race, for the log.
 struct Decision {
-  Group group = Group::None;
+  // A group, or the groups a combination combined ("Tail+Height", "all").
+  std::string stage;
   u32 round = 0;
   RaceHow how = RaceHow::Pending;
   std::string winner;  // the move that won, or "the incumbent"
@@ -146,8 +151,8 @@ struct FamilyState {
 
   std::vector<Decision> decisions{};
 
-  // While racing.
-  Group group = Group::None;
+  // While racing: the group or the combination.
+  std::string stage{};
   std::vector<RaceEntry> entries{};
   RaceResult race{};
 };
@@ -159,6 +164,9 @@ struct Turn {
   std::string key;   // what moved, for a build failure to be pinned on; empty for the incumbent
   std::string text;  // "Width WMUL=1", or "defaults"
   u32 calls = 0;
+
+  // 2 or 3 for a point of a combination, 1 otherwise.
+  u32 tier = 1;
 };
 
 struct BootstrapState {
@@ -175,7 +183,8 @@ struct BootstrapState {
 class Bootstrap {
 public:
   Bootstrap() = default;
-  Bootstrap(Env env, u64 probe, std::vector<Family> families, bool enabled = true);
+  // `comboTiers` is how many tiers of the combination tree are raced after the groups: 1 races the groups alone.
+  Bootstrap(Env env, u64 probe, std::vector<Family> families, bool enabled = true, u32 comboTiers = COMBO_TIERS);
 
   // Where every family stands against what `env` has measured.  `excluded` names the candidates this process has tried
   // too often without recording anything, by configText().
@@ -191,6 +200,11 @@ private:
   u64 probe_ = 0;
   std::vector<Family> families_;
   bool enabled_ = false;
+  u32 comboTiers_ = COMBO_TIERS;
+
+  // The last probesOf() for each family's combination tier, which is pure, and what it was asked: a decided family's
+  // stages are asked for again on every re-score.
+  mutable std::map<std::pair<size_t, u32>, std::pair<std::string, ProbeList>> stageLists_;
 };
 
 // The families a run over `baselines` bootstraps: for each type some baseline belongs to, its smallest shape whose

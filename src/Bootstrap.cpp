@@ -216,8 +216,8 @@ RaceResult decideRace(const std::vector<RaceEntry>& entries) {
   return {.how = tied.size() > 1 ? RaceHow::Margin : RaceHow::Separated, .winner = winner, .next = {}};
 }
 
-Bootstrap::Bootstrap(Env env, u64 probe, std::vector<Family> families, bool enabled) :
-  env_{std::move(env)}, probe_{probe}, families_{std::move(families)}, enabled_{enabled} {}
+Bootstrap::Bootstrap(Env env, u64 probe, std::vector<Family> families, bool enabled, u32 comboTiers) :
+  env_{std::move(env)}, probe_{probe}, families_{std::move(families)}, enabled_{enabled}, comboTiers_{comboTiers} {}
 
 BootstrapState Bootstrap::state(const TuneDB& db, u32 env, const std::set<std::string>& excluded) const {
   BootstrapState out;
@@ -285,7 +285,57 @@ BootstrapState Bootstrap::state(const TuneDB& db, u32 env, const std::set<std::s
     }
     s.phase = FamilyPhase::Done;
 
+    // What the decided races read, which the combinations are built from.  Only these: a later search of the same
+    // configuration as an entry measures other option sets, which must not reopen what the bootstrap decided.
+    std::vector<Reading> answers;
+    std::set<std::string> answered;
+    auto keep = [&](const std::vector<RaceEntry>& entries) {
+      for (const RaceEntry& e : entries) {
+        if (e.m && !e.out && answered.insert(configText(e.config)).second) {
+          answers.push_back({.config = e.config, .cost = e.m->cost()});
+        }
+      }
+    };
+
+    // Races `entries`, the incumbent first, as `stage`: the winner's place among them, 0 where every candidate is out,
+    // and nothing while the race is still being called, having said what to call.
     bool pending = false;
+    auto race = [&](std::vector<RaceEntry> entries, const std::vector<std::string>& keys, const std::string& stage,
+                    u32 tier, u32 round) -> std::optional<size_t> {
+      RaceResult const result = decideRace(entries);
+      if (result.how == RaceHow::Pending) {
+        pending = true;
+        s.phase = racing ? FamilyPhase::Waiting : FamilyPhase::Racing;
+        s.stage = stage;
+        if (!racing) {
+          for (size_t const i : result.next) {
+            out.turns.push_back({.family = f,
+                                 .config = entries[i].config,
+                                 .key = keys[i],
+                                 .text = stage + " " + entries[i].text,
+                                 .calls = callsOf(entries[i]),
+                                 .tier = tier});
+          }
+        }
+        s.entries = std::move(entries);
+        s.race = result;
+        return {};
+      }
+
+      keep(entries);
+      if (!result.winner) { return 0; }
+      const RaceEntry& won = entries[*result.winner];
+      s.decisions.push_back({.stage = stage,
+                             .round = round,
+                             .how = result.how,
+                             .winner = won.text,
+                             .cost = won.m ? won.m->cost() : 0,
+                             .se = seOf(won),
+                             .candidates = u32(entries.size())});
+      s.decided = won.config;
+      return *result.winner;
+    };
+
     for (Group const group : allGroups()) {
       // Again from each winner that moved: a structural key's dependents are offered only against the background as it
       // stands, so the keys INPLACE=0 opens are raced in the round after it wins.
@@ -299,39 +349,54 @@ BootstrapState Bootstrap::state(const TuneDB& db, u32 env, const std::set<std::s
           entries.push_back(entryOf(f, move.config, move.text));
           keys.push_back(move.key);
         }
-
-        RaceResult const race = decideRace(entries);
-        if (race.how == RaceHow::Pending) {
-          pending = true;
-          s.phase = racing ? FamilyPhase::Waiting : FamilyPhase::Racing;
-          s.group = group;
-          if (!racing) {
-            for (size_t const i : race.next) {
-              out.turns.push_back({.family = f,
-                                   .config = entries[i].config,
-                                   .key = keys[i],
-                                   .text = std::string{toString(group)} + " " + entries[i].text,
-                                   .calls = callsOf(entries[i])});
-            }
-          }
-          s.entries = std::move(entries);
-          s.race = race;
-          break;
-        }
-
-        if (!race.winner) { break; }
-        const RaceEntry& won = entries[*race.winner];
-        s.decisions.push_back({.group = group,
-                               .round = round,
-                               .how = race.how,
-                               .winner = won.text,
-                               .cost = won.m ? won.m->cost() : 0,
-                               .se = seOf(won),
-                               .candidates = u32(entries.size())});
-        s.decided = won.config;
-        if (*race.winner == 0) { break; }
+        if (race(std::move(entries), keys, toString(group), 1, round).value_or(0) == 0) { break; }
       }
       if (pending) { break; }
+    }
+
+    // Then each stage of the combination tree once, from the background as it stands: the groups that share kernels
+    // combined, then everything.  A stage combines what the tiers below it read, so the answers of a tier join the
+    // seeds only once the tier is done, and a stage's candidates do not move while it is being raced.
+    std::set<std::string> combined;
+    for (u32 tier = 2; tier <= comboTiers_ && !pending; ++tier) {
+      std::vector<Reading> fromTier;
+      while (!pending) {
+        RaceEntry const incumbent = entryOf(f, s.decided, "the incumbent");
+        if (!incumbent.m) { break; }
+
+        std::vector<Reading> readings{{.config = s.decided, .cost = incumbent.m->cost()}};
+        for (const Reading& r : answers) {
+          if (r.config != s.decided) { readings.push_back(r); }
+        }
+        std::ranges::stable_sort(readings.begin() + 1, readings.end(), {}, &Reading::cost);
+
+        std::string asked;
+        for (const Reading& r : readings) { asked += configText(r.config) + "@" + std::to_string(r.cost) + " "; }
+        auto& [was, list] = stageLists_[{f, tier}];
+        if (was != asked) {
+          Strategy const tree{.kind = Strategy::Kind::Hybrid, .comboTop = COMBO_TOP, .comboTiers = tier};
+          list = probesOf(env_, families_[f].fft, s.decided, tree, readings);
+          was = std::move(asked);
+        }
+        auto const next = std::ranges::find_if(
+          list.probes, [&](const Probe& p) { return p.tier == tier && !combined.contains(p.stage); });
+        if (next == list.probes.end()) { break; }
+        std::string const stage = next->stage;
+        combined.insert(stage);
+
+        std::vector<RaceEntry> entries{incumbent};
+        std::vector<std::string> keys{""};
+        for (const Probe& p : list.probes) {
+          if (p.stage != stage) { continue; }
+          entries.push_back(entryOf(f, p.config, p.text));
+          keys.push_back(p.key);
+        }
+        size_t const before = answers.size();
+        (void)race(std::move(entries), keys, stage, tier, 0);
+        fromTier.insert(fromTier.end(), answers.begin() + ptrdiff_t(before), answers.end());
+        answers.resize(before);
+      }
+      answers.insert(answers.end(), fromTier.begin(), fromTier.end());
     }
     racing = racing || pending;
 

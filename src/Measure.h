@@ -126,6 +126,9 @@ public:
   // Records that the next call is the `k`th draw of its entry's restart sequence.
   void declareRestart(const FFTConfig& fft, TestKind kind, u64 exponent, const UseConfig& options, u32 k);
 
+  // Records that the next call is a point of a combination of tier `tier`.
+  void declareCombo(const FFTConfig& fft, TestKind kind, u64 exponent, const UseConfig& options, u32 tier);
+
   [[nodiscard]] u32 id() const { return session_; }
   [[nodiscard]] u32 envId() const { return envId_; }
 

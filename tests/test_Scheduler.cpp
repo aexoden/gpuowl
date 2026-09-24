@@ -88,6 +88,16 @@ public:
                           .ts = u64(clock_)}));
   }
 
+  void declareCombo(const FFTConfig& fft, TestKind kind, u64 exponent, const UseConfig& options, u32 tier) override {
+    CHECK(db_.add(ComboRow{.sess = sess_,
+                           .fft = fft.spec(),
+                           .kind = kind,
+                           .regime = regimeOf(fft, exponent),
+                           .cfg = db_.internCfg(options),
+                           .tier = tier,
+                           .ts = u64(clock_)}));
+  }
+
   // What the device builds when asked for an option set: what was asked, unless a test says the host sets part of it
   // aside.
   std::function<UseConfig(const UseConfig&)> builtAs = [](const UseConfig& asked) { return asked; };
@@ -1459,4 +1469,162 @@ TEST(a_probe_answered_in_one_regime_is_still_owed_in_another) {
     CHECK(owed(0));
     CHECK(!owed(1));
   }
+}
+
+namespace {
+
+// The calls of `order` that a combo row declares, as their places in it.
+std::vector<size_t> comboCalls(const TuneDB& db, const std::vector<std::string>& order) {
+  std::set<std::string> declared;
+  for (const ComboRow& row : db.combos()) {
+    if (const UseConfig* const opts = db.findCfg(row.cfg)) { declared.insert(row.fft + " " + configText(*opts)); }
+  }
+  std::vector<size_t> out;
+  for (size_t i = 0; i < order.size(); ++i) {
+    const std::string& call = order[i];
+    size_t const space = call.find(' ');
+    if (space == std::string::npos) { continue; }
+    if (declared.contains(call.substr(0, call.find('@')) + call.substr(space))) { out.push_back(i); }
+  }
+  return out;
+}
+
+}  // namespace
+
+TEST(a_combination_waits_for_the_tier_below_and_is_valued_by_the_combination_gains) {
+  Fixture f;
+  FakeBench bench{f.db, f.sess, false};
+  bench.optionFactor = crossGroupPair;
+  FFTConfig const fft{PROBED};
+  auto measure = [&](const UseConfig& options) {
+    for (u32 call = 0; call < MIN_CALLS; ++call) { (void)bench.run(fft, TestKind::PRP, 118'063'003, options, {}); }
+  };
+  measure({});
+  measure({{"TAIL_KERNELS", "3"}});
+  measure({{"ZEROHACK_H", "0"}});
+
+  std::vector<Baseline> one;
+  for (const Baseline& b : baselines(nvidia(), scope(), {FFTShape{"512:15:512"}})) {
+    if (b.fft.spec() == PROBED) { one.push_back(b); }
+  }
+  CHECK_EQ(one.size(), size_t(1));
+  if (one.size() != 1) { return; }
+  Scheduler const scheduler{scope(), one, 1000, Bootstrap{nvidia(), 118'063'003, {}, false}, Strategy{}};
+  auto kindsOf = [&](const std::vector<Item>& items, ItemKind kind) {
+    return std::ranges::count_if(items, [&](const Item& i) { return i.kind == kind; });
+  };
+
+  // Tail and Height each have an answer to combine, but their groups' probes are not all answered yet.
+  std::vector<Item> const early = scheduler.admissible(f.db, f.env, Objective{f.db, f.env, scope()});
+  CHECK(kindsOf(early, ItemKind::Probe) > 0);
+  CHECK_EQ(kindsOf(early, ItemKind::Combo), 0);
+
+  // Every step from the defaults answered, the structural ones among them, and none of them better than the defaults.
+  // The branches those open have probes of their own left, which hold back only their own combinations.
+  for (const Probe& p : probesOf(nvidia(), fft, {}, Strategy{}).probes) {
+    if (p.tier == 1) { measure(p.config); }
+  }
+
+  Objective const objective{f.db, f.env, scope()};
+  std::vector<Item> const late = scheduler.admissible(f.db, f.env, objective);
+  CHECK(kindsOf(late, ItemKind::Combo) > 0);
+
+  // What the combinations the device has shown expect a combination from the entry's best set to save, which here --
+  // with none shown -- is the prior's, and not what a move is expected to.
+  const Baseline& b = one.front();
+  EntryKey const key{PROBED, b.kind, b.band.regime.label()};
+  double best = 0;
+  for (const OptionSet& s : optionSetsFor(f.db, f.env, {})) {
+    if (s.entry.fft == PROBED && (!best || s.entry.cost < best)) { best = s.entry.cost; }
+  }
+  GainModel const gains = gainsOf(f.db, f.env);
+  double const combo = expectedSaving(objective.points(), b.kind, b.band, best, gains.comboForEntry(key));
+  double const move = expectedSaving(objective.points(), b.kind, b.band, best, gains.forEntry(key));
+  CHECK(combo > 0 && !near(combo, move));
+  for (const Item& item : late) {
+    if (item.kind == ItemKind::Combo) {
+      CHECK(near(item.value, combo));
+      CHECK(item.tier == 2 || item.tier == 3);
+    }
+  }
+}
+
+TEST(each_combination_is_declared_once_before_its_first_call) {
+  // A whole search, and the same search stopped between the two calls of its first combination and carried on by a
+  // later process: the second resumes it without declaring it again.
+  Fixture whole;
+  FakeBench all{whole.db, whole.sess, false, SEARCH_CALLS + 60};
+  all.optionFactor = crossGroupPair;
+  auto searchOne = [] {
+    std::vector<Baseline> one;
+    for (const Baseline& b : baselines(nvidia(), scope(), {FFTShape{"512:15:512"}})) {
+      if (b.fft.spec() == PROBED) { one.push_back(b); }
+    }
+    return Scheduler{scope(), one, 1000, Bootstrap{nvidia(), 118'063'003, {}, false}, Strategy{}};
+  };
+  Scheduler s0 = searchOne();
+  (void)runQueue(s0, whole.db, whole.env, all, [](const Objective&, const Defaults&) {});
+
+  std::vector<size_t> const combos = comboCalls(whole.db, all.order);
+  CHECK(!combos.empty());
+  if (combos.empty()) { return; }
+  CHECK(std::ranges::all_of(whole.db.combos(), [](const ComboRow& r) { return r.tier == 2 || r.tier == 3; }));
+
+  // One declaration per combination, and each measured as any configuration is.
+  std::set<u32> cfgs;
+  for (const ComboRow& r : whole.db.combos()) { CHECK(cfgs.insert(r.cfg).second); }
+  CHECK(std::ranges::any_of(whole.db.combos(), [&](const ComboRow& r) {
+    return r.tier == 2 && configText(*whole.db.findCfg(r.cfg)) == "TAIL_KERNELS=3,ZEROHACK_H=0";
+  }));
+
+  Fixture f;
+  u32 const stop = u32(combos.front()) + 1;
+  FakeBench first{f.db, f.sess, false, stop};
+  first.optionFactor = crossGroupPair;
+  Scheduler s1 = searchOne();
+  (void)runQueue(s1, f.db, f.env, first, [](const Objective&, const Defaults&) {});
+  CHECK_EQ(f.db.combos().size(), size_t(1));
+
+  f.newSession();
+  FakeBench second{f.db, f.sess, false, SEARCH_CALLS + 60 - stop};
+  second.optionFactor = crossGroupPair;
+  Scheduler s2 = searchOne();
+  (void)runQueue(s2, f.db, f.env, second, [](const Objective&, const Defaults&) {});
+
+  std::vector<std::string> split = first.order;
+  split.insert(split.end(), second.order.begin(), second.order.end());
+  CHECK(tally(split) == tally(all.order));
+  CHECK_EQ(f.db.combos().size(), whole.db.combos().size());
+
+  // Each concluded combination is one observation of the combination gains, and none of the move gains.
+  GainModel const gains = gainsOf(f.db, f.env);
+  GainModel const plain = gainsOf(whole.db, whole.env);
+  CHECK(gains.combos().n() > 0 && gains.combos().n() <= double(f.db.combos().size()));
+  CHECK(near(gains.combos().n(), plain.combos().n()));
+  CHECK(near(gains.all().n(), plain.all().n()));
+}
+
+TEST(a_bootstrap_interrupted_among_its_combinations_carries_on_from_its_rows) {
+  Fixture whole;
+  BootstrapRun const all = runBootstrapped(whole);
+  std::vector<size_t> const combos = comboCalls(whole.db, all.order);
+  CHECK(!combos.empty());
+  if (combos.empty()) { return; }
+
+  // Every bootstrap combination is called before the first baseline, as every bootstrap call is.
+  auto const firstBaseline = std::ranges::find_if(all.order, [](const std::string& s) { return !isFamilyCall(s); });
+  CHECK(combos.back() < size_t(firstBaseline - all.order.begin()));
+
+  Fixture f;
+  BootstrapRun const first = runBootstrapped(f, u32(combos.front()) + 1);
+  CHECK(first.report.stopped);
+  f.newSession();
+  BootstrapRun const second = runBootstrapped(f);
+  CHECK(!second.report.stopped);
+
+  std::map<std::string, u32> split = tally(first.order);
+  for (const auto& [call, n] : tally(second.order)) { split[call] += n; }
+  CHECK(split == tally(all.order));
+  CHECK_EQ(configText(second.defaults.global), configText(all.defaults.global));
+  CHECK_EQ(f.db.combos().size(), whole.db.combos().size());
 }

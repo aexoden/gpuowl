@@ -59,6 +59,9 @@ struct GainDist {
 // like, and a tail that stopped short of them would exclude it in all but name.
 inline constexpr GainDist GAIN_PRIOR{{0.398, 0.20, 0.15, 0.10, 0.07, 0.04, 0.03, 0.01, 0.002}};
 
+// A combination of several groups' answers lands less often than a move within one group, and pays more when it does.
+inline constexpr GainDist GAIN_COMBO_PRIOR{{0.598, 0.12, 0.08, 0.07, 0.06, 0.04, 0.02, 0.01, 0.002}};
+
 // Observed gains, as counts over the bins.
 class GainCounts {
 public:
@@ -77,11 +80,18 @@ private:
   double n_ = 0;
 };
 
-// What the gains a device has shown say about the next one.
+// What a gain was observed on.
+enum class GainSource : u8 {
+  Move,     // a move within one group, or one key: teaches the device and its entry
+  Restart,  // a random jump: says the entry's search is spent, and nothing about the device
+  Combo,    // a combination of several groups' answers: teaches the device's and its entry's combination gains
+};
+
+// What the gains a device has shown say about the next one.  Two distributions, each learnt only from its own kind of
+// step, since folding them together would misprice both: moves from the move prior, combinations from theirs.
 class GainModel {
 public:
-  // `device` false for a gain that says something about its entry but not about the moves the device rewards.
-  void observe(const EntryKey& entry, double gain, bool device = true);
+  void observe(const EntryKey& entry, double gain, GainSource source = GainSource::Move);
 
   // For a configuration of no entry in particular.
   [[nodiscard]] GainDist global() const { return all_.posterior(GAIN_PRIOR); }
@@ -89,11 +99,18 @@ public:
   // For one of `entry`'s: its own counts over the global posterior, mixed back with that posterior at ENTRY_MIX.
   [[nodiscard]] GainDist forEntry(const EntryKey& entry) const;
 
+  // The same two for a combination.
+  [[nodiscard]] GainDist globalCombo() const { return combos_.posterior(GAIN_COMBO_PRIOR); }
+  [[nodiscard]] GainDist comboForEntry(const EntryKey& entry) const;
+
   [[nodiscard]] const GainCounts& all() const { return all_; }
+  [[nodiscard]] const GainCounts& combos() const { return combos_; }
 
 private:
   GainCounts all_;
   std::map<EntryKey, GainCounts> entries_;
+  GainCounts combos_;
+  std::map<EntryKey, GainCounts> entryCombos_;
 };
 
 // An option set of an entry, as its canonical text.
@@ -107,6 +124,9 @@ using EntrySet = std::pair<EntryKey, std::string>;
 // An option set a jump row declares was a random restart rather than a move, and almost all of them gain nothing: it
 // teaches its own entry, whose search it says is exhausted, but not the device's distribution, which values every
 // other entry.
+//
+// An option set a combo row declares was a combination of several groups' answers, and teaches the combination gains
+// alone, device and entry, and never the move gains.
 [[nodiscard]] GainModel gainsOf(const TuneDB& db, u32 env);
 
 // The fall in T, in microseconds per iteration, were a configuration eligible over `band` to cost `cost`:

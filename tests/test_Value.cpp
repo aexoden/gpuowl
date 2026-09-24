@@ -463,3 +463,61 @@ TEST(a_restart_teaches_its_entry_but_not_the_device) {
   CHECK(jumped.forEntry(entry).mean() < jumped.global().mean());
   CHECK(jumped.global().mean() > moves.global().mean());
 }
+
+TEST(a_combination_teaches_the_combination_gains_and_not_the_move_gains) {
+  TuneDB db;
+  Env const device{.isNvidia = true, .computeCapability = 806};
+  u32 const env = db.internEnv(dbEnvOf(device));
+  u32 const sess = db.beginSession(env, "", 0, 1'753'471'200);
+
+  std::string const x = "512:15:512:212";
+  Regime const regime = regimeOf(FFTConfig{x}, E0);
+  auto add = [&](const UseConfig& opts, double mean) {
+    CHECK(
+      db.add(RunRow{.sess = sess,
+                    .fft = x,
+                    .kind = TestKind::PRP,
+                    .exponent = E0,
+                    .regime = regime,
+                    .cfg = db.internCfg(opts),
+                    .m = {.mean = mean, .stddev = 0.1, .blocks = 8, .calls = 2, .drift = 1, .status = Status::Ok}}));
+  };
+  add({}, 100);
+  add({{"TAIL_KERNELS", "3"}}, 100.4);
+  add({{"ZEROHACK_H", "0"}}, 100.2);
+  add({{"TAIL_KERNELS", "3"}, {"ZEROHACK_H", "0"}}, 97);
+
+  EntryKey const entry{x, TestKind::PRP, regime.label()};
+  GainModel const undeclared = gainsOf(db, env);
+  CHECK(near(undeclared.all().n(), 3));
+  CHECK(near(undeclared.combos().n(), 0));
+
+  // Declared as a combination, however spelt: the 3% it found is the combinations' alone.
+  CHECK(db.add(ComboRow{.sess = sess,
+                        .fft = x,
+                        .kind = TestKind::PRP,
+                        .regime = regime,
+                        .cfg = db.internCfg({{"TAIL_KERNELS", "3"}, {"ZEROHACK_H", "0"}, {"WMUL", "2"}}),
+                        .tier = 2,
+                        .ts = 1}));
+  GainModel const declared = gainsOf(db, env);
+  CHECK(near(declared.all().n(), 2));
+  CHECK(near(declared.combos().n(), 1));
+  CHECK(declared.global().mean() < undeclared.global().mean());
+  CHECK(declared.globalCombo().mean() > GAIN_COMBO_PRIOR.mean());
+
+  // The entry's own combinations over the device's, mixed back: one observation moves it by 1/18 of the way.
+  GainDist const own = declared.comboForEntry(entry);
+  CHECK(own.mean() > declared.globalCombo().mean());
+  CHECK(near(declared.comboForEntry(EntryKey{"1K:8:1K:202", TestKind::PRP, "short32"}).mean(),
+             declared.globalCombo().mean()));
+}
+
+TEST(the_combination_prior_is_rarer_with_a_tail_as_long) {
+  double total = 0;
+  for (double const p : GAIN_COMBO_PRIOR.p) { total += p; }
+  CHECK(near(total, 1));
+  CHECK(GAIN_COMBO_PRIOR.p[0] > GAIN_PRIOR.p[0]);
+  CHECK_EQ(GAIN_COMBO_PRIOR.p.back(), GAIN_PRIOR.p.back());
+  CHECK(near(GainModel{}.globalCombo().mean(), GAIN_COMBO_PRIOR.mean()));
+}

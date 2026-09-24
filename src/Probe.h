@@ -161,8 +161,8 @@ struct Branch {
 // its best `comboTop` distinct projections of those readings, the background's own first; tier 2 combines the seeds of
 // the groups of each cluster of more than one (clusterGraph()), and tier 3 the seeds of each top-tier group and of
 // each cluster taken whole.  A stage is its cross product without the background, most promising first -- the highest
-// summed gain of its seeds, a seed's gain being 1 - cost / the branch's best -- and cut at MAX_POINTS.  `best` must be
-// the cheapest of the readings in its branch.
+// summed gain of its seeds, a seed's gain being 1 - cost / the cost of `best`, and no more than 0 -- and cut at
+// MAX_POINTS.  `best` must be the first of the readings in its branch, and the rest must follow cheapest first.
 //
 // A point is dropped where some key it sets is at a value the table would not offer it alongside the rest.
 [[nodiscard]] ProbeList probesOf(const Env& env, const FFTConfig& fft, const UseConfig& best, const Strategy& strategy,

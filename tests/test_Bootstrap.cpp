@@ -13,6 +13,7 @@
 
 #include <algorithm>
 #include <functional>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -275,7 +276,7 @@ TEST(a_family_the_gain_prior_cannot_bring_level_is_not_raced) {
   // The cheaper family races first, and its first race is its first group's.
   CHECK(!s.turns.empty());
   for (const Turn& t : s.turns) { CHECK_EQ(t.family, size_t(1)); }
-  CHECK(s.families[1].group == Group::Placement);
+  CHECK_EQ(s.families[1].stage, std::string{"Placement"});
   CHECK(!s.complete);
 }
 
@@ -353,10 +354,10 @@ TEST(turned_off_it_decides_nothing) {
 
 TEST(a_family_raced_to_the_end_is_a_transcript_of_its_races) {
   // Every call answered at once from a fixed rule: WMUL=1 and TAIL_KERNELS=3 each save 2%, every other move costs 1%,
-  // and anything else is the defaults.  Replaying the turns until none is left is what a run does.
+  // and anything else is the defaults.  Replaying the turns until none is left is what a run does.  The groups alone.
   Fixture f;
   Family const family = familyOf("2:1K:8:256:212");
-  Bootstrap const b{nvidia(), PROBE, {family}};
+  Bootstrap const b{nvidia(), PROBE, {family}, true, 1};
 
   auto cost = [](const UseConfig& c) {
     double us = 1576;
@@ -446,4 +447,137 @@ TEST(a_line_reaches_only_the_shapes_that_can_take_it) {
   CHECK_EQ(configText(underDefaults(nvidia(), FFTConfig{"2:1K:8:256:212"}, TestKind::PRP, d)),
            std::string{"SHUFL_BYTES_W=16,WMUL=1"});
   CHECK_EQ(configText(underDefaults(nvidia(), FFTConfig{"2:4K:8:256:212"}, TestKind::PRP, d)), std::string{"-"});
+}
+
+namespace {
+
+// Replays the turns of `b` until none is left, answering each call from `cost` at once.  The turns taken, in order.
+std::vector<Turn> raceToTheEnd(Fixture& f, const Bootstrap& b, const std::function<double(const UseConfig&)>& cost) {
+  std::vector<Turn> out;
+  for (BootstrapState s = b.state(f.db, f.env); !s.turns.empty(); s = b.state(f.db, f.env)) {
+    const Turn& t = s.turns.front();
+    f.add(b.families()[t.family].fft, t.config, reading(cost(t.config), cost(t.config) * 0.0005, 1));
+    out.push_back(t);
+    // A rule that never lets the races finish would otherwise loop for ever.
+    if (out.size() >= 2000) {
+      CHECK(false);
+      break;
+    }
+  }
+  return out;
+}
+
+// TAIL_KERNELS=3 and ZEROHACK_H=0, in two groups that share the tail kernels, each cost a little alone -- less than
+// any other move, each of which costs 1% -- and save 3% together.
+double crossGroupPair(const UseConfig& c) {
+  bool const tail = useValue(c, "TAIL_KERNELS", 2) == 3;
+  bool const height = useValue(c, "ZEROHACK_H", 1) == 0;
+  double us = 1700 * (tail && height ? 0.97 : tail ? 1.004 : height ? 1.002 : 1);
+  for (const auto& [key, value] : c) {
+    if (!(key == "TAIL_KERNELS" && value == "3") && !(key == "ZEROHACK_H" && value == "0")) { us *= 1.01; }
+  }
+  return us;
+}
+
+}  // namespace
+
+TEST(a_cross_group_pair_is_found_by_the_combinations_and_not_by_the_groups) {
+  // FP64 at variant 212 away from 1024: Tail and Height share the tail kernels, so they are combined at tier 2.
+  Family const family = familyOf("512:15:512:212");
+
+  Fixture groupsOnly;
+  Bootstrap const groups{nvidia(), PROBE, {family}, true, 1};
+  std::vector<Turn> const plain = raceToTheEnd(groupsOnly, groups, crossGroupPair);
+  BootstrapState const g = groups.state(groupsOnly.db, groupsOnly.env);
+  CHECK(g.complete);
+  CHECK_EQ(configText(g.families[0].decided), std::string{"-"});
+  CHECK(std::ranges::all_of(plain, [](const Turn& t) { return t.tier == 1; }));
+
+  Fixture whole;
+  Bootstrap const tree{nvidia(), PROBE, {family}};
+  std::vector<Turn> const turns = raceToTheEnd(whole, tree, crossGroupPair);
+  BootstrapState const t = tree.state(whole.db, whole.env);
+  CHECK(t.complete);
+  CHECK_EQ(configText(t.families[0].decided), std::string{"TAIL_KERNELS=3,ZEROHACK_H=0"});
+  CHECK_EQ(configText(t.defaults.global), std::string{"TAIL_KERNELS=3,ZEROHACK_H=0"});
+
+  // The groups raced exactly as before, and the combinations after them.
+  CHECK(turns.size() > plain.size());
+  for (size_t i = 0; i < plain.size() && i < turns.size(); ++i) { CHECK(turns[i].config == plain[i].config); }
+  CHECK(std::all_of(turns.begin() + ptrdiff_t(std::min(plain.size(), turns.size())), turns.end(), [](const Turn& turn) {
+    return turn.tier > 1 || turn.text.find("the incumbent") != std::string::npos;
+  }));
+
+  // Found at tier 2, by combining the two groups' best answers, and held at tier 3.
+  auto const pair =
+    std::ranges::find_if(t.families[0].decisions, [](const Decision& d) { return d.stage == "Tail+Height"; });
+  CHECK(pair != t.families[0].decisions.end());
+  if (pair != t.families[0].decisions.end()) {
+    CHECK_EQ(pair->winner, std::string{"TAIL_KERNELS=3,ZEROHACK_H=0"});
+    CHECK(pair->how == RaceHow::Separated);
+  }
+  CHECK(t.families[0].decisions.back().stage == "all");
+  CHECK_EQ(t.families[0].decisions.back().winner, std::string{"the incumbent"});
+}
+
+TEST(each_combination_stage_is_raced_once_from_the_background_as_it_stands) {
+  // No combination pays: every stage holds its incumbent, and the lines are what the groups decided.
+  Fixture f;
+  Family const family = familyOf("2:1K:8:256:212");
+  Bootstrap const b{nvidia(), PROBE, {family}};
+  auto cost = [](const UseConfig& c) {
+    double us = 1576;
+    for (const auto& [key, value] : c) {
+      us *= (key == "WMUL" && value == "1") || (key == "TAIL_KERNELS" && value == "3") ? 0.98 : 1.01;
+    }
+    return us;
+  };
+  std::vector<Turn> const turns = raceToTheEnd(f, b, cost);
+
+  BootstrapState const done = b.state(f.db, f.env);
+  CHECK(done.complete);
+  CHECK_EQ(configText(done.families[0].decided), std::string{"TAIL_KERNELS=3,WMUL=1"});
+
+  // The ten group races, then one race per stage, each once.
+  const std::vector<Decision>& decisions = done.families[0].decisions;
+  CHECK(decisions.size() > 10);
+  std::set<std::string> stages;
+  for (size_t i = 10; i < decisions.size(); ++i) {
+    CHECK(stages.insert(decisions[i].stage).second);
+    CHECK_EQ(decisions[i].winner, std::string{"the incumbent"});
+  }
+  CHECK(stages.contains("all"));
+  CHECK(std::ranges::any_of(stages, [](const std::string& s) { return s != "all"; }));
+
+  // Every combination point is a set the groups' races never measured, called as a tier-2 or tier-3 turn.
+  std::set<std::string> raced;
+  for (const Turn& t : turns) {
+    if (t.tier == 1) { raced.insert(configText(t.config)); }
+  }
+  for (const Turn& t : turns) {
+    if (t.tier > 1 && t.text.find("the incumbent") == std::string::npos) {
+      CHECK(!raced.contains(configText(t.config)));
+      CHECK(t.tier == 2 || t.tier == 3);
+    }
+  }
+}
+
+TEST(what_the_entry_later_measures_does_not_reopen_the_combinations) {
+  // Once the bootstrap is done, its configuration is searched as an entry like any other, and those rows are at the
+  // same spec and exponent.  They are not answers of the bootstrap's races, so its stages keep their candidates.
+  Fixture f;
+  Family const family = familyOf("512:15:512:212");
+  Bootstrap const b{nvidia(), PROBE, {family}};
+  (void)raceToTheEnd(f, b, crossGroupPair);
+  BootstrapState const before = b.state(f.db, f.env);
+  CHECK(before.complete);
+
+  // Cheap readings of two-key moves within one group, which a combination would take as its best answers.
+  f.add(family.fft, {{"TAIL_KERNELS", "3"}, {"ZEROHACK_H", "0"}, {"TAIL_TRIGS", "1"}}, reading(1640, 0.5, 2));
+  f.add(family.fft, {{"TAIL_KERNELS", "3"}, {"ZEROHACK_H", "0"}, {"LOADS", "2"}, {"STORES", "2"}},
+        reading(1641, 0.5, 2));
+  BootstrapState const after = b.state(f.db, f.env);
+  CHECK(after.complete);
+  CHECK(after.turns.empty());
+  CHECK(after.families[0].decided == before.families[0].decided);
 }
