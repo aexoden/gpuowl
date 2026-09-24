@@ -727,6 +727,10 @@ unique_ptr<Gpu> Gpu::make(u64 E, GpuCommon shared, FFTConfig fftConfig, const ve
 Gpu::~Gpu() {
   // Background tasks may have captured *this*, so wait until those are complete before destruction
   background->waitEmpty();
+
+#if CUDA_BACKEND
+  if (args.value("L2PERSIST", 0)) { cudaReleaseL2Persist(); }
+#endif
 }
 
 // Part of GPU initialization is to compute the default number of registers each kernel should target during compilation.
