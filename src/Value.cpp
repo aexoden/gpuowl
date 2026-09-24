@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <functional>
 #include <numbers>
 #include <utility>
 
@@ -20,6 +21,12 @@ double GainDist::expectedSaving(double best, double estimate) const {
 double GainDist::mean() const {
   double out = 0;
   for (size_t i = 0; i < GAIN_BINS; ++i) { out += p[i] * GAIN_AT[i]; }
+  return out;
+}
+
+double GainDist::chanceOfAtLeast(double gain) const {
+  double out = 0;
+  for (size_t i = 0; i < GAIN_BINS; ++i) { out += GAIN_AT[i] >= gain ? p[i] : 0; }
   return out;
 }
 
@@ -65,8 +72,14 @@ namespace {
 
 void GainModel::observe(const EntryKey& entry, double gain, GainSource source) {
   switch (source) {
-  case GainSource::Move: all_.observe(gain); [[fallthrough]];
-  case GainSource::Restart: entries_[entry].observe(gain); return;
+  case GainSource::Move:
+    all_.observe(gain);
+    entries_[entry].observe(gain);
+    return;
+  case GainSource::Restart:
+    entries_[entry].observe(gain);
+    restarts_[entry].observe(gain);
+    return;
   case GainSource::Combo:
     combos_.observe(gain);
     entryCombos_[entry].observe(gain);
@@ -77,6 +90,11 @@ void GainModel::observe(const EntryKey& entry, double gain, GainSource source) {
 GainDist GainModel::forEntry(const EntryKey& entry) const { return mixed(global(), entries_, entry); }
 
 GainDist GainModel::comboForEntry(const EntryKey& entry) const { return mixed(globalCombo(), entryCombos_, entry); }
+
+GainDist GainModel::restartForEntry(const EntryKey& entry) const {
+  auto const at = restarts_.find(entry);
+  return at == restarts_.end() ? forEntry(entry) : at->second.posterior(forEntry(entry));
+}
 
 GainModel gainsOf(const TuneDB& db, u32 env) {
   const DbEnv* const dbEnv = db.findEnv(env);
@@ -155,6 +173,38 @@ double expectedSaving(std::span<const ObjectivePoint> points, TestKind kind, con
     if (gains.p[i] > 0) { out += gains.p[i] * saving(points, kind, band, cost * (1 - GAIN_AT[i])); }
   }
   return out;
+}
+
+std::optional<double> requiredGain(std::span<const ObjectivePoint> points, TestKind kind, const Interval& band,
+                                   double cost, double worth) {
+  if (cost <= 0) { return {}; }
+
+  // saving() is piecewise linear in the cost, falling with it: between two neighbouring c*, the points dearer than the
+  // cost save their weight's worth for every microsecond it drops.
+  std::vector<std::pair<double, double>> dearest;
+  for (const ObjectivePoint& point : points) {
+    if (point.kind != kind || !point.cost || point.weight <= 0 || !band.contains(point.exponent)) { continue; }
+    dearest.emplace_back(point.cost->us, point.weight);
+  }
+  if (dearest.empty()) { return {}; }
+  std::ranges::sort(dearest, std::greater{});
+
+  // The cost at which saving() is exactly `worth`, or for 0 the cost below which it is anything at all.
+  std::optional<double> at;
+  if (worth <= 0) {
+    at = dearest.front().first;
+  } else {
+    double sum = 0;
+    double weight = 0;
+    for (size_t i = 0; i < dearest.size() && !at; ++i) {
+      sum += dearest[i].first * dearest[i].second;
+      weight += dearest[i].second;
+      double const next = i + 1 < dearest.size() ? dearest[i + 1].first : 0;
+      if (sum - weight * next >= worth) { at = (sum - worth) / weight; }
+    }
+  }
+  if (!at) { return {}; }
+  return std::max(0.0, 1 - *at / cost);
 }
 
 double regret(double mu, double sigma) {

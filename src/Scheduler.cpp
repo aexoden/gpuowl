@@ -459,14 +459,16 @@ std::vector<Item> Scheduler::gateItems(const TuneDB& db, u32 env, const Defaults
   return out;
 }
 
-std::vector<Item> Scheduler::admissible(const TuneDB& db, u32 env, const Objective& objective) const {
+std::vector<Item> Scheduler::baselineItems(const TuneDB& db, u32 env, const Objective& objective) const {
   BootstrapState const state = bootstrapState(db, env);
-  if (!state.turns.empty()) { return bootstrapItems(state, objective); }
-  if (std::vector<Item> gates = gateItems(db, env, state.defaults); !gates.empty()) { return gates; }
+  Progress const progress = progressOf(db, env, bootstrap_.env(), state.defaults);
+  return baselineItems(db, env, state, progress, gainsOf(db, env), objective);
+}
 
+std::vector<Item> Scheduler::baselineItems(const TuneDB& db, u32 env, const BootstrapState& state,
+                                           const Progress& progress, const GainModel& gains,
+                                           const Objective& objective) const {
   const Env& device = bootstrap_.env();
-  Progress const progress = progressOf(db, env, device, state.defaults);
-  GainModel const gains = gainsOf(db, env);
   GainDist const unmeasured = gains.global();
 
   std::vector<Item> out;
@@ -504,11 +506,25 @@ std::vector<Item> Scheduler::admissible(const TuneDB& db, u32 env, const Objecti
                    .what = {},
                    .exponent = exponent,
                    .value = value,
+                   .cost = estimate,
                    .seconds = clock_.seconds(estimate / PRIOR_OPTIMISM, fresh),
                    .fresh = fresh,
                    .calls = p.calls});
   }
 
+  return out;
+}
+
+std::vector<Item> Scheduler::admissible(const TuneDB& db, u32 env, const Objective& objective) const {
+  BootstrapState const state = bootstrapState(db, env);
+  if (!state.turns.empty()) { return bootstrapItems(state, objective); }
+  if (std::vector<Item> gates = gateItems(db, env, state.defaults); !gates.empty()) { return gates; }
+
+  const Env& device = bootstrap_.env();
+  Progress const progress = progressOf(db, env, device, state.defaults);
+  GainModel const gains = gainsOf(db, env);
+
+  std::vector<Item> out = baselineItems(db, env, state, progress, gains, objective);
   if (strategy_) {
     // The option sets of each entry, which also say how much each option set costs where it was measured.
     std::vector<OptionSet> const sets = optionSetsFor(db, env, state.defaults);
@@ -588,6 +604,7 @@ std::vector<Item> Scheduler::admissible(const TuneDB& db, u32 env, const Objecti
                     .what = probe.stage + " " + probe.text,
                     .exponent = b.exponent,
                     .value = worth,
+                    .cost = branches[branch].cost,
                     .seconds = 0,
                     .fresh = true,
                     .calls = 0,
@@ -617,14 +634,17 @@ std::vector<Item> Scheduler::admissible(const TuneDB& db, u32 env, const Objecti
       }
 
       // At a local optimum of the declared moves, and only there, a jump: worth what a move from the entry's best set
-      // is, since it is one, but offered only once no probe is left rather than left to a score to rank below them.
-      double const value = expectedSaving(objective.points(), b.kind, b.band, ofEntry.front().cost, entryGains);
+      // is, by what the entry's earlier jumps found, and offered only once no probe is left rather than left to a score
+      // to rank below them.
+      double const value =
+        expectedSaving(objective.points(), b.kind, b.band, ofEntry.front().cost, gains.restartForEntry(key));
       std::optional<Item> next = restarts_ && value > 0 && out.size() == before
         ? nextRestart(db, env, progress, state.defaults, i)
         : std::nullopt;
       if (next) {
         Item item = std::move(*next);
         item.value = value;
+        item.cost = ofEntry.front().cost;
         item.fresh = !built_.contains(builtKey(b.fft, item.options));
         item.seconds = clock_.seconds(ofEntry.front().cost, item.fresh);
         out.push_back(std::move(item));
@@ -675,21 +695,26 @@ std::vector<Item> Scheduler::admissible(const TuneDB& db, u32 env, const Objecti
   return out;
 }
 
-std::optional<Item> Scheduler::pick(const std::vector<Item>& ranked) const {
-  if (ranked.empty() || ranked.front().value <= 0) { return {}; }
+bool worthRunning(const Item& item, double floor) {
+  if (item.kind == ItemKind::Bootstrap || item.kind == ItemKind::Gate) { return true; }
+  return item.value > 0 && item.value >= floor;
+}
 
-  const Item& top = ranked.front();
-  if (keyOf(top) != last_) { return top; }
+std::optional<Item> Scheduler::pick(const std::vector<Item>& ranked, double floor) const {
+  auto const worth = [floor](const Item& i) { return worthRunning(i, floor); };
+  auto const top = std::ranges::find_if(ranked, worth);
+  if (top == ranked.end()) { return {}; }
+  if (keyOf(*top) != last_) { return *top; }
 
-  if (top.kind == ItemKind::Bootstrap) {
+  if (top->kind == ItemKind::Bootstrap) {
     auto const other = std::ranges::find_if(ranked, [&](const Item& i) { return keyOf(i) != last_; });
-    return other != ranked.end() ? *other : top;
+    return other != ranked.end() ? *other : *top;
   }
 
-  for (auto it = std::next(ranked.begin()); it != ranked.end() && it->value > 0; ++it) {
-    if (it->rate() >= (1 - INTERLEAVE_EPS) * top.rate()) { return *it; }
+  for (auto it = std::next(top); it != ranked.end(); ++it) {
+    if (worth(*it) && it->rate() >= (1 - INTERLEAVE_EPS) * top->rate()) { return *it; }
   }
-  return top;
+  return *top;
 }
 
 void Scheduler::ran(const Item& item, double seconds, double usPerIt, bool recorded) {
@@ -812,7 +837,7 @@ private:
 
 }  // namespace
 
-QueueReport runQueue(Scheduler& scheduler, TuneDB& db, u32 env, Bench& bench, const Publisher& publish) {
+QueueReport runQueue(Scheduler& scheduler, TuneDB& db, u32 env, Bench& bench, const Publisher& publish, double stop) {
   QueueReport out;
   BootstrapLog bootstrapLog;
   bool const bootstrapping = scheduler.bootstrap().enabled();
@@ -833,8 +858,16 @@ QueueReport runQueue(Scheduler& scheduler, TuneDB& db, u32 env, Bench& bench, co
   };
 
   while (!bench.stopped()) {
-    // Scheduled by the clock rather than by value, and ahead of everything else when it is due: the first reading is
-    // what every row of the session is divided by.
+    std::vector<Item> const ranked = scheduler.admissible(db, env, valuing);
+    std::optional<Item> const item = scheduler.pick(ranked, stop * valuing.T());
+    if (!item) {
+      out.end =
+        std::ranges::any_of(ranked, [](const Item& i) { return i.value > 0; }) ? QueueEnd::BelowStop : QueueEnd::Dry;
+      break;
+    }
+
+    // Scheduled by the clock rather than by value, and ahead of everything else when it is due, but only while there
+    // is something to divide by it: the first reading is what every row of the session is divided by.
     if (bench.anchorDue()) {
       bench.timeAnchor();
       scheduler.ran({.kind = ItemKind::Anchor}, 0, 0);
@@ -843,14 +876,6 @@ QueueReport runQueue(Scheduler& scheduler, TuneDB& db, u32 env, Bench& bench, co
       // The first one may have been a race, whose readings are rows like any other.
       rescore();
       continue;
-    }
-
-    std::vector<Item> const ranked = scheduler.admissible(db, env, valuing);
-    std::optional<Item> const item = scheduler.pick(ranked);
-    if (!item) {
-      log("tune: nothing left is worth measuring (%zu %s still unmeasured)\n", ranked.size(),
-          ranked.size() == 1 ? "entry" : "entries");
-      break;
     }
 
     const Baseline* const baseline = item->kind != ItemKind::Bootstrap ? &scheduler.baselines()[item->index] : nullptr;
@@ -897,6 +922,8 @@ QueueReport runQueue(Scheduler& scheduler, TuneDB& db, u32 env, Bench& bench, co
 
     scheduler.ran(*item, result.seconds, result.completed ? result.usPerIt : 0, recorded);
     ++out.items;
+    ++out.spent[item->kind].items;
+    out.spent[item->kind].seconds += result.seconds;
 
     double const before = objective.T();
     rescore();
@@ -931,17 +958,12 @@ QueueReport runQueue(Scheduler& scheduler, TuneDB& db, u32 env, Bench& bench, co
   }
 
   out.stopped = bench.stopped();
+  if (out.stopped) { out.end = QueueEnd::Stopped; }
   out.endT = objective.T();
 
-  GainModel const gains = gainsOf(db, env);
-  GainDist const shown = gains.global();
-  double large = 0;
-  for (size_t i = 0; i < GAIN_BINS; ++i) { large += GAIN_AT[i] >= 0.16 ? shown.p[i] : 0; }
-  log("tune: %.0f gains observed; a move is expected to gain %.2f%% (the prior says %.2f%%), and 16%% or more %.1f%% "
-      "of the time\n",
-      gains.all().n(), 100 * shown.mean(), 100 * GAIN_PRIOR.mean(), 100 * large);
-  log("tune: %.0f combinations measured; one is expected to gain %.2f%% (the prior says %.2f%%)\n", gains.combos().n(),
-      100 * gains.globalCombo().mean(), 100 * GAIN_COMBO_PRIOR.mean());
+  out.left = scheduler.admissible(db, env, valuing);
+  out.valuedT = valuing.T();
+  out.floor = stop * valuing.T();
   return out;
 }
 
