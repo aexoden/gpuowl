@@ -7,6 +7,7 @@
 
 #include "Anchor.h"
 #include "FFTConfig.h"
+#include "Gate.h"
 #include "GpuCommon.h"
 #include "OptionSpace.h"
 #include "Stats.h"
@@ -21,9 +22,6 @@
 struct IterSamples;  // Gpu.h
 
 namespace tune {
-
-// The Gumbel z a configuration's largest rounding error has to clear to be usable at all.
-[[nodiscard]] double minSafeZ(enum FFT_TYPES type);
 
 // One call to the GPU.
 struct Call {
@@ -69,6 +67,9 @@ struct RoeCheck {
   double minZ = 0;
   u64 exponent = 0;  // where it was measured
   bool checkOk = true;
+
+  // The options the kernels were built with.
+  UseConfig ran{};
 
   // Records the reason for no reading when there is none.
   Status status = Status::Ok;

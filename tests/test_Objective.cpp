@@ -21,7 +21,7 @@ namespace {
 // One FP64 shape measured once in its short-carry, 32-bit-carry regime, which runs from 78643196 (10 bits per word,
 // below which the carry is long) to 143413744 (above which the carry needs 64 bits); a pure NTT shape covering some of
 // the same exponents at a higher cost; an LL reading; and rows that must count for nothing -- another env's, a single
-// call's, and a failure's.
+// call's, and a failure's.  The FP64 set's accuracy has been read at the top of its interval; the NTT rounds nothing.
 const char* const DB =
   "# prpll tunedb v1\n"
   "env   1 gpu=\"NVIDIA RTX A4000\" name=\"NVIDIA RTX A4000\" drv=550.163.01 vendor=nvidia be=ocl cc=806 noasm=0"
@@ -37,7 +37,8 @@ const char* const DB =
   "run   4 3:1K:8:512:202 prp 100000000 short32 21 2000.000 5.000 16 4 1.0000 ok 1753471294\n"
   "run   4 1K:8:1K:202 prp 200000000 short32 21 100.000 1.000 4 1 1.0000 ok 1753471304\n"
   "run   4 4K:8:1K:202 prp 900000000 short32 21 100.000 1.000 16 4 1.0000 err 1753471314\n"
-  "run   9 512:15:512:212 prp 100000000 short32 17 900.000 1.000 16 4 1.0000 ok 1753471324\n";
+  "run   9 512:15:512:212 prp 100000000 short32 17 900.000 1.000 16 4 1.0000 ok 1753471324\n"
+  "roe   4 512:15:512:212 143413741 17 24.40 2150 0.3098 ok 1753471330\n";
 
 constexpr u64 SHORT32_LO = 78'643'196;
 constexpr u64 SHORT32_HI = 143'413'744;
@@ -186,6 +187,21 @@ TEST(rows_that_conclude_nothing_or_belong_elsewhere_count_for_nothing) {
   std::optional<Cost> const at200M = objective.cStar(TestKind::PRP, 200'000'000);
   CHECK(at200M && !at200M->measured());
   CHECK(at200M->us < 1000);
+}
+
+TEST(an_entry_the_gate_still_owes_a_reading_counts_only_for_valuing) {
+  std::string text = DB;
+  std::string const roe = "roe   4 512:15:512:212 143413741 17 24.40 2150 0.3098 ok 1753471330\n";
+  text.erase(text.find(roe), roe.size());
+  TuneDB const db = loaded(text.c_str());
+  RunScope const scope = scopeOver({{100'000'000, 1}});
+
+  // Published, 100M is the NTT's; to the search, which takes the reading next, it is already the FP64 set's.
+  Objective const published{db, 1, scope};
+  Objective const valuing{db, 1, scope, {}, Gating::Assumed};
+  CHECK_EQ(published.cStar(TestKind::PRP, 100'000'000)->fft, std::string{"3:1K:8:512:202"});
+  CHECK_EQ(valuing.cStar(TestKind::PRP, 100'000'000)->fft, std::string{"512:15:512:212"});
+  CHECK(valuing.T() < published.T());
 }
 
 TEST(a_point_no_fft_can_run_is_left_out_of_T) {

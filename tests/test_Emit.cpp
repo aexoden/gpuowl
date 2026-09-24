@@ -17,7 +17,10 @@ using namespace tune;
 namespace {
 
 // Ten rows on env 1 and one on env 2, over three FFTs: one FP64 shape measured under three option sets and at two
-// exponents of one regime, a second FP64 shape in another regime, and a pure NTT shape.
+// exponents of one regime, a second FP64 shape in another regime, and a pure NTT shape.  Each set that is published
+// has an accuracy reading at the top of its interval, but the NTT, which rounds nothing.  PAD does nothing on NVIDIA,
+// so the gate reads the PAD=256 and PAD=128 sets as the one configuration they are, and either one's reading at or
+// above the other's gate exponent counts for both.
 const char* const DB =
   "# prpll tunedb v1\n"
   "env   1 gpu=\"NVIDIA RTX A4000\" name=\"NVIDIA RTX A4000\" drv=550.163.01 vendor=nvidia be=ocl cc=806 noasm=0"
@@ -42,7 +45,14 @@ const char* const DB =
   "run   4 1K:8:1K:202 prp 200000000 short32 21 3100.000 4.000 16 4 1.0000 ok 1753471354\n"
   "run   4 3:1K:8:512:202 prp 100000000 short32 21 2000.000 5.000 16 4 1.0000 ok 1753471364\n"
   "run   9 512:15:512:212 prp 100000000 short32 17 900.000 1.000 16 4 1.0000 ok 1753471374\n"
-  "reach 4 512:15:512:212 prp short32 17 148000000 confirmed 1753471404\n";
+  "reach 4 512:15:512:212 prp short32 17 148000000 confirmed 1753471404\n"
+  "roe   4 512:15:512:212 143413741 18 24.40 2150 0.3098 ok 1753471410\n"
+  "roe   4 512:15:512:212 143498461 17 24.40 2150 0.3098 ok 1753471420\n"
+  "roe   4 1K:8:1K:202 296960407 21 25.10 2150 0.3021 ok 1753471430\n"
+  "roe   9 512:15:512:212 143413741 17 24.40 2150 0.3098 ok 1753471440\n";
+
+// The accuracy reading of the set published as 2e51eaf52a48bfc9 and 0a567e7dbc3e06d4, prp and ll alike.
+const char* const PAD128_ROE = "roe   4 512:15:512:212 143413741 18 24.40 2150 0.3098 ok 1753471410\n";
 
 // What env 1 supports.  Costs are the mean plus two standard errors, so the six calls behind the first entry buy it a
 // smaller penalty (+1.84) than the four behind the second (+3.35); PAD=512 at 1802.236 is dropped as nothing cheaper
@@ -251,4 +261,133 @@ TEST(emit_drops_an_entry_its_own_default_lines_would_change) {
 
   // With nothing to shadow it, the same row is published.
   CHECK_EQ(entriesFor(db, 1).size(), entriesFor(loaded(DB), 1, defaults()).size());
+}
+
+namespace {
+
+const char* const ROE_1K = "roe   4 1K:8:1K:202 296960407 21 25.10 2150 0.3021 ok 1753471430\n";
+
+// The 1K:8:1K entry, and a second, dearer set of the same identity that the gate has passed.
+std::string withSecondSet(const std::string& roe1K) {
+  std::string text = DB;
+  text.replace(text.find(ROE_1K), std::string{ROE_1K}.size(), roe1K);
+  return text +
+    "cfg   22 INPLACE=1,PAD=256,TAIL_KERNELS=3\n"
+    "run   4 1K:8:1K:202 prp 200000000 short32 22 3200.000 4.000 16 4 1.0000 ok 1753471450\n"
+    "roe   4 1K:8:1K:202 296960407 22 24.90 2150 0.3040 ok 1753471460\n";
+}
+
+std::vector<std::string> published1K(const TuneDB& db, Gating gating = Gating::Required) {
+  std::vector<std::string> out;
+  for (const SelectionEntry& e : entriesFor(db, 1, defaults(), gating)) {
+    if (e.fft == "1K:8:1K:202") { out.push_back(configText(e.opts)); }
+  }
+  return out;
+}
+
+Env nvidia() {
+  Env env;
+  env.isNvidia = true;
+  env.computeCapability = 806;
+  return env;
+}
+
+}  // namespace
+
+TEST(a_configuration_the_gate_rejects_never_reaches_the_selection_file) {
+  std::vector<std::string> const cheapest{"INPLACE=1,PAD=256"};
+  std::vector<std::string> const dearer{"INPLACE=1,PAD=256,TAIL_KERNELS=3"};
+  CHECK(published1K(loaded(withSecondSet(ROE_1K))) == cheapest);
+
+  // Read below the FP64 floor at the top of its interval, and with a failed Gerbicz check: either way the cheaper set
+  // is gone, from the file and from what the search works from, and the set it kept out takes its place.
+  for (const char* roe : {"roe   4 1K:8:1K:202 296960407 21 17.20 2150 0.4011 ok 1753471430\n",
+                          "roe   4 1K:8:1K:202 296960407 21 25.10 2150 0.3021 fail 1753471430\n"}) {
+    TuneDB const db = loaded(withSecondSet(roe));
+    CHECK(published1K(db) == dearer);
+    CHECK(published1K(db, Gating::Assumed) == dearer);
+    CHECK(emitted(db, provenance()).find("3104.472") == std::string::npos);
+    for (const OptionSet& s : optionSetsFor(db, 1, defaults())) {
+      CHECK(s.entry.fft != "1K:8:1K:202" || s.entry.opts.contains("TAIL_KERNELS"));
+    }
+    CHECK(gatesOwed(db, 1, defaults()).empty());
+  }
+}
+
+TEST(a_set_the_gate_has_not_read_waits_for_its_reading) {
+  TuneDB const db = loaded(withSecondSet(""));
+
+  // Not published, and nothing dearer of its identity stands in for it where the search expects it to pass.
+  CHECK(published1K(db) == std::vector<std::string>{"INPLACE=1,PAD=256,TAIL_KERNELS=3"});
+  CHECK(published1K(db, Gating::Assumed) == std::vector<std::string>{"INPLACE=1,PAD=256"});
+
+  std::vector<OptionSet> const owed = gatesOwed(db, 1, defaults());
+  CHECK_EQ(owed.size(), size_t{1});
+  CHECK_EQ(configText(owed.at(0).entry.opts), std::string{"INPLACE=1,PAD=256"});
+  CHECK_EQ(owed.at(0).gateExponent, u64(296'960'407));
+  CHECK(!owed.at(0).gate.owesReference);
+
+  // Read where it would not count -- below the top of the interval -- it is still owed.
+  TuneDB const low = loaded(withSecondSet("roe   4 1K:8:1K:202 250000013 21 25.10 2150 0.3021 ok 1753471430\n"));
+  CHECK_EQ(gatesOwed(low, 1, defaults()).size(), size_t{1});
+}
+
+TEST(a_reading_at_the_fitted_standard_publishes_its_reach_as_confirmed) {
+  TuneDB const db = loaded(withRecord(ROE_1K, "roe   4 1K:8:1K:202 296960407 21 28.30 2150 0.2711 ok 1753471430\n"));
+  bool seen = false;
+  for (const SelectionEntry& e : entriesFor(db, 1, defaults())) {
+    if (e.fft != "1K:8:1K:202") { continue; }
+    CHECK(e.evidence == Evidence::Confirmed);
+    seen = true;
+  }
+  CHECK(seen);
+}
+
+TEST(a_set_that_spends_accuracy_is_held_to_its_defaults_reading) {
+  Env const env = nvidia();
+  TuneDB db;
+  u32 const id = db.internEnv(dbEnvOf(env));
+  u32 const sess = db.beginSession(id, "512:15:512:212@118063003", 0, 1'753'471'200);
+
+  FFTConfig const fft{"2:512:8:512:202"};
+  u64 const at = 118'063'003;
+  UseConfig const moved{{"TAIL_TRIGS32", "0"}};
+  CHECK(db.add(RunRow{
+    .sess = sess,
+    .fft = fft.spec(),
+    .kind = TestKind::PRP,
+    .exponent = at,
+    .regime = regimeOf(fft, at),
+    .cfg = db.internCfg(moved),
+    .m = {
+      .mean = 1400, .stddev = 1, .blocks = 16, .calls = 4, .drift = 1, .status = Status::Ok, .ts = 1'753'471'300}}));
+
+  u64 const top = gateExponent(interval(fft, at));
+  u64 ts = 1'753'471'300;
+  auto read = [&](const UseConfig& opts, double z) {
+    CHECK(db.add(RoeRow{.sess = sess,
+                        .fft = fft.spec(),
+                        .exponent = top,
+                        .cfg = db.internCfg(opts),
+                        .z = z,
+                        .n = 2150,
+                        .maxRoe = 0.4,
+                        .checkOk = true,
+                        .ts = ++ts}));
+  };
+
+  // Its own reading clears the floor, and then the reading of its defaults is owed.
+  read(moved, 12);
+  std::vector<OptionSet> const owed = gatesOwed(db, id);
+  CHECK_EQ(owed.size(), size_t{1});
+  CHECK(owed.at(0).gate.owesReference);
+  CHECK_EQ(owed.at(0).gateExponent, top);
+  CHECK(entriesFor(db, id).empty());
+
+  // Within ACCURACY_SLACK_Z of it, it is published; read again better, the defaults show what the set spent.
+  read(accuracyReference(env, fft, moved), 12.4);
+  CHECK_EQ(entriesFor(db, id).size(), size_t{1});
+  read({}, 13);
+  CHECK(entriesFor(db, id).empty());
+  CHECK(gatesOwed(db, id).empty());
 }

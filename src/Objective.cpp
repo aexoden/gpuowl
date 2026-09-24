@@ -84,8 +84,8 @@ double Prior::cost(const FFTShape& shape) const {
 
 bool Prior::fitted(enum FFT_TYPES type) const { return measured_.contains(type); }
 
-Objective::Objective(const TuneDB& db, u32 env, const RunScope& scope, const Defaults& defaults) :
-  Objective(envOf(db, env), entriesFor(db, env, defaults), Prior{db, env}, scope) {}
+Objective::Objective(const TuneDB& db, u32 env, const RunScope& scope, const Defaults& defaults, Gating gating) :
+  Objective(envOf(db, env), entriesFor(db, env, defaults, gating), Prior{db, env}, scope) {}
 
 Objective::Objective(const Env& env, const RunScope& scope) : Objective(env, {}, {}, scope) {}
 

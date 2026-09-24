@@ -57,6 +57,10 @@ public:
   // `fresh` for a configuration whose kernels this process has not built before.
   [[nodiscard]] double seconds(double usPerIt, bool fresh) const;
 
+  // What an accuracy check is expected to take.  Always a build of its own: the kernels are compiled for the exponent,
+  // and the gate reads a set where it was not timed.
+  [[nodiscard]] double gateSeconds(double usPerIt) const;
+
   // A completed call: how long it took and what it measured per iteration.
   void observe(double seconds, double usPerIt, bool fresh);
 
@@ -100,7 +104,7 @@ struct Baseline {
 [[nodiscard]] std::vector<Baseline> baselines(const Env& env, const RunScope& scope,
                                               const std::vector<FFTShape>& shapes = FFTShape::allShapes());
 
-enum class ItemKind : u8 { Anchor, Bootstrap, Baseline, Probe, Combo, Refine, Restart };
+enum class ItemKind : u8 { Anchor, Bootstrap, Baseline, Probe, Combo, Refine, Restart, Gate };
 
 [[nodiscard]] const char* toString(ItemKind kind);
 
@@ -113,8 +117,12 @@ struct Item {
 
   // What the configuration is built with: a bootstrap candidate, for a baseline the defaults the bootstrap decided, for
   // a probe, a combo or a restart its option set with every key the lines would set otherwise named at its own value,
-  // and for a refine the option set its row was recorded under.
+  // for a refine the option set its row was recorded under, and for a gate the set it reads: the one waiting on it, or
+  // that set's accuracy reference.
   UseConfig options{};
+
+  // A gate's: the option set whose publication waits on its reading.
+  UseConfig subject{};
 
   // A bootstrap call's or a probe's: the key it moved; and what it is, for the log.
   std::string moved{};
@@ -172,9 +180,10 @@ public:
   // With the default `bootstrap`, which is turned off, every baseline is admissible at once and runs at the built-in
   // defaults.  Without a `strategy` nothing measured is measured further: no probes, and no refines.  Without
   // `restarts` an entry whose probes are all answered is left there, so the queue can run dry; with them it never
-  // does, since a jump is always worth a little.
+  // does, since a jump is always worth a little.  Without `gate` the accuracy gate reads nothing, so nothing but exact
+  // arithmetic is ever published; the search is the same either way.
   Scheduler(RunScope scope, std::vector<Baseline> baselines, u32 blockSize = 1000, Bootstrap bootstrap = {},
-            std::optional<Strategy> strategy = {}, bool restarts = false);
+            std::optional<Strategy> strategy = {}, bool restarts = false, bool gate = false);
 
   [[nodiscard]] const RunScope& scope() const { return scope_; }
   [[nodiscard]] const std::vector<Baseline>& baselines() const { return baselines_; }
@@ -183,17 +192,21 @@ public:
 
   [[nodiscard]] BootstrapState bootstrapState(const TuneDB& db, u32 env) const;
 
-  // Every item that may run now, scored against what `env` has measured.  While a family still has a bootstrap call to
-  // make, those calls are all there is, most wanted first: every other configuration runs at what the bootstrap
-  // decides, so measuring one earlier would measure something production is not going to run.  After that, together
-  // and best rate first: the baselines; the probes and combos of every entry with a row emission could publish, from
-  // its best set or, under a strategy that searches by group, from the best set of each of its cheapest MAX_BRANCHES
-  // structural branches, each valued at that branch's cost -- a probe under the entry's move gains and a combo under
-  // its combination gains -- and a combo only once its branch has nothing of a lower tier left to offer, since it
-  // combines what those found; one more call on each side of every contest production decides that the race rule leaves
-  // undecided (refineValues()); and for an entry with no probe or combo left, the next draw of its restart sequence.  A
-  // baseline is left out once a row has concluded it or recorded a failure of it, and a probe, a combo or a restart
-  // once a row answers it or recorded a failure of it; any of them while an earlier generation's death or an
+  // Every item that may run now, scored against what `env` has measured, by `objective` -- which should count the sets
+  // the gate still owes a reading, Gating::Assumed, since those readings are taken first.  While a family still has a
+  // bootstrap call to make, those calls are all there is, most wanted first: every other configuration runs at what the
+  // bootstrap decides, so measuring one earlier would measure something production is not going to run.  Then, while
+  // the table would publish a set the accuracy gate owes a reading -- of the set, or of its accuracy reference -- those
+  // readings are all there is, quickest first: they are what stands between what has been found and what production
+  // runs, and the objective cannot price them, since its prior is below what the entries they publish cost.  After
+  // that, together and best rate first: the baselines; the probes and combos of every entry with a row emission could
+  // publish, from its best set or, under a strategy that searches by group, from the best set of each of its cheapest
+  // MAX_BRANCHES structural branches, each valued at that branch's cost -- a probe under the entry's move gains and a
+  // combo under its combination gains -- and a combo only once its branch has nothing of a lower tier left to offer,
+  // since it combines what those found; one more call on each side of every contest production decides that the race
+  // rule leaves undecided (refineValues()); and for an entry with no probe or combo left, the next draw of its restart
+  // sequence.  A baseline is left out once a row has concluded it or recorded a failure of it, and a probe, a combo or
+  // a restart once a row answers it or recorded a failure of it; any of them while an earlier generation's death or an
   // unbuildable key holds it, and once this process has tried it more often than any entry needs.
   [[nodiscard]] std::vector<Item> admissible(const TuneDB& db, u32 env, const Objective& objective) const;
 
@@ -213,6 +226,8 @@ private:
   [[nodiscard]] std::string keyOf(const Item& item) const;
 
   [[nodiscard]] std::vector<Item> bootstrapItems(const BootstrapState& state, const Objective& objective) const;
+
+  [[nodiscard]] std::vector<Item> gateItems(const TuneDB& db, u32 env, const Defaults& defaults) const;
 
   // "<spec> <canonical options>", which is what makes a later build of the same configuration find it compiled.
   [[nodiscard]] std::string builtKey(const FFTConfig& fft, const UseConfig& options) const;
@@ -247,6 +262,7 @@ private:
   Bootstrap bootstrap_;
   std::optional<Strategy> strategy_;
   bool restarts_;
+  bool gate_;
 
   // The configurations this process has built, whose next build finds its kernels compiled.
   std::set<std::string> built_;
@@ -258,6 +274,10 @@ private:
 
   // How far each entry's restart sequence has been read in this process.
   mutable std::map<size_t, RestartScan> scans_;
+
+  // Gate readings by keyOf(), however they ended: one that recorded a reading is not owed again unless its kernels
+  // were built otherwise, and asking again would only repeat that.
+  std::map<std::string, u32> gateAttempts_;
 
   // Refine calls by keyOf() that recorded nothing; a refine is bounded by its row's calls otherwise.
   std::map<std::string, u32> unrecordedRefines_;
@@ -291,6 +311,20 @@ public:
   // Declares that the next call is a point of a combination of tier `tier`, before it is made.
   virtual void declareCombo(const FFTConfig& fft, TestKind kind, u64 exponent, const UseConfig& options, u32 tier) = 0;
 
+  struct Reading {
+    bool completed = false;
+    double seconds = 0;
+
+    double z = 0;
+    u32 n = 0;
+    bool checkOk = true;
+
+    UseConfig ran{};
+  };
+
+  // Reads the rounding error of one configuration at `exponent`, recording the reading as its own row.
+  [[nodiscard]] virtual Reading gate(const FFTConfig& fft, u64 exponent, const UseConfig& options) = 0;
+
   // Records its own rows.  `moved` is the one key that differs from the configuration this one is compared with, if
   // there is one, so that a build failure can be pinned on it.
   [[nodiscard]] virtual Result run(const FFTConfig& fft, TestKind kind, u64 exponent, const UseConfig& options,
@@ -314,8 +348,8 @@ struct QueueReport {
 using Publisher = std::function<void(const Objective&, const Defaults&)>;
 
 // Runs items until none is worth anything or the bench stops, re-scoring from the database after each.  `publish`
-// is given the objective once before the first item and again after every one, so that whatever interrupts the run
-// finds a selection file describing everything measured before it.
+// is given the objective of what is published once before the first item and again after every one, so that whatever
+// interrupts the run finds a selection file describing everything measured and gated before it.
 QueueReport runQueue(Scheduler& scheduler, TuneDB& db, u32 env, Bench& bench, const Publisher& publish);
 
 }  // namespace tune

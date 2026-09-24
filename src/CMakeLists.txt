@@ -39,6 +39,7 @@ add_executable(prpll
   Bootstrap.cpp
   Probe.cpp
   Value.cpp
+  Gate.cpp
   fs.cpp
   )
 

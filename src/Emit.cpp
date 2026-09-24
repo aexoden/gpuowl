@@ -124,13 +124,10 @@ public:
     }
   }
 
-  // Inherited where nothing was measured: the fitted table's own limit, marked as the state that says so.
-  [[nodiscard]] std::pair<u64, Evidence> operator()(const FFTConfig& fft, const RunRow& row,
-                                                    const UseConfig& opts) const {
+  // Nothing where nothing was derived, and the fitted table's own limit is inherited.
+  [[nodiscard]] const ReachRow* operator()(const RunRow& row, const UseConfig& opts) const {
     auto const it = rows_.find(Key{row.fft, row.kind, row.regime.label(), configText(opts)});
-    if (it != rows_.end()) { return {it->second.reach, it->second.evidence}; }
-
-    return {maxExp(fft), exactArithmetic(fft) ? Evidence::NotApplicable : Evidence::Unvalidated};
+    return it != rows_.end() ? &it->second : nullptr;
   }
 
 private:
@@ -165,10 +162,27 @@ bool shadowedBy(const Defaults& defaults, const Env& env, const FFTConfig& fft, 
 
 namespace {
 
-std::vector<Candidate> identityFrontier(const TuneDB& db, u32 env, const Defaults& defaults) {
+std::vector<Candidate> identityFrontier(const TuneDB& db, u32 env, const Defaults& defaults, Gating gating) {
+  std::vector<Candidate> sets = optionSetsFor(db, env, defaults);
+  if (gating == Gating::Required) {
+    std::erase_if(sets, [](const Candidate& c) { return c.gate.state != GateState::Passed; });
+  }
+
   // A configuration that costs more but reaches further is kept, because nothing else may reach that far cheaply, and
   // picking one option set per identity before the table is built would lose it.
-  return frontier(optionSetsFor(db, env, defaults), [](const Candidate& c) { return identityOf(c.entry); });
+  return frontier(sets, [](const Candidate& c) { return identityOf(c.entry); });
+}
+
+// Then across the table, per kind, since an entry no exponent would ever choose is one production would only walk
+// past.  Cheapest first.
+std::vector<Candidate> tableFor(const TuneDB& db, u32 env, const Defaults& defaults, Gating gating) {
+  std::vector<Candidate> out =
+    frontier(identityFrontier(db, env, defaults, gating), [](const Candidate& c) { return c.entry.kind; });
+
+  std::ranges::sort(out, [](const Candidate& a, const Candidate& b) {
+    return std::tuple{a.entry.cost, a.entry.id} < std::tuple{b.entry.cost, b.entry.id};
+  });
+  return out;
 }
 
 }  // namespace
@@ -179,6 +193,7 @@ std::vector<OptionSet> optionSetsFor(const TuneDB& db, u32 env, const Defaults& 
 
   Env const built = row->toEnv();
   Reaches const reachOf{db, env};
+  Gates const gates{db, env, built};
 
   std::vector<RunRow> const runs = db.mergedRuns();
   std::set<Configuration> const failed = condemned(db, env, runs);
@@ -187,6 +202,7 @@ std::vector<OptionSet> optionSetsFor(const TuneDB& db, u32 env, const Defaults& 
   // of one thing -- the cost is per iteration, and the regime is what decides which kernels ran -- so the better
   // supported of the two is what gets published, rather than both under one id.
   std::map<std::string, Candidate> byId;
+  std::set<std::string> derivedIds;
 
   for (const RunRow& row : runs) {
     if (db.envOf(row.sess) != env || !concluded(row.m)) { continue; }
@@ -202,8 +218,8 @@ std::vector<OptionSet> optionSetsFor(const TuneDB& db, u32 env, const Defaults& 
 
     if (failed.contains(configurationOf(row, *opts))) { continue; }
 
-    auto const [reach, evidence] = reachOf(*fft, row, *opts);
-    Interval const span = interval(*fft, row.exponent, reach);
+    const ReachRow* const derived = reachOf(row, *opts);
+    Interval const span = interval(*fft, row.exponent, derived ? derived->reach : maxExp(*fft));
     if (span.empty()) { continue; }
 
     // A row whose regime is not the one its own exponent runs in was written by something that disagrees with this
@@ -221,10 +237,12 @@ std::vector<OptionSet> optionSetsFor(const TuneDB& db, u32 env, const Defaults& 
                                   .emin = span.lo,
                                   .reach = span.hi,
                                   .regime = span.regime,
-                                  .evidence = evidence,
+                                  .evidence = derived ? derived->evidence : Evidence::Unvalidated,
                                   .opts = *opts},
                         .m = row.m,
-                        .exponent = row.exponent};
+                        .exponent = row.exponent,
+                        .gateExponent = gateExponent(span),
+                        .gate = {}};
 
     candidate.entry.id = entryId(candidate.entry.fft, candidate.entry.kind, candidate.entry.regime, *opts);
 
@@ -232,35 +250,42 @@ std::vector<OptionSet> optionSetsFor(const TuneDB& db, u32 env, const Defaults& 
     // is how the database ordinarily looks rather than something wrong with it.
     if (!shadowedKeys(defaults, built, *fft, candidate.entry).empty()) { continue; }
 
+    if (derived) { derivedIds.insert(candidate.entry.id); }
     auto const [at, fresh] = byId.emplace(candidate.entry.id, candidate);
     if (!fresh && better(candidate, at->second)) { at->second = candidate; }
   }
 
+  // Judged once per set rather than once per row: the rows of one set in one regime share its interval.
   std::vector<Candidate> candidates;
-  for (auto& [id, candidate] : byId) { candidates.push_back(std::move(candidate)); }
+  for (auto& [id, candidate] : byId) {
+    candidate.gate = gates(*parseFft(candidate.entry.fft), candidate.gateExponent, candidate.entry.opts);
+    if (candidate.gate.state == GateState::Rejected) { continue; }
+
+    // A derived reach carries the evidence it was derived from.  Otherwise the reach is inherited, and the gate's
+    // reading at it says how well.
+    if (candidate.gate.state == GateState::Passed && !derivedIds.contains(id)) {
+      candidate.entry.evidence = candidate.gate.evidence;
+    }
+    candidates.push_back(std::move(candidate));
+  }
   return candidates;
 }
 
-std::vector<SelectionEntry> candidatesFor(const TuneDB& db, u32 env, const Defaults& defaults) {
+std::vector<SelectionEntry> candidatesFor(const TuneDB& db, u32 env, const Defaults& defaults, Gating gating) {
   std::vector<SelectionEntry> out;
-  for (Candidate& c : identityFrontier(db, env, defaults)) { out.push_back(std::move(c.entry)); }
+  for (Candidate& c : identityFrontier(db, env, defaults, gating)) { out.push_back(std::move(c.entry)); }
   return out;
 }
 
-std::vector<SelectionEntry> entriesFor(const TuneDB& db, u32 env, const Defaults& defaults) {
-  // Then across the table, per kind, since an entry no exponent would ever choose is one production would only walk
-  // past.
-  std::vector<Candidate> candidates =
-    frontier(identityFrontier(db, env, defaults), [](const Candidate& c) { return c.entry.kind; });
-
-  std::ranges::sort(candidates, [](const Candidate& a, const Candidate& b) {
-    return std::tuple{a.entry.cost, a.entry.id} < std::tuple{b.entry.cost, b.entry.id};
-  });
-
+std::vector<SelectionEntry> entriesFor(const TuneDB& db, u32 env, const Defaults& defaults, Gating gating) {
   std::vector<SelectionEntry> out;
-  out.reserve(candidates.size());
-  for (Candidate& c : candidates) { out.push_back(std::move(c.entry)); }
+  for (Candidate& c : tableFor(db, env, defaults, gating)) { out.push_back(std::move(c.entry)); }
+  return out;
+}
 
+std::vector<OptionSet> gatesOwed(const TuneDB& db, u32 env, const Defaults& defaults) {
+  std::vector<OptionSet> out = tableFor(db, env, defaults, Gating::Assumed);
+  std::erase_if(out, [](const OptionSet& s) { return s.gate.state != GateState::Owed; });
   return out;
 }
 

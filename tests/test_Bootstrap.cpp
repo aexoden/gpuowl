@@ -8,6 +8,7 @@
 
 #include "Anchor.h"
 #include "FFTVariants.h"
+#include "Gate.h"
 
 #include "test.h"
 
@@ -392,11 +393,41 @@ TEST(a_family_raced_to_the_end_is_a_transcript_of_its_races) {
   CHECK_EQ(configText(done.defaults.global), std::string{"TAIL_KERNELS=3,WMUL=1"});
   CHECK(done.defaults.family.empty());
 
-  // Two calls for each of the 53 moves of its eight first rounds, and two for the defaults: each later race's incumbent
-  // is the previous one's winner, whose calls it already has.  Then the second rounds: Tail's from TAIL_KERNELS=3
-  // offers eight moves, of which the three back to TAIL_KERNELS 0, 1 and 2 were measured in the first; Width's from
-  // WMUL=1 offers seven, of which WMUL=2 was.
-  CHECK_EQ(calls, 2u * 53 + 2 + 2 * 5 + 2 * 6);
+  // Two calls for each of the 50 moves of its eight first rounds, and two for the defaults: each later race's incumbent
+  // is the previous one's winner, whose calls it already has.  The 53 moves there are less the three that change the
+  // rounding -- TAIL_TRIGS32 to 0 or 1, TABMUL_CHAIN32 to 1 -- which no line carries.  Then the second rounds: Tail's
+  // from TAIL_KERNELS=3 offers five moves, of which the three back to TAIL_KERNELS 0, 1 and 2 were measured in the
+  // first; Width's from WMUL=1 offers seven, of which WMUL=2 was.
+  CHECK_EQ(calls, 2u * 50 + 2 + 2 * 2 + 2 * 6);
+}
+
+TEST(no_line_carries_a_key_that_changes_the_rounding) {
+  // TAIL_TRIGS32=0 and TABMUL_CHAIN32=1 would each save 10%; every other move costs 1%.  Production applies the lines
+  // where no gate ever read them, so neither is raced, in the groups or in the combinations.
+  Fixture f;
+  Family const family = familyOf("2:1K:8:256:212");
+  Bootstrap const b{nvidia(), PROBE, {family}, true};
+
+  auto cost = [](const UseConfig& c) {
+    double us = 1576;
+    for (const auto& [key, value] : c) {
+      us *= (key == "TAIL_TRIGS32" && value == "0") || (key == "TABMUL_CHAIN32" && value == "1") ? 0.9 : 1.01;
+    }
+    return us;
+  };
+
+  u32 calls = 0;
+  for (BootstrapState s = b.state(f.db, f.env); !s.turns.empty() && calls < 2000; s = b.state(f.db, f.env)) {
+    const Turn& t = s.turns.front();
+    CHECK(!movesAccuracy(nvidia(), family.fft, t.config));
+    f.add(family.fft, t.config, reading(cost(t.config), cost(t.config) * 0.0005, 1));
+    ++calls;
+  }
+
+  BootstrapState const done = b.state(f.db, f.env);
+  CHECK(done.complete);
+  CHECK(done.defaults.global.empty());
+  CHECK(done.defaults.family.empty());
 }
 
 TEST(what_the_families_agree_on_is_global_and_the_rest_is_theirs) {

@@ -221,6 +221,17 @@ public:
       .completed = c.measurement.ok(), .seconds = c.buildSec + c.timedSec, .usPerIt = c.measurement.mean, .ran = c.ran};
   }
 
+  [[nodiscard]] Reading gate(const FFTConfig& fft, u64 exponent, const UseConfig& options) override {
+    Timer timer;
+    RoeCheck const roe = session_.checkRoe(fft, options, exponent);
+    return {.completed = roe.status == Status::Ok && roe.applicable && !session_.stopped(),
+            .seconds = timer.at(),
+            .z = roe.z,
+            .n = roe.n,
+            .checkOk = roe.checkOk,
+            .ran = roe.ran};
+  }
+
   [[nodiscard]] bool stopped() const override { return session_.stopped() || Signal::stopRequested(); }
 
 private:
@@ -730,7 +741,7 @@ MeasureOutcome runTune(const GpuCommon& shared, const TuneCommand& command) {
 
   std::vector<Baseline> entries = baselines(env, scope);
   Bootstrap bootstrap = bootstrapFor(env, scope, entries, command.bootstrap);
-  Scheduler scheduler{scope, std::move(entries), args.blockSize, std::move(bootstrap), command.strategy, true};
+  Scheduler scheduler{scope, std::move(entries), args.blockSize, std::move(bootstrap), command.strategy, true, true};
   std::string const combo = command.strategy.kind == Strategy::Kind::Hybrid
     ? " (comboTop=" + std::to_string(command.strategy.comboTop) +
       ", comboTiers=" + std::to_string(command.strategy.comboTiers) + ")"
