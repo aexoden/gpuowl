@@ -11,6 +11,7 @@
 
 #pragma once
 
+#include "Gate.h"
 #include "Selection.h"
 #include "TuneDB.h"
 #include "UseResolve.h"
@@ -45,12 +46,17 @@ struct Provenance {
 
 [[nodiscard]] std::string provenanceOf(const Provenance& from);
 
+// Which option sets count: nothing is published that the accuracy gate has not passed, but the search works from --
+// and values its items against -- every set the gate has not rejected, since a reading it still owes is taken next.
+enum class Gating : u8 { Required, Assumed };
+
 // Every entry `env`'s own measurements support, cheapest first.  Rows of another env -- another card, or the same card
 // under other kernels -- are invisible here, as they are to every other comparison.
 //
 // `defaults` is what the entries will be published beside: an entry outranks those lines, so one whose recorded option
 // set does not name a key they set would run differently from the way it was measured, and is not published.
-[[nodiscard]] std::vector<SelectionEntry> entriesFor(const TuneDB& db, u32 env, const Defaults& defaults = {});
+[[nodiscard]] std::vector<SelectionEntry> entriesFor(const TuneDB& db, u32 env, const Defaults& defaults = {},
+                                                     Gating gating = Gating::Required);
 
 // A publishable option set, and the row it would be a transcript of.
 struct OptionSet {
@@ -59,16 +65,26 @@ struct OptionSet {
 
   // Where the row was taken, which is where another call pools with it.
   u64 exponent = 0;
+
+  // Where the accuracy gate reads the set, and what it has made of it so far.
+  u64 gateExponent = 0;
+  GateVerdict gate{};
 };
 
 // Every option set of every identity that could be published beside `defaults`, one per option set, before any is
 // dropped for being dominated: the one a slightly cheaper set of the same identity keeps out is still what production
-// would run if that reading were the unlucky one.
+// would run if that reading were the unlucky one.  A set the accuracy gate rejected is not one of them, whatever it
+// costs; one it still owes a reading is.
 [[nodiscard]] std::vector<OptionSet> optionSetsFor(const TuneDB& db, u32 env, const Defaults& defaults = {});
 
 // What entriesFor() chooses the table from: every option set of every identity that no other of the same identity
 // dominates, including those that another identity's entry would keep out of the table.
-[[nodiscard]] std::vector<SelectionEntry> candidatesFor(const TuneDB& db, u32 env, const Defaults& defaults = {});
+[[nodiscard]] std::vector<SelectionEntry> candidatesFor(const TuneDB& db, u32 env, const Defaults& defaults = {},
+                                                        Gating gating = Gating::Required);
+
+// The option sets the table would publish if every reading the gate owes passed, that are waiting on one: the readings
+// that stand between what the search has found and what production runs.
+[[nodiscard]] std::vector<OptionSet> gatesOwed(const TuneDB& db, u32 env, const Defaults& defaults = {});
 
 // Whether `defaults` would change what a row measured under `opts` builds on `fft`, so that emission would not publish
 // it beside them.

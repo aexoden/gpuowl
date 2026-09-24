@@ -132,6 +132,37 @@ public:
     return {.completed = true, .seconds = seconds, .usPerIt = cost, .ran = built};
   }
 
+  // What an accuracy check reads for an option set: a z the floor of every type is clear of, by default.
+  std::function<double(const FFTConfig&, const UseConfig&)> zOf = [](const FFTConfig&, const UseConfig&) {
+    return 24.0;
+  };
+
+  [[nodiscard]] Reading gate(const FFTConfig& fft, u64 exponent, const UseConfig& options) override {
+    if (calls_ == stopAfter_) {
+      stopped_ = true;
+      return {};
+    }
+    ++calls_;
+
+    order.push_back("gate " + fft.spec() + "@" + std::to_string(exponent) +
+                    (options.empty() ? "" : " " + configText(options)));
+    double const seconds = ROE_ITERATIONS * pseudoCost(fft) * 1e-6 + 1.5 + compileSeconds;
+    clock_ += seconds;
+
+    UseConfig const built = builtAs(options);
+    double const z = zOf(fft, built);
+    CHECK(db_.add(RoeRow{.sess = sess_,
+                         .fft = fft.spec(),
+                         .exponent = exponent,
+                         .cfg = db_.internCfg(built),
+                         .z = z,
+                         .n = 2000,
+                         .maxRoe = 0.3,
+                         .checkOk = true,
+                         .ts = u64(clock_)}));
+    return {.completed = true, .seconds = seconds, .z = z, .n = 2000, .checkOk = true, .ran = built};
+  }
+
   [[nodiscard]] bool stopped() const override { return stopped_; }
 
 private:
@@ -180,8 +211,8 @@ struct Fixture {
   void newSession() { sess = db.beginSession(env, "512:15:512:212@118063003", 0, 1'753'481'200); }
 };
 
-std::vector<std::string> runAll(Fixture& f, FakeBench& bench, u32* published = nullptr) {
-  Scheduler scheduler{scope(), baselines(nvidia(), scope(), shapes())};
+std::vector<std::string> runAll(Fixture& f, FakeBench& bench, u32* published = nullptr, bool gate = false) {
+  Scheduler scheduler{scope(), baselines(nvidia(), scope(), shapes()), 1000, {}, {}, false, gate};
   (void)runQueue(scheduler, f.db, f.env, bench, [&](const Objective&, const Defaults&) {
     if (published) { ++*published; }
   });
@@ -424,16 +455,16 @@ TEST(an_interrupted_run_leaves_a_valid_selection_file_and_a_rerun_resumes) {
   // Uninterrupted, for what a whole run concludes.
   Fixture whole;
   FakeBench wholeBench{whole.db, whole.sess};
-  std::vector<std::string> const all = runAll(whole, wholeBench);
+  std::vector<std::string> const all = runAll(whole, wholeBench, nullptr, true);
 
-  // Stopped in the middle of the fourth call: 512:15:512:000 is concluded, the hybrid has one call of two, and the call
-  // that was cut short recorded nothing.
+  // Stopped in the middle of the fifth call: 512:15:512:000 is concluded and its accuracy read, the hybrid has one call
+  // of two, and the call that was cut short recorded nothing.
   Fixture f;
-  FakeBench first{f.db, f.sess, true, 3};
-  Scheduler one{scope(), baselines(nvidia(), scope(), shapes())};
+  FakeBench first{f.db, f.sess, true, 4};
+  Scheduler one{scope(), baselines(nvidia(), scope(), shapes()), 1000, {}, {}, false, true};
   QueueReport const stopped = runQueue(one, f.db, f.env, first, publisher(f.db, f.env));
   CHECK(stopped.stopped);
-  CHECK_EQ(stopped.items, 3u);
+  CHECK_EQ(stopped.items, 4u);
   CHECK_EQ(callsOn(f.db, "1:512:8:512:202", 118'063'003), 1u);
 
   // What was published is a file production reads, holding exactly what had concluded.
@@ -447,7 +478,7 @@ TEST(an_interrupted_run_leaves_a_valid_selection_file_and_a_rerun_resumes) {
   // though this process has never built it -- at the exponent it was started at, and repeats nothing concluded.
   f.newSession();
   FakeBench second{f.db, f.sess};
-  Scheduler two{scope(), baselines(nvidia(), scope(), shapes())};
+  Scheduler two{scope(), baselines(nvidia(), scope(), shapes()), 1000, {}, {}, false, true};
   QueueReport const resumed = runQueue(two, f.db, f.env, second, publisher(f.db, f.env));
   CHECK(!resumed.stopped);
   CHECK(second.order.size() >= 2);
@@ -483,7 +514,7 @@ TEST(what_failed_or_what_an_earlier_generation_died_on_is_not_offered_again) {
   u32 const defaults = f.db.internCfg({});
 
   auto offered = [&](const std::string& spec) {
-    Objective const objective{f.db, f.env, scheduler.scope()};
+    Objective const objective{f.db, f.env, scheduler.scope(), {}, Gating::Assumed};
     for (const Item& item : scheduler.admissible(f.db, f.env, objective)) {
       if (scheduler.baselines()[item.index].fft.spec() == spec) { return true; }
     }
@@ -547,7 +578,7 @@ TEST(a_started_entry_is_finished_where_it_was_started) {
                         .m = {.mean = 1720, .stddev = 1, .blocks = 4, .calls = 1, .status = Status::Ok, .ts = 1}}));
 
   Scheduler scheduler{scope(), baselines(nvidia(), scope(), shapes())};
-  Objective const objective{f.db, f.env, scheduler.scope()};
+  Objective const objective{f.db, f.env, scheduler.scope(), {}, Gating::Assumed};
   std::vector<Item> const ranked = scheduler.admissible(f.db, f.env, objective);
 
   auto const at = std::ranges::find_if(
@@ -781,8 +812,9 @@ ProbeRun runProbed(Fixture& f, u32 stopAfter = ~0u, const std::function<UseConfi
 
   Scheduler scheduler = probedScheduler(restarts);
   ProbeRun out;
-  out.report = runQueue(scheduler, f.db, f.env, bench, [&](const Objective& objective, const Defaults&) {
-    for (const SelectionEntry& e : objective.entries()) {
+  // As the search sees it: with the gate turned off nothing is published but what rounds nothing.
+  out.report = runQueue(scheduler, f.db, f.env, bench, [&](const Objective&, const Defaults& defaults) {
+    for (const SelectionEntry& e : entriesFor(f.db, f.env, defaults, Gating::Assumed)) {
       if (e.fft == PROBED) {
         out.best = configText(canonicalConfig(nvidia(), FFTConfig{PROBED}, e.opts));
         break;
@@ -992,7 +1024,7 @@ TEST(an_entry_whose_moves_have_paid_is_probed_ahead_of_one_whose_have_not) {
   add("512:15:512:212", {{"ZEROHACK_W", "0"}}, 1710);
   add("512:15:512:212", {{"LDSPAD_W", "0"}}, 1705);
 
-  Objective const objective{f.db, f.env, scheduler.scope()};
+  Objective const objective{f.db, f.env, scheduler.scope(), {}, Gating::Assumed};
   double paid = -1;
   double flat = -1;
   for (const Item& item : scheduler.admissible(f.db, f.env, objective)) {
@@ -1044,7 +1076,7 @@ TEST(an_unmeasured_entry_is_valued_under_the_gains_the_device_has_shown) {
   CHECK(near(gainsOf(f.db, f.env).all().n(), moves));
   CHECK(shown.mean() > 2 * GAIN_PRIOR.mean());
 
-  Objective const objective{f.db, f.env, scheduler.scope()};
+  Objective const objective{f.db, f.env, scheduler.scope(), {}, Gating::Assumed};
   u32 checked = 0;
   for (const Item& item : scheduler.admissible(f.db, f.env, objective)) {
     const Baseline& b = scheduler.baselines()[item.index];
@@ -1328,8 +1360,8 @@ SearchRun runSearched(const Strategy& strategy, double (*factor)(const FFTConfig
   Scheduler scheduler{scope(), one, 1000, Bootstrap{nvidia(), 118'063'003, {}, false}, strategy};
 
   SearchRun out;
-  QueueReport const report = runQueue(scheduler, f.db, f.env, bench, [&](const Objective& objective, const Defaults&) {
-    for (const SelectionEntry& e : objective.entries()) {
+  QueueReport const report = runQueue(scheduler, f.db, f.env, bench, [&](const Objective&, const Defaults& defaults) {
+    for (const SelectionEntry& e : entriesFor(f.db, f.env, defaults, Gating::Assumed)) {
       if (e.fft == PROBED) { out.best = configText(canonicalConfig(nvidia(), FFTConfig{PROBED}, e.opts)); }
     }
   });
@@ -1460,7 +1492,7 @@ TEST(a_probe_answered_in_one_regime_is_still_owed_in_another) {
 
   Scheduler const scheduler{wide, both, 1000, Bootstrap{nvidia(), 80'000'023, {}, false},
                             Strategy{.kind = Strategy::Kind::Single}};
-  Objective const objective{f.db, f.env, wide};
+  Objective const objective{f.db, f.env, wide, {}, Gating::Assumed};
   for (int round = 0; round < 2; ++round) {
     std::vector<Item> const items = scheduler.admissible(f.db, f.env, objective);
     auto owed = [&](size_t index) {
@@ -1525,7 +1557,7 @@ TEST(a_combination_waits_for_the_tier_below_and_is_valued_by_the_combination_gai
     if (p.tier == 1) { measure(p.config); }
   }
 
-  Objective const objective{f.db, f.env, scope()};
+  Objective const objective{f.db, f.env, scope(), {}, Gating::Assumed};
   std::vector<Item> const late = scheduler.admissible(f.db, f.env, objective);
   CHECK(kindsOf(late, ItemKind::Combo) > 0);
 
@@ -1627,4 +1659,140 @@ TEST(a_bootstrap_interrupted_among_its_combinations_carries_on_from_its_rows) {
   CHECK(split == tally(all.order));
   CHECK_EQ(configText(second.defaults.global), configText(all.defaults.global));
   CHECK_EQ(f.db.combos().size(), whole.db.combos().size());
+}
+
+namespace {
+
+// Whether every entry `objective` publishes is one the accuracy gate has passed.
+bool allGated(const TuneDB& db, u32 env, const Objective& objective) {
+  Gates const gates{db, env, nvidia()};
+  return std::ranges::all_of(objective.entries(), [&](const SelectionEntry& e) {
+    FFTConfig const fft{e.fft};
+    return gates(fft, gateExponent(interval(fft, e.emin, e.reach)), e.opts).state == GateState::Passed;
+  });
+}
+
+// A row concluding one baseline at the built-in defaults, as two calls leave it.
+void conclude(Fixture& f, const std::string& spec, const UseConfig& opts, double mean) {
+  CHECK(f.db.add(RunRow{.sess = f.sess,
+                        .fft = spec,
+                        .kind = TestKind::PRP,
+                        .exponent = 118'063'003,
+                        .regime = regimeOf(FFTConfig{spec}, 118'063'003),
+                        .cfg = f.db.internCfg(opts),
+                        .m = {.mean = mean,
+                              .stddev = 0.1,
+                              .blocks = 4 * MIN_CALLS,
+                              .calls = MIN_CALLS,
+                              .drift = 1,
+                              .status = Status::Ok,
+                              .ts = 0}}));
+}
+
+}  // namespace
+
+TEST(nothing_is_published_that_the_gate_has_not_passed) {
+  // 1K:8:1K:112 is the cheapest 1K variant, and reads below the FP64 floor at the top of its interval.
+  Fixture f;
+  FakeBench bench{f.db, f.sess};
+  bench.zOf = [](const FFTConfig& fft, const UseConfig&) { return fft.spec() == "1K:8:1K:112" ? 17.0 : 24.0; };
+
+  u32 publications = 0;
+  std::set<std::string> ever;
+  Scheduler scheduler{scope(), baselines(nvidia(), scope(), shapes()), 1000, {}, {}, false, true};
+  (void)runQueue(scheduler, f.db, f.env, bench, [&](const Objective& objective, const Defaults&) {
+    ++publications;
+    CHECK(allGated(f.db, f.env, objective));
+    for (const SelectionEntry& e : objective.entries()) { ever.insert(e.fft); }
+  });
+  CHECK(publications > 1);
+
+  // It was read, rejected, and never published; the next cheapest 1K variant was read and published in its place.
+  CHECK_EQ(std::ranges::count(bench.order, std::string{"gate 1K:8:1K:112@167772107"}), 1);
+  CHECK(!ever.contains("1K:8:1K:112"));
+  std::vector<SelectionEntry> const last = entriesFor(f.db, f.env);
+  CHECK(std::ranges::any_of(last, [](const SelectionEntry& e) { return e.fft.starts_with("1K:8:1K:"); }));
+
+  // The exact-arithmetic hybrid was never read at all.
+  CHECK(std::ranges::none_of(bench.order, [](const std::string& s) { return s.starts_with("gate 1:512:8:512"); }));
+}
+
+TEST(a_reading_the_gate_owes_is_taken_before_anything_valued) {
+  Fixture f;
+  Scheduler scheduler{scope(), baselines(nvidia(), scope(), shapes()), 1000, {}, {}, false, true};
+  conclude(f, "1K:8:1K:112", {}, 2900);
+
+  Objective const objective{f.db, f.env, scheduler.scope(), {}, Gating::Assumed};
+  std::vector<Item> const owed = scheduler.admissible(f.db, f.env, objective);
+  CHECK_EQ(owed.size(), size_t{1});
+  CHECK(owed.at(0).kind == ItemKind::Gate);
+  CHECK_EQ(owed.at(0).exponent, u64(167'772'107));
+  CHECK(owed.at(0).options.empty() && owed.at(0).subject.empty());
+
+  // Answered, the baselines are what is left.
+  CHECK(f.db.add(RoeRow{.sess = f.sess,
+                        .fft = "1K:8:1K:112",
+                        .exponent = 167'772'107,
+                        .cfg = f.db.internCfg({}),
+                        .z = 24,
+                        .n = 2000,
+                        .maxRoe = 0.3,
+                        .checkOk = true,
+                        .ts = 1}));
+  std::vector<Item> const next = scheduler.admissible(f.db, f.env, objective);
+  CHECK(!next.empty());
+  CHECK(std::ranges::none_of(next, [](const Item& i) { return i.kind == ItemKind::Gate; }));
+
+  // Without the gate there is never a reading to take.
+  Fixture g;
+  Scheduler ungated{scope(), baselines(nvidia(), scope(), shapes())};
+  conclude(g, "1K:8:1K:112", {}, 2900);
+  CHECK(std::ranges::none_of(ungated.admissible(g.db, g.env, objective),
+                             [](const Item& i) { return i.kind == ItemKind::Gate; }));
+}
+
+TEST(a_set_that_spends_accuracy_has_its_defaults_read_as_well) {
+  // Any 1K variant on which a middle chain length can move away from its default.
+  Env const env = nvidia();
+  std::optional<Baseline> entry;
+  UseConfig moved;
+  for (const Baseline& b : baselines(env, scope(), shapes())) {
+    for (const char* key : {"MM_CHAIN", "MM2_CHAIN"}) {
+      const Option& option = *findOption(key);
+      for (int v : option.valuesFor(env, b.fft, {})) {
+        if (!entry && b.fft.shape.spec() == "1K:8:1K" && v != option.defaultFor(env, b.fft, {})) {
+          entry = b;
+          moved = {{key, std::to_string(v)}};
+        }
+      }
+    }
+  }
+  CHECK(entry.has_value());
+  if (!entry) { return; }
+  CHECK(movesAccuracy(env, entry->fft, moved));
+  std::string const spec = entry->fft.spec();
+  u64 const top = gateExponent(interval(entry->fft, 118'063'003));
+
+  Fixture f;
+  Scheduler scheduler{scope(), baselines(nvidia(), scope(), shapes()), 1000, {}, {}, false, true};
+  conclude(f, spec, moved, 2900);
+  CHECK(f.db.add(RoeRow{.sess = f.sess,
+                        .fft = spec,
+                        .exponent = top,
+                        .cfg = f.db.internCfg(moved),
+                        .z = 23,
+                        .n = 2000,
+                        .maxRoe = 0.3,
+                        .checkOk = true,
+                        .ts = 1}));
+
+  Objective const objective{f.db, f.env, scheduler.scope(), {}, Gating::Assumed};
+  std::vector<Item> const owed = scheduler.admissible(f.db, f.env, objective);
+  CHECK_EQ(owed.size(), size_t{1});
+  if (owed.empty()) { return; }
+  CHECK(owed.at(0).kind == ItemKind::Gate);
+  CHECK_EQ(owed.at(0).exponent, top);
+  CHECK(owed.at(0).subject == moved);
+  CHECK(!movesAccuracy(env, entry->fft, owed.at(0).options));
+  CHECK(canonicalConfig(env, entry->fft, owed.at(0).options).empty());
 }

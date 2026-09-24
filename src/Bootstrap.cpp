@@ -6,6 +6,7 @@
 #include "Args.h"
 #include "Eligibility.h"
 #include "FFTVariants.h"
+#include "Gate.h"
 #include "Probe.h"
 #include "Scheduler.h"
 #include "UseResolve.h"
@@ -340,7 +341,10 @@ BootstrapState Bootstrap::state(const TuneDB& db, u32 env, const std::set<std::s
       // Again from each winner that moved: a structural key's dependents are offered only against the background as it
       // stands, so the keys INPLACE=0 opens are raced in the round after it wins.
       for (u32 round = 0; round < GROUP_ROUNDS && !pending; ++round) {
-        std::vector<Move> const moves = movesWithin(env_, families_[f].fft, s.decided, group);
+        // The lines hold every key that changes the rounding at its default.  Production applies them to every shape
+        // nothing was published for, where no gate ever read them.
+        std::vector<Move> moves = movesWithin(env_, families_[f].fft, s.decided, group);
+        std::erase_if(moves, [&](const Move& m) { return movesAccuracy(env_, families_[f].fft, m.config); });
         if (moves.empty()) { break; }
 
         std::vector<RaceEntry> entries{entryOf(f, s.decided, "the incumbent")};
@@ -387,7 +391,7 @@ BootstrapState Bootstrap::state(const TuneDB& db, u32 env, const std::set<std::s
         std::vector<RaceEntry> entries{incumbent};
         std::vector<std::string> keys{""};
         for (const Probe& p : list.probes) {
-          if (p.stage != stage) { continue; }
+          if (p.stage != stage || movesAccuracy(env_, families_[f].fft, p.config)) { continue; }
           entries.push_back(entryOf(f, p.config, p.text));
           keys.push_back(p.key);
         }

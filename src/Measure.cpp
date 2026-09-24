@@ -79,8 +79,6 @@ Failure classify(std::string_view message) {
   return {.status = Status::Unsupported, .what = std::string{message}};
 }
 
-double minSafeZ(enum FFT_TYPES type) { return type == FFT64 ? 20 : 6; }
-
 Call summarize(const IterSamples& samples) {
   CoreStats const core = coreStats(samples.usPerIt);
 
@@ -124,6 +122,7 @@ RoeCheck roeCheck(GpuCommon shared, const FFTConfig& fft, const UseConfig& optio
   out.z = roeSq.z();
   out.n = roeSq.N;
   out.maxRoe = roeSq.max;
+  out.ran = gpu->args.flags;
   return out;
 }
 
@@ -537,10 +536,11 @@ RoeCheck Session::checkRoe(const FFTConfig& fft, const UseConfig& options, u64 e
   }
 
   if (out.applicable && !stopped_) {
+    // Keyed on what the kernels were built with, as a run row is.
     (void)db_.add(RoeRow{.sess = session_,
                          .fft = fft.spec(),
                          .exponent = exponent,
-                         .cfg = cfg,
+                         .cfg = out.ran.empty() ? cfg : db_.internCfg(out.ran),
                          .z = out.z,
                          .n = out.n,
                          .maxRoe = out.maxRoe,

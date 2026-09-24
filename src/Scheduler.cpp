@@ -169,6 +169,8 @@ double CallClock::iterSeconds(double usPerIt) const {
   return double(WARMUP_BLOCKS + BLOCKS_PER_CALL) * blockSize_ * usPerIt * 1e-6;
 }
 
+double CallClock::gateSeconds(double usPerIt) const { return ROE_ITERATIONS * usPerIt * 1e-6 + overhead() + compile(); }
+
 double CallClock::overhead() const { return overheadN_ ? overheadSum_ / overheadN_ : CALL_OVERHEAD_SEC; }
 
 double CallClock::compile() const { return compileN_ ? compileSum_ / compileN_ : COMPILE_ESTIMATE_SEC; }
@@ -224,18 +226,20 @@ const char* toString(ItemKind kind) {
   case ItemKind::Combo: return "combo";
   case ItemKind::Refine: return "refine";
   case ItemKind::Restart: return "restart";
+  case ItemKind::Gate: return "gate";
   }
   return "?";
 }
 
 Scheduler::Scheduler(RunScope scope, std::vector<Baseline> baselines, u32 blockSize, Bootstrap bootstrap,
-                     std::optional<Strategy> strategy, bool restarts) :
+                     std::optional<Strategy> strategy, bool restarts, bool gate) :
   scope_{std::move(scope)},
   baselines_{std::move(baselines)},
   clock_{blockSize},
   bootstrap_{std::move(bootstrap)},
   strategy_{std::move(strategy)},
-  restarts_{restarts} {}
+  restarts_{restarts},
+  gate_{gate} {}
 
 std::string Scheduler::builtKey(const FFTConfig& fft, const UseConfig& options) const {
   return fft.spec() + " " + configText(canonicalConfig(bootstrap_.env(), fft, options));
@@ -358,6 +362,10 @@ std::string Scheduler::keyOf(const Item& item) const {
   case ItemKind::Restart:
     return baselines_[item.index].label() + " " +
       configText(canonicalConfig(bootstrap_.env(), baselines_[item.index].fft, item.options));
+  case ItemKind::Gate:
+    return baselines_[item.index].label() + " gate " +
+      configText(canonicalConfig(bootstrap_.env(), baselines_[item.index].fft, item.options)) + "@" +
+      std::to_string(item.exponent);
   case ItemKind::Baseline: break;
   }
   return baselines_[item.index].label() + "@" + std::to_string(item.exponent);
@@ -403,9 +411,58 @@ std::vector<Item> Scheduler::bootstrapItems(const BootstrapState& state, const O
   return out;
 }
 
+std::vector<Item> Scheduler::gateItems(const TuneDB& db, u32 env, const Defaults& defaults) const {
+  if (!gate_) { return {}; }
+  const Env& device = bootstrap_.env();
+
+  std::map<EntryKey, size_t> indexOf;
+  for (size_t i = 0; i < baselines_.size(); ++i) {
+    indexOf.try_emplace({baselines_[i].fft.spec(), baselines_[i].kind, baselines_[i].band.regime.label()}, i);
+  }
+
+  std::vector<Item> out;
+  std::set<std::string> offered;
+  for (const OptionSet& s : gatesOwed(db, env, defaults)) {
+    const SelectionEntry& e = s.entry;
+
+    // An entry of a run over another workload waits for a run whose workload weighs it.
+    auto const at = indexOf.find({e.fft, e.kind, e.regime.label()});
+    if (at == indexOf.end() || !s.gateExponent) { continue; }
+    const Baseline& b = baselines_[at->second];
+
+    UseConfig const canonical = canonicalConfig(device, b.fft, e.opts);
+    std::string const text = canonical.empty() ? "the built-in defaults" : configText(canonical);
+    Item item{.kind = ItemKind::Gate,
+              .index = at->second,
+              .options = s.gate.owesReference ? accuracyReference(device, b.fft, e.opts) : e.opts,
+              .subject = e.opts,
+              .moved = {},
+              .what = s.gate.owesReference ? "the default accuracy of " + text : text,
+              .exponent = s.gate.owesReference ? s.gate.referenceAt : s.gateExponent,
+              .value = 1,
+              .seconds = clock_.gateSeconds(s.m.cost()),
+              .fresh = true,
+              .calls = 0};
+
+    // Two kinds of one set, or two sets of one reference, owe the same reading.
+    std::string const key = keyOf(item);
+    if (!offered.insert(key).second) { continue; }
+    if (auto const n = gateAttempts_.find(key); n != gateAttempts_.end() && n->second >= MAX_ATTEMPTS) { continue; }
+    if (db.isNogo(env, e.fft, item.options)) { continue; }
+    if (u32 const cfg = db.findCfgId(item.options); cfg && db.diedOn(env, cfg, TestKind::PRP, e.fft, item.exponent)) {
+      continue;
+    }
+    out.push_back(std::move(item));
+  }
+
+  std::ranges::stable_sort(out, {}, &Item::seconds);
+  return out;
+}
+
 std::vector<Item> Scheduler::admissible(const TuneDB& db, u32 env, const Objective& objective) const {
   BootstrapState const state = bootstrapState(db, env);
   if (!state.turns.empty()) { return bootstrapItems(state, objective); }
+  if (std::vector<Item> gates = gateItems(db, env, state.defaults); !gates.empty()) { return gates; }
 
   const Env& device = bootstrap_.env();
   Progress const progress = progressOf(db, env, device, state.defaults);
@@ -647,6 +704,11 @@ void Scheduler::ran(const Item& item, double seconds, double usPerIt, bool recor
     return;
   }
 
+  if (item.kind == ItemKind::Gate) {
+    ++gateAttempts_[last_];
+    return;
+  }
+
   built_.insert(builtKey(baselines_[item.index].fft, item.options));
   switch (item.kind) {
   case ItemKind::Probe:
@@ -657,7 +719,8 @@ void Scheduler::ran(const Item& item, double seconds, double usPerIt, bool recor
     return;
   case ItemKind::Baseline: ++attempts_[item.index]; return;
   case ItemKind::Anchor:
-  case ItemKind::Bootstrap: return;
+  case ItemKind::Bootstrap:
+  case ItemKind::Gate: return;
   }
 }
 
@@ -721,10 +784,22 @@ private:
   });
 }
 
+// What the gate made of `item`'s subject once its reading is in, for the log.
+[[nodiscard]] std::string gateOutcome(const TuneDB& db, u32 envId, const Env& env, const FFTConfig& fft,
+                                      const Item& item) {
+  GateVerdict const verdict = Gates{db, envId, env}(fft, item.exponent, item.subject);
+  switch (verdict.state) {
+  case GateState::Passed: return std::string{"passed, "} + toString(verdict.evidence);
+  case GateState::Rejected: return "rejected: " + verdict.why + ", so it is never published";
+  case GateState::Owed: return verdict.owesReference ? "owes the reading of its default accuracy" : "still owed";
+  }
+  return "?";
+}
+
 // The best option set of the entry `b`, canonical, and its cost; nothing where no row of it could be published.
 [[nodiscard]] std::optional<std::string> bestOf(const TuneDB& db, u32 envId, const Env& env, const Defaults& defaults,
                                                 const Baseline& b) {
-  std::vector<SelectionEntry> const candidates = candidatesFor(db, envId, defaults);
+  std::vector<SelectionEntry> const candidates = candidatesFor(db, envId, defaults, Gating::Assumed);
   std::map<EntryKey, const SelectionEntry*> const best = bestEntries(candidates);
   auto const at = best.find({b.fft.spec(), b.kind, b.band.regime.label()});
   if (at == best.end()) { return {}; }
@@ -742,14 +817,18 @@ QueueReport runQueue(Scheduler& scheduler, TuneDB& db, u32 env, Bench& bench, co
   BootstrapLog bootstrapLog;
   bool const bootstrapping = scheduler.bootstrap().enabled();
 
+  // What is published, and what the items are valued against: the same but for the sets the gate still owes, whose
+  // readings are taken before anything is valued.
   BootstrapState state = scheduler.bootstrapState(db, env);
   Objective objective{db, env, scheduler.scope(), state.defaults};
+  Objective valuing{db, env, scheduler.scope(), state.defaults, Gating::Assumed};
   out.startT = objective.T();
   publish(objective, state.defaults);
 
   auto rescore = [&] {
     state = scheduler.bootstrapState(db, env);
     objective = Objective{db, env, scheduler.scope(), state.defaults};
+    valuing = Objective{db, env, scheduler.scope(), state.defaults, Gating::Assumed};
     bootstrapLog.report(state, bootstrapping);
   };
 
@@ -766,7 +845,7 @@ QueueReport runQueue(Scheduler& scheduler, TuneDB& db, u32 env, Bench& bench, co
       continue;
     }
 
-    std::vector<Item> const ranked = scheduler.admissible(db, env, objective);
+    std::vector<Item> const ranked = scheduler.admissible(db, env, valuing);
     std::optional<Item> const item = scheduler.pick(ranked);
     if (!item) {
       log("tune: nothing left is worth measuring (%zu %s still unmeasured)\n", ranked.size(),
@@ -777,10 +856,10 @@ QueueReport runQueue(Scheduler& scheduler, TuneDB& db, u32 env, Bench& bench, co
     const Baseline* const baseline = item->kind != ItemKind::Bootstrap ? &scheduler.baselines()[item->index] : nullptr;
     const FFTConfig& fft = baseline ? baseline->fft : scheduler.bootstrap().families()[item->index].fft;
     TestKind const kind = baseline ? baseline->kind : TestKind::PRP;
-    bool const probing = baseline && item->kind != ItemKind::Baseline;
-    std::string const label = !baseline ? item->what
-      : probing                         ? baseline->label() + " " + item->what
-                                        : baseline->label();
+    bool const probing = baseline && item->kind != ItemKind::Baseline && item->kind != ItemKind::Gate;
+    std::string const label = !baseline         ? item->what
+      : probing || item->kind == ItemKind::Gate ? baseline->label() + " " + item->what
+                                                : baseline->label();
     std::optional<std::string> const bestBefore =
       probing ? bestOf(db, env, scheduler.bootstrap().env(), state.defaults, *baseline) : std::nullopt;
 
@@ -792,7 +871,14 @@ QueueReport runQueue(Scheduler& scheduler, TuneDB& db, u32 env, Bench& bench, co
         !declaredCombo(db, env, scheduler.bootstrap().env(), fft, kind, item->exponent, item->options)) {
       bench.declareCombo(fft, kind, item->exponent, item->options, item->tier);
     }
-    Bench::Result const result = bench.run(fft, kind, item->exponent, item->options, item->moved);
+    Bench::Result result;
+    Bench::Reading reading;
+    if (item->kind == ItemKind::Gate) {
+      reading = bench.gate(fft, item->exponent, item->options);
+      result = {.completed = reading.completed, .seconds = reading.seconds, .usPerIt = 0, .ran = reading.ran};
+    } else {
+      result = bench.run(fft, kind, item->exponent, item->options, item->moved);
+    }
 
     // A call cut short by a stop recorded nothing, so there is nothing to account for.
     if (!result.completed && bench.stopped()) { break; }
@@ -821,7 +907,12 @@ QueueReport runQueue(Scheduler& scheduler, TuneDB& db, u32 env, Bench& bench, co
     std::string const call = counted ? " (call " + std::to_string(item->calls + 1) + ")"
       : item->calls                  ? " (resumed at call " + std::to_string(item->calls + 1) + ")"
                                      : "";
-    if (result.completed) {
+    if (item->kind == ItemKind::Gate && result.completed) {
+      log("tune: %u. gate %s at %" PRIu64 ": z %.2f over %u rounding errors, check %s, %.1f s -- %s; T %.3f -> %.3f "
+          "us/it\n",
+          out.items, label.c_str(), item->exponent, reading.z, reading.n, reading.checkOk ? "OK" : "failed",
+          result.seconds, gateOutcome(db, env, scheduler.bootstrap().env(), fft, *item).c_str(), before, objective.T());
+    } else if (result.completed) {
       log("tune: %u. %s %s at %" PRIu64 "%s: %.3f us/it, %.1f s; T %.3f -> %.3f us/it\n", out.items,
           toString(item->kind), label.c_str(), item->exponent, call.c_str(), result.usPerIt, result.seconds, before,
           objective.T());
