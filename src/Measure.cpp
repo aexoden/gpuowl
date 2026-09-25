@@ -229,13 +229,18 @@ Status Session::failed(const FFTConfig& fft, TestKind kind, u64 exponent, const 
   }
 
   log("measure: %s during the %s of %s: %s\n", toString(f.status), during, fft.spec().c_str(), f.what.c_str());
-  if (f.status == Status::NoCompile) {
-    if (!deviceUsable()) {
-      lost(fft, kind, exponent, options, "the context did not survive the failed build", during);
-      return Status::Lost;
-    }
-    noteNogo(fft, options);
+
+  // A kernel that faults can leave the context unusable while reporting something ordinary (NVIDIA's OpenCL says
+  // OUT_OF_RESOURCES).  Asked now, the loss is pinned on what caused it; left for the next call to find, it would be
+  // pinned on that call's configuration, and every call in between would record a failure that was not its own.
+  if (!deviceUsable()) {
+    lost(fft, kind, exponent, options,
+         f.status == Status::NoCompile ? "the context did not survive the failed build"
+                                       : "the context did not survive it: " + f.what,
+         during);
+    return Status::Lost;
   }
+  if (f.status == Status::NoCompile) { noteNogo(fft, options); }
   return f.status;
 }
 
@@ -515,6 +520,15 @@ Call Session::runCall(const FFTConfig& fft, TestKind kind, u64 exponent, const U
 RoeCheck Session::checkRoe(const FFTConfig& fft, const UseConfig& options, u64 exponent) {
   RoeCheck out{.minZ = minSafeZ(fft.shape.fft_type), .exponent = exponent};
   if (stopped_) { return out; }
+
+  // As for a timing: a configuration an earlier generation died on would otherwise be built again by every generation
+  // the restart limit allows.
+  if (std::string const why = held(fft, TestKind::PRP, exponent, options); !why.empty()) {
+    log("measure: %s -use %s is not built again here: %s\n", fft.spec().c_str(), configText(options).c_str(),
+        why.c_str());
+    out.status = Status::Unsupported;
+    return out;
+  }
 
   u32 const cfg = db_.internCfg(options);
   Attempt const attempt{
