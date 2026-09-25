@@ -150,9 +150,12 @@ void updateStats(local u32 *lds, u32 num_threads, u32 num_blocks, global uint *b
     // at all.  bar() decides that by what the hardware guarantees, and with G_W == 64 and a 32-lane wavefront
     // two of the three reduction steps here were running with no barrier and no fence.  num_threads is a
     // compile-time workgroup size, so every thread makes the same number of passes and reaches both calls.
-    bar(num_threads);
+    // Wider than a wavefront it takes the workgroup barrier rather than bar(num_threads): with ENABLE_BARSYNC that
+    // is a named barrier per num_threads-wide slice, and as num_threads halves, a slice done with one pass arrives at
+    // a barrier id that threads of the pass before are still waiting on with the old count (illegal on nVidia).
+    if (num_threads > WAVEFRONT) { bar(); } else { bar(num_threads); }
     if (me >= num_threads / 2 && me < num_threads) lds[me - num_threads / 2] = u32RoundMax;
-    bar(num_threads);
+    if (num_threads > WAVEFRONT) { bar(); } else { bar(num_threads); }
     // Low half of threads do a max
     if (me < num_threads / 2) {
       u32 highHalfMax = lds[me];
