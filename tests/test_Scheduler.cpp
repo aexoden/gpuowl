@@ -135,8 +135,8 @@ public:
     return {.completed = true, .seconds = seconds, .usPerIt = cost, .ran = built};
   }
 
-  // What an accuracy check reads for an option set: a z the floor of every type is clear of, by default.
-  std::function<double(const FFTConfig&, const UseConfig&)> zOf = [](const FFTConfig&, const UseConfig&) {
+  // What an accuracy check reads for an option set at an exponent: a z the floor of every type is clear of, by default.
+  std::function<double(const FFTConfig&, const UseConfig&, u64)> zOf = [](const FFTConfig&, const UseConfig&, u64) {
     return 24.0;
   };
 
@@ -153,7 +153,7 @@ public:
     clock_ += seconds;
 
     UseConfig const built = builtAs(options);
-    double const z = zOf(fft, built);
+    double const z = zOf(fft, built, exponent);
     CHECK(db_.add(RoeRow{.sess = sess_,
                          .fft = fft.spec(),
                          .exponent = exponent,
@@ -1686,12 +1686,13 @@ TEST(a_bootstrap_interrupted_among_its_combinations_carries_on_from_its_rows) {
 
 namespace {
 
-// Whether every entry `objective` publishes is one the accuracy gate has passed.
+// Whether every entry `objective` publishes is one the accuracy gate has passed, up to where it is published.
 bool allGated(const TuneDB& db, u32 env, const Objective& objective) {
   Gates const gates{db, env, nvidia()};
   return std::ranges::all_of(objective.entries(), [&](const SelectionEntry& e) {
     FFTConfig const fft{e.fft};
-    return gates(fft, gateExponent(interval(fft, e.emin, e.reach)), e.opts).state == GateState::Passed;
+    GateVerdict const v = gates(fft, interval(fft, e.emin), e.opts);
+    return v.state == GateState::Passed && e.reach <= v.reach;
   });
 }
 
@@ -1715,10 +1716,11 @@ void conclude(Fixture& f, const std::string& spec, const UseConfig& opts, double
 }  // namespace
 
 TEST(nothing_is_published_that_the_gate_has_not_passed) {
-  // 1K:8:1K:112 is the cheapest 1K variant, and reads below the FP64 floor at the top of its interval.
+  // 1K:8:1K:112 is the cheapest 1K variant, and reads below the FP64 floor at the top of its interval and everywhere
+  // under it.
   Fixture f;
   FakeBench bench{f.db, f.sess};
-  bench.zOf = [](const FFTConfig& fft, const UseConfig&) { return fft.spec() == "1K:8:1K:112" ? 17.0 : 24.0; };
+  bench.zOf = [](const FFTConfig& fft, const UseConfig&, u64) { return fft.spec() == "1K:8:1K:112" ? 17.0 : 24.0; };
 
   u32 publications = 0;
   std::set<std::string> ever;
@@ -1730,14 +1732,52 @@ TEST(nothing_is_published_that_the_gate_has_not_passed) {
   });
   CHECK(publications > 1);
 
-  // It was read, rejected, and never published; the next cheapest 1K variant was read and published in its place.
+  // It was read at the top, a reach was derived for it that no reading bore out, and it was never published; the next
+  // cheapest 1K variant was read and published in its place.
   CHECK_EQ(std::ranges::count(bench.order, std::string{"gate 1K:8:1K:112@167772107"}), 1);
+  CHECK_EQ(std::ranges::count_if(bench.order, [](const std::string& s) { return s.starts_with("gate 1K:8:1K:112@"); }),
+           long(MAX_DERIVE_READINGS));
   CHECK(!ever.contains("1K:8:1K:112"));
   std::vector<SelectionEntry> const last = entriesFor(f.db, f.env);
   CHECK(std::ranges::any_of(last, [](const SelectionEntry& e) { return e.fft.starts_with("1K:8:1K:"); }));
 
   // The exact-arithmetic hybrid was never read at all.
   CHECK(std::ranges::none_of(bench.order, [](const std::string& s) { return s.starts_with("gate 1:512:8:512"); }));
+}
+
+TEST(a_set_short_of_the_floor_at_its_top_is_published_up_to_the_reach_derived_for_it) {
+  // 1K:8:1K:112 again, now reading 17 at the top of its interval and a unit more for every 0.012 bits per word under
+  // it: its reach is derived where it reads 28, by readings the queue takes by rule before it publishes the entry.
+  Fixture f;
+  FakeBench bench{f.db, f.sess};
+  FFTConfig const cheapest{"1K:8:1K:112"};
+  u64 const top = 167'772'107;
+  auto const zOf = [=](u64 E) { return 17.0 + (double(top) - double(E)) / double(cheapest.size()) / 0.012; };
+  bench.zOf = [&](const FFTConfig& fft, const UseConfig&, u64 E) {
+    return fft.spec() == cheapest.spec() ? zOf(E) : 24.0;
+  };
+
+  Scheduler scheduler{scope(), baselines(nvidia(), scope(), shapes()), 1000, {}, {}, false, true};
+  (void)runQueue(scheduler, f.db, f.env, bench,
+                 [&](const Objective& objective, const Defaults&) { CHECK(allGated(f.db, f.env, objective)); });
+
+  u32 const readings =
+    u32(std::ranges::count_if(bench.order, [](const std::string& s) { return s.starts_with("gate 1K:8:1K:112@"); }));
+  CHECK(readings >= 2 && readings <= 5);
+
+  std::vector<SelectionEntry> const last = entriesFor(f.db, f.env);
+  auto const entry = std::ranges::find(last, cheapest.spec(), &SelectionEntry::fft);
+  CHECK(entry != last.end());
+  if (entry == last.end()) { return; }
+  CHECK(entry->evidence == Evidence::Confirmed);
+  CHECK(entry->reach < top);
+  CHECK(zOf(entry->reach) >= 28);
+  CHECK(double(entry->reach) / cheapest.size() > double(top) / cheapest.size() - (28 - 17) * 0.012 - REACH_GUARD_BPW);
+
+  // Above it, another 1K variant, which reaches the table's top, serves what it cannot.
+  CHECK(std::ranges::any_of(last, [&](const SelectionEntry& e) {
+    return e.fft.starts_with("1K:8:1K:") && e.fft != cheapest.spec() && e.reach > entry->reach;
+  }));
 }
 
 TEST(a_reading_the_gate_owes_is_taken_before_anything_valued) {

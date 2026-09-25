@@ -5,6 +5,7 @@
 #include "Bootstrap.h"
 #include "Primes.h"
 
+#include <algorithm>
 #include <cstdio>
 
 namespace tune {
@@ -67,37 +68,53 @@ u64 gateExponent(const Interval& span) {
   return top >= span.lo ? top : 0;
 }
 
+Standard standardFor(enum FFT_TYPES type, bool movesAccuracy, const std::optional<RoeRow>& reference) {
+  double const floor = minSafeZ(type);
+  if (movesAccuracy && reference && reference->checkOk && reference->n > 2 && reference->z >= floor) {
+    return {.aim = reference->z, .bar = std::max(reference->z - ACCURACY_SLACK_Z, floor)};
+  }
+  return {.aim = TARGET_Z, .bar = TARGET_Z};
+}
+
 GateVerdict judge(enum FFT_TYPES type, const std::optional<RoeRow>& own, bool movesAccuracy,
                   const std::optional<RoeRow>& reference) {
   if (!own) { return {}; }
 
-  auto rejected = [](std::string why) {
-    return GateVerdict{.state = GateState::Rejected, .evidence = Evidence::Rejected, .why = std::move(why)};
+  auto rejected = [](std::string why, bool derivable) {
+    return GateVerdict{
+      .state = GateState::Rejected, .evidence = Evidence::Rejected, .derivable = derivable, .why = std::move(why)};
   };
 
-  if (!own->checkOk) { return rejected("its Gerbicz check failed"); }
-
-  double const floor = minSafeZ(type);
-
-  // Too few rounding errors to fit z to: the errors are small, which the floor has nothing to say against, but there
-  // is no reading to hold a set that spends accuracy to.
-  if (own->n <= 2) {
-    if (movesAccuracy) { return rejected("too few rounding errors to compare with its defaults'"); }
-    return {.state = GateState::Passed, .evidence = Evidence::Unavailable};
+  // A set that spends accuracy is held to its reference, so there is nothing to judge it by without the reference's
+  // reading, and nothing to compare where either has too few rounding errors to fit z to -- however small they are.
+  if (movesAccuracy) {
+    if (own->checkOk && own->n <= 2) {
+      return rejected("too few rounding errors to compare with its defaults'", false);
+    }
+    if (!reference) { return {.owesReference = true}; }
+    if (reference->checkOk && reference->n <= 2) {
+      return rejected("its defaults are too accurate to fit z to", false);
+    }
   }
 
-  if (own->z < floor) { return rejected(format("z %.2f is below the floor of %.0f", own->z, floor)); }
+  if (!own->checkOk) { return rejected("its Gerbicz check failed", true); }
 
+  // Too few rounding errors to fit z to: the errors are small, which the floor has nothing to say against.
+  if (own->n <= 2) { return {.state = GateState::Passed, .evidence = Evidence::Unavailable}; }
+
+  double const floor = minSafeZ(type);
+  if (own->z < floor) { return rejected(format("z %.2f is below the floor of %.0f", own->z, floor), true); }
+
+  // Defaults that fall short here themselves are held to the fitted standard, and so is a set that spends accuracy
+  // beside them.
   if (movesAccuracy) {
-    if (!reference) { return {.owesReference = true}; }
-
-    // A reference that failed its own check says the defaults cannot run here at all, which no set can read worse
-    // than; one with too few errors to fit is more accurate than anything a z can be compared with.
-    if (reference->checkOk) {
-      if (reference->n <= 2) { return rejected("its defaults are too accurate to fit z to"); }
-      if (own->z < reference->z - ACCURACY_SLACK_Z) {
-        return rejected(format("z %.2f is below the %.2f its defaults read", own->z, reference->z));
-      }
+    Standard const standard = standardFor(type, true, reference);
+    bool const relative = reference->checkOk && reference->z >= floor;
+    if (own->z < standard.bar) {
+      return rejected(relative ? format("z %.2f is below the %.2f its defaults read", own->z, reference->z)
+                               : format("z %.2f is below the %.0f its defaults are held to, which fall short here",
+                                        own->z, standard.aim),
+                      true);
     }
   }
 
@@ -128,16 +145,53 @@ std::optional<RoeRow> Gates::reading(const FFTConfig& fft, u64 exponent, const U
   return out;
 }
 
-GateVerdict Gates::operator()(const FFTConfig& fft, u64 exponent, const UseConfig& opts) const {
-  if (exactArithmetic(fft)) { return {.state = GateState::Passed, .evidence = Evidence::NotApplicable}; }
+GateVerdict Gates::operator()(const FFTConfig& fft, const Interval& span, const UseConfig& opts) const {
+  if (exactArithmetic(fft)) {
+    return {.state = GateState::Passed, .evidence = Evidence::NotApplicable, .reach = span.hi};
+  }
+
+  u64 const top = gateExponent(span);
+  if (!top) { return {}; }
 
   bool const moves = movesAccuracy(device_, fft, opts);
-  std::optional<RoeRow> const own = reading(fft, exponent, opts, true);
+  std::optional<RoeRow> const own = reading(fft, top, opts, true);
+  if (!own) { return {.owedAt = top}; }
+
   std::optional<RoeRow> const reference =
-    moves && own ? reading(fft, own->exponent, accuracyReference(device_, fft, opts), false) : std::nullopt;
+    moves ? reading(fft, own->exponent, accuracyReference(device_, fft, opts), false) : std::nullopt;
 
   GateVerdict out = judge(fft.shape.fft_type, own, moves, reference);
-  if (out.owesReference) { out.referenceAt = own->exponent; }
+  if (out.state == GateState::Owed) {
+    out.owedAt = own->exponent;
+    return out;
+  }
+  if (out.state == GateState::Passed) {
+    out.reach = span.hi;
+    return out;
+  }
+  if (!out.derivable) { return out; }
+
+  auto const toZ = [](const RoeRow& row) {
+    return ZReading{.exponent = row.exponent, .z = row.z, .n = row.n, .checkOk = row.checkOk};
+  };
+  ReachOutcome const derived = deriveReach({.words = fft.size(),
+                                            .lo = span.lo,
+                                            .hi = std::min(top, carryCeiling(fft)),
+                                            .standard = standardFor(fft.shape.fft_type, moves, reference)},
+                                           toZ(*own), [&](u64 E) -> std::optional<ZReading> {
+                                             std::optional<RoeRow> const row = reading(fft, E, opts, false);
+                                             return row ? std::optional{toZ(*row)} : std::nullopt;
+                                           });
+
+  switch (derived.state) {
+  case ReachState::Owed: return {.owedAt = derived.exponent};
+  case ReachState::Confirmed:
+    return {.state = GateState::Passed, .evidence = Evidence::Confirmed, .reach = derived.exponent, .derived = true};
+  case ReachState::Rejected:
+    out.why += ", and " + derived.why;
+    out.derivable = false;
+    return out;
+  }
   return out;
 }
 

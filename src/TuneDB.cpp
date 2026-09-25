@@ -332,16 +332,29 @@ std::string formatRow(const NogoRow& row) {
   return "nogo  " + to_string(row.sess) + ' ' + row.fft + ' ' + row.key + '=' + row.val + ' ' + to_string(row.ts);
 }
 
-std::string formatRow(const RoeRow& row) {
-  char buf[128];
-  snprintf(buf, sizeof(buf), "%.2f %u %.6f %s", row.z, row.n, row.maxRoe, row.checkOk ? "ok" : "fail");
-  return "roe   " + to_string(row.sess) + ' ' + row.fft + ' ' + to_string(row.exponent) + ' ' + to_string(row.cfg) +
-    ' ' + buf + ' ' + to_string(row.ts);
+namespace {
+
+// A roe row's readings as its line spells them.  The reach derivation computes the exponents it reads next from z, so
+// a z held to more digits than the file keeps would send a reloaded database to other exponents than the process that
+// wrote it.
+std::string zText(double z) {
+  char buf[64];
+  snprintf(buf, sizeof(buf), "%.2f", z);
+  return buf;
 }
 
-std::string formatRow(const ReachRow& row) {
-  return "reach " + to_string(row.sess) + ' ' + row.fft + ' ' + toString(row.kind) + ' ' + row.regime.label() + ' ' +
-    to_string(row.cfg) + ' ' + to_string(row.reach) + ' ' + toString(row.evidence) + ' ' + to_string(row.ts);
+std::string maxRoeText(double maxRoe) {
+  char buf[64];
+  snprintf(buf, sizeof(buf), "%.6f", maxRoe);
+  return buf;
+}
+
+}  // namespace
+
+std::string formatRow(const RoeRow& row) {
+  return "roe   " + to_string(row.sess) + ' ' + row.fft + ' ' + to_string(row.exponent) + ' ' + to_string(row.cfg) +
+    ' ' + zText(row.z) + ' ' + to_string(row.n) + ' ' + maxRoeText(row.maxRoe) + ' ' + (row.checkOk ? "ok" : "fail") +
+    ' ' + to_string(row.ts);
 }
 
 std::string formatRow(const AnchorRow& row) {
@@ -533,8 +546,14 @@ bool TuneDB::add(const NogoRow& row) {
 bool TuneDB::add(const RoeRow& row) {
   if (!findSession(row.sess) || !findCfg(row.cfg) || isSealed(row.sess)) { return false; }
   if (!std::isfinite(row.z) || !std::isfinite(row.maxRoe) || row.maxRoe < 0) { return false; }
+
+  // Held as the file will hold it, so that what this process derives from it a later one derives too.
+  RoeRow held = row;
+  held.z = parseDouble(zText(row.z)).value_or(row.z);
+  held.maxRoe = parseDouble(maxRoeText(row.maxRoe)).value_or(row.maxRoe);
+
   u64 const ts = row.ts;
-  if (!record(roes_, row)) { return false; }
+  if (!record(roes_, held)) { return false; }
   noteRow(row.sess, ts);
   return true;
 }
@@ -555,14 +574,6 @@ bool TuneDB::add(const AlarmRow& row) {
   if (!append(formatRow(row))) { return false; }
   sess->alarmed = true;
   noteRow(row.sess, row.ts);
-  return true;
-}
-
-bool TuneDB::add(const ReachRow& row) {
-  if (!findSession(row.sess) || !findCfg(row.cfg) || isSealed(row.sess)) { return false; }
-  u64 const ts = row.ts;
-  if (!record(reaches_, row)) { return false; }
-  noteRow(row.sess, ts);
   return true;
 }
 
@@ -743,27 +754,15 @@ std::vector<RoeRow> TuneDB::latestRoes() const {
   return foldBy<Key>(roes_, keyOf, [](RoeRow& into, const RoeRow& add) { into = add; });
 }
 
-std::vector<ReachRow> TuneDB::latestReaches() const {
-  using Key = std::tuple<u32, std::string, TestKind, std::string, u32>;
-
-  auto const keyOf = [this](const ReachRow& row) {
-    return Key{envOf(row.sess), row.fft, row.kind, row.regime.label(), row.cfg};
-  };
-
-  return foldBy<Key>(reaches_, keyOf, [](ReachRow& into, const ReachRow& add) { into = add; });
-}
-
 bool TuneDB::compact() {
   if (!rewritable("compact")) { return false; }
 
   runs_ = mergedRuns();
   roes_ = latestRoes();
-  reaches_ = latestReaches();
 
   std::set<u32> named;
   for (const RunRow& r : runs_) { named.insert(r.cfg); }
   for (const RoeRow& r : roes_) { named.insert(r.cfg); }
-  for (const ReachRow& r : reaches_) { named.insert(r.cfg); }
   for (const AnchorRow& r : anchors_) { named.insert(r.cfg); }
   for (const TryRow& r : tries_) { named.insert(r.cfg); }
   for (const JumpRow& r : jumps_) { named.insert(r.cfg); }
@@ -810,7 +809,7 @@ bool TuneDB::reset(u32 env, std::string_view fft) {
         rows, [this, env, &spec](const auto& row) { return envOf(row.sess) == env && row.fft != spec; });
     };
 
-    if (pinned && pinned->fft == spec && (stranded(runs_) || stranded(roes_) || stranded(reaches_))) {
+    if (pinned && pinned->fft == spec && (stranded(runs_) || stranded(roes_))) {
       log("tune-db: '%s' is the anchor env %u is pinned to, and rows of other shapes are normalised against its"
           " readings; reset the env itself to drop those too\n",
           spec.c_str(), env);
@@ -820,7 +819,6 @@ bool TuneDB::reset(u32 env, std::string_view fft) {
 
   std::erase_if(runs_, drop);
   std::erase_if(roes_, drop);
-  std::erase_if(reaches_, drop);
   std::erase_if(anchors_, drop);
   std::erase_if(refs_, drop);
   std::erase_if(nogos_, drop);
@@ -926,7 +924,6 @@ void TuneDB::clear() {
   nogos_.clear();
   roes_.clear();
   anchors_.clear();
-  reaches_.clear();
   refs_.clear();
   jumps_.clear();
   combos_.clear();
@@ -983,7 +980,7 @@ bool TuneDB::parse(std::string_view text, std::string_view name) {
     std::string const& tag = f[0];
 
     auto const known = tag == "env" || tag == "cfg" || tag == "sess" || tag == "run" || tag == "try" || tag == "done" ||
-      tag == "nogo" || tag == "roe" || tag == "reach" || tag == "ref" || tag == "jump" || tag == "combo";
+      tag == "nogo" || tag == "roe" || tag == "ref" || tag == "jump" || tag == "combo";
     if (known && f.size() < 2) {
       refuse(tag + " row has no fields");
       continue;
@@ -1186,15 +1183,14 @@ bool TuneDB::parse(std::string_view text, std::string_view name) {
       if (!ts) { refuse("'" + f[2] + "' is not a timestamp"); }
       if (!sess || !ts) { continue; }
       if (!add(AlarmRow{.sess = *sess, .ts = *ts})) { refuse("alarm row names a session that is not declared"); }
-    } else if (tag == "run" || tag == "try" || tag == "nogo" || tag == "roe" || tag == "anchor" || tag == "reach" ||
-               tag == "ref" || tag == "jump" || tag == "combo") {
+    } else if (tag == "run" || tag == "try" || tag == "nogo" || tag == "roe" || tag == "anchor" || tag == "ref" ||
+               tag == "jump" || tag == "combo") {
       size_t const want = tag == "run"    ? 14
         : tag == "jump" || tag == "combo" ? 8
         : tag == "try"                    ? 7
         : tag == "nogo"                   ? 5
         : tag == "roe"                    ? 10
         : tag == "anchor"                 ? 8
-        : tag == "reach"                  ? 9
                                           : 7;
       if (f.size() != want) {
         refuse(tag + " row has " + to_string(f.size()) + " fields, expected " + to_string(want));
@@ -1303,29 +1299,6 @@ bool TuneDB::parse(std::string_view text, std::string_view name) {
         AnchorRow const row{
           .sess = *sess, .fft = *fft, .exponent = *exponent, .cfg = *cfg, .mean = *mean, .ratio = *ratio, .ts = *ts};
         if (!add(row)) { refuse("anchor row holds a value this format cannot write back"); }
-      } else if (tag == "reach") {
-        auto const kind = parseTestKind(f[3]);
-        auto const regime = parseRegime(f[4]);
-        std::optional<u32> cfg;
-        cfgOf(f[5], cfg);
-        auto const reach = parseInt<u64>(f[6]);
-        auto const evidence = parseEvidence(f[7]);
-        auto const ts = parseInt<u64>(f[8]);
-        if (!kind) { refuse("'" + f[3] + "' is not a test kind"); }
-        if (!regime) { refuse("'" + f[4] + "' is not a regime"); }
-        if (!reach) { refuse("'" + f[6] + "' is not a reach"); }
-        if (!evidence) { refuse("'" + f[7] + "' is not an evidence state"); }
-        if (!ts) { refuse("'" + f[8] + "' is not a timestamp"); }
-        if (!kind || !regime || !cfg || !reach || !evidence || !ts) { continue; }
-        ReachRow const row{.sess = *sess,
-                           .fft = *fft,
-                           .kind = *kind,
-                           .regime = *regime,
-                           .cfg = *cfg,
-                           .reach = *reach,
-                           .evidence = *evidence,
-                           .ts = *ts};
-        if (!add(row)) { refuse("reach row holds a value this format cannot write back"); }
       } else if (tag == "jump") {
         auto const kind = parseTestKind(f[3]);
         auto const regime = parseRegime(f[4]);
@@ -1402,7 +1375,6 @@ std::string TuneDB::text() const {
   for (const NogoRow& r : nogos_) { out += formatRow(r) + '\n'; }
   for (const RoeRow& r : roes_) { out += formatRow(r) + '\n'; }
   for (const AnchorRow& r : anchors_) { out += formatRow(r) + '\n'; }
-  for (const ReachRow& r : reaches_) { out += formatRow(r) + '\n'; }
   for (const RefRow& r : refs_) { out += formatRow(r) + '\n'; }
   for (const JumpRow& r : jumps_) { out += formatRow(r) + '\n'; }
   for (const ComboRow& r : combos_) { out += formatRow(r) + '\n'; }
