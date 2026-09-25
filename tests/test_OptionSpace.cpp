@@ -75,10 +75,22 @@ TEST(structural_and_accuracy_flags) {
                                "SHUFL_BYTES_H", "LDSPAD_W", "LDSPAD_H",      "L2PERSIST"};
   for (const Option& o : allOptions()) { CHECK_EQ(o.structural, structural.contains(o.key)); }
 
-  CHECK(findOption("TAIL_TRIGS32")->accuracyImpact == AccuracyImpact::Yes);
-  CHECK(findOption("TABMUL_CHAIN32")->accuracyImpact == AccuracyImpact::Yes);
-  CHECK(findOption("MM_CHAIN")->accuracyImpact == AccuracyImpact::Suspected);
-  CHECK(findOption("MM2_CHAIN")->accuracyImpact == AccuracyImpact::Suspected);
+  // As measured: every value of every other key rounds bit-identically to the set it moves from.
+  const set<string> rounding{"MM_CHAIN",     "MM2_CHAIN",    "TAIL_KERNELS",  "TAIL_TRIGS",
+                             "TAIL_TRIGS32", "TABMUL_CHAIN", "TABMUL_CHAIN32"};
+  for (const Option& o : allOptions()) {
+    if (o.key == "FUSE_WEIGHT_BUTTERFLY") {
+      CHECK(o.accuracyImpact == AccuracyImpact::Suspected);
+    } else {
+      CHECK_EQ(o.accuracyImpact == AccuracyImpact::Yes, rounding.contains(o.key));
+    }
+  }
+
+  // TAIL_KERNELS=3 is the default's arithmetic split another way; 0 and 1 are not.
+  const Option& tail = *findOption("TAIL_KERNELS");
+  CHECK(tail.changesRounding(0) && tail.changesRounding(1) && !tail.changesRounding(3));
+  CHECK(findOption("TAIL_TRIGS")->changesRounding(0));
+  CHECK(!findOption("TAIL_TRIGS31")->changesRounding(1));
   CHECK(findOption("MODM31")->group == Group::Arith);
 
   for (const char* key : {"INPLACE", "L2_STRIPING", "IN_WG", "IN_SIZEX", "OUT_WG", "OUT_SIZEX", "PAD"}) {

@@ -140,6 +140,11 @@ struct RoeRow {
   u32 n = 0;
   double maxRoe = 0;
   bool checkOk = false;
+
+  // A hash of the error samples behind z, which the statistics above only summarise: two readings with equal ones
+  // rounded identically.  0 where the reading carries none.
+  u64 fp = 0;
+
   u64 ts = 0;
 };
 

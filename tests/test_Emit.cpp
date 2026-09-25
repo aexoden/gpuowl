@@ -48,13 +48,13 @@ const char* const DB =
   "run   4 1K:8:1K:202 prp 200000000 short32 21 3100.000 4.000 16 4 1.0000 ok 1753471354\n"
   "run   4 3:1K:8:512:202 prp 100000000 short32 21 2000.000 5.000 16 4 1.0000 ok 1753471364\n"
   "run   9 512:15:512:212 prp 100000000 short32 17 900.000 1.000 16 4 1.0000 ok 1753471374\n"
-  "roe   4 512:15:512:212 143413741 18 24.40 2150 0.3098 ok 1753471410\n"
-  "roe   4 512:15:512:212 143498461 17 24.40 2150 0.3098 ok 1753471420\n"
-  "roe   4 1K:8:1K:202 296960407 21 25.10 2150 0.3021 ok 1753471430\n"
-  "roe   9 512:15:512:212 143413741 17 24.40 2150 0.3098 ok 1753471440\n";
+  "roe   4 512:15:512:212 143413741 18 24.40 2150 0.3098 ok - 1753471410\n"
+  "roe   4 512:15:512:212 143498461 17 24.40 2150 0.3098 ok - 1753471420\n"
+  "roe   4 1K:8:1K:202 296960407 21 25.10 2150 0.3021 ok - 1753471430\n"
+  "roe   9 512:15:512:212 143413741 17 24.40 2150 0.3098 ok - 1753471440\n";
 
 // The accuracy reading of the set published as 2e51eaf52a48bfc9 and 0a567e7dbc3e06d4, prp and ll alike.
-const char* const PAD128_ROE = "roe   4 512:15:512:212 143413741 18 24.40 2150 0.3098 ok 1753471410\n";
+const char* const PAD128_ROE = "roe   4 512:15:512:212 143413741 18 24.40 2150 0.3098 ok - 1753471410\n";
 
 // What env 1 supports.  Costs are the mean plus two standard errors, so the six calls behind PAD=256 buy it a smaller
 // penalty (+1.84) than the four behind PAD=128 (+3.35); PAD=256 at 1776.069 and PAD=512 at 1802.236 are dropped as
@@ -240,7 +240,7 @@ TEST(emit_drops_an_entry_its_own_default_lines_would_change) {
 
 namespace {
 
-const char* const ROE_1K = "roe   4 1K:8:1K:202 296960407 21 25.10 2150 0.3021 ok 1753471430\n";
+const char* const ROE_1K = "roe   4 1K:8:1K:202 296960407 21 25.10 2150 0.3021 ok - 1753471430\n";
 
 // The 1K:8:1K entry, and a second, dearer set of the same identity that the gate has passed.
 std::string withSecondSet(const std::string& roe1K) {
@@ -249,7 +249,7 @@ std::string withSecondSet(const std::string& roe1K) {
   return text +
     "cfg   22 INPLACE=1,PAD=256,TAIL_KERNELS=3\n"
     "run   4 1K:8:1K:202 prp 200000000 short32 22 3200.000 4.000 16 4 1.0000 ok 1753471450\n"
-    "roe   4 1K:8:1K:202 296960407 22 24.90 2150 0.3040 ok 1753471460\n";
+    "roe   4 1K:8:1K:202 296960407 22 24.90 2150 0.3040 ok - 1753471460\n";
 }
 
 std::vector<std::string> published1K(const TuneDB& db, Gating gating = Gating::Required) {
@@ -311,8 +311,8 @@ TEST(a_configuration_the_gate_rejects_never_reaches_the_selection_file) {
   // derived for the cheaper set, and where no exponent it is read at does any better, it is gone -- from the file and
   // from what the search works from -- and the set it kept out takes its place.
   for (bool const checkOk : {true, false}) {
-    TuneDB db = loaded(withSecondSet(checkOk ? "roe   4 1K:8:1K:202 296960407 21 17.20 2150 0.4011 ok 1753471430\n"
-                                             : "roe   4 1K:8:1K:202 296960407 21 25.10 2150 0.3021 fail 1753471430\n"));
+    TuneDB db = loaded(withSecondSet(checkOk ? "roe   4 1K:8:1K:202 296960407 21 17.20 2150 0.4011 ok - 1753471430\n"
+                                             : "roe   4 1K:8:1K:202 296960407 21 25.10 2150 0.3021 fail - 1753471430\n"));
     CHECK(published1K(db) == dearer);
     CHECK_EQ(gatesOwed(db, 1, defaults()).size(), size_t{1});
 
@@ -329,7 +329,7 @@ TEST(a_configuration_the_gate_rejects_never_reaches_the_selection_file) {
 // What a derived reach buys: a set that cannot reach the top of the table is not discarded but published below where it
 // stops, cheaper there than what reaches further, which is kept above it.
 TEST(a_set_short_of_the_floor_is_published_up_to_the_reach_derived_for_it) {
-  TuneDB db = loaded(withSecondSet("roe   4 1K:8:1K:202 296960407 21 17.20 2150 0.4011 ok 1753471430\n"));
+  TuneDB db = loaded(withSecondSet("roe   4 1K:8:1K:202 296960407 21 17.20 2150 0.4011 ok - 1753471430\n"));
   FFTConfig const fft{"1K:8:1K:202"};
   double const top = 296'960'407 / double(fft.size());
 
@@ -372,12 +372,12 @@ TEST(a_set_the_gate_has_not_read_waits_for_its_reading) {
   CHECK(!owed.at(0).gate.owesReference);
 
   // Read where it would not count -- below the top of the interval -- it is still owed.
-  TuneDB const low = loaded(withSecondSet("roe   4 1K:8:1K:202 250000013 21 25.10 2150 0.3021 ok 1753471430\n"));
+  TuneDB const low = loaded(withSecondSet("roe   4 1K:8:1K:202 250000013 21 25.10 2150 0.3021 ok - 1753471430\n"));
   CHECK_EQ(gatesOwed(low, 1, defaults()).size(), size_t{1});
 }
 
 TEST(a_reading_at_the_fitted_standard_publishes_its_reach_as_confirmed) {
-  TuneDB const db = loaded(withRecord(ROE_1K, "roe   4 1K:8:1K:202 296960407 21 28.30 2150 0.2711 ok 1753471430\n"));
+  TuneDB const db = loaded(withRecord(ROE_1K, "roe   4 1K:8:1K:202 296960407 21 28.30 2150 0.2711 ok - 1753471430\n"));
   bool seen = false;
   for (const SelectionEntry& e : entriesFor(db, 1, defaults())) {
     if (e.fft != "1K:8:1K:202") { continue; }

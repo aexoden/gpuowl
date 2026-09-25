@@ -105,11 +105,11 @@ public:
   // every other key as written, since a key the table does not search can still change what is built.
   [[nodiscard]] GateVerdict operator()(const FFTConfig& fft, const Interval& span, const UseConfig& opts) const;
 
-private:
   // The latest reading of `opts` at `exponent`, or with `above` at or above it in its regime.
   [[nodiscard]] std::optional<RoeRow> reading(const FFTConfig& fft, u64 exponent, const UseConfig& opts,
                                               bool above) const;
 
+private:
   Env device_;
 
   // By spec, then by the text of the gate's identity for the set the kernels were built with.

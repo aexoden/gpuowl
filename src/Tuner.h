@@ -4,7 +4,8 @@
 //
 // Five of its subcommands open no device, build no kernels and take no readings: four read and rewrite the measurement
 // database, and the fifth reports the scope. They run wherever the files are rather than only on the card that was
-// measured.  Everything else -- settings alone, or nothing at all -- is a tuning run on the device.
+// measured.  `accuracy` reads which option keys change the rounding, on the device.  Everything else -- settings
+// alone, or nothing at all -- is a tuning run on the device.
 //
 // The scope is two things: the exponent range the user's work covers, and the one exponent within it that matters
 // most. Everything downstream is weighted by them, so a configuration nobody will run is never paid for.
@@ -60,15 +61,19 @@ inline constexpr double PROBE_BIN = 0.02;
 inline constexpr double STOP = 0.001;
 
 enum class TuneVerb : u8 {
-  Emit,     // publish the selection file the database supports
-  Reset,    // drop what was measured on an env, or on one shape of it
-  Adopt,    // restamp another env's rows as this one's
-  Compact,  // fold duplicate rows and drop the option sets nothing names
-  Scope,    // report the range, the probe and the grid a tuning run would work within
-  Run,      // tune: measure what is worth measuring, publishing after every item
+  Emit,      // publish the selection file the database supports
+  Reset,     // drop what was measured on an env, or on one shape of it
+  Adopt,     // restamp another env's rows as this one's
+  Compact,   // fold duplicate rows and drop the option sets nothing names
+  Scope,     // report the range, the probe and the grid a tuning run would work within
+  Run,       // tune: measure what is worth measuring, publishing after every item
+  Accuracy,  // read which option keys change the rounding
 };
 
 [[nodiscard]] const char* toString(TuneVerb verb);
+
+// Whether the verb builds kernels on a device; the others work on the files alone.
+[[nodiscard]] bool opensDevice(TuneVerb verb);
 
 // What `-tune` was asked to work within. Zero where the setting was not given and is to be derived from the worktodo.
 struct ScopeArgs {
@@ -91,8 +96,11 @@ struct TuneCommand {
   // other kernels.
   u32 from = 0;
 
-  // `reset` only: one shape of the env rather than all of it.
+  // `reset`: one shape of the env rather than all of it.  `accuracy`: the one FFT to read rather than each family's.
   std::string fft;
+
+  // `accuracy` only: the groups whose keys are read; empty for every group.
+  std::vector<Group> groups;
 
   // `scope`, `run` and `emit`: the scope the bootstrap's races were run at the probe of.
   ScopeArgs scope;

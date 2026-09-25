@@ -206,7 +206,7 @@ int main(int argc, char **argv) {
     // opened, and work where there is none.
     std::optional<tune::TuneCommand> const tuneCommand =
       args.doTune ? tune::parseTuneCommand(args.tune) : std::optional<tune::TuneCommand>{};
-    if (tuneCommand && tuneCommand->verb != tune::TuneVerb::Run) {
+    if (tuneCommand && !tune::opensDevice(tuneCommand->verb)) {
       exitCode = tune::runTuneCommand(*tuneCommand, args, fs::current_path()) ? EXIT_OK : EXIT_FAILED;
       log("Bye\n");
       return exitCode;

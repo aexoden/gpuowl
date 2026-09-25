@@ -8,6 +8,7 @@
 #include "common.h"
 #include "FFTConfig.h"
 
+#include <algorithm>
 #include <map>
 #include <string>
 #include <utility>
@@ -135,6 +136,14 @@ struct Option {
   bool compound = false;
 
   AccuracyImpact accuracyImpact = AccuracyImpact::None;
+
+  // Values measured to round exactly as the default does, on a key whose other values change the rounding.
+  vector<int> defaultRounding{};
+
+  // Whether running the key at `value`, which is not its default, changes the rounding.
+  [[nodiscard]] bool changesRounding(int value) const {
+    return accuracyImpact != AccuracyImpact::None && std::ranges::find(defaultRounding, value) == defaultRounding.end();
+  }
 
   // Every key that applies, touchesFn, valuesFn, defaultFn or inert reads. Must name real keys and be acyclic.
   vector<string> dependsOn{};

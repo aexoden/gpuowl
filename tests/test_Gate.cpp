@@ -182,9 +182,16 @@ TEST(only_keys_that_change_the_rounding_spend_accuracy) {
   // A key that does not apply to the FFT changes nothing on it.
   CHECK(!movesAccuracy(env, fp64(), {{"TAIL_TRIGS32", "0"}}));
 
-  // Suspected keys count.
   CHECK(movesAccuracy(env, fp64(), {{"MM2_CHAIN", "1"}}) ==
         (findOption("MM2_CHAIN")->defaultFor(env, fp64(), {}) != 1));
+
+  // A value measured to round as the default does spends nothing, though its key's other values do.
+  CHECK(movesAccuracy(env, fp64(), {{"TAIL_KERNELS", "0"}}));
+  CHECK(!movesAccuracy(env, fp64(), {{"TAIL_KERNELS", "3"}}));
+  CHECK(movesAccuracy(env, fp64(), {{"TAIL_KERNELS", "3"}, {"TAIL_TRIGS", "0"}}));
+
+  // A value that does not parse is taken to spend it.
+  CHECK(movesAccuracy(env, fp64(), {{"TAIL_KERNELS", "x"}}));
 }
 
 TEST(a_reference_is_the_set_with_its_accuracy_keys_at_their_defaults) {
@@ -199,6 +206,13 @@ TEST(a_reference_is_the_set_with_its_accuracy_keys_at_their_defaults) {
 
   // Stated, so that nothing layered under it can set it otherwise.
   CHECK(accuracyReference(env, hybrid(), {}).contains("TAIL_TRIGS32"));
+
+  // A value that rounds as the default is kept, being part of what the reference is the reference of.
+  UseConfig const tail = accuracyReference(env, fp64(), {{"TAIL_KERNELS", "3"}, {"TAIL_TRIGS", "0"}});
+  CHECK_EQ(tail.at("TAIL_KERNELS"), std::string{"3"});
+  CHECK_EQ(tail.at("TAIL_TRIGS"), std::string{"2"});
+  UseConfig const single = accuracyReference(env, fp64(), {{"TAIL_KERNELS", "1"}});
+  CHECK_EQ(single.at("TAIL_KERNELS"), std::string{"2"});
 }
 
 TEST(a_reading_counts_in_its_own_regime_at_or_above_the_gate) {

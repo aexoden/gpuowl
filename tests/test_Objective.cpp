@@ -38,7 +38,7 @@ const char* const DB =
   "run   4 1K:8:1K:202 prp 200000000 short32 21 100.000 1.000 4 1 1.0000 ok 1753471304\n"
   "run   4 4K:8:1K:202 prp 900000000 short32 21 100.000 1.000 16 4 1.0000 err 1753471314\n"
   "run   9 512:15:512:212 prp 100000000 short32 17 900.000 1.000 16 4 1.0000 ok 1753471324\n"
-  "roe   4 512:15:512:212 143413741 17 24.40 2150 0.3098 ok 1753471330\n";
+  "roe   4 512:15:512:212 143413741 17 24.40 2150 0.3098 ok - 1753471330\n";
 
 constexpr u64 SHORT32_LO = 78'643'196;
 constexpr u64 SHORT32_HI = 143'413'744;
@@ -191,7 +191,7 @@ TEST(rows_that_conclude_nothing_or_belong_elsewhere_count_for_nothing) {
 
 TEST(an_entry_the_gate_still_owes_a_reading_counts_only_for_valuing) {
   std::string text = DB;
-  std::string const roe = "roe   4 512:15:512:212 143413741 17 24.40 2150 0.3098 ok 1753471330\n";
+  std::string const roe = "roe   4 512:15:512:212 143413741 17 24.40 2150 0.3098 ok - 1753471330\n";
   text.erase(text.find(roe), roe.size());
   TuneDB const db = loaded(text.c_str());
   RunScope const scope = scopeOver({{100'000'000, 1}});

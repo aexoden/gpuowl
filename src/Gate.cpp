@@ -12,7 +12,11 @@ namespace tune {
 
 namespace {
 
-[[nodiscard]] bool changesRounding(const Option& option) { return option.accuracyImpact != AccuracyImpact::None; }
+// A value that does not parse is taken to change the rounding, which is the safe error.
+[[nodiscard]] bool changesRounding(const Option& option, const std::string& value) {
+  std::optional<int> const v = parseInt<int>(value);
+  return option.accuracyImpact != AccuracyImpact::None && (!v || option.changesRounding(*v));
+}
 
 [[nodiscard]] std::string format(const char* fmt, double a, double b) {
   char buf[128];
@@ -37,7 +41,7 @@ double minSafeZ(enum FFT_TYPES type) { return type == FFT64 ? 20 : 6; }
 
 bool movesAccuracy(const Env& env, const FFTConfig& fft, const UseConfig& opts) {
   for (const auto& [key, value] : canonicalConfig(env, fft, opts)) {
-    if (changesRounding(*findOption(key))) { return true; }
+    if (changesRounding(*findOption(key), value)) { return true; }
   }
   return false;
 }
@@ -49,9 +53,14 @@ UseConfig accuracyReference(const Env& env, const FFTConfig& fft, const UseConfi
   for (bool changed = true; changed;) {
     changed = false;
     for (const Option& option : allOptions()) {
-      if (option.kind != Kind::Tunable || !changesRounding(option) || !option.appliesTo(env, fft, out)) { continue; }
+      if (option.kind != Kind::Tunable || option.accuracyImpact == AccuracyImpact::None ||
+          !option.appliesTo(env, fft, out)) {
+        continue;
+      }
       std::string const own = std::to_string(option.defaultFor(env, fft, out));
-      if (auto const at = out.find(option.key); at == out.end() || at->second != own) {
+      auto const at = out.find(option.key);
+      if (at != out.end() && at->second != own && !changesRounding(option, at->second)) { continue; }
+      if (at == out.end() || at->second != own) {
         out[option.key] = own;
         changed = true;
       }
