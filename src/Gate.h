@@ -49,6 +49,10 @@ inline constexpr u32 ROE_ITERATIONS = 2000;
 // underneath can set it otherwise: the set whose reading a set that moves one is held to.
 [[nodiscard]] UseConfig accuracyReference(const Env& env, const FFTConfig& fft, const UseConfig& opts);
 
+// The keys of `opts` held at a value that changes the rounding on `fft`, and nothing else. Two sets of one FFT with the
+// same answer round alike, so a reach measured for one holds for the other.
+[[nodiscard]] UseConfig roundingOf(const Env& env, const FFTConfig& fft, const UseConfig& opts);
+
 // The prime the gate reads `span` at: the largest it holds, where the rounding errors are largest.  0 where it holds
 // none.
 [[nodiscard]] u64 gateExponent(const Interval& span);

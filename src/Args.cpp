@@ -304,6 +304,8 @@ its reach.
                      option at a time (single), or every combination of named options (permute:PAD+IN_SIZEX).
                      hybrid then combines the best comboTop=<N> (3) answers of each group, over comboTiers=<1..3>
                      (3) tiers: groups alone, groups that share kernels, everything; comboTiers=1 is groups.
+                     tunetxt=1 (a run, or emit) also writes tune.txt beside selection.txt, for binaries that read
+                     only tune.txt: just the FFTs measured to hold their fitted reach at default rounding.
                      The option words above (noconfig, fp64, quick=, ...) still select the previous tuner.
                          accuracy[,fft=<spec>][,groups=<Group>+...] - on the device: read the rounding error of
                              every value of every -use option against the set it moved from, on each FFT type's

@@ -32,6 +32,7 @@ namespace tune {
 namespace {
 
 constexpr const char* SELECTION_NAME = "selection.txt";
+constexpr const char* TUNE_TXT_NAME = "tune.txt";
 
 // How many grid points a report prints in full before it falls back to the heaviest few.
 constexpr size_t GRID_SHOWN = 12;
@@ -572,6 +573,9 @@ std::optional<TuneCommand> parseTuneCommand(std::string_view text) {
       out.strategy = parseStrategy(val);
     } else if (key == "stop" && isRun) {
       out.stop = parseStop(val);
+    } else if (key == "tunetxt" && (isRun || out.verb == TuneVerb::Emit)) {
+      if (val != "0" && val != "1") { throw who + ": tunetxt= takes 0 or 1"; }
+      out.tuneTxt = val == "1";
     } else if (key == "comboTop" && isRun) {
       comboTop = parseInt<u32>(val);
       if (!comboTop || *comboTop < 1) { throw std::string{"-tune: comboTop= takes a count of 1 or more"}; }
@@ -584,7 +588,8 @@ std::optional<TuneCommand> parseTuneCommand(std::string_view text) {
       std::string accepted = "nothing";
       switch (out.verb) {
       case TuneVerb::Emit:
-        accepted = "env=<id>, and the run's workload=<lo>-<hi>, probe=<E>, probeWeight=<0..1>, kinds=prp|ll|prp+ll";
+        accepted = "env=<id>, tunetxt=0|1, and the run's workload=<lo>-<hi>, probe=<E>, probeWeight=<0..1>,"
+                   " kinds=prp|ll|prp+ll";
         break;
       case TuneVerb::Reset: accepted = "env=<id>, fft=<spec>"; break;
       case TuneVerb::Adopt: accepted = "into=<id> (or env=<id>), from=<id>"; break;
@@ -595,6 +600,7 @@ std::optional<TuneCommand> parseTuneCommand(std::string_view text) {
       case TuneVerb::Run:
         accepted = "workload=<lo>-<hi>, probe=<E>, probeWeight=<0..1>, kinds=prp, bootstrap=0|1,"
                    " strategy=hybrid|single|groups|permute:<KEY>+<KEY>..., comboTop=<N>, comboTiers=1|2|3, stop=<P>%|0,"
+                   " tunetxt=0|1,"
                    " or a subcommand: emit, reset, adopt, compact, scope, accuracy";
         break;
       case TuneVerb::Accuracy: accepted = "workload=<lo>-<hi>, probe=<E>, fft=<spec>, groups=<Group>+<Group>..."; break;
@@ -743,6 +749,14 @@ bool runTuneCommand(const TuneCommand& command, const Args& args, const fs::path
     writeSelection(out, *file);
     log("tune: published %zu %s of env %u to %s\n", file->entries.size(),
         file->entries.size() == 1 ? "entry" : "entries", env, out.string().c_str());
+
+    if (command.tuneTxt) {
+      const DbEnv* const row = db.findEnv(env);
+      fs::path const compat = dir / TUNE_TXT_NAME;
+      size_t const lines = writeCompatibility(compat, *file, row ? row->toEnv() : Env{});
+      log("tune: wrote %zu %s to %s for binaries that read no %s\n", lines, lines == 1 ? "line" : "lines",
+          compat.string().c_str(), SELECTION_NAME);
+    }
     return true;
   }
 
@@ -809,6 +823,8 @@ MeasureOutcome runTune(const GpuCommon& shared, const TuneCommand& command) {
   }
 
   fs::path const out = dir / SELECTION_NAME;
+  std::optional<fs::path> const compat =
+    command.tuneTxt ? std::optional<fs::path>{dir / TUNE_TXT_NAME} : std::optional<fs::path>{};
   auto publishNow = [&](const Objective& objective, const Defaults& defaults) {
     Provenance const from{.ts = u64(time(nullptr)),
                           .db = TuneDB::DEFAULT_NAME,
@@ -816,7 +832,7 @@ MeasureOutcome runTune(const GpuCommon& shared, const TuneCommand& command) {
                           .T = objective.T(),
                           .workloadLo = scope.lo,
                           .workloadHi = scope.hi};
-    if (!publish(out, db, defaults, from)) { log("tune: %s could not be published\n", out.string().c_str()); }
+    if (!publish(out, db, defaults, from, compat)) { log("tune: %s could not be published\n", out.string().c_str()); }
   };
 
   SessionBench bench{session, args.blockSize};
@@ -825,7 +841,7 @@ MeasureOutcome runTune(const GpuCommon& shared, const TuneCommand& command) {
   logSummary(summarize(scheduler, db, envId, session.id(), report, command.stop));
   log("tune: T %.3f -> %.3f us/it%s\n", report.startT, report.endT,
       report.stopped ? ", stopped before the queue was done" : "");
-  log("tune: published %s\n", out.string().c_str());
+  log("tune: published %s%s\n", out.string().c_str(), compat ? (" and " + compat->string()).c_str() : "");
   if (!takeover.configKeys.empty()) {
     std::string keys;
     for (const std::string& k : takeover.configKeys) { keys += (keys.empty() ? "" : ", ") + k; }

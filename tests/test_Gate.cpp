@@ -194,6 +194,23 @@ TEST(only_keys_that_change_the_rounding_spend_accuracy) {
   CHECK(movesAccuracy(env, fp64(), {{"TAIL_KERNELS", "x"}}));
 }
 
+TEST(what_decides_the_rounding_is_the_keys_held_at_a_value_that_changes_it) {
+  Env const env = nvidia();
+  CHECK(roundingOf(env, hybrid(), {}).empty());
+  CHECK(roundingOf(env, hybrid(), {{"UNROLL_W", "1"}, {"TAIL_TRIGS32", "2"}}).empty());
+  UseConfig const trigs{{"TAIL_TRIGS32", "0"}};
+  CHECK(roundingOf(env, hybrid(), {{"TAIL_TRIGS32", "0"}, {"UNROLL_W", "1"}}) == trigs);
+
+  // A value measured to round as the default does is the default's rounding, and so are the keys around it.
+  CHECK(roundingOf(env, fp64(), {{"TAIL_KERNELS", "3"}, {"UNROLL_W", "1"}}) == roundingOf(env, fp64(), {}));
+  UseConfig const single{{"TAIL_KERNELS", "1"}};
+  CHECK(roundingOf(env, fp64(), single) == single);
+  CHECK(roundingOf(env, fp64(), {{"TAIL_KERNELS", "1"}}) != roundingOf(env, fp64(), {{"TAIL_KERNELS", "0"}}));
+
+  // A key that does not apply to the FFT changes nothing on it.
+  CHECK(roundingOf(env, fp64(), {{"TAIL_TRIGS32", "0"}}).empty());
+}
+
 TEST(a_reference_is_the_set_with_its_accuracy_keys_at_their_defaults) {
   Env const env = nvidia();
   UseConfig const moved{{"TAIL_TRIGS32", "0"}, {"UNROLL_W", "1"}};

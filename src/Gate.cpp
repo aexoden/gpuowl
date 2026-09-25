@@ -40,10 +40,13 @@ namespace {
 double minSafeZ(enum FFT_TYPES type) { return type == FFT64 ? 20 : 6; }
 
 bool movesAccuracy(const Env& env, const FFTConfig& fft, const UseConfig& opts) {
-  for (const auto& [key, value] : canonicalConfig(env, fft, opts)) {
-    if (changesRounding(*findOption(key), value)) { return true; }
-  }
-  return false;
+  return !roundingOf(env, fft, opts).empty();
+}
+
+UseConfig roundingOf(const Env& env, const FFTConfig& fft, const UseConfig& opts) {
+  UseConfig out = canonicalConfig(env, fft, opts);
+  std::erase_if(out, [](const auto& kv) { return !changesRounding(*findOption(kv.first), kv.second); });
+  return out;
 }
 
 UseConfig accuracyReference(const Env& env, const FFTConfig& fft, const UseConfig& opts) {

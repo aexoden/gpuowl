@@ -409,3 +409,123 @@ TEST(the_fallback_does_not_re_select_a_configuration_published_as_reaching_less)
 
   fs::remove_all(dir);
 }
+
+// A measured reach is a limit, not a hint: no exponent above it selects the entry, whatever else is published beside
+// it, and below it the entry still answers.
+TEST(an_entry_with_reduced_reach_is_never_selected_above_it) {
+  FFTConfig const small{"512:15:512:212"};
+  Interval const band = intervals(small, minExp(small), maxExp(small)).back();
+  u64 const reduced = band.lo + (band.hi - band.lo) / 2;
+
+  SelectionFile const file = published({SelectionEntry{.id = {},
+                                                       .cost = 1700,
+                                                       .fft = small.spec(),
+                                                       .kind = TestKind::PRP,
+                                                       .emin = band.lo,
+                                                       .reach = reduced,
+                                                       .regime = {},
+                                                       .evidence = Evidence::Confirmed,
+                                                       .opts = CHEAP_OPTS},
+                                        SelectionEntry{.id = {},
+                                                       .cost = 1900,
+                                                       .fft = "1K:8:1K:202",
+                                                       .kind = TestKind::PRP,
+                                                       .emin = 100'000'000,
+                                                       .reach = 160'000'000,
+                                                       .regime = {},
+                                                       .evidence = Evidence::Unvalidated,
+                                                       .opts = DEAR_OPTS}});
+  Args const args = configured({});
+
+  for (u64 E = band.lo; E <= band.hi; E += (band.hi - band.lo) / 64) {
+    std::optional<Choice> const choice = chooseFrom(file, args, Env{}, E, TestKind::PRP);
+    if (E <= reduced) {
+      CHECK_EQ(specOf(choice), small.spec());
+    } else {
+      CHECK(!choice || choice->fft.spec() != small.spec());
+      CHECK(!choice || E <= choice->reach);
+    }
+  }
+  CHECK_EQ(specOf(chooseFrom(file, args, Env{}, reduced + 1, TestKind::PRP)), std::string{"1K:8:1K:202"});
+  CHECK_EQ(specOf(chooseFrom(file, args, Env{}, band.hi, TestKind::PRP)), std::string{"1K:8:1K:202"});
+}
+
+// The shape scan resolves its own options, which need not be any entry's; where they round as a published entry's do,
+// that entry's limit is theirs too, and where they round otherwise it says nothing about them.
+TEST(the_fallback_holds_options_that_round_alike_to_the_reach_published_for_them) {
+  fs::path const dir = fs::temp_directory_path() / "prpll-test-production-rounding";
+  fs::remove_all(dir);
+  fs::create_directories(dir);
+  WorkingDirectory const here{dir};
+
+  FFTConfig const small{"256:2:256:202"};
+  Interval const span = intervals(small, minExp(small), maxExp(small)).back();
+  u64 const restricted = span.lo + (span.hi - span.lo) / 2;
+  u64 const past = restricted + 1000;
+  { File::openWrite("tune.txt").printf("100.0 %s # %llu\n", small.spec().c_str(), (unsigned long long)maxExp(small)); }
+
+  auto const entryUnder = [&](const UseConfig& opts) {
+    return SelectionEntry{.id = {},
+                          .cost = 100,
+                          .fft = small.spec(),
+                          .kind = TestKind::PRP,
+                          .emin = span.lo,
+                          .reach = restricted,
+                          .regime = {},
+                          .evidence = Evidence::Confirmed,
+                          .opts = opts};
+  };
+  Args const args = configured({});
+
+  // TAIL_KERNELS=3 splits the default's arithmetic another way and rounds exactly as it does.
+  writeSelection("selection.txt", published({entryUnder({{"TAIL_KERNELS", "3"}})}));
+  CHECK(choose(args, Env{}, past, TestKind::PRP).fft.spec() != small.spec());
+
+  // TAIL_KERNELS=1 rounds otherwise, so its shortfall is not the defaults'.
+  writeSelection("selection.txt", published({entryUnder({{"TAIL_KERNELS", "1"}})}));
+  Choice const other = choose(args, Env{}, past, TestKind::PRP);
+  CHECK_EQ(other.fft.spec(), small.spec());
+  CHECK_EQ(other.reach, maxExp(small));
+
+  fs::remove_all(dir);
+}
+
+// Two entries that round alike are one arithmetic, and the lower of their reaches is its limit: the one measured
+// further up does not carry it past where the other was held, overridden or not.
+TEST(an_entry_is_held_to_the_limit_published_for_its_arithmetic) {
+  FFTConfig const small{"512:15:512:212"};
+  Interval const band = intervals(small, minExp(small), maxExp(small)).back();
+  u64 const reduced = band.lo + (band.hi - band.lo) / 2;
+
+  auto const entryOf = [&](double cost, u64 reach, const UseConfig& opts) {
+    return SelectionEntry{.id = {},
+                          .cost = cost,
+                          .fft = small.spec(),
+                          .kind = TestKind::PRP,
+                          .emin = band.lo,
+                          .reach = reach,
+                          .regime = {},
+                          .evidence = Evidence::Confirmed,
+                          .opts = opts};
+  };
+
+  // TAIL_KERNELS=3 splits the defaults' arithmetic another way and rounds exactly as it does.
+  SelectionFile const file = published({entryOf(1700, band.hi, {{"TAIL_KERNELS", "3"}}), entryOf(1800, reduced, {})});
+  Args const args = configured({});
+
+  std::optional<Choice> const below = chooseFrom(file, args, Env{}, reduced, TestKind::PRP);
+  CHECK(below.has_value());
+  if (below) {
+    CHECK_EQ(below->options.at("TAIL_KERNELS"), std::string{"3"});
+    CHECK(below->shadowed.empty());
+    CHECK_EQ(below->reach, reduced);
+  }
+  CHECK(!chooseFrom(file, args, Env{}, reduced + 100, TestKind::PRP));
+  CHECK(!chooseFrom(file, args, Env{}, band.hi, TestKind::PRP));
+
+  // An entry that rounds otherwise is not held by it.
+  SelectionFile const apart = published({entryOf(1700, band.hi, {{"TAIL_KERNELS", "1"}}), entryOf(1800, reduced, {})});
+  std::optional<Choice> const other = chooseFrom(apart, args, Env{}, band.hi, TestKind::PRP);
+  CHECK(other.has_value());
+  if (other) { CHECK_EQ(other->reach, band.hi); }
+}

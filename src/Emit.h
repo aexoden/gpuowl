@@ -14,6 +14,7 @@
 #include "Gate.h"
 #include "Selection.h"
 #include "TuneDB.h"
+#include "TuneEntry.h"
 #include "UseResolve.h"
 
 #include <filesystem>
@@ -95,7 +96,22 @@ struct OptionSet {
 // about the database and is published as such.
 [[nodiscard]] std::optional<SelectionFile> emit(const TuneDB& db, const Defaults& defaults, const Provenance& from);
 
-// Writes it through a sibling temporary and a rename, so a reader sees either the whole file or the old one.
-[[nodiscard]] bool publish(const fs::path& path, const TuneDB& db, const Defaults& defaults, const Provenance& from);
+// Upstream's tune.txt for a binary that reads no selection file: one line per FFT the file publishes at the fitted
+// table's own reach, at default rounding, or with exact arithmetic, and no other -- nor any FFT whose default rounding
+// was held short of the end of a band in any regime, since a line says nothing of regimes. Such a binary runs an FFT up
+// to the table's reach under options of its own, so a line is safe only where the table's reach holds at default
+// rounding; its cost is the cheapest entry of that FFT, and the lines form the cost/reach frontier its reader keeps.
+[[nodiscard]] std::vector<TuneEntry> compatibilityView(const SelectionFile& file, const Env& env);
+
+// The view in upstream's own format.
+[[nodiscard]] std::string compatibilityText(const std::vector<TuneEntry>& view);
+
+// Writes the view of `file` to `path` through a sibling temporary and a rename, returning how many lines it holds.
+size_t writeCompatibility(const fs::path& path, const SelectionFile& file, const Env& env);
+
+// Writes it through a sibling temporary and a rename, so a reader sees either the whole file or the old one; and the
+// compatibility view beside it to `compat`, the same way, where one is asked for.
+[[nodiscard]] bool publish(const fs::path& path, const TuneDB& db, const Defaults& defaults, const Provenance& from,
+                           const std::optional<fs::path>& compat = {});
 
 }  // namespace tune
