@@ -221,7 +221,7 @@ MeasureOutcome runAccuracy(const GpuCommon& shared, const TuneCommand& command) 
   Gates gates{db, session.envId(), env};
   SweepLookup const readingOf = [&](const FFTConfig& fft, u64 exponent,
                                     const UseConfig& config) -> std::optional<SweepReading> {
-    std::optional<RoeRow> const row = gates.reading(fft, exponent, config, false);
+    std::optional<RoeRow> const row = gates.reading(fft, exponent, config);
     if (!row || !row->fp) { return {}; }
     return SweepReading{
       .z = row->z, .n = row->n, .maxRoe = row->maxRoe, .checkOk = row->checkOk, .fingerprint = row->fp};

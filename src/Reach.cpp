@@ -2,6 +2,7 @@
 
 #include "Reach.h"
 
+#include "Eligibility.h"
 #include "Primes.h"
 
 #include <algorithm>
@@ -141,6 +142,15 @@ u64 carryCeiling(const FFTConfig& fft) {
   u64 const words = fft.size();
   u64 const below19 = 19 * words - 1;
   return std::min(u64(double(fft.shape.carry32BPW()) * double(words)), below19);
+}
+
+u64 raiseCeiling(const FFTConfig& fft) {
+  u64 const top = maxExp(fft);
+  u64 const cap = std::min(u64((double(fft.maxBpw()) + MAX_RAISE_BPW) * double(fft.size())), carryCeiling(fft));
+  if (cap <= top) { return std::min(cap, top); }
+
+  std::vector<Interval> const above = intervals(fft, top, cap);
+  return above.empty() ? top : above.front().hi;
 }
 
 }  // namespace tune

@@ -101,4 +101,13 @@ using ReadingAt = std::function<std::optional<ZReading>(u64 exponent)>;
 // and in any case below 19 bits per word, where the CARRY32 code breaks.  No limit otherwise.
 [[nodiscard]] u64 carryCeiling(const FFTConfig& fft);
 
+// How far above the fitted table a reach may be raised, in bits per word.  A sanity bound rather than a measured one:
+// at the slopes measured near z 28 even a set reading z 40 at the table's top is about 0.3 bits per word from 28.
+inline constexpr double MAX_RAISE_BPW = 0.5;
+
+// The largest exponent a reach of `fft` may be raised to above the fitted table: no further than MAX_RAISE_BPW past it,
+// than the carry can run, or than the regime the table's reach ends in, whose kernels are the ones the table's top
+// was read under.  At or below maxExp() where there is no room at all.
+[[nodiscard]] u64 raiseCeiling(const FFTConfig& fft);
+
 }  // namespace tune

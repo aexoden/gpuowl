@@ -10,6 +10,7 @@
 #include "Args.h"
 #include "Emit.h"
 #include "File.h"
+#include "Reach.h"
 #include "test.h"
 
 #include <string>
@@ -528,4 +529,48 @@ TEST(an_entry_is_held_to_the_limit_published_for_its_arithmetic) {
   std::optional<Choice> const other = chooseFrom(apart, args, Env{}, band.hi, TestKind::PRP);
   CHECK(other.has_value());
   if (other) { CHECK_EQ(other->reach, band.hi); }
+}
+
+TEST(a_raise_is_held_by_what_alike_entries_measured_and_not_by_the_tables_reach) {
+  FFTConfig const small{"512:15:512:212"};
+  Interval const band = intervals(small, minExp(small), maxExp(small)).back();
+  CHECK_EQ(band.hi, maxExp(small));
+  u64 const raised = raiseCeiling(small);
+  CHECK(raised > band.hi);
+  u64 const reduced = band.lo + (band.hi - band.lo) / 2;
+
+  auto const entryOf = [&](double cost, u64 reach, const UseConfig& opts) {
+    return SelectionEntry{.id = {},
+                          .cost = cost,
+                          .fft = small.spec(),
+                          .kind = TestKind::PRP,
+                          .emin = band.lo,
+                          .reach = reach,
+                          .regime = band.regime,
+                          .evidence = Evidence::Confirmed,
+                          .opts = opts};
+  };
+  Args const args = configured({});
+
+  // A cheaper set that rounds alike was read only at the table's top, which says nothing past it.
+  SelectionFile const file = published({entryOf(1700, band.hi, {{"TAIL_KERNELS", "3"}}), entryOf(1800, raised, {})});
+  std::optional<Choice> const above = chooseFrom(file, args, Env{}, raised, TestKind::PRP);
+  CHECK(above.has_value());
+  if (above) {
+    CHECK(above->options.find("TAIL_KERNELS") == above->options.end());
+    CHECK_EQ(above->reach, raised);
+  }
+  std::optional<Choice> const below = chooseFrom(file, args, Env{}, band.hi, TestKind::PRP);
+  CHECK(below.has_value());
+  if (below) { CHECK_EQ(below->options.at("TAIL_KERNELS"), std::string{"3"}); }
+
+  // One that measured a lower limit holds the raise to it, as it holds every entry that rounds alike.
+  SelectionFile const held = published({entryOf(1700, band.hi, {{"TAIL_KERNELS", "3"}}), entryOf(1800, raised, {}),
+                                        entryOf(1900, reduced, {{"TAIL_KERNELS", "3"}, {"INPLACE", "1"}})});
+  CHECK(!chooseFrom(held, args, Env{}, raised, TestKind::PRP));
+  CHECK(!chooseFrom(held, args, Env{}, reduced + 100, TestKind::PRP));
+
+  // And the shape scan, landing on the raised arithmetic, is told how far it was measured to.
+  CHECK_EQ(publishedReach(file, Env{}, small, TestKind::PRP, {}, band.hi), raised);
+  CHECK_EQ(publishedReach(held, Env{}, small, TestKind::PRP, {}, band.hi), reduced);
 }

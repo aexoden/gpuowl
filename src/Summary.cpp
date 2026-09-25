@@ -18,7 +18,7 @@ namespace tune {
 namespace {
 
 [[nodiscard]] std::string labelOf(const Scheduler& scheduler, const Item& item) {
-  if (item.kind == ItemKind::Bootstrap) { return item.what; }
+  if (item.kind == ItemKind::Bootstrap || item.kind == ItemKind::Reach) { return item.what; }
   std::string const entry = scheduler.baselines()[item.index].label();
   return item.what.empty() ? entry : entry + " " + item.what;
 }

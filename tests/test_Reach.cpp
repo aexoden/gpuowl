@@ -5,6 +5,7 @@
 
 #include "Reach.h"
 
+#include "Eligibility.h"
 #include "Primes.h"
 
 #include "test.h"
@@ -313,4 +314,25 @@ TEST(a_reading_taken_on_the_way_that_passes_is_preferred_to_a_band_under_it) {
   ReachOutcome const done = next();
   CHECK(done.state == ReachState::Confirmed);
   CHECK_EQ(done.exponent, u64(130'744'829));
+}
+
+TEST(a_reach_is_raised_no_further_than_the_table_allows_it) {
+  // 512:15:512:212's automatic carry changes to 64 bits a little past its table reach, and the raise stops there.
+  FFTConfig const shortTop{"512:15:512:212"};
+  u64 const ceiling = raiseCeiling(shortTop);
+  CHECK(ceiling > maxExp(shortTop));
+  CHECK(regimeOf(shortTop, ceiling) == regimeOf(shortTop, maxExp(shortTop)));
+  CHECK(regimeOf(shortTop, ceiling + 1) != regimeOf(shortTop, maxExp(shortTop)));
+
+  // Where the regime runs on, MAX_RAISE_BPW past the table.
+  FFTConfig const wideTop{"1K:8:1K:202"};
+  CHECK(regimeOf(wideTop, maxExp(wideTop)).carry64);
+  CHECK_EQ(raiseCeiling(wideTop), u64((double(wideTop.maxBpw()) + MAX_RAISE_BPW) * double(wideTop.size())));
+
+  // A pinned 32-bit carry has no more room than the carry gives it.
+  for (const char* spec : {"512:15:512:212:0", "1K:8:1K:202:0", "1K:16:1K:202:0", "4K:16:1K:202:0"}) {
+    if (FFTConfig const pinned{spec}; pinned.carry == CARRY_32) {
+      CHECK(raiseCeiling(pinned) <= std::max(carryCeiling(pinned), maxExp(pinned)));
+    }
+  }
 }

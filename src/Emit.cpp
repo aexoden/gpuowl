@@ -258,7 +258,7 @@ std::vector<OptionSet> optionSetsFor(const TuneDB& db, u32 env, const Defaults& 
 
   // Judged once per set rather than once per row: the rows of one set in one regime share its interval.  The cost is
   // per iteration and the same anywhere in the regime, so a set timed above the reach the gate derived for it is still
-  // published below it.
+  // published below it, and one whose reach was raised above the table is published above it.
   std::vector<Candidate> candidates;
   for (auto& [id, candidate] : byId) {
     SelectionEntry& e = candidate.entry;
@@ -266,7 +266,7 @@ std::vector<OptionSet> optionSetsFor(const TuneDB& db, u32 env, const Defaults& 
     if (candidate.gate.state == GateState::Rejected) { continue; }
 
     if (candidate.gate.state == GateState::Passed) {
-      e.reach = std::min(e.reach, candidate.gate.reach);
+      e.reach = candidate.gate.reach;
       e.evidence = candidate.gate.evidence;
     }
     candidates.push_back(std::move(candidate));

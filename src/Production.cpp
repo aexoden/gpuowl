@@ -76,6 +76,10 @@ u64 publishedReach(const SelectionFile& file, const Env& env, const FFTConfig& f
     if (entry.kind != kind || entry.fft != fft.spec() || entry.regime != regime) { continue; }
     if (roundingOf(env, fft, entry.opts) != rounding) { continue; }
 
+    // An entry that holds exactly the table's reach for its band was read there and nowhere past it, which says nothing
+    // against a reach another entry of the same arithmetic was measured to above it.
+    if (entry.reach == interval(fft, entry.emin).hi) { continue; }
+
     lowest = std::min(lowest.value_or(entry.reach), entry.reach);
   }
 
