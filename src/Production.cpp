@@ -3,6 +3,7 @@
 #include "Production.h"
 
 #include "Args.h"
+#include "Gate.h"
 #include "log.h"
 #include "TuneDB.h"
 
@@ -65,18 +66,20 @@ Regime runRegime(const Args& args, const FFTConfig& fft, u64 E) {
   return regime;
 }
 
-u64 publishedReach(const SelectionFile& file, const FFTConfig& fft, TestKind kind, const UseConfig& options, u64 E) {
-  u64 limit = maxExp(fft);
+u64 publishedReach(const SelectionFile& file, const Env& env, const FFTConfig& fft, TestKind kind,
+                   const UseConfig& options, u64 E) {
+  std::optional<u64> lowest;
   Regime const regime = regimeOf(fft, E);
+  UseConfig const rounding = roundingOf(env, fft, options);
 
   for (const SelectionEntry& entry : file.entries) {
     if (entry.kind != kind || entry.fft != fft.spec() || entry.regime != regime) { continue; }
-    if (configText(entry.opts) != configText(options)) { continue; }
+    if (roundingOf(env, fft, entry.opts) != rounding) { continue; }
 
-    limit = std::min(limit, entry.reach);
+    lowest = std::min(lowest.value_or(entry.reach), entry.reach);
   }
 
-  return limit;
+  return lowest.value_or(maxExp(fft));
 }
 
 std::vector<std::string> shadowedKeys(const Args& args, const Env& env, const SelectionFile& file,
@@ -124,16 +127,17 @@ std::optional<Choice> chooseFrom(const SelectionFile& file, const Args& args, co
     // same way.
     if (runRegime(args, *fft, E) != entry.regime) { shadowed.insert(shadowed.begin(), "-carry"); }
 
-    // Conservative whether the entry's reach was raised by the options it was measured under or lowered by them: what
-    // survives an override is what every configuration of this shape inherits.
-    u64 const reach = shadowed.empty() ? entry.reach : std::min(entry.reach, maxExp(*fft));
+    UseConfig options = resolveConfig(args, *fft, kind, fittedTo(file.layersFor(entry), env, *fft, kind));
+
+    // Every entry of the arithmetic that will actually run holds it to the lowest reach any of them measured, whether
+    // or not this one was overridden. An override also costs whatever the options it was measured under bought above
+    // the table, conservative whether they raised the reach or lowered it.
+    u64 reach = std::min(entry.reach, publishedReach(file, env, *fft, kind, options, entry.reach));
+    if (!shadowed.empty()) { reach = std::min(reach, maxExp(*fft)); }
     if (double(E) > double(reach) * args.fftOverdrive) { continue; }
 
-    best = Choice{.fft = *fft,
-                  .options = resolveConfig(args, *fft, kind, fittedTo(file.layersFor(entry), env, *fft, kind)),
-                  .entry = entry,
-                  .shadowed = std::move(shadowed),
-                  .reach = reach};
+    best = Choice{
+      .fft = *fft, .options = std::move(options), .entry = entry, .shadowed = std::move(shadowed), .reach = reach};
   }
 
   return best;
@@ -154,8 +158,8 @@ Choice choose(const Args& args, const Env& env, u64 E, TestKind kind) {
     if (std::optional<Choice> chosen = chooseFrom(*file, args, env, E, kind)) {
       if (!chosen->shadowed.empty()) {
         logOnce("Selection entry " + chosen->entry->id + " (" + chosen->fft.spec() + ") was measured with " +
-                joined(chosen->shadowed) + " set otherwise, so it runs at the inherited reach " +
-                to_string(chosen->reach) + " rather than at the " + to_string(chosen->entry->reach) + " it measured\n");
+                joined(chosen->shadowed) + " set otherwise, so it runs only to " + to_string(chosen->reach) +
+                " rather than to the " + to_string(chosen->entry->reach) + " it measured\n");
       }
 
       if (double(E) > double(chosen->reach)) {
@@ -173,7 +177,7 @@ Choice choose(const Args& args, const Env& env, u64 E, TestKind kind) {
   auto const scan = [&](u64 ask) {
     FFTConfig const fft = FFTConfig::bestFit(args, ask, args.fftSpec, env.hasFP64);
     UseConfig options = resolveConfig(args, fft, kind, fittedTo(layers, env, fft, kind));
-    u64 const limit = file ? publishedReach(*file, fft, kind, options, E) : maxExp(fft);
+    u64 const limit = file ? publishedReach(*file, env, fft, kind, options, E) : maxExp(fft);
 
     return Choice{.fft = fft, .options = std::move(options), .entry = {}, .shadowed = {}, .reach = limit};
   };

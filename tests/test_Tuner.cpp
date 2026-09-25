@@ -7,6 +7,7 @@
 #include "Tuner.h"
 
 #include "Args.h"
+#include "Emit.h"
 #include "File.h"
 #include "Selection.h"
 #include "TuneDB.h"
@@ -311,6 +312,38 @@ TEST(emit_publishes_the_selection_file_beside_the_database) {
   TuneDB after;
   CHECK(after.load(dir.path / TuneDB::DEFAULT_NAME));
   CHECK_EQ(after.runs().size(), 4u);
+}
+
+TEST(emit_writes_tune_txt_only_when_asked) {
+  Dir const dir{"prpll-test-tuner-tunetxt"};
+  dir.write(TuneDB::DEFAULT_NAME, DB);
+
+  CHECK(runTuneCommand(parsed("emit,env=1"), Args{}, dir.path));
+  CHECK(dir.has("selection.txt"));
+  CHECK(!dir.has("tune.txt"));
+
+  CHECK(runTuneCommand(parsed("emit,env=1,tunetxt=1"), Args{}, dir.path));
+  CHECK(dir.has("tune.txt"));
+
+  std::optional<SelectionFile> const file = readSelection(dir.path / "selection.txt");
+  TuneDB db;
+  CHECK(db.load(dir.path / TuneDB::DEFAULT_NAME));
+  CHECK(file.has_value() && db.findEnv(1));
+  if (!file || !db.findEnv(1)) { return; }
+  CHECK_EQ(File::openRead(dir.path / "tune.txt").readAll(),
+           compatibilityText(compatibilityView(*file, db.findEnv(1)->toEnv())));
+}
+
+TEST(tune_txt_is_written_by_a_run_or_by_emit) {
+  CHECK(!parseTuneCommand("workload=100M-400M")->tuneTxt);
+  CHECK(parseTuneCommand("workload=100M-400M,tunetxt=1")->tuneTxt);
+  CHECK(parseTuneCommand("emit,tunetxt=1")->tuneTxt);
+  CHECK(!parseTuneCommand("emit,tunetxt=0")->tuneTxt);
+
+  CHECK(!refusal("tunetxt=2").empty());
+  CHECK(!refusal("emit,tunetxt=").empty());
+  CHECK(!refusal("scope,tunetxt=1").empty());
+  CHECK(!refusal("compact,tunetxt=1").empty());
 }
 
 TEST(a_command_that_rewrites_writes_the_database_back) {

@@ -48,13 +48,15 @@ struct Choice {
 // forces the long-carry kernels at any bits per word.
 [[nodiscard]] Regime runRegime(const Args& args, const FFTConfig& fft, u64 E);
 
-// The reach published for exactly this configuration -- same FFT, kind, regime and option set -- or the FFT's own
-// inherited limit where nothing publishes one. A measurement may reach further than the fitted table or fall short of
-// it, and a configuration that fell short is one production must not run above, by whichever path it arrives at it.
+// The lowest reach published for this FFT, kind and regime under options that round as `options` do, or the FFT's own
+// inherited limit where nothing that rounds as they do is published. A measurement may reach further than the fitted
+// table or fall short of it, and a configuration that fell short is one production must not run above, by whichever
+// path it arrives at it -- including under options that differ from the entry's only in keys that leave the arithmetic
+// as it was.
 //
 // Keyed by the regime the exponent alone gives, since that is how entries are keyed; a -carry long run that lands on
 // the same options is held to the same limit, which is the conservative reading in both directions.
-[[nodiscard]] u64 publishedReach(const SelectionFile& file, const FFTConfig& fft, TestKind kind,
+[[nodiscard]] u64 publishedReach(const SelectionFile& file, const Env& env, const FFTConfig& fft, TestKind kind,
                                  const UseConfig& options, u64 E);
 
 // The keys whose resolved value is not the one `entry` was measured under, in key order. A key that changes nothing

@@ -7,11 +7,14 @@
 
 #include "Emit.h"
 
+#include "Args.h"
 #include "Bootstrap.h"
+#include "Production.h"
 
 #include "test.h"
 
 #include <algorithm>
+#include <filesystem>
 #include <functional>
 #include <string>
 
@@ -501,4 +504,174 @@ TEST(a_rejected_set_falls_back_to_its_default_accuracy) {
   CHECK_EQ(table[0].reach, span.hi);
   CHECK(std::ranges::none_of(optionSetsFor(db, id),
                              [&](const OptionSet& s) { return movesAccuracy(env, fft, s.entry.opts); }));
+}
+
+// A set whose reach was derived short of the table stays in the file once a cheaper set covers everything it does:
+// nothing would choose it, but it is where production learns that its arithmetic stops there, and a user's setting can
+// turn the cheaper set into exactly that arithmetic.
+TEST(a_reduced_reach_is_published_though_a_cheaper_set_covers_it) {
+  TuneDB db = loaded(withSecondSet("roe   4 1K:8:1K:202 296960407 21 17.20 2150 0.4011 ok - 1753471430\n"));
+  FFTConfig const fft{"1K:8:1K:202"};
+  u64 const top = 296'960'407;
+  u64 const bandEnd = interval(fft, top).hi;
+  CHECK(answerOwed(db, sloped(17.2, top / double(fft.size()))) >= 2);
+
+  // Then the search finds a cheaper set off the defaults' rounding that reads well enough at the top to hold the
+  // table's reach there.
+  UseConfig const cheaper{{"INPLACE", "1"}, {"PAD", "256"}, {"TAIL_KERNELS", "1"}};
+  u32 const cfg = db.internCfg(cheaper);
+  CHECK(db.add(RunRow{
+    .sess = 4,
+    .fft = fft.spec(),
+    .kind = TestKind::PRP,
+    .exponent = 200'000'000,
+    .regime = regimeOf(fft, 200'000'000),
+    .cfg = cfg,
+    .m = {
+      .mean = 2900, .stddev = 4, .blocks = 16, .calls = 4, .drift = 1, .status = Status::Ok, .ts = 1'753'473'000}}));
+  CHECK(db.add(RoeRow{.sess = 4,
+                      .fft = fft.spec(),
+                      .exponent = top,
+                      .cfg = cfg,
+                      .z = 28.5,
+                      .n = 2150,
+                      .maxRoe = 0.27,
+                      .checkOk = true,
+                      .ts = 1'753'473'010}));
+  CHECK(gatesOwed(db, 1, defaults()).empty());
+
+  // The table the objective prices has only the cheaper set; the file keeps the derived one beside it.
+  CHECK(published1K(db) == std::vector<std::string>{configText(cheaper)});
+
+  auto const file = emit(db, defaults(), provenance());
+  CHECK(file.has_value());
+  if (!file) { return; }
+
+  std::vector<SelectionEntry> both;
+  for (const SelectionEntry& e : file->entries) {
+    if (e.fft == fft.spec()) { both.push_back(e); }
+  }
+  CHECK_EQ(both.size(), size_t{2});
+  if (both.size() != 2) { return; }
+  CHECK_EQ(configText(both[0].opts), configText(cheaper));
+  CHECK_EQ(both[0].reach, bandEnd);
+  CHECK_EQ(configText(both[1].opts), std::string{"INPLACE=1,PAD=256"});
+  u64 const reach = both[1].reach;
+  CHECK(reach < bandEnd);
+
+  // A config.txt that puts TAIL_KERNELS back to its default runs the cheaper entry at the defaults' arithmetic, which
+  // is held to the reach derived for it, above which nothing in the file covers the exponent.
+  Args args{true};
+  args.parse("-use TAIL_KERNELS=2", true);
+  std::optional<Choice> const below = chooseFrom(*file, args, nvidia(), reach, TestKind::PRP);
+  CHECK(below.has_value());
+  if (below) {
+    CHECK_EQ(configText(below->entry->opts), configText(cheaper));
+    CHECK_EQ(below->reach, reach);
+  }
+  CHECK(!chooseFrom(*file, args, nvidia(), reach + 2, TestKind::PRP));
+
+  // Left alone, the cheaper entry serves its whole band.
+  std::optional<Choice> const alone = chooseFrom(*file, Args{true}, nvidia(), bandEnd, TestKind::PRP);
+  CHECK(alone.has_value());
+  if (alone) { CHECK_EQ(alone->reach, bandEnd); }
+}
+
+namespace {
+
+// The top regime's interval of `fft`, the one the table's reach ends in.
+Interval topOf(const FFTConfig& fft) { return intervals(fft, minExp(fft), maxExp(fft)).back(); }
+
+SelectionEntry entryOf(const std::string& spec, double cost, const UseConfig& opts, std::optional<u64> reach = {},
+                       Evidence evidence = Evidence::Unvalidated) {
+  FFTConfig const fft{spec};
+  Interval const top = topOf(fft);
+  return {.id = {},
+          .cost = cost,
+          .fft = fft.spec(),
+          .kind = TestKind::PRP,
+          .emin = top.lo,
+          .reach = reach.value_or(top.hi),
+          .regime = {},
+          .evidence = evidence,
+          .opts = opts};
+}
+
+SelectionFile fileOf(std::vector<SelectionEntry> entries) {
+  SelectionFile file{.provenance = "written 1753471500 by test from tunedb.txt env 1",
+                     .global = {},
+                     .family = {},
+                     .entries = std::move(entries),
+                     .unknown = {}};
+  CHECK(finalize(file));
+  return file;
+}
+
+std::vector<std::pair<std::string, double>> linesOf(const std::vector<TuneEntry>& view) {
+  std::vector<std::pair<std::string, double>> out;
+  for (const TuneEntry& line : view) { out.emplace_back(line.fft.spec(), line.cost); }
+  return out;
+}
+
+}  // namespace
+
+TEST(tune_txt_offers_only_what_the_table_reach_holds_for_at_default_rounding) {
+  std::string const fp64 = "512:15:512:212";
+  std::string const shortOfTable = "1K:8:1K:202";
+  std::string const ntt = "3:1K:8:512:202";
+  std::string const hybrid = "2:512:8:512:202";
+  std::string const small = "256:2:256:202";
+
+  // An FFT whose table reach ends in one regime and that was only measured in another.
+  FFTConfig const lowered{"1K:12:1K:202"};
+  std::vector<Interval> const bands = intervals(lowered, minExp(lowered), maxExp(lowered));
+  CHECK(bands.size() >= 2);
+  SelectionEntry lowerBand = entryOf(lowered.spec(), 1500, {});
+  lowerBand.emin = bands.front().lo;
+  lowerBand.reach = bands.front().hi;
+
+  // One measured to the table's reach at the top, but held short of the end of a lower band: an older binary would run
+  // it through the whole of that band.
+  std::string const restrictedLow = "1K:16:1K:202";
+  FFTConfig const low{restrictedLow};
+  std::vector<Interval> const lowBands = intervals(low, minExp(low), maxExp(low));
+  CHECK(lowBands.size() >= 2);
+  SelectionEntry heldLow = entryOf(restrictedLow, 1400, {});
+  heldLow.emin = lowBands.front().lo;
+  heldLow.reach = lowBands.front().lo + (lowBands.front().hi - lowBands.front().lo) / 2;
+  heldLow.evidence = Evidence::Confirmed;
+
+  SelectionFile const file = fileOf({
+    // Two sets that round alike, at the table's reach: the cheaper one's cost.
+    entryOf(fp64, 1750, {}),
+    entryOf(fp64, 1740, {{"TAIL_KERNELS", "3"}}),
+    // The defaults' arithmetic derived short of the table, so it is not offered, whatever else reaches it.
+    entryOf(shortOfTable, 3000, {{"TAIL_KERNELS", "1"}}),
+    entryOf(shortOfTable, 3100, {}, topOf(FFTConfig{shortOfTable}).hi - 1'000'000, Evidence::Confirmed),
+    // Exact arithmetic, whatever it reaches.
+    entryOf(ntt, 2000, {}, {}, Evidence::NotApplicable),
+    // An older binary would not run the arithmetic that held the table's reach.
+    entryOf(hybrid, 1600, {{"TAIL_TRIGS32", "0"}}),
+    // Dearer than a line that reaches further, which upstream's reader would drop.
+    entryOf(small, 1800, {}),
+    lowerBand,
+    entryOf(restrictedLow, 1450, {}),
+    heldLow,
+  });
+
+  std::vector<TuneEntry> const view = compatibilityView(file, nvidia());
+  CHECK(linesOf(view) == (std::vector<std::pair<std::string, double>>{{fp64, 1740}, {ntt, 2000}}));
+
+  // Upstream's own reader keeps every line, and reads each at the table's reach.
+  fs::path const dir = fs::temp_directory_path() / "prpll-test-emit-tunetxt";
+  fs::remove_all(dir);
+  fs::create_directories(dir);
+  { File::openWrite(dir / "tune.txt").write(compatibilityText(view)); }
+  fs::path const previous = fs::current_path();
+  fs::current_path(dir);
+  std::vector<TuneEntry> const read = TuneEntry::readTuneFile(Args{true});
+  fs::current_path(previous);
+  CHECK(linesOf(read) == linesOf(view));
+  CHECK(compatibilityText(view).find(" # " + std::to_string(maxExp(FFTConfig{fp64})) + "\n") != std::string::npos);
+  fs::remove_all(dir);
 }

@@ -113,6 +113,9 @@ struct TuneCommand {
 
   // `run` only: the fraction of T an item has to be expected to remove to be worth running; 0 to run until stopped.
   double stop = STOP;
+
+  // `run` and `emit`: whether to write the tune.txt an older binary reads, beside every selection file published.
+  bool tuneTxt = false;
 };
 
 // One pending assignment, reduced to what the scope cares about.

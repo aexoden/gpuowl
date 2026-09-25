@@ -3,6 +3,8 @@
 #include "Emit.h"
 
 #include "Args.h"
+#include "CycleFile.h"
+#include "Gate.h"
 #include "log.h"
 #include "version.h"
 
@@ -132,26 +134,60 @@ bool shadowedBy(const Defaults& defaults, const Env& env, const FFTConfig& fft, 
 
 namespace {
 
-std::vector<Candidate> identityFrontier(const TuneDB& db, u32 env, const Defaults& defaults, Gating gating) {
+std::vector<Candidate> gatedSets(const TuneDB& db, u32 env, const Defaults& defaults, Gating gating) {
   std::vector<Candidate> sets = optionSetsFor(db, env, defaults);
   if (gating == Gating::Required) {
     std::erase_if(sets, [](const Candidate& c) { return c.gate.state != GateState::Passed; });
   }
+  return sets;
+}
 
-  // A configuration that costs more but reaches further is kept, because nothing else may reach that far cheaply, and
-  // picking one option set per identity before the table is built would lose it.
+// A configuration that costs more but reaches further is kept, because nothing else may reach that far cheaply, and
+// picking one option set per identity before the table is built would lose it.
+std::vector<Candidate> identityFrontier(const std::vector<Candidate>& sets) {
   return frontier(sets, [](const Candidate& c) { return identityOf(c.entry); });
+}
+
+void sortByCost(std::vector<Candidate>& sets) {
+  std::ranges::sort(sets, [](const Candidate& a, const Candidate& b) {
+    return std::tuple{a.entry.cost, a.entry.id} < std::tuple{b.entry.cost, b.entry.id};
+  });
 }
 
 // Then across the table, per kind, since an entry no exponent would ever choose is one production would only walk
 // past.  Cheapest first.
-std::vector<Candidate> tableFor(const TuneDB& db, u32 env, const Defaults& defaults, Gating gating) {
-  std::vector<Candidate> out =
-    frontier(identityFrontier(db, env, defaults, gating), [](const Candidate& c) { return c.entry.kind; });
+std::vector<Candidate> tableOf(const std::vector<Candidate>& sets) {
+  std::vector<Candidate> out = frontier(identityFrontier(sets), [](const Candidate& c) { return c.entry.kind; });
+  sortByCost(out);
+  return out;
+}
 
-  std::ranges::sort(out, [](const Candidate& a, const Candidate& b) {
-    return std::tuple{a.entry.cost, a.entry.id} < std::tuple{b.entry.cost, b.entry.id};
-  });
+std::vector<Candidate> tableFor(const TuneDB& db, u32 env, const Defaults& defaults, Gating gating) {
+  return tableOf(gatedSets(db, env, defaults, gating));
+}
+
+// Whether the reach derived for a passed set stops short of the one the fitted table gives its FFT.  Production has to
+// hold that arithmetic to it on paths that never walk to the set's own entry -- a shape scan landing on the same FFT,
+// or another entry's options overridden into it -- and the file is the only place it can learn it from.
+bool reduced(const Candidate& c) {
+  if (c.gate.state != GateState::Passed || !c.gate.derived) { return false; }
+  auto const fft = parseFft(c.entry.fft);
+  return fft && c.entry.reach < interval(*fft, c.exponent).hi;
+}
+
+// The table, and every set whose reach was reduced that the table's frontier dropped as covered more cheaply.
+std::vector<Candidate> publishedFor(const TuneDB& db, u32 env, const Defaults& defaults) {
+  std::vector<Candidate> const sets = gatedSets(db, env, defaults, Gating::Required);
+  std::vector<Candidate> out = tableOf(sets);
+
+  std::set<std::string> ids;
+  for (const Candidate& c : out) { ids.insert(c.entry.id); }
+
+  for (const Candidate& c : sets) {
+    if (reduced(c) && !ids.contains(c.entry.id)) { out.push_back(c); }
+  }
+
+  sortByCost(out);
   return out;
 }
 
@@ -240,7 +276,7 @@ std::vector<OptionSet> optionSetsFor(const TuneDB& db, u32 env, const Defaults& 
 
 std::vector<SelectionEntry> candidatesFor(const TuneDB& db, u32 env, const Defaults& defaults, Gating gating) {
   std::vector<SelectionEntry> out;
-  for (Candidate& c : identityFrontier(db, env, defaults, gating)) { out.push_back(std::move(c.entry)); }
+  for (Candidate& c : identityFrontier(gatedSets(db, env, defaults, gating))) { out.push_back(std::move(c.entry)); }
   return out;
 }
 
@@ -260,18 +296,81 @@ std::optional<SelectionFile> emit(const TuneDB& db, const Defaults& defaults, co
   SelectionFile file{.provenance = provenanceOf(from),
                      .global = {defaults.global.begin(), defaults.global.end()},
                      .family = defaults.family,
-                     .entries = entriesFor(db, from.env, defaults),
+                     .entries = {},
                      .unknown = {}};
+
+  for (Candidate& c : publishedFor(db, from.env, defaults)) { file.entries.push_back(std::move(c.entry)); }
 
   if (!finalize(file)) { return {}; }
   return file;
 }
 
-bool publish(const fs::path& path, const TuneDB& db, const Defaults& defaults, const Provenance& from) {
+std::vector<TuneEntry> compatibilityView(const SelectionFile& file, const Env& env) {
+  std::map<std::string, TuneEntry> cheapest;
+  std::set<std::string> shortOfTable;
+
+  for (const SelectionEntry& e : file.entries) {
+    auto const fft = parseFft(e.fft);
+    if (!fft) { continue; }
+
+    if (e.evidence != Evidence::NotApplicable) {
+      // Only an entry at default rounding speaks for what an older binary runs. One held short of the end of its band,
+      // in any regime, is a limit tune.txt cannot express, and the older binary would run the FFT past it.
+      if (movesAccuracy(env, *fft, e.opts)) { continue; }
+      if (e.reach < interval(*fft, e.emin).hi) {
+        shortOfTable.insert(fft->spec());
+        continue;
+      }
+
+      // And only one in the regime the table's reach ends in says that reach holds.
+      if (e.regime != regimeOf(*fft, maxExp(*fft))) { continue; }
+    }
+
+    auto const [at, fresh] = cheapest.try_emplace(fft->spec(), TuneEntry{e.cost, *fft});
+    if (!fresh) { at->second.cost = std::min(at->second.cost, e.cost); }
+  }
+
+  std::vector<TuneEntry> lines;
+  for (const auto& [spec, line] : cheapest) {
+    if (!shortOfTable.contains(spec)) { lines.push_back(line); }
+  }
+  std::ranges::sort(lines, [](const TuneEntry& a, const TuneEntry& b) { return a.cost < b.cost; });
+
+  // Upstream's reader keeps the cost/reach frontier and drops the rest, so the file holds exactly that.
+  std::vector<TuneEntry> out;
+  for (const TuneEntry& line : lines) { (void)line.update(out); }
+  return out;
+}
+
+std::string compatibilityText(const std::vector<TuneEntry>& view) {
+  std::string out;
+  for (const TuneEntry& line : view) {
+    char buf[128];
+    snprintf(buf, sizeof(buf), "%6.1f %14s # %llu\n", line.cost, line.fft.spec().c_str(),
+             (unsigned long long)line.fft.maxExp());
+    out += buf;
+  }
+  return out;
+}
+
+size_t writeCompatibility(const fs::path& path, const SelectionFile& file, const Env& env) {
+  std::vector<TuneEntry> const view = compatibilityView(file, env);
+  CycleFile out{path};
+  out->write(compatibilityText(view));
+  return view.size();
+}
+
+bool publish(const fs::path& path, const TuneDB& db, const Defaults& defaults, const Provenance& from,
+             const std::optional<fs::path>& compat) {
   auto const file = emit(db, defaults, from);
   if (!file) { return false; }
 
   writeSelection(path, *file);
+
+  if (compat) {
+    const DbEnv* const env = db.findEnv(from.env);
+    writeCompatibility(*compat, *file, env ? env->toEnv() : Env{});
+  }
   return true;
 }
 
