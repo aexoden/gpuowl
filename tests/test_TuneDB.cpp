@@ -35,7 +35,6 @@ const char* const FIXTURE =
   "roe   4 512:15:512:212 143400073 17 29.40 118 0.371094 ok 1753471402\n"
   "anchor 4 512:15:512:212 143400073 1 1774.230 1.0000 1753471410\n"
   "anchor 5 512:15:512:212 143400073 1 1792.000 1.0100 1753481410\n"
-  "reach 4 512:15:512:212 prp short32 17 148000000 confirmed 1753471460\n"
   "ref   5 512:15:512:212 1000151 2000 171f3662c332472f 1753471480\n"
   "jump  4 512:15:512:212 prp short32 17 3 1753471490\n"
   "combo 4 512:15:512:212 prp short32 17 2 1753471495\n"
@@ -143,10 +142,6 @@ TEST(rows_are_read) {
   CHECK(db.envBaseline(1) == &db.anchors().at(0));
   CHECK(db.envBaseline(2) == nullptr);
 
-  CHECK_EQ(db.reaches().size(), size_t{1});
-  CHECK_EQ(db.reaches().at(0).reach, u64{148'000'000});
-  CHECK(db.reaches().at(0).evidence == Evidence::Confirmed);
-
   CHECK_EQ(db.refs().size(), size_t{1});
   CHECK_EQ(db.refs().at(0).res64, u64{0x171f3662c332472f});
   CHECK_EQ(db.refs().at(0).iters, u64{2000});
@@ -186,7 +181,6 @@ TEST(malformed_rows_are_rejected) {
           "run   4 512:15:512:212 prp 143400073 short32 17 1774.230 2.100 24 6 1.0000 ok");  // a column short
   rejects("prp 143400073 short32 17 1774.230", "prp 143400073 sideways 17 1774.230");        // not a regime
   rejects("2.100 24 6 1.0000 ok 1753471274", "2.100 24 6 1.0000 fine 1753471274");           // not a status
-  rejects("prp short32 17 148000000 confirmed", "prp short32 17 148000000 probably");        // not an evidence state
   rejects("run   4 512:15:512:212 prp", "run   4 not-an-fft prp");                           // not an FFT
   rejects("run   4 512:15:512:212 prp 143400073 short32 17", "run   4 512:15:512:212 cert 143400073 short32 17");
   rejects("run   4 512:15:512:212 prp 143400073 short32 17", "run   9 512:15:512:212 prp 143400073 short32 17");
@@ -747,8 +741,6 @@ const char* const FOLDING =
   "nogo  1 256:2:256:212 SHUFL_BYTES_W=16 1150\n"
   "roe   1 512:15:512:212 143400073 1 29.40 118 0.371094 ok 1300\n"
   "roe   2 512:15:512:212 143400073 1 31.00 200 0.400000 fail 2300\n"
-  "reach 1 512:15:512:212 prp short32 1 148000000 unvalidated 1400\n"
-  "reach 2 512:15:512:212 prp short32 1 149000000 confirmed 2400\n"
   "ref   1 512:15:512:212 1000151 2000 171f3662c332472f 1500\n";
 
 // The fixture above with one row replaced.
@@ -824,11 +816,6 @@ TEST(evidence_is_replaced_rather_than_pooled) {
   CHECK_EQ(roes.size(), size_t{1});
   CHECK_EQ(roes.at(0).z, 31.0);
   CHECK(!roes.at(0).checkOk);
-
-  auto const reaches = db.latestReaches();
-  CHECK_EQ(reaches.size(), size_t{1});
-  CHECK_EQ(reaches.at(0).reach, u64{149'000'000});
-  CHECK(reaches.at(0).evidence == Evidence::Confirmed);
 }
 
 TEST(a_compacted_database_says_the_same_thing_and_says_it_once) {
@@ -837,7 +824,6 @@ TEST(a_compacted_database_says_the_same_thing_and_says_it_once) {
 
   CHECK_EQ(db.runs().size(), size_t{3});
   CHECK_EQ(db.roes().size(), size_t{1});
-  CHECK_EQ(db.reaches().size(), size_t{1});
 
   // PAD=128 is named by a surviving row; the second spelling of PAD=256 is not, since the readings under it folded
   // into the row that names the first.
@@ -857,7 +843,7 @@ TEST(a_reset_drops_what_was_measured_and_keeps_the_env_that_measured_it) {
 
   CHECK_EQ(db.runs().size(), size_t{1});
   CHECK_EQ(db.runs().at(0).sess, 3u);
-  CHECK(db.roes().empty() && db.reaches().empty() && db.refs().empty() && db.nogos().empty());
+  CHECK(db.roes().empty() && db.refs().empty() && db.nogos().empty());
 
   // The env and its sessions stay: the env is still this card under these kernels, and it is the earliest session
   // that pins the anchor every later reading is divided by.
@@ -1044,4 +1030,29 @@ TEST(an_env_whose_sessions_raced_is_pinned_by_its_first_anchor_reading) {
   // A session row that names one still decides, as before.
   CHECK(db.add(SessRow{.id = 3, .env = 1, .start = 1'753'471'400, .gen = 0, .anchor = "1K:13:256:212@118063003"}));
   CHECK_EQ(db.envAnchor(1), std::string{"1K:13:256:212@118063003"});
+}
+
+TEST(a_roe_row_is_held_as_its_line_reads_back) {
+  // The reach derivation works out where to read next from z, so a process and a later one reading its file have to
+  // see the same z.
+  TuneDB db;
+  u32 const env = db.internEnv(DbEnv{.gpu = "a card", .name = "a card", .driver = "1.0"});
+  u32 const sess = db.beginSession(env, "-");
+  CHECK(db.add(RoeRow{.sess = sess,
+                      .fft = "512:15:512:212",
+                      .exponent = 143'400'073,
+                      .cfg = db.internCfg({}),
+                      .z = 20.834567891,
+                      .n = 2150,
+                      .maxRoe = 0.30571234567,
+                      .checkOk = true,
+                      .ts = 1}));
+
+  TuneDB const again = loaded(db.text());
+  CHECK_EQ(db.roes().size(), size_t{1});
+  CHECK_EQ(again.roes().size(), size_t{1});
+  if (db.roes().empty() || again.roes().empty()) { return; }
+  CHECK_EQ(db.roes().at(0).z, again.roes().at(0).z);
+  CHECK_EQ(db.roes().at(0).maxRoe, again.roes().at(0).maxRoe);
+  CHECK_EQ(db.roes().at(0).z, 20.83);
 }

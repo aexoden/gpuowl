@@ -143,17 +143,6 @@ struct RoeRow {
   u64 ts = 0;
 };
 
-struct ReachRow {
-  u32 sess = 0;
-  std::string fft;
-  TestKind kind = TestKind::PRP;
-  Regime regime{};
-  u32 cfg = 0;
-  u64 reach = 0;
-  Evidence evidence = Evidence::Unvalidated;
-  u64 ts = 0;
-};
-
 // One timing of the session's drift anchor.
 struct AnchorRow {
   u32 sess = 0;
@@ -243,7 +232,6 @@ public:
   [[nodiscard]] const std::vector<NogoRow>& nogos() const { return nogos_; }
   [[nodiscard]] const std::vector<RoeRow>& roes() const { return roes_; }
   [[nodiscard]] const std::vector<AnchorRow>& anchors() const { return anchors_; }
-  [[nodiscard]] const std::vector<ReachRow>& reaches() const { return reaches_; }
   [[nodiscard]] const std::vector<RefRow>& refs() const { return refs_; }
   [[nodiscard]] const std::vector<JumpRow>& jumps() const { return jumps_; }
   [[nodiscard]] const std::vector<ComboRow>& combos() const { return combos_; }
@@ -254,10 +242,9 @@ public:
   // the record of which session took it.
   [[nodiscard]] std::vector<RunRow> mergedRuns() const;
 
-  // The surviving reading for each key.  A later roe or reach replaces the earlier one rather than pooling with it:
-  // one is evidence about a configuration and the other the state derived from it, and neither is a sample.
+  // The surviving reading for each key.  A later roe replaces the earlier one rather than pooling with it: it is
+  // evidence about a configuration, not a sample.
   [[nodiscard]] std::vector<RoeRow> latestRoes() const;
-  [[nodiscard]] std::vector<ReachRow> latestReaches() const;
 
   // Replaces the rows with the folded views above and drops option sets no surviving row names.
   [[nodiscard]] bool compact();
@@ -289,7 +276,6 @@ public:
   [[nodiscard]] bool add(const RoeRow& row);
   [[nodiscard]] bool add(const AnchorRow& row);
   [[nodiscard]] bool add(const AlarmRow& row);
-  [[nodiscard]] bool add(const ReachRow& row);
   [[nodiscard]] bool add(const RefRow& row);
   [[nodiscard]] bool add(const JumpRow& row);
   [[nodiscard]] bool add(const ComboRow& row);
@@ -359,7 +345,6 @@ private:
   std::vector<NogoRow> nogos_;
   std::vector<RoeRow> roes_;
   std::vector<AnchorRow> anchors_;
-  std::vector<ReachRow> reaches_;
   std::vector<RefRow> refs_;
   std::vector<JumpRow> jumps_;
   std::vector<ComboRow> combos_;
@@ -382,7 +367,6 @@ private:
 [[nodiscard]] std::string formatRow(const RoeRow& row);
 [[nodiscard]] std::string formatRow(const AnchorRow& row);
 [[nodiscard]] std::string formatRow(const AlarmRow& row);
-[[nodiscard]] std::string formatRow(const ReachRow& row);
 [[nodiscard]] std::string formatRow(const RefRow& row);
 [[nodiscard]] std::string formatRow(const JumpRow& row);
 [[nodiscard]] std::string formatRow(const ComboRow& row);

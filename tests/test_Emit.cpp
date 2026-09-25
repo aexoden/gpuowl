@@ -7,9 +7,12 @@
 
 #include "Emit.h"
 
+#include "Bootstrap.h"
+
 #include "test.h"
 
 #include <algorithm>
+#include <functional>
 #include <string>
 
 using namespace tune;
@@ -45,7 +48,6 @@ const char* const DB =
   "run   4 1K:8:1K:202 prp 200000000 short32 21 3100.000 4.000 16 4 1.0000 ok 1753471354\n"
   "run   4 3:1K:8:512:202 prp 100000000 short32 21 2000.000 5.000 16 4 1.0000 ok 1753471364\n"
   "run   9 512:15:512:212 prp 100000000 short32 17 900.000 1.000 16 4 1.0000 ok 1753471374\n"
-  "reach 4 512:15:512:212 prp short32 17 148000000 confirmed 1753471404\n"
   "roe   4 512:15:512:212 143413741 18 24.40 2150 0.3098 ok 1753471410\n"
   "roe   4 512:15:512:212 143498461 17 24.40 2150 0.3098 ok 1753471420\n"
   "roe   4 1K:8:1K:202 296960407 21 25.10 2150 0.3021 ok 1753471430\n"
@@ -54,19 +56,16 @@ const char* const DB =
 // The accuracy reading of the set published as 2e51eaf52a48bfc9 and 0a567e7dbc3e06d4, prp and ll alike.
 const char* const PAD128_ROE = "roe   4 512:15:512:212 143413741 18 24.40 2150 0.3098 ok 1753471410\n";
 
-// What env 1 supports.  Costs are the mean plus two standard errors, so the six calls behind the first entry buy it a
-// smaller penalty (+1.84) than the four behind the second (+3.35); PAD=512 at 1802.236 is dropped as nothing cheaper
-// than PAD=128 anywhere it runs; the ll rows under PAD=256 are dropped because one of the two failed; and the 1700.000
-// of one call is dropped as a reading nothing concluded.  The first entry reaches past the fitted table because a
-// reach row says so, and stops at 143498475 because that is where the carry regime it was measured in ends.
+// What env 1 supports.  Costs are the mean plus two standard errors, so the six calls behind PAD=256 buy it a smaller
+// penalty (+1.84) than the four behind PAD=128 (+3.35); PAD=256 at 1776.069 and PAD=512 at 1802.236 are dropped as
+// nothing cheaper than PAD=128 anywhere they run; the ll rows under PAD=256 are dropped because one of the two failed;
+// and the 1700.000 of one call is dropped as a reading nothing concluded.
 const char* const SELECTION = "# prpll selection v1\n"
                               "# %PROVENANCE%\n"
                               "use   INPLACE=1,PAD=256\n"
                               "use ! 1 TAIL_KERNELS=3\n"
                               "entry 2e51eaf52a48bfc9 1753.354 512:15:512:212 prp 78643196 143413744 unvalidated\n"
                               "opts  2e51eaf52a48bfc9 INPLACE=1,PAD=128,TAIL_KERNELS=3\n"
-                              "entry adc5960c72b18307 1776.069 512:15:512:212 prp 78643196 143498475 confirmed\n"
-                              "opts  adc5960c72b18307 INPLACE=1,PAD=256,TAIL_KERNELS=3\n"
                               "entry 0a567e7dbc3e06d4 1853.354 512:15:512:212 ll 78643196 143413744 unvalidated\n"
                               "opts  0a567e7dbc3e06d4 INPLACE=1,PAD=128,TAIL_KERNELS=3\n"
                               "entry 688735b9ab069fec 2005.590 3:1K:8:512:202 prp 83886076 152674512 n/a\n"
@@ -128,9 +127,6 @@ bool publishes(const TuneDB& db, const std::string& id) {
   return false;
 }
 
-// The entry the reach row in the fixture belongs to.
-const char* const REACHED = "adc5960c72b18307";
-
 }  // namespace
 
 TEST(emit_writes_the_entries_its_rows_support) { CHECK_EQ(emitted(loaded(DB), provenance()), expected(provenance())); }
@@ -164,13 +160,6 @@ TEST(emit_keeps_each_env_to_its_own_rows) {
   CHECK(other.at(0).cost < 1000);
 
   for (const SelectionEntry& e : entriesFor(db, 1, defaults())) { CHECK(e.cost > 1000); }
-}
-
-// An entry is published for the exponents its row's own regime covers, so a reach that stops short of the exponent the
-// row was measured at leaves nothing to publish rather than an interval the measurement says nothing about.
-TEST(emit_drops_a_row_its_reach_no_longer_covers) {
-  CHECK(publishes(loaded(DB), REACHED));
-  CHECK(!publishes(loaded(withRecord("148000000 confirmed", "90000000 rejected")), REACHED));
 }
 
 // A row that names a regime its own exponent does not run in disagrees with this build about what the kernels do, and
@@ -214,8 +203,8 @@ TEST(emit_withdraws_a_configuration_that_answered_wrongly_in_the_regime) {
   TuneDB const db = loaded(withRecord("16 4 1.0000 ok 1753471294", "16 4 1.0000 err 1753471294"));
   CHECK(!publishes(db, TWICE_MEASURED));
 
-  // And only that configuration: the others measured on the same FFT are untouched.
-  CHECK(publishes(db, REACHED));
+  // And only that configuration: the same options in the other kind are untouched.
+  CHECK(publishes(db, "0a567e7dbc3e06d4"));
 }
 
 // A build that would not compile and a run the backend refused say nothing about the answers the configuration
@@ -224,20 +213,6 @@ TEST(emit_keeps_a_configuration_a_refusal_never_ran) {
   CHECK(
     publishes(loaded(withRecord("16 4 1.0000 ok 1753471294", "16 4 1.0000 unsupported 1753471294")), TWICE_MEASURED));
   CHECK(publishes(loaded(withRecord("16 4 1.0000 ok 1753471294", "16 4 1.0000 nocompile 1753471294")), TWICE_MEASURED));
-}
-
-// Reach rows are grouped by the id naming an option set and handed back in the order the ids first appeared, so a
-// database that spells one set under two ids offers them in an order that says nothing about which reading is later.
-TEST(emit_takes_the_newest_reach_however_its_options_were_named) {
-  TuneDB const db = loaded(withRecord("reach 4 512:15:512:212 prp short32 17 148000000 confirmed 1753471404\n",
-                                      "cfg   22 INPLACE=1,PAD=256,TAIL_KERNELS=3\n"
-                                      "reach 4 512:15:512:212 prp short32 17 148000000 confirmed 1753471404\n"
-                                      "reach 4 512:15:512:212 prp short32 22 143450000 confirmed 1753471414\n"
-                                      "reach 4 512:15:512:212 prp short32 17 90000000 rejected 1753471424\n"));
-
-  // The newest of the three rejects the configuration below the exponent it was measured at, so it publishes nothing
-  // at all -- rather than the middle row's reach, which is what reading them in id order would have given.
-  CHECK(!publishes(db, REACHED));
 }
 
 // An entry outranks the file's own default lines, so one that does not name a key they set would run under a value its
@@ -294,24 +269,93 @@ Env nvidia() {
 
 }  // namespace
 
+namespace {
+
+// Takes every reading the gate owes env 1, as the queue would, each reading `zAt` gives at its exponent, until nothing
+// is owed; the number taken.
+u32 answerOwed(TuneDB& db, const std::function<RoeRow(const OptionSet&, u64)>& zAt) {
+  u32 taken = 0;
+  for (std::vector<OptionSet> owed = gatesOwed(db, 1, defaults()); !owed.empty() && taken < 100;
+       owed = gatesOwed(db, 1, defaults())) {
+    const OptionSet& s = owed.front();
+    FFTConfig const fft{s.entry.fft};
+    RoeRow row = zAt(s, s.gate.owedAt);
+    row.sess = 4;
+    row.fft = s.entry.fft;
+    row.exponent = s.gate.owedAt;
+    row.cfg = db.internCfg(s.gate.owesReference ? accuracyReference(nvidia(), fft, s.entry.opts) : s.entry.opts);
+    row.ts = 1'753'472'000 + ++taken;
+    CHECK(db.add(row));
+  }
+  CHECK(taken < 100);
+  return taken;
+}
+
+RoeRow roe(double z, bool checkOk = true) {
+  return {.sess = 0, .fft = {}, .exponent = 0, .cfg = 0, .z = z, .n = 2150, .maxRoe = 0.3, .checkOk = checkOk, .ts = 0};
+}
+
+// z falling by one per 0.015 bits per word above `at`, where it reads `z`: -ztune's slope at 4M words.
+std::function<RoeRow(const OptionSet&, u64)> sloped(double z, double at) {
+  return [=](const OptionSet& s, u64 E) { return roe(z + (at - E / double(FFTConfig{s.entry.fft}.size())) / 0.015); };
+}
+
+}  // namespace
+
 TEST(a_configuration_the_gate_rejects_never_reaches_the_selection_file) {
   std::vector<std::string> const cheapest{"INPLACE=1,PAD=256"};
   std::vector<std::string> const dearer{"INPLACE=1,PAD=256,TAIL_KERNELS=3"};
   CHECK(published1K(loaded(withSecondSet(ROE_1K))) == cheapest);
 
-  // Read below the FP64 floor at the top of its interval, and with a failed Gerbicz check: either way the cheaper set
-  // is gone, from the file and from what the search works from, and the set it kept out takes its place.
-  for (const char* roe : {"roe   4 1K:8:1K:202 296960407 21 17.20 2150 0.4011 ok 1753471430\n",
-                          "roe   4 1K:8:1K:202 296960407 21 25.10 2150 0.3021 fail 1753471430\n"}) {
-    TuneDB const db = loaded(withSecondSet(roe));
+  // Read below the FP64 floor at the top of its interval, and with a failed Gerbicz check: either way a reach is
+  // derived for the cheaper set, and where no exponent it is read at does any better, it is gone -- from the file and
+  // from what the search works from -- and the set it kept out takes its place.
+  for (bool const checkOk : {true, false}) {
+    TuneDB db = loaded(withSecondSet(checkOk ? "roe   4 1K:8:1K:202 296960407 21 17.20 2150 0.4011 ok 1753471430\n"
+                                             : "roe   4 1K:8:1K:202 296960407 21 25.10 2150 0.3021 fail 1753471430\n"));
+    CHECK(published1K(db) == dearer);
+    CHECK_EQ(gatesOwed(db, 1, defaults()).size(), size_t{1});
+
+    CHECK(answerOwed(db, [&](const OptionSet&, u64) { return roe(checkOk ? 17.2 : 25.1, checkOk); }) > 1);
     CHECK(published1K(db) == dearer);
     CHECK(published1K(db, Gating::Assumed) == dearer);
     CHECK(emitted(db, provenance()).find("3104.472") == std::string::npos);
     for (const OptionSet& s : optionSetsFor(db, 1, defaults())) {
       CHECK(s.entry.fft != "1K:8:1K:202" || s.entry.opts.contains("TAIL_KERNELS"));
     }
-    CHECK(gatesOwed(db, 1, defaults()).empty());
   }
+}
+
+// What a derived reach buys: a set that cannot reach the top of the table is not discarded but published below where it
+// stops, cheaper there than what reaches further, which is kept above it.
+TEST(a_set_short_of_the_floor_is_published_up_to_the_reach_derived_for_it) {
+  TuneDB db = loaded(withSecondSet("roe   4 1K:8:1K:202 296960407 21 17.20 2150 0.4011 ok 1753471430\n"));
+  FFTConfig const fft{"1K:8:1K:202"};
+  double const top = 296'960'407 / double(fft.size());
+
+  u32 const taken = answerOwed(db, sloped(17.2, top));
+  CHECK(taken >= 2 && taken <= 4);
+
+  std::vector<SelectionEntry> table;
+  for (const SelectionEntry& e : entriesFor(db, 1, defaults())) {
+    if (e.fft == fft.spec()) { table.push_back(e); }
+  }
+  CHECK_EQ(table.size(), size_t{2});
+  if (table.size() != 2) { return; }
+
+  // Cheapest first: the set derived a reach where the model reads 28, within a guard band, and confirmed by a reading
+  // taken there; the dearer set keeps the table's reach.
+  CHECK_EQ(configText(table[0].opts), std::string{"INPLACE=1,PAD=256"});
+  CHECK(table[0].evidence == Evidence::Confirmed);
+  double const reachBpw = table[0].reach / double(fft.size());
+  CHECK(reachBpw <= top - (28 - 17.2) * 0.015 + 1e-9);
+  CHECK(reachBpw > top - (28 - 17.2) * 0.015 - REACH_GUARD_BPW);
+  CHECK(std::ranges::any_of(db.roes(), [&](const RoeRow& r) { return r.exponent == table[0].reach && r.z >= 28; }));
+
+  CHECK_EQ(configText(table[1].opts), std::string{"INPLACE=1,PAD=256,TAIL_KERNELS=3"});
+  CHECK_EQ(table[1].reach, u64(296'960'416));
+  CHECK(table[1].evidence == Evidence::Unvalidated);
+  CHECK_EQ(table[0].emin, table[1].emin);
 }
 
 TEST(a_set_the_gate_has_not_read_waits_for_its_reading) {
@@ -324,7 +368,7 @@ TEST(a_set_the_gate_has_not_read_waits_for_its_reading) {
   std::vector<OptionSet> const owed = gatesOwed(db, 1, defaults());
   CHECK_EQ(owed.size(), size_t{1});
   CHECK_EQ(configText(owed.at(0).entry.opts), std::string{"INPLACE=1,PAD=256"});
-  CHECK_EQ(owed.at(0).gateExponent, u64(296'960'407));
+  CHECK_EQ(owed.at(0).gate.owedAt, u64(296'960'407));
   CHECK(!owed.at(0).gate.owesReference);
 
   // Read where it would not count -- below the top of the interval -- it is still owed.
@@ -381,13 +425,80 @@ TEST(a_set_that_spends_accuracy_is_held_to_its_defaults_reading) {
   std::vector<OptionSet> const owed = gatesOwed(db, id);
   CHECK_EQ(owed.size(), size_t{1});
   CHECK(owed.at(0).gate.owesReference);
-  CHECK_EQ(owed.at(0).gateExponent, top);
+  CHECK_EQ(owed.at(0).gate.owedAt, top);
   CHECK(entriesFor(db, id).empty());
 
-  // Within ACCURACY_SLACK_Z of it, it is published; read again better, the defaults show what the set spent.
+  // Within ACCURACY_SLACK_Z of it, it is published; read again better, the defaults show what the set spent, and its
+  // reach is derived lower down, where it reads what they read at the top.
   read(accuracyReference(env, fft, moved), 12.4);
   CHECK_EQ(entriesFor(db, id).size(), size_t{1});
   read({}, 13);
   CHECK(entriesFor(db, id).empty());
-  CHECK(gatesOwed(db, id).empty());
+  std::vector<OptionSet> const deriving = gatesOwed(db, id);
+  CHECK_EQ(deriving.size(), size_t{1});
+  if (deriving.empty()) { return; }
+  CHECK(!deriving.at(0).gate.owesReference);
+  CHECK(deriving.at(0).gate.owedAt < top);
+}
+
+// A set that spends accuracy and cannot be confirmed anywhere is not published at all; what is, is the same set with
+// those keys at their defaults, which the fitted table's reach describes.
+TEST(a_rejected_set_falls_back_to_its_default_accuracy) {
+  Env const env = nvidia();
+  TuneDB db;
+  u32 const id = db.internEnv(dbEnvOf(env));
+  u32 const sess = db.beginSession(id, "512:15:512:212@118063003", 0, 1'753'471'200);
+
+  FFTConfig const fft{"2:512:8:512:202"};
+  u64 const at = 118'063'003;
+  UseConfig const moved{{"TAIL_TRIGS32", "0"}};
+  UseConfig const reference = accuracyReference(env, fft, moved);
+  u64 ts = 1'753'471'300;
+  auto time = [&](const UseConfig& opts, double mean) {
+    CHECK(db.add(RunRow{
+      .sess = sess,
+      .fft = fft.spec(),
+      .kind = TestKind::PRP,
+      .exponent = at,
+      .regime = regimeOf(fft, at),
+      .cfg = db.internCfg(opts),
+      .m = {.mean = mean, .stddev = 1, .blocks = 16, .calls = 4, .drift = 1, .status = Status::Ok, .ts = ++ts}}));
+  };
+  time(moved, 1400);
+  time(reference, 1450);
+
+  Interval const span = interval(fft, at);
+  u64 const top = gateExponent(span);
+  auto read = [&](const UseConfig& opts, u64 E, double z, bool checkOk) {
+    CHECK(db.add(RoeRow{.sess = sess,
+                        .fft = fft.spec(),
+                        .exponent = E,
+                        .cfg = db.internCfg(opts),
+                        .z = z,
+                        .n = 2150,
+                        .maxRoe = 0.4,
+                        .checkOk = checkOk,
+                        .ts = ++ts}));
+  };
+  read(reference, top, 25.7, true);
+
+  // Its Gerbicz check fails wherever it is read, so no reach can be confirmed for it.
+  u32 taken = 0;
+  for (std::vector<OptionSet> owed = gatesOwed(db, id); !owed.empty() && taken < 20; owed = gatesOwed(db, id)) {
+    const OptionSet& s = owed.front();
+    CHECK(canonicalConfig(env, fft, s.entry.opts) == canonicalConfig(env, fft, moved));
+    CHECK(!s.gate.owesReference);
+    read(moved, s.gate.owedAt, 6.1, false);
+    ++taken;
+  }
+  CHECK(taken > 1 && taken < 20);
+
+  std::vector<SelectionEntry> const table = entriesFor(db, id);
+  CHECK_EQ(table.size(), size_t{1});
+  if (table.empty()) { return; }
+  CHECK(!movesAccuracy(env, fft, table[0].opts));
+  CHECK(canonicalConfig(env, fft, table[0].opts) == canonicalConfig(env, fft, reference));
+  CHECK_EQ(table[0].reach, span.hi);
+  CHECK(std::ranges::none_of(optionSetsFor(db, id),
+                             [&](const OptionSet& s) { return movesAccuracy(env, fft, s.entry.opts); }));
 }

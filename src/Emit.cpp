@@ -106,36 +106,6 @@ using Identity = std::tuple<std::string, TestKind, std::string>;
 
 Identity identityOf(const SelectionEntry& e) { return {e.fft, e.kind, e.regime.label()}; }
 
-// The reach and evidence state recorded for a configuration, keyed as the reach rows are keyed but by the option set
-// itself rather than by the id naming it, so that a database declaring one set twice does not hide half its evidence.
-class Reaches {
-public:
-  Reaches(const TuneDB& db, u32 env) {
-    for (const ReachRow& row : db.latestReaches()) {
-      if (db.envOf(row.sess) != env) { continue; }
-      const UseConfig* const opts = db.findCfg(row.cfg);
-      if (!opts) { continue; }
-
-      // The database's own fold groups these by the id naming the option set, and hands them back in the order the
-      // ids first appeared rather than in the order they were written.  Two ids spelling one set therefore arrive in
-      // an order that says nothing about which reading is the later one, so it is asked for here.
-      auto const [at, fresh] = rows_.try_emplace(Key{row.fft, row.kind, row.regime.label(), configText(*opts)}, row);
-      if (!fresh && row.ts >= at->second.ts) { at->second = row; }
-    }
-  }
-
-  // Nothing where nothing was derived, and the fitted table's own limit is inherited.
-  [[nodiscard]] const ReachRow* operator()(const RunRow& row, const UseConfig& opts) const {
-    auto const it = rows_.find(Key{row.fft, row.kind, row.regime.label(), configText(opts)});
-    return it != rows_.end() ? &it->second : nullptr;
-  }
-
-private:
-  using Key = std::tuple<std::string, TestKind, std::string, std::string>;
-
-  std::map<Key, ReachRow> rows_;
-};
-
 }  // namespace
 
 std::string provenanceOf(const Provenance& from) {
@@ -192,7 +162,6 @@ std::vector<OptionSet> optionSetsFor(const TuneDB& db, u32 env, const Defaults& 
   if (!row) { return {}; }
 
   Env const built = row->toEnv();
-  Reaches const reachOf{db, env};
   Gates const gates{db, env, built};
 
   std::vector<RunRow> const runs = db.mergedRuns();
@@ -202,7 +171,6 @@ std::vector<OptionSet> optionSetsFor(const TuneDB& db, u32 env, const Defaults& 
   // of one thing -- the cost is per iteration, and the regime is what decides which kernels ran -- so the better
   // supported of the two is what gets published, rather than both under one id.
   std::map<std::string, Candidate> byId;
-  std::set<std::string> derivedIds;
 
   for (const RunRow& row : runs) {
     if (db.envOf(row.sess) != env || !concluded(row.m)) { continue; }
@@ -218,8 +186,7 @@ std::vector<OptionSet> optionSetsFor(const TuneDB& db, u32 env, const Defaults& 
 
     if (failed.contains(configurationOf(row, *opts))) { continue; }
 
-    const ReachRow* const derived = reachOf(row, *opts);
-    Interval const span = interval(*fft, row.exponent, derived ? derived->reach : maxExp(*fft));
+    Interval const span = interval(*fft, row.exponent);
     if (span.empty()) { continue; }
 
     // A row whose regime is not the one its own exponent runs in was written by something that disagrees with this
@@ -237,11 +204,10 @@ std::vector<OptionSet> optionSetsFor(const TuneDB& db, u32 env, const Defaults& 
                                   .emin = span.lo,
                                   .reach = span.hi,
                                   .regime = span.regime,
-                                  .evidence = derived ? derived->evidence : Evidence::Unvalidated,
+                                  .evidence = Evidence::Unvalidated,
                                   .opts = *opts},
                         .m = row.m,
                         .exponent = row.exponent,
-                        .gateExponent = gateExponent(span),
                         .gate = {}};
 
     candidate.entry.id = entryId(candidate.entry.fft, candidate.entry.kind, candidate.entry.regime, *opts);
@@ -250,21 +216,22 @@ std::vector<OptionSet> optionSetsFor(const TuneDB& db, u32 env, const Defaults& 
     // is how the database ordinarily looks rather than something wrong with it.
     if (!shadowedKeys(defaults, built, *fft, candidate.entry).empty()) { continue; }
 
-    if (derived) { derivedIds.insert(candidate.entry.id); }
     auto const [at, fresh] = byId.emplace(candidate.entry.id, candidate);
     if (!fresh && better(candidate, at->second)) { at->second = candidate; }
   }
 
-  // Judged once per set rather than once per row: the rows of one set in one regime share its interval.
+  // Judged once per set rather than once per row: the rows of one set in one regime share its interval.  The cost is
+  // per iteration and the same anywhere in the regime, so a set timed above the reach the gate derived for it is still
+  // published below it.
   std::vector<Candidate> candidates;
   for (auto& [id, candidate] : byId) {
-    candidate.gate = gates(*parseFft(candidate.entry.fft), candidate.gateExponent, candidate.entry.opts);
+    SelectionEntry& e = candidate.entry;
+    candidate.gate = gates(*parseFft(e.fft), Interval{.lo = e.emin, .hi = e.reach, .regime = e.regime}, e.opts);
     if (candidate.gate.state == GateState::Rejected) { continue; }
 
-    // A derived reach carries the evidence it was derived from.  Otherwise the reach is inherited, and the gate's
-    // reading at it says how well.
-    if (candidate.gate.state == GateState::Passed && !derivedIds.contains(id)) {
-      candidate.entry.evidence = candidate.gate.evidence;
+    if (candidate.gate.state == GateState::Passed) {
+      e.reach = std::min(e.reach, candidate.gate.reach);
+      e.evidence = candidate.gate.evidence;
     }
     candidates.push_back(std::move(candidate));
   }

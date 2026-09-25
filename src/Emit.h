@@ -66,8 +66,8 @@ struct OptionSet {
   // Where the row was taken, which is where another call pools with it.
   u64 exponent = 0;
 
-  // Where the accuracy gate reads the set, and what it has made of it so far.
-  u64 gateExponent = 0;
+  // What the accuracy gate has made of the set so far, over the interval the fitted table gives it -- which is the
+  // entry's own until the gate derives a lower reach.
   GateVerdict gate{};
 };
 

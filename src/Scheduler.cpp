@@ -427,18 +427,23 @@ std::vector<Item> Scheduler::gateItems(const TuneDB& db, u32 env, const Defaults
 
     // An entry of a run over another workload waits for a run whose workload weighs it.
     auto const at = indexOf.find({e.fft, e.kind, e.regime.label()});
-    if (at == indexOf.end() || !s.gateExponent) { continue; }
+    if (at == indexOf.end() || !s.gate.owedAt) { continue; }
     const Baseline& b = baselines_[at->second];
 
     UseConfig const canonical = canonicalConfig(device, b.fft, e.opts);
     std::string const text = canonical.empty() ? "the built-in defaults" : configText(canonical);
+    Interval const span{.lo = e.emin, .hi = e.reach, .regime = e.regime};
+    bool const deriving = !s.gate.owesReference && s.gate.owedAt != gateExponent(span);
     Item item{.kind = ItemKind::Gate,
               .index = at->second,
               .options = s.gate.owesReference ? accuracyReference(device, b.fft, e.opts) : e.opts,
               .subject = e.opts,
+              .span = span,
               .moved = {},
-              .what = s.gate.owesReference ? "the default accuracy of " + text : text,
-              .exponent = s.gate.owesReference ? s.gate.referenceAt : s.gateExponent,
+              .what = s.gate.owesReference ? "the default accuracy of " + text
+                : deriving                 ? text + ", deriving its reach"
+                                           : text,
+              .exponent = s.gate.owedAt,
               .value = 1,
               .seconds = clock_.gateSeconds(s.m.cost()),
               .fresh = true,
@@ -812,11 +817,17 @@ private:
 // What the gate made of `item`'s subject once its reading is in, for the log.
 [[nodiscard]] std::string gateOutcome(const TuneDB& db, u32 envId, const Env& env, const FFTConfig& fft,
                                       const Item& item) {
-  GateVerdict const verdict = Gates{db, envId, env}(fft, item.exponent, item.subject);
+  GateVerdict const verdict = Gates{db, envId, env}(fft, item.span, item.subject);
   switch (verdict.state) {
-  case GateState::Passed: return std::string{"passed, "} + toString(verdict.evidence);
+  case GateState::Passed:
+    return std::string{"passed, "} + toString(verdict.evidence) +
+      (verdict.derived ? " up to " + std::to_string(verdict.reach) + ", the reach derived for it" : "");
   case GateState::Rejected: return "rejected: " + verdict.why + ", so it is never published";
-  case GateState::Owed: return verdict.owesReference ? "owes the reading of its default accuracy" : "still owed";
+  case GateState::Owed:
+    return verdict.owesReference ? "owes the reading of its default accuracy"
+      : verdict.owedAt != item.exponent
+      ? "short of its standard; its reach is read next at " + std::to_string(verdict.owedAt)
+      : "still owed";
   }
   return "?";
 }

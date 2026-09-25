@@ -121,8 +121,10 @@ struct Item {
   // that set's accuracy reference.
   UseConfig options{};
 
-  // A gate's: the option set whose publication waits on its reading.
+  // A gate's: the option set whose publication waits on its reading, and the interval the fitted table gives it, which
+  // the gate reads it at the top of and derives a lower reach inside.
   UseConfig subject{};
+  Interval span{};
 
   // A bootstrap call's or a probe's: the key it moved; and what it is, for the log.
   std::string moved{};
