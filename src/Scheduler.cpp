@@ -9,6 +9,7 @@
 
 #include <algorithm>
 #include <cinttypes>
+#include <iterator>
 #include <tuple>
 #include <utility>
 
@@ -227,6 +228,7 @@ const char* toString(ItemKind kind) {
   case ItemKind::Refine: return "refine";
   case ItemKind::Restart: return "restart";
   case ItemKind::Gate: return "gate";
+  case ItemKind::Reach: return "reach";
   }
   return "?";
 }
@@ -362,8 +364,11 @@ std::string Scheduler::keyOf(const Item& item) const {
   case ItemKind::Restart:
     return baselines_[item.index].label() + " " +
       configText(canonicalConfig(bootstrap_.env(), baselines_[item.index].fft, item.options));
+  case ItemKind::Reach:
+    return item.fft->spec() + " " + item.span.regime.label() + " reach " +
+      configText(canonicalConfig(bootstrap_.env(), *item.fft, item.options)) + "@" + std::to_string(item.exponent);
   case ItemKind::Gate:
-    return baselines_[item.index].label() + " gate " +
+    return baselines_[item.index].label() + " " + toString(item.kind) + " " +
       configText(canonicalConfig(bootstrap_.env(), baselines_[item.index].fft, item.options)) + "@" +
       std::to_string(item.exponent);
   case ItemKind::Baseline: break;
@@ -411,14 +416,18 @@ std::vector<Item> Scheduler::bootstrapItems(const BootstrapState& state, const O
   return out;
 }
 
+std::map<EntryKey, size_t> Scheduler::entryIndex() const {
+  std::map<EntryKey, size_t> out;
+  for (size_t i = 0; i < baselines_.size(); ++i) {
+    out.try_emplace({baselines_[i].fft.spec(), baselines_[i].kind, baselines_[i].band.regime.label()}, i);
+  }
+  return out;
+}
+
 std::vector<Item> Scheduler::gateItems(const TuneDB& db, u32 env, const Defaults& defaults) const {
   if (!gate_) { return {}; }
   const Env& device = bootstrap_.env();
-
-  std::map<EntryKey, size_t> indexOf;
-  for (size_t i = 0; i < baselines_.size(); ++i) {
-    indexOf.try_emplace({baselines_[i].fft.spec(), baselines_[i].kind, baselines_[i].band.regime.label()}, i);
-  }
+  std::map<EntryKey, size_t> const indexOf = entryIndex();
 
   std::vector<Item> out;
   std::set<std::string> offered;
@@ -461,6 +470,60 @@ std::vector<Item> Scheduler::gateItems(const TuneDB& db, u32 env, const Defaults
   }
 
   std::ranges::stable_sort(out, {}, &Item::seconds);
+  return out;
+}
+
+std::vector<Item> Scheduler::reachItems(const TuneDB& db, u32 env, std::span<const OptionSet> sets,
+                                        const Objective& objective) const {
+  if (!gate_) { return {}; }
+  const Env& device = bootstrap_.env();
+
+  std::vector<Item> out;
+  std::map<std::string, size_t> offered;
+  for (const OptionSet& s : sets) {
+    const SelectionEntry& e = s.entry;
+    if (s.gate.state != GateState::Passed || !s.gate.raiseAt) { continue; }
+    auto const fft = parseFft(e.fft);
+    if (!fft) { continue; }
+
+    // Valued as if the reading about to be taken confirms the reach it is taken at, which is the derivation's own
+    // estimate of it; a backoff lowers the estimate, and the next item is worth less.
+    double const value =
+      saving(objective.points(), e.kind, {.lo = e.reach + 1, .hi = s.gate.raiseAt, .regime = e.regime}, e.cost);
+    if (value <= 0) { continue; }
+
+    UseConfig const canonical = canonicalConfig(device, *fft, e.opts);
+    Item item{.kind = ItemKind::Reach,
+              .index = 0,
+              .fft = fft,
+              .options = e.opts,
+              .subject = e.opts,
+              .span = {.lo = e.emin, .hi = e.reach, .regime = e.regime},
+              .moved = {},
+              .what = e.fft + " " + e.regime.label() + " " +
+                (canonical.empty() ? "the built-in defaults" : configText(canonical)) + ", raising its reach",
+              .exponent = s.gate.raiseAt,
+              .value = value,
+              .cost = e.cost,
+              .seconds = clock_.gateSeconds(s.m.cost()),
+              .fresh = true,
+              .calls = 0};
+
+    // The set's other kinds are raised by the same reading, which is worth what it saves in each; the key names the
+    // reading, not a kind.
+    std::string const key = keyOf(item);
+    if (auto const seen = offered.find(key); seen != offered.end()) {
+      out[seen->second].value += value;
+      continue;
+    }
+    if (auto const n = gateAttempts_.find(key); n != gateAttempts_.end() && n->second >= MAX_ATTEMPTS) { continue; }
+    if (db.isNogo(env, e.fft, item.options)) { continue; }
+    if (u32 const cfg = db.findCfgId(item.options); cfg && db.diedOn(env, cfg, TestKind::PRP, e.fft, item.exponent)) {
+      continue;
+    }
+    offered.emplace(key, out.size());
+    out.push_back(std::move(item));
+  }
   return out;
 }
 
@@ -530,9 +593,13 @@ std::vector<Item> Scheduler::admissible(const TuneDB& db, u32 env, const Objecti
   GainModel const gains = gainsOf(db, env);
 
   std::vector<Item> out = baselineItems(db, env, state, progress, gains, objective);
+
+  // The option sets of each entry, which also say how much each option set costs where it was measured.
+  std::vector<OptionSet> const sets =
+    strategy_ || gate_ ? optionSetsFor(db, env, state.defaults) : std::vector<OptionSet>{};
+  std::ranges::move(reachItems(db, env, sets, objective), std::back_inserter(out));
+
   if (strategy_) {
-    // The option sets of each entry, which also say how much each option set costs where it was measured.
-    std::vector<OptionSet> const sets = optionSetsFor(db, env, state.defaults);
     std::map<EntryKey, std::vector<Reading>> const readings = readingsOf(sets, device);
 
     for (size_t i = 0; i < baselines_.size(); ++i) {
@@ -656,10 +723,7 @@ std::vector<Item> Scheduler::admissible(const TuneDB& db, u32 env, const Objecti
       }
     }
 
-    std::map<EntryKey, size_t> indexOf;
-    for (size_t i = 0; i < baselines_.size(); ++i) {
-      indexOf.try_emplace({baselines_[i].fft.spec(), baselines_[i].kind, baselines_[i].band.regime.label()}, i);
-    }
+    std::map<EntryKey, size_t> const indexOf = entryIndex();
 
     // At the exponent and under the options its row was recorded at, so that the call pools with it.
     std::vector<double> const worth = refineValues(sets, objective.points());
@@ -734,7 +798,7 @@ void Scheduler::ran(const Item& item, double seconds, double usPerIt, bool recor
     return;
   }
 
-  if (item.kind == ItemKind::Gate) {
+  if (item.kind == ItemKind::Gate || item.kind == ItemKind::Reach) {
     ++gateAttempts_[last_];
     return;
   }
@@ -750,7 +814,8 @@ void Scheduler::ran(const Item& item, double seconds, double usPerIt, bool recor
   case ItemKind::Baseline: ++attempts_[item.index]; return;
   case ItemKind::Anchor:
   case ItemKind::Bootstrap:
-  case ItemKind::Gate: return;
+  case ItemKind::Gate:
+  case ItemKind::Reach: return;
   }
 }
 
@@ -832,6 +897,19 @@ private:
   return "?";
 }
 
+// What a reach reading made of its set's reach, for the log.
+[[nodiscard]] std::string reachOutcome(const TuneDB& db, u32 envId, const Env& env, const FFTConfig& fft,
+                                       const Item& item) {
+  GateVerdict const verdict = Gates{db, envId, env}(fft, item.span, item.subject);
+  if (verdict.state == GateState::Passed && verdict.reach > item.span.hi) {
+    return "raised to " + std::to_string(verdict.reach) + ", above the table's " + std::to_string(item.span.hi);
+  }
+  if (verdict.state == GateState::Passed && verdict.raiseAt) {
+    return "not yet confirmed; read next at " + std::to_string(verdict.raiseAt);
+  }
+  return "no raise confirmed, so it stays at the table's " + std::to_string(item.span.hi);
+}
+
 // The best option set of the entry `b`, canonical, and its cost; nothing where no row of it could be published.
 [[nodiscard]] std::optional<std::string> bestOf(const TuneDB& db, u32 envId, const Env& env, const Defaults& defaults,
                                                 const Baseline& b) {
@@ -889,13 +967,18 @@ QueueReport runQueue(Scheduler& scheduler, TuneDB& db, u32 env, Bench& bench, co
       continue;
     }
 
-    const Baseline* const baseline = item->kind != ItemKind::Bootstrap ? &scheduler.baselines()[item->index] : nullptr;
-    const FFTConfig& fft = baseline ? baseline->fft : scheduler.bootstrap().families()[item->index].fft;
+    const Baseline* const baseline = item->kind != ItemKind::Bootstrap && item->kind != ItemKind::Reach
+      ? &scheduler.baselines()[item->index]
+      : nullptr;
+    const FFTConfig& fft = item->fft ? *item->fft
+      : baseline                     ? baseline->fft
+                                     : scheduler.bootstrap().families()[item->index].fft;
     TestKind const kind = baseline ? baseline->kind : TestKind::PRP;
-    bool const probing = baseline && item->kind != ItemKind::Baseline && item->kind != ItemKind::Gate;
-    std::string const label = !baseline         ? item->what
-      : probing || item->kind == ItemKind::Gate ? baseline->label() + " " + item->what
-                                                : baseline->label();
+    bool const reads = item->kind == ItemKind::Gate || item->kind == ItemKind::Reach;
+    bool const probing = baseline && item->kind != ItemKind::Baseline && !reads;
+    std::string const label = !baseline ? item->what
+      : probing || reads                ? baseline->label() + " " + item->what
+                                        : baseline->label();
     std::optional<std::string> const bestBefore =
       probing ? bestOf(db, env, scheduler.bootstrap().env(), state.defaults, *baseline) : std::nullopt;
 
@@ -909,7 +992,7 @@ QueueReport runQueue(Scheduler& scheduler, TuneDB& db, u32 env, Bench& bench, co
     }
     Bench::Result result;
     Bench::Reading reading;
-    if (item->kind == ItemKind::Gate) {
+    if (reads) {
       reading = bench.gate(fft, item->exponent, item->options);
       result = {.completed = reading.completed, .seconds = reading.seconds, .usPerIt = 0, .ran = reading.ran};
     } else {
@@ -945,11 +1028,14 @@ QueueReport runQueue(Scheduler& scheduler, TuneDB& db, u32 env, Bench& bench, co
     std::string const call = counted ? " (call " + std::to_string(item->calls + 1) + ")"
       : item->calls                  ? " (resumed at call " + std::to_string(item->calls + 1) + ")"
                                      : "";
-    if (item->kind == ItemKind::Gate && result.completed) {
-      log("tune: %u. gate %s at %" PRIu64 ": z %.2f over %u rounding errors, check %s, %.1f s -- %s; T %.3f -> %.3f "
+    if (reads && result.completed) {
+      const Env& device = scheduler.bootstrap().env();
+      std::string const outcome = item->kind == ItemKind::Gate ? gateOutcome(db, env, device, fft, *item)
+                                                               : reachOutcome(db, env, device, fft, *item);
+      log("tune: %u. %s %s at %" PRIu64 ": z %.2f over %u rounding errors, check %s, %.1f s -- %s; T %.3f -> %.3f "
           "us/it\n",
-          out.items, label.c_str(), item->exponent, reading.z, reading.n, reading.checkOk ? "OK" : "failed",
-          result.seconds, gateOutcome(db, env, scheduler.bootstrap().env(), fft, *item).c_str(), before, objective.T());
+          out.items, toString(item->kind), label.c_str(), item->exponent, reading.z, reading.n,
+          reading.checkOk ? "OK" : "failed", result.seconds, outcome.c_str(), before, objective.T());
     } else if (result.completed) {
       log("tune: %u. %s %s at %" PRIu64 "%s: %.3f us/it, %.1f s; T %.3f -> %.3f us/it\n", out.items,
           toString(item->kind), label.c_str(), item->exponent, call.c_str(), result.usPerIt, result.seconds, before,

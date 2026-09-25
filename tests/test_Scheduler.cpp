@@ -1861,6 +1861,236 @@ TEST(a_set_that_spends_accuracy_has_its_defaults_read_as_well) {
 }
 
 
+namespace {
+
+// 1K:8:1K:112, whose 64-bit carry runs on past its table reach, and a workload that goes on past that reach too.
+FFTConfig raisable() { return FFTConfig{"1K:8:1K:112"}; }
+u64 raisableTop() { return gateExponent(interval(raisable(), maxExp(raisable()))); }
+
+RunScope pastTheTop(u64 past) {
+  u64 const top = raisableTop();
+  return makeScope(ScopeArgs{.lo = top - 10'000'000, .hi = top + past, .probe = top - 1'000'000}, {});
+}
+
+// z falling by one for every 0.012 bits per word above the table's top, where it reads 32.
+double raisableZ(u64 E) { return 32.0 - (double(E) - double(raisableTop())) / double(raisable().size()) / 0.012; }
+
+void readAt(Fixture& f, const FFTConfig& fft, u64 exponent, double z, u64 ts) {
+  CHECK(f.db.add(RoeRow{.sess = f.sess,
+                        .fft = fft.spec(),
+                        .exponent = exponent,
+                        .cfg = f.db.internCfg({}),
+                        .z = z,
+                        .n = 2000,
+                        .maxRoe = 0.3,
+                        .checkOk = true,
+                        .ts = ts}));
+}
+
+}  // namespace
+
+TEST(a_reach_item_is_worth_what_the_set_would_save_between_its_reach_and_the_reading) {
+  FFTConfig const fft = raisable();
+  u64 const top = raisableTop();
+  Interval const span = interval(fft, top);
+  CHECK_EQ(span.hi, maxExp(fft));
+  CHECK(span.regime.carry64);
+
+  // Past the table's top, a larger FFT that costs more serves the workload.
+  FFTConfig const larger{"1K:9:1K:202"};
+
+  for (u64 const past : {u64(10'000'000), u64(0)}) {
+    RunScope const scope = pastTheTop(past);
+    Fixture f;
+    Scheduler scheduler{scope, baselines(nvidia(), scope, {fft.shape}), 1000, {}, {}, false, true};
+    for (const auto& [c, mean] : {std::pair{fft, 2900.0}, std::pair{larger, 3300.0}}) {
+      CHECK(f.db.add(RunRow{.sess = f.sess,
+                            .fft = c.spec(),
+                            .kind = TestKind::PRP,
+                            .exponent = scope.probe,
+                            .regime = regimeOf(c, scope.probe),
+                            .cfg = f.db.internCfg({}),
+                            .m = {.mean = mean,
+                                  .stddev = 0.1,
+                                  .blocks = 4 * MIN_CALLS,
+                                  .calls = MIN_CALLS,
+                                  .drift = 1,
+                                  .status = Status::Ok,
+                                  .ts = 0}}));
+    }
+    readAt(f, fft, top, 32, 1);
+    readAt(f, larger, gateExponent(interval(larger, scope.probe)), 24, 2);
+
+    Objective const objective{f.db, f.env, scheduler.scope(), {}, Gating::Assumed};
+    std::vector<Item> const items = scheduler.admissible(f.db, f.env, objective);
+    auto const reach = std::ranges::find(items, ItemKind::Reach, &Item::kind);
+
+    // A workload that ends at the table's top has nothing for a raise to save.
+    if (!past) {
+      CHECK(reach == items.end());
+      continue;
+    }
+
+    CHECK(reach != items.end());
+    if (reach == items.end()) { continue; }
+    CHECK(reach->exponent > span.hi);
+    CHECK(reach->options.empty() && reach->subject.empty());
+    CHECK(reach->span == span);
+
+    std::vector<OptionSet> const sets = optionSetsFor(f.db, f.env);
+    auto const set = std::ranges::find_if(sets, [&](const OptionSet& o) { return o.entry.fft == fft.spec(); });
+    CHECK(set != sets.end());
+    if (set == sets.end()) { continue; }
+    double const expected = saving(objective.points(), TestKind::PRP,
+                                   {.lo = span.hi + 1, .hi = reach->exponent, .regime = span.regime}, set->entry.cost);
+    CHECK(expected > 0);
+    CHECK(near(reach->value, expected));
+    CHECK(reach->seconds > 0);
+
+    // Once the reading there is the standard's, the reach is raised to it and no item is left.
+    readAt(f, fft, reach->exponent, 28.5, 3);
+    std::vector<SelectionEntry> const published = entriesFor(f.db, f.env);
+    auto const entry = std::ranges::find(published, fft.spec(), &SelectionEntry::fft);
+    CHECK(entry != published.end());
+    if (entry == published.end()) { continue; }
+    CHECK_EQ(entry->reach, reach->exponent);
+    CHECK(entry->evidence == Evidence::Confirmed);
+    Objective const after{f.db, f.env, scheduler.scope(), {}, Gating::Assumed};
+    CHECK(after.T() < objective.T());
+    CHECK(std::ranges::none_of(scheduler.admissible(f.db, f.env, after),
+                               [](const Item& i) { return i.kind == ItemKind::Reach; }));
+  }
+}
+
+namespace {
+
+// A concluded row of `fft` at `exponent`, in `kind`, at the built-in defaults.
+void concludeAt(Fixture& f, const FFTConfig& fft, TestKind kind, u64 exponent, double mean) {
+  CHECK(f.db.add(RunRow{.sess = f.sess,
+                        .fft = fft.spec(),
+                        .kind = kind,
+                        .exponent = exponent,
+                        .regime = regimeOf(fft, exponent),
+                        .cfg = f.db.internCfg({}),
+                        .m = {.mean = mean,
+                              .stddev = 0.1,
+                              .blocks = 4 * MIN_CALLS,
+                              .calls = MIN_CALLS,
+                              .drift = 1,
+                              .status = Status::Ok,
+                              .ts = 0}}));
+}
+
+}  // namespace
+
+TEST(a_raise_is_offered_for_a_workload_wholly_past_the_band_that_holds_its_set) {
+  // Measured and read by an earlier run over a wider workload; this one weighs only what the raise would serve, so no
+  // baseline holds the set.
+  FFTConfig const fft = raisable();
+  u64 const top = raisableTop();
+  Interval const span = interval(fft, top);
+  FFTConfig const larger{"1K:9:1K:202"};
+  RunScope const scope = makeScope(ScopeArgs{.lo = span.hi + 1, .hi = span.hi + 2'000'000, .probe = 0}, {});
+
+  Scheduler scheduler{scope, baselines(nvidia(), scope, {fft.shape}), 1000, {}, {}, false, true};
+  CHECK(std::ranges::none_of(scheduler.baselines(), [&](const Baseline& b) { return b.fft.spec() == fft.spec(); }));
+
+  Fixture f;
+  concludeAt(f, fft, TestKind::PRP, top - 1'000'000, 2900);
+  concludeAt(f, larger, TestKind::PRP, span.hi + 1'000'000, 3300);
+  readAt(f, fft, top, 32, 1);
+  readAt(f, larger, gateExponent(interval(larger, span.hi + 1'000'000)), 24, 2);
+
+  Objective const objective{f.db, f.env, scheduler.scope(), {}, Gating::Assumed};
+  std::vector<Item> const items = scheduler.admissible(f.db, f.env, objective);
+  auto const reach = std::ranges::find(items, ItemKind::Reach, &Item::kind);
+  CHECK(reach != items.end());
+  if (reach == items.end()) { return; }
+  CHECK(reach->fft.has_value() && reach->fft->spec() == fft.spec());
+  CHECK(reach->exponent > span.hi);
+  CHECK(reach->value > 0);
+
+  // And the queue takes it, with no baseline to say what it reads.
+  FakeBench bench{f.db, f.sess, false};
+  bench.zOf = [&](const FFTConfig& c, const UseConfig&, u64 E) { return c.spec() == fft.spec() ? raisableZ(E) : 24.0; };
+  (void)runQueue(scheduler, f.db, f.env, bench, [](const Objective&, const Defaults&) {});
+  CHECK(std::ranges::count(bench.order, "gate " + fft.spec() + "@" + std::to_string(reach->exponent)) == 1);
+  std::vector<SelectionEntry> const last = entriesFor(f.db, f.env);
+  CHECK(std::ranges::any_of(last, [&](const SelectionEntry& e) { return e.fft == fft.spec() && e.reach > span.hi; }));
+}
+
+TEST(one_reading_that_raises_several_kinds_is_worth_what_it_saves_in_each) {
+  FFTConfig const fft = raisable();
+  u64 const top = raisableTop();
+  Interval const span = interval(fft, top);
+  FFTConfig const larger{"1K:9:1K:202"};
+  RunScope const scope = makeScope(
+    ScopeArgs{.lo = top - 10'000'000, .hi = top + 10'000'000, .probe = 0, .kinds = {TestKind::PRP, TestKind::LL}}, {});
+  Scheduler scheduler{scope, baselines(nvidia(), scope, {fft.shape}), 1000, {}, {}, false, true};
+
+  Fixture f;
+  for (TestKind const kind : {TestKind::PRP, TestKind::LL}) {
+    concludeAt(f, fft, kind, top - 1'000'000, 2900);
+    concludeAt(f, larger, kind, top - 1'000'000, 3300);
+  }
+  readAt(f, fft, top, 32, 1);
+  readAt(f, larger, gateExponent(interval(larger, top - 1'000'000)), 24, 2);
+
+  Objective const objective{f.db, f.env, scheduler.scope(), {}, Gating::Assumed};
+  std::vector<Item> const items = scheduler.admissible(f.db, f.env, objective);
+  CHECK_EQ(std::ranges::count(items, ItemKind::Reach, &Item::kind), 1);
+  auto const reach = std::ranges::find(items, ItemKind::Reach, &Item::kind);
+  if (reach == items.end()) { return; }
+
+  double each[2]{};
+  for (const OptionSet& set : optionSetsFor(f.db, f.env)) {
+    if (set.entry.fft != fft.spec() || set.entry.regime != span.regime) { continue; }
+    Interval const beyond{.lo = span.hi + 1, .hi = reach->exponent, .regime = span.regime};
+    each[set.entry.kind == TestKind::LL] = saving(objective.points(), set.entry.kind, beyond, set.entry.cost);
+  }
+  CHECK(each[0] > 0 && each[1] > 0);
+  CHECK(near(reach->value, each[0] + each[1]));
+
+  // Worth running where the fraction of T a run stops at lies between either kind's saving and their sum.
+  double const floor = (std::max(each[0], each[1]) + each[0] + each[1]) / 2;
+  CHECK(worthRunning(*reach, floor));
+}
+
+TEST(a_set_better_than_the_standard_at_the_top_is_raised_by_the_queue_where_the_workload_goes_on) {
+  Fixture f;
+  FakeBench bench{f.db, f.sess};
+  FFTConfig const fft = raisable();
+  u64 const top = raisableTop();
+  bench.zOf = [&](const FFTConfig& c, const UseConfig&, u64 E) { return c.spec() == fft.spec() ? raisableZ(E) : 24.0; };
+
+  RunScope const scope = pastTheTop(10'000'000);
+  Scheduler scheduler{scope, baselines(nvidia(), scope, shapes()), 1000, {}, {}, false, true};
+  (void)runQueue(scheduler, f.db, f.env, bench,
+                 [&](const Objective& objective, const Defaults&) { CHECK(allGated(f.db, f.env, objective)); });
+
+  // In the band the table ends in, read at the top by rule, then above it by value, until a reading confirmed the
+  // raise.
+  std::string const prefix = "gate " + fft.spec() + "@";
+  std::vector<u64> read;
+  for (const std::string& s : bench.order) {
+    if (!s.starts_with(prefix)) { continue; }
+    if (u64 const E = std::stoull(s.substr(prefix.size())); E >= interval(fft, top).lo) { read.push_back(E); }
+  }
+  CHECK(!read.empty() && read.front() == top);
+  CHECK(read.size() >= 2 && read.size() <= 4);
+  CHECK(std::ranges::all_of(read, [&](u64 E) { return E == top || E > maxExp(fft); }));
+
+  std::vector<SelectionEntry> const last = entriesFor(f.db, f.env);
+  auto const entry = std::ranges::find_if(
+    last, [&](const SelectionEntry& e) { return e.fft == fft.spec() && e.regime == interval(fft, top).regime; });
+  CHECK(entry != last.end());
+  if (entry == last.end()) { return; }
+  CHECK(entry->reach > maxExp(fft));
+  CHECK_EQ(entry->reach, read.back());
+  CHECK(raisableZ(entry->reach) >= 28);
+  CHECK(entry->evidence == Evidence::Confirmed);
+}
+
 TEST(a_run_that_restarts_stops_once_nothing_is_worth_the_stop_fraction) {
   Fixture plain;
   ProbeRun const descent = runProbed(plain);

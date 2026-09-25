@@ -104,25 +104,29 @@ struct Baseline {
 [[nodiscard]] std::vector<Baseline> baselines(const Env& env, const RunScope& scope,
                                               const std::vector<FFTShape>& shapes = FFTShape::allShapes());
 
-enum class ItemKind : u8 { Anchor, Bootstrap, Baseline, Probe, Combo, Refine, Restart, Gate };
+enum class ItemKind : u8 { Anchor, Bootstrap, Baseline, Probe, Combo, Refine, Restart, Gate, Reach };
 
 [[nodiscard]] const char* toString(ItemKind kind);
 
 struct Item {
   ItemKind kind = ItemKind::Baseline;
 
-  // Into Scheduler::baselines() -- for a probe, a combo, a refine or a restart, the baseline of the entry it measures
-  // -- or for a bootstrap call into the bootstrap's families.
+  // Into Scheduler::baselines() -- for anything but a baseline, the baseline of the entry it measures -- or for a
+  // bootstrap call into the bootstrap's families.  Unused by a reach, which carries its FFT itself.
   size_t index = 0;
+
+  // A reach's: the FFT it reads.  Not a baseline's, since what a raise is worth lies past the band that holds its set,
+  // which the workload need not weigh at all, and one reading raises every kind of the set at once.
+  std::optional<FFTConfig> fft{};
 
   // What the configuration is built with: a bootstrap candidate, for a baseline the defaults the bootstrap decided, for
   // a probe, a combo or a restart its option set with every key the lines would set otherwise named at its own value,
-  // for a refine the option set its row was recorded under, and for a gate the set it reads: the one waiting on it, or
-  // that set's accuracy reference.
+  // for a refine the option set its row was recorded under, for a gate the set it reads: the one waiting on it, or that
+  // set's accuracy reference, and for a reach the set whose reach it raises.
   UseConfig options{};
 
-  // A gate's: the option set whose publication waits on its reading, and the interval the fitted table gives it, which
-  // the gate reads it at the top of and derives a lower reach inside.
+  // A gate's or a reach's: the option set the reading is for, and the interval the fitted table gives it, which the
+  // gate reads it at the top of, derives a lower reach inside and raises a reach above.
   UseConfig subject{};
   Interval span{};
 
@@ -217,10 +221,12 @@ public:
   // MAX_BRANCHES structural branches, each valued at that branch's cost -- a probe under the entry's move gains and a
   // combo under its combination gains -- and a combo only once its branch has nothing of a lower tier left to offer,
   // since it combines what those found; one more call on each side of every contest production decides that the race
-  // rule leaves undecided (refineValues()); and for an entry with no probe or combo left, the next draw of its restart
-  // sequence.  A baseline is left out once a row has concluded it or recorded a failure of it, and a probe, a combo or
-  // a restart once a row answers it or recorded a failure of it; any of them while an earlier generation's death or an
-  // unbuildable key holds it, and once this process has tried it more often than any entry needs.
+  // rule leaves undecided (refineValues()); for an entry with no probe or combo left, the next draw of its restart
+  // sequence; and with the gate, the next reading of each passed set whose reach may be raised above the table, worth
+  // what that set would save over the exponents between its reach and that reading, at what it costs.  A baseline is
+  // left out once a row has concluded it or recorded a failure of it, and a probe, a combo or a restart once a row
+  // answers it or recorded a failure of it; any of them while an earlier generation's death or an unbuildable key holds
+  // it, and once this process has tried it more often than any entry needs.
   [[nodiscard]] std::vector<Item> admissible(const TuneDB& db, u32 env, const Objective& objective) const;
 
 
@@ -250,6 +256,12 @@ private:
                                                 const Objective& objective) const;
 
   [[nodiscard]] std::vector<Item> gateItems(const TuneDB& db, u32 env, const Defaults& defaults) const;
+
+  [[nodiscard]] std::vector<Item> reachItems(const TuneDB& db, u32 env, std::span<const OptionSet> sets,
+                                             const Objective& objective) const;
+
+  // Into baselines_, by the entry each is of.
+  [[nodiscard]] std::map<EntryKey, size_t> entryIndex() const;
 
   // "<spec> <canonical options>", which is what makes a later build of the same configuration find it compiled.
   [[nodiscard]] std::string builtKey(const FFTConfig& fft, const UseConfig& options) const;
@@ -297,8 +309,8 @@ private:
   // How far each entry's restart sequence has been read in this process.
   mutable std::map<size_t, RestartScan> scans_;
 
-  // Gate readings by keyOf(), however they ended: one that recorded a reading is not owed again unless its kernels
-  // were built otherwise, and asking again would only repeat that.
+  // Gate and reach readings by keyOf(), however they ended: one that recorded a reading is not owed again unless its
+  // kernels were built otherwise, and asking again would only repeat that.
   std::map<std::string, u32> gateAttempts_;
 
   // Refine calls by keyOf() that recorded nothing; a refine is bounded by its row's calls otherwise.

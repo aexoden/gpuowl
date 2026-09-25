@@ -76,6 +76,10 @@ struct GateVerdict {
   u64 reach = 0;
   bool derived = false;
 
+  // A passed set's that reads better than the fitted standard at the top of the table: where the reading its reach is
+  // raised above the table by is to be taken next, while that raise is still owed.
+  u64 raiseAt = 0;
+
   // A rejected set's: whether it was refused for reading too inaccurately where it was read, which a reach lower down
   // may cure, rather than for something no exponent changes.
   bool derivable = false;
@@ -100,20 +104,27 @@ public:
   Gates(const TuneDB& db, u32 env, const Env& device);
 
   // The verdict on `opts` over `span`, the interval the fitted table gives it in one regime: at the top of it, a
-  // reading of the set counts if it was taken in that regime at or above the gate exponent, and a reading of its
-  // accuracy reference only at the exponent the set's own was taken at, since every set reads worse further up.  A set
-  // that falls short there has a reach derived for it inside `span`, from readings at exactly the exponents the
-  // derivation asks for.  Exact arithmetic passes without one.
+  // reading of the set counts if it was taken in that regime between the gate exponent and the end of `span`, and a
+  // reading of its accuracy reference only at the exponent the set's own was taken at, since every set reads worse
+  // further up.  A set that falls short there has a reach derived for it inside `span`, from readings at exactly the
+  // exponents the derivation asks for; one whose `span` ends where the table does, and that reads better than the
+  // fitted standard there, has one derived above it the same way, up to raiseCeiling().  Exact arithmetic passes
+  // without a reading.
   //
   // A reading is of the option set the kernels were built with: its tunable keys as canonicalConfig() has them, and
   // every other key as written, since a key the table does not search can still change what is built.
   [[nodiscard]] GateVerdict operator()(const FFTConfig& fft, const Interval& span, const UseConfig& opts) const;
 
-  // The latest reading of `opts` at `exponent`, or with `above` at or above it in its regime.
-  [[nodiscard]] std::optional<RoeRow> reading(const FFTConfig& fft, u64 exponent, const UseConfig& opts,
-                                              bool above) const;
+  // The latest reading of `opts` at `exponent`.
+  [[nodiscard]] std::optional<RoeRow> reading(const FFTConfig& fft, u64 exponent, const UseConfig& opts) const;
 
 private:
+  // The latest reading of `opts` in [lo, hi], in the regime `lo` runs in.
+  [[nodiscard]] std::optional<RoeRow> latestIn(const FFTConfig& fft, u64 lo, u64 hi, const UseConfig& opts) const;
+
+  // A passed set's reach raised above the table from `own`, its reading at the table's top, where one is confirmed.
+  void raise(const FFTConfig& fft, const UseConfig& opts, const RoeRow& own, GateVerdict& out) const;
+
   Env device_;
 
   // By spec, then by the text of the gate's identity for the set the kernels were built with.

@@ -35,6 +35,10 @@ namespace {
   return configText(out);
 }
 
+[[nodiscard]] ZReading toZ(const RoeRow& row) {
+  return {.exponent = row.exponent, .z = row.z, .n = row.n, .checkOk = row.checkOk};
+}
+
 }  // namespace
 
 double minSafeZ(enum FFT_TYPES type) { return type == FFT64 ? 20 : 6; }
@@ -143,18 +147,45 @@ Gates::Gates(const TuneDB& db, u32 env, const Env& device) : device_{device} {
   }
 }
 
-std::optional<RoeRow> Gates::reading(const FFTConfig& fft, u64 exponent, const UseConfig& opts, bool above) const {
+std::optional<RoeRow> Gates::latestIn(const FFTConfig& fft, u64 lo, u64 hi, const UseConfig& opts) const {
   auto const at = rows_.find({fft.spec(), identity(device_, fft, opts)});
   if (at == rows_.end()) { return {}; }
 
-  Regime const regime = regimeOf(fft, exponent);
+  Regime const regime = regimeOf(fft, lo);
   std::optional<RoeRow> out;
   for (const RoeRow& row : at->second) {
-    bool const counts = above ? row.exponent >= exponent : row.exponent == exponent;
-    if (!counts || regimeOf(fft, row.exponent) != regime) { continue; }
+    if (row.exponent < lo || row.exponent > hi || regimeOf(fft, row.exponent) != regime) { continue; }
     if (!out || row.ts > out->ts) { out = row; }
   }
   return out;
+}
+
+std::optional<RoeRow> Gates::reading(const FFTConfig& fft, u64 exponent, const UseConfig& opts) const {
+  return latestIn(fft, exponent, exponent, opts);
+}
+
+void Gates::raise(const FFTConfig& fft, const UseConfig& opts, const RoeRow& own, GateVerdict& out) const {
+  // Only a reading better than the standard says there is room above, and one with too few errors has no z to
+  // extrapolate from.  Held to the fitted standard whatever keys it moves: the set's reference was read at the top
+  // alone, and says nothing of how far past it the table's standard holds.
+  if (!own.checkOk || own.n <= 2 || own.z <= TARGET_Z) { return; }
+  u64 const ceiling = raiseCeiling(fft);
+  if (ceiling <= out.reach) { return; }
+
+  ReachOutcome const raised = deriveReach(
+    {.words = fft.size(), .lo = own.exponent, .hi = ceiling, .standard = {.aim = TARGET_Z, .bar = TARGET_Z}}, toZ(own),
+    [&](u64 E) -> std::optional<ZReading> {
+      std::optional<RoeRow> const row = reading(fft, E, opts);
+      return row ? std::optional{toZ(*row)} : std::nullopt;
+    });
+
+  // A raise that fails to confirm leaves the table's reach, which the reading at its top already stands for.
+  if (raised.exponent <= out.reach) { return; }
+  if (raised.state == ReachState::Owed) { out.raiseAt = raised.exponent; }
+  if (raised.state == ReachState::Confirmed) {
+    out.reach = raised.exponent;
+    out.derived = true;
+  }
 }
 
 GateVerdict Gates::operator()(const FFTConfig& fft, const Interval& span, const UseConfig& opts) const {
@@ -166,11 +197,11 @@ GateVerdict Gates::operator()(const FFTConfig& fft, const Interval& span, const 
   if (!top) { return {}; }
 
   bool const moves = movesAccuracy(device_, fft, opts);
-  std::optional<RoeRow> const own = reading(fft, top, opts, true);
+  std::optional<RoeRow> const own = latestIn(fft, top, span.hi, opts);
   if (!own) { return {.owedAt = top}; }
 
   std::optional<RoeRow> const reference =
-    moves ? reading(fft, own->exponent, accuracyReference(device_, fft, opts), false) : std::nullopt;
+    moves ? reading(fft, own->exponent, accuracyReference(device_, fft, opts)) : std::nullopt;
 
   GateVerdict out = judge(fft.shape.fft_type, own, moves, reference);
   if (out.state == GateState::Owed) {
@@ -179,19 +210,17 @@ GateVerdict Gates::operator()(const FFTConfig& fft, const Interval& span, const 
   }
   if (out.state == GateState::Passed) {
     out.reach = span.hi;
+    if (span.hi == maxExp(fft)) { raise(fft, opts, *own, out); }
     return out;
   }
   if (!out.derivable) { return out; }
 
-  auto const toZ = [](const RoeRow& row) {
-    return ZReading{.exponent = row.exponent, .z = row.z, .n = row.n, .checkOk = row.checkOk};
-  };
   ReachOutcome const derived = deriveReach({.words = fft.size(),
                                             .lo = span.lo,
                                             .hi = std::min(top, carryCeiling(fft)),
                                             .standard = standardFor(fft.shape.fft_type, moves, reference)},
                                            toZ(*own), [&](u64 E) -> std::optional<ZReading> {
-                                             std::optional<RoeRow> const row = reading(fft, E, opts, false);
+                                             std::optional<RoeRow> const row = reading(fft, E, opts);
                                              return row ? std::optional{toZ(*row)} : std::nullopt;
                                            });
 

@@ -68,7 +68,7 @@ struct OptionSet {
   u64 exponent = 0;
 
   // What the accuracy gate has made of the set so far, over the interval the fitted table gives it -- which is the
-  // entry's own until the gate derives a lower reach.
+  // entry's own until the gate derives a reach below it or raises one above it.
   GateVerdict gate{};
 };
 

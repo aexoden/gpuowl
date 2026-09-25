@@ -48,11 +48,11 @@ struct Choice {
 // forces the long-carry kernels at any bits per word.
 [[nodiscard]] Regime runRegime(const Args& args, const FFTConfig& fft, u64 E);
 
-// The lowest reach published for this FFT, kind and regime under options that round as `options` do, or the FFT's own
-// inherited limit where nothing that rounds as they do is published. A measurement may reach further than the fitted
-// table or fall short of it, and a configuration that fell short is one production must not run above, by whichever
-// path it arrives at it -- including under options that differ from the entry's only in keys that leave the arithmetic
-// as it was.
+// The lowest reach measured for this FFT, kind and regime under options that round as `options` do, or the FFT's own
+// inherited limit where nothing that rounds as they do was published with a reach of its own. A measurement may reach
+// further than the fitted table or fall short of it, and a configuration that fell short is one production must not run
+// above, by whichever path it arrives at it -- including under options that differ from the entry's only in keys that
+// leave the arithmetic as it was. An entry published at exactly the table's reach for its band measured no limit.
 //
 // Keyed by the regime the exponent alone gives, since that is how entries are keyed; a -carry long run that lands on
 // the same options is held to the same limit, which is the conservative reading in both directions.

@@ -232,7 +232,7 @@ TEST(a_reference_is_the_set_with_its_accuracy_keys_at_their_defaults) {
   CHECK_EQ(single.at("TAIL_KERNELS"), std::string{"2"});
 }
 
-TEST(a_reading_counts_in_its_own_regime_at_or_above_the_gate) {
+TEST(a_reading_counts_in_its_own_regime_at_the_gate) {
   Fixture f;
   UseConfig const opts{{"TAIL_KERNELS", "3"}};
   CHECK(!canonicalConfig(nvidia(), fp64(), opts).empty());
@@ -312,7 +312,7 @@ TEST(another_envs_readings_do_not_count) {
 }
 
 TEST(a_set_and_its_reference_are_compared_at_one_exponent) {
-  // 512:15:512 runs short32 up to 143498475, past its table reach, so a reading above the gate exponent still counts.
+  // 512:15:512 runs short32 up to 143498475, past its table reach.
   Fixture f;
   FFTConfig const fft{"512:15:512:212"};
   UseConfig const moved{{"MM2_CHAIN", "1"}};
@@ -334,18 +334,30 @@ TEST(a_set_and_its_reference_are_compared_at_one_exponent) {
   CHECK(f.verdict(fft, gate, moved).state == GateState::Owed);
   CHECK_EQ(f.verdict(fft, gate, moved).owedAt, deriving.owedAt);
 
-  // Read where its reference was, the set is compared there, and owes nothing it does not need.
+  // Nor does the set read there beside it: past the table is where a reach is raised, not where the gate reads.
   f.read(fft, above, moved, 20.8);
-  CHECK(f.verdict(fft, gate, moved).state == GateState::Passed);
+  CHECK_EQ(f.verdict(fft, gate, moved).owedAt, deriving.owedAt);
+}
 
-  // A set read only higher up owes its reference there, not at the gate exponent, where it would never compare.
-  Fixture g;
-  g.read(fft, above, moved, 20.8);
-  g.read(fft, gate, reference, 25);
-  GateVerdict const owed = g.verdict(fft, gate, moved);
+TEST(a_reading_past_the_table_is_not_the_gates_own) {
+  // A raise reads a set past its table reach in the same regime, and a raise that fails there says nothing against the
+  // table's own top.
+  Fixture f;
+  FFTConfig const fft{"512:15:512:212"};
+  u64 const gate = 143'413'741;
+  u64 const above = 143'498'461;
+  CHECK(regimeOf(fft, above) == regimeOf(fft, gate));
+
+  f.read(fft, above, {}, 12, false);
+  GateVerdict const owed = f.verdict(fft, gate, {});
   CHECK(owed.state == GateState::Owed);
-  CHECK(owed.owesReference);
-  CHECK_EQ(owed.owedAt, above);
+  CHECK_EQ(owed.owedAt, gate);
+
+  f.read(fft, gate, {}, 30);
+  GateVerdict const passed = f.verdict(fft, gate, {});
+  CHECK(passed.state == GateState::Passed);
+  CHECK(passed.evidence == Evidence::Confirmed);
+  CHECK_EQ(passed.reach, interval(fft, gate).hi);
 }
 
 TEST(a_set_the_table_does_not_search_is_its_own_configuration_to_the_gate) {
@@ -486,4 +498,140 @@ TEST(a_derived_reach_survives_a_reload_of_the_database) {
   CHECK(again.state == GateState::Passed);
   CHECK_EQ(again.reach, v.reach);
   CHECK_EQ(again.owedAt, v.owedAt);
+}
+
+namespace {
+
+// 256:10:256:101, whose 32-bit carry runs on past its table reach to 19 bits per word: measured on an RTX A4000 at
+// z 31.97 at the top.
+FFTConfig roomy() { return FFTConfig{"256:10:256:101"}; }
+
+u64 topOf(const FFTConfig& fft) { return gateExponent(interval(fft, maxExp(fft))); }
+
+// Answers every reading a raise of `opts` owes from `zAt` until it concludes; the verdict and the readings taken.
+std::pair<GateVerdict, u32> settleRaise(
+  Fixture& f, const FFTConfig& fft, const UseConfig& opts, const std::function<double(u64 E)>& zAt,
+  const std::function<bool(u64 E)>& checkOk = [](u64) { return true; }) {
+  u64 const top = topOf(fft);
+  u32 taken = 0;
+  GateVerdict v = f.verdict(fft, top, opts);
+  for (; v.state == GateState::Passed && v.raiseAt && taken < 30; v = f.verdict(fft, top, opts)) {
+    CHECK(v.raiseAt > interval(fft, top).hi);
+    CHECK(v.raiseAt <= raiseCeiling(fft));
+    f.read(fft, v.raiseAt, opts, zAt(v.raiseAt), checkOk(v.raiseAt));
+    ++taken;
+  }
+  CHECK(taken < 30);
+  return {v, taken};
+}
+
+}  // namespace
+
+TEST(a_set_better_than_the_standard_at_the_tables_top_owes_a_reading_above_it) {
+  FFTConfig const fft = roomy();
+  u64 const top = topOf(fft);
+  Interval const span = interval(fft, top);
+  CHECK_EQ(span.hi, maxExp(fft));
+
+  Fixture f;
+  f.read(fft, top, {}, 31.97);
+  GateVerdict const v = f.verdict(fft, top, {});
+  CHECK(v.state == GateState::Passed);
+  CHECK(v.evidence == Evidence::Confirmed);
+  CHECK_EQ(v.reach, span.hi);
+  CHECK(!v.derived);
+  CHECK(v.raiseAt > span.hi);
+
+  // No better than the standard, nothing to raise; nor with too few rounding errors to extrapolate from.
+  Fixture g;
+  g.read(fft, top, {}, 28);
+  CHECK_EQ(g.verdict(fft, top, {}).raiseAt, u64(0));
+  Fixture h;
+  CHECK(h.db.add(RoeRow{.sess = h.sess,
+                        .fft = fft.spec(),
+                        .exponent = top,
+                        .cfg = h.db.internCfg({}),
+                        .z = 0,
+                        .n = 2,
+                        .maxRoe = 0.01,
+                        .checkOk = true,
+                        .ts = ++h.ts}));
+  GateVerdict const sparse = h.verdict(fft, top, {});
+  CHECK(sparse.state == GateState::Passed);
+  CHECK_EQ(sparse.raiseAt, u64(0));
+}
+
+TEST(only_the_band_the_table_ends_in_is_raised) {
+  // 1K:8:1K:202's carry turns 64-bit below its table reach, so its 32-bit band ends at a regime change.
+  FFTConfig const fft{"1K:8:1K:202"};
+  Interval const lower = interval(fft, 250'000'000);
+  CHECK(lower.hi < maxExp(fft));
+  u64 const top = gateExponent(lower);
+
+  Fixture f;
+  f.read(fft, top, {}, 40);
+  GateVerdict const v = f.verdict(fft, top, {});
+  CHECK(v.state == GateState::Passed);
+  CHECK_EQ(v.reach, lower.hi);
+  CHECK_EQ(v.raiseAt, u64(0));
+}
+
+TEST(a_raise_is_confirmed_where_the_set_reads_28_and_published_to_there) {
+  FFTConfig const fft = roomy();
+  u64 const top = topOf(fft);
+
+  Fixture f;
+  f.read(fft, top, {}, 31.97);
+  auto const [v, taken] = settleRaise(f, fft, {}, [&](u64 E) { return linear(fft, top, 31.97, 0.015, E); });
+  CHECK(v.state == GateState::Passed);
+  CHECK(v.derived);
+  CHECK(v.evidence == Evidence::Confirmed);
+  CHECK(taken >= 1 && taken <= 3);
+
+  // Past the table, where the model reads 28 or better, and within a guard band of where it reads exactly 28.
+  CHECK(v.reach > maxExp(fft));
+  CHECK(linear(fft, top, 31.97, 0.015, v.reach) >= 28);
+  double const at28 = double(top) / fft.size() + (31.97 - 28) * 0.015;
+  CHECK(double(v.reach) / fft.size() > at28 - REACH_GUARD_BPW);
+  CHECK(regimeOf(fft, v.reach) == interval(fft, top).regime);
+}
+
+TEST(a_raise_that_cannot_be_confirmed_leaves_the_tables_reach) {
+  FFTConfig const fft = roomy();
+  u64 const top = topOf(fft);
+
+  Fixture f;
+  f.read(fft, top, {}, 31.97);
+  auto const [v, taken] =
+    settleRaise(f, fft, {}, [&](u64 E) { return linear(fft, top, 31.97, 0.015, E); }, [](u64) { return false; });
+  CHECK(v.state == GateState::Passed);
+  CHECK(v.evidence == Evidence::Confirmed);
+  CHECK(!v.derived);
+  CHECK_EQ(v.reach, maxExp(fft));
+  CHECK_EQ(v.raiseAt, u64(0));
+  CHECK(taken >= 1);
+}
+
+TEST(a_set_that_spends_accuracy_is_raised_to_the_fitted_standard_not_its_references_reading) {
+  FFTConfig const fft = roomy();
+  u64 const top = topOf(fft);
+
+  std::optional<UseConfig> found;
+  for (UseConfig const& opts : {UseConfig{{"TAIL_TRIGS", "0"}}, UseConfig{{"TAIL_TRIGS", "1"}},
+                               UseConfig{{"MM2_CHAIN", "1"}}, UseConfig{{"TAIL_KERNELS", "1"}}}) {
+    if (!found && movesAccuracy(nvidia(), fft, opts)) { found = opts; }
+  }
+  CHECK(found.has_value());
+  if (!found) { return; }
+  UseConfig const moved = *found;
+
+  // Its defaults read 35 at the top, and it 34.8: no worse than them, and far better than the standard.
+  Fixture f;
+  f.read(fft, top, moved, 34.8);
+  f.read(fft, top, accuracyReference(nvidia(), fft, moved), 35);
+  auto const [v, taken] = settleRaise(f, fft, moved, [&](u64 E) { return linear(fft, top, 34.8, 0.015, E); });
+  CHECK(v.state == GateState::Passed);
+  CHECK(v.derived);
+  CHECK(linear(fft, top, 34.8, 0.015, v.reach) >= 28);
+  CHECK(linear(fft, top, 34.8, 0.015, v.reach) < 34.5);
 }
