@@ -586,7 +586,15 @@ RoeInfo roeStat(const vector<float>& roe) {
   double const sdRoe = sqrt(n * sum2Roe - sumRoe * sumRoe) / n;
   double const meanRoe = sumRoe / n;
 
-  return {n, maxRoe, meanRoe, sdRoe};
+  RoeInfo ret{n, maxRoe, meanRoe, sdRoe};
+  u64 fnv = 0xcbf29ce484222325ull;  // FNV-1a over the samples' bits
+  for (float const x : roe) {
+    u32 bits;
+    memcpy(&bits, &x, sizeof(bits));
+    for (u32 i = 0; i < 4; ++i) { fnv = (fnv ^ ((bits >> (8 * i)) & 0xff)) * 0x100000001b3ull; }
+  }
+  ret.fingerprint = fnv;
+  return ret;
 }
 
 class IterationTimer {

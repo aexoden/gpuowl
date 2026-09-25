@@ -393,12 +393,13 @@ TEST(a_family_raced_to_the_end_is_a_transcript_of_its_races) {
   CHECK_EQ(configText(done.defaults.global), std::string{"TAIL_KERNELS=3,WMUL=1"});
   CHECK(done.defaults.family.empty());
 
-  // Two calls for each of the 46 moves of its eight first rounds, and two for the defaults: each later race's incumbent
-  // is the previous one's winner, whose calls it already has.  The 49 moves there are less the three that change the
-  // rounding -- TAIL_TRIGS32 to 0 or 1, TABMUL_CHAIN32 to 1 -- which no line carries.  Then the second rounds: Tail's
-  // from TAIL_KERNELS=3 offers five moves, of which the three back to TAIL_KERNELS 0, 1 and 2 were measured in the
-  // first; Width's from WMUL=1 offers five, of which WMUL=2 was.
-  CHECK_EQ(calls, 2u * 46 + 2 + 2 * 2 + 2 * 4);
+  // Two calls for each of the 44 moves of its eight first rounds, and two for the defaults: each later race's incumbent
+  // is the previous one's winner, whose calls it already has.  The 49 moves there are less the five that change the
+  // rounding -- TAIL_KERNELS to 0 or 1, TAIL_TRIGS32 to 0 or 1, TABMUL_CHAIN32 to 1 -- which no line carries;
+  // TAIL_KERNELS=3 rounds as the default does, and is raced.  Then the second rounds: Tail's from TAIL_KERNELS=3 offers
+  // three moves it may race, of which the one back to TAIL_KERNELS=2 was measured in the first; Width's from WMUL=1
+  // offers five, of which WMUL=2 was.
+  CHECK_EQ(calls, 2u * 44 + 2 + 2 * 2 + 2 * 4);
 }
 
 TEST(no_line_carries_a_key_that_changes_the_rounding) {

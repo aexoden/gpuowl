@@ -64,6 +64,7 @@ struct RoeCheck {
   double z = 0;  // the Gumbel z of the largest rounding error against 0.5
   u32 n = 0;     // rounding errors behind z
   double maxRoe = 0;
+  u64 fingerprint = 0;  // of the error samples: equal only where the rounding was
   double minZ = 0;
   u64 exponent = 0;  // where it was measured
   bool checkOk = true;

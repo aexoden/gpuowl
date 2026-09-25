@@ -354,7 +354,7 @@ std::string maxRoeText(double maxRoe) {
 std::string formatRow(const RoeRow& row) {
   return "roe   " + to_string(row.sess) + ' ' + row.fft + ' ' + to_string(row.exponent) + ' ' + to_string(row.cfg) +
     ' ' + zText(row.z) + ' ' + to_string(row.n) + ' ' + maxRoeText(row.maxRoe) + ' ' + (row.checkOk ? "ok" : "fail") +
-    ' ' + to_string(row.ts);
+    ' ' + (row.fp ? hex16(row.fp) : std::string{"-"}) + ' ' + to_string(row.ts);
 }
 
 std::string formatRow(const AnchorRow& row) {
@@ -1189,7 +1189,7 @@ bool TuneDB::parse(std::string_view text, std::string_view name) {
         : tag == "jump" || tag == "combo" ? 8
         : tag == "try"                    ? 7
         : tag == "nogo"                   ? 5
-        : tag == "roe"                    ? 10
+        : tag == "roe"                    ? 11
         : tag == "anchor"                 ? 8
                                           : 7;
       if (f.size() != want) {
@@ -1268,12 +1268,17 @@ bool TuneDB::parse(std::string_view text, std::string_view name) {
         auto const n = parseInt<u32>(f[6]);
         auto const maxRoe = parseNonNegative(f[7]);
         bool const checkOk = f[8] == "ok";
-        auto const ts = parseInt<u64>(f[9]);
+        bool const noFp = f[9] == "-";
+        std::optional<u64> const hex = f[9].size() == 16 ? parseInt<u64>(f[9], 16) : std::nullopt;
+        bool const fpOk = noFp || hex.has_value();
+        u64 const fpValue = noFp || !hex ? 0 : *hex;
+        auto const ts = parseInt<u64>(f[10]);
         if (!exponent) { refuse("'" + f[3] + "' is not an exponent"); }
         if (!z || !n || !maxRoe) { refuse("roe row has a malformed reading"); }
         if (f[8] != "ok" && f[8] != "fail") { refuse("'" + f[8] + "' is not ok or fail"); }
-        if (!ts) { refuse("'" + f[9] + "' is not a timestamp"); }
-        if (!exponent || !cfg || !z || !n || !maxRoe || (f[8] != "ok" && f[8] != "fail") || !ts) { continue; }
+        if (!fpOk) { refuse("'" + f[9] + "' is not a fingerprint (16 hex digits, or -)"); }
+        if (!ts) { refuse("'" + f[10] + "' is not a timestamp"); }
+        if (!exponent || !cfg || !z || !n || !maxRoe || (f[8] != "ok" && f[8] != "fail") || !fpOk || !ts) { continue; }
         RoeRow const row{.sess = *sess,
                          .fft = *fft,
                          .exponent = *exponent,
@@ -1282,6 +1287,7 @@ bool TuneDB::parse(std::string_view text, std::string_view name) {
                          .n = *n,
                          .maxRoe = *maxRoe,
                          .checkOk = checkOk,
+                         .fp = fpValue,
                          .ts = *ts};
         if (!add(row)) { refuse("roe row holds a value this format cannot write back"); }
 

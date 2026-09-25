@@ -32,7 +32,7 @@ const char* const FIXTURE =
   "run   4 512:15:512:212 prp 143400073 short32 17 1774.230 2.100 24 6 1.0000 ok 1753471274\n"
   "run   4 512:15:512:212 ll 143400073 short32 1 1801.000 3.000 8 2 0.9980 err 1753471300\n"
   "nogo  4 512:15:512:212 SHUFL_BYTES_W=16 1753471260\n"
-  "roe   4 512:15:512:212 143400073 17 29.40 118 0.371094 ok 1753471402\n"
+  "roe   4 512:15:512:212 143400073 17 29.40 118 0.371094 ok - 1753471402\n"
   "anchor 4 512:15:512:212 143400073 1 1774.230 1.0000 1753471410\n"
   "anchor 5 512:15:512:212 143400073 1 1792.000 1.0100 1753481410\n"
   "ref   5 512:15:512:212 1000151 2000 171f3662c332472f 1753471480\n"
@@ -198,6 +198,9 @@ TEST(malformed_rows_are_rejected) {
   rejects("combo 4 512:15:512:212 prp short32 17 2", "combo 4 512:15:512:212 prp short32 17 1");  // not a combination
   rejects("combo 4 512:15:512:212 prp short32 17 2", "combo 4 512:15:512:212 prp short32 99 2");
   rejects("combo 4 512:15:512:212 prp short32 17 2", "combo 4 512:15:512:212 prp short32 17");
+  rejects("29.40 118 0.371094 ok - 1753471402", "29.40 118 0.371094 ok 1753471402");        // no fingerprint field
+  rejects("29.40 118 0.371094 ok - 1753471402", "29.40 118 0.371094 ok 12345 1753471402");  // not 16 digits
+  rejects("29.40 118 0.371094 ok - 1753471402", "29.40 118 0.371094 ok 0123456789abcdeg 1753471402");
   rejects("sess  5 env=1 start=1753481200 gen=1 anchor=- alarmed=1",
           "sess  5 env=1 start=1753481200 gen=1 anchor=- alarmed=banana");
 
@@ -739,8 +742,8 @@ const char* const FOLDING =
   "run   1 512:15:512:212 prp 143400073 short32 3 1500.000 0.000 4 1 1.0000 ok 1200\n"
   "run   3 512:15:512:212 prp 143400073 short32 1 1400.000 0.000 4 1 1.0000 ok 3100\n"
   "nogo  1 256:2:256:212 SHUFL_BYTES_W=16 1150\n"
-  "roe   1 512:15:512:212 143400073 1 29.40 118 0.371094 ok 1300\n"
-  "roe   2 512:15:512:212 143400073 1 31.00 200 0.400000 fail 2300\n"
+  "roe   1 512:15:512:212 143400073 1 29.40 118 0.371094 ok - 1300\n"
+  "roe   2 512:15:512:212 143400073 1 31.00 200 0.400000 fail - 2300\n"
   "ref   1 512:15:512:212 1000151 2000 171f3662c332472f 1500\n";
 
 // The fixture above with one row replaced.
@@ -1055,4 +1058,33 @@ TEST(a_roe_row_is_held_as_its_line_reads_back) {
   CHECK_EQ(db.roes().at(0).z, again.roes().at(0).z);
   CHECK_EQ(db.roes().at(0).maxRoe, again.roes().at(0).maxRoe);
   CHECK_EQ(db.roes().at(0).z, 20.83);
+}
+
+TEST(a_roe_rows_fingerprint_survives_the_file_exactly) {
+  TuneDB db;
+  u32 const env = db.internEnv(DbEnv{.gpu = "a card", .name = "a card", .driver = "1.0"});
+  u32 const sess = db.beginSession(env, "-");
+  RoeRow row{.sess = sess,
+             .fft = "512:15:512:212",
+             .exponent = 143'400'073,
+             .cfg = db.internCfg({}),
+             .z = 20.83,
+             .n = 2150,
+             .maxRoe = 0.3,
+             .checkOk = true,
+             .fp = 0xfedcba9876543210ull,
+             .ts = 1};
+  CHECK(db.add(row));
+  row.fp = 0;
+  row.ts = 2;
+  CHECK(db.add(row));
+
+  std::string const text = db.text();
+  CHECK(text.find(" ok fedcba9876543210 1\n") != std::string::npos);
+  CHECK(text.find(" ok - 2\n") != std::string::npos);
+  TuneDB const again = loaded(text);
+  CHECK_EQ(again.roes().size(), size_t{2});
+  if (again.roes().size() < 2) { return; }
+  CHECK_EQ(again.roes().at(0).fp, 0xfedcba9876543210ull);
+  CHECK_EQ(again.roes().at(1).fp, u64{0});
 }

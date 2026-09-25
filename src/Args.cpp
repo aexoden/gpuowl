@@ -305,6 +305,10 @@ its reach.
                      hybrid then combines the best comboTop=<N> (3) answers of each group, over comboTiers=<1..3>
                      (3) tiers: groups alone, groups that share kernels, everything; comboTiers=1 is groups.
                      The option words above (noconfig, fp64, quick=, ...) still select the previous tuner.
+                         accuracy[,fft=<spec>][,groups=<Group>+...] - on the device: read the rounding error of
+                             every value of every -use option against the set it moved from, on each FFT type's
+                             bootstrap FFT (or on fft=) at the probe, recording the readings in tunedb.txt, and say
+                             which options change the rounding. Takes workload= and probe= as a run does.
 -device <N>        : select the GPU at position N in the list of devices
 -uid    <UID>      : select the GPU with the given UID (on ROCm/AMDGPU, Linux)
 -pci    <BDF>      : select the GPU with the given PCI BDF, e.g. "0c:00.0"

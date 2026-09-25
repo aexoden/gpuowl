@@ -333,7 +333,7 @@ vector<Option> buildTable() {
   t.push_back({.key = "MM_CHAIN",
                .group = Group::Middle,
                .touches = KG_MIDDLE_IN | KG_MIDDLE_OUT,
-               .accuracyImpact = AccuracyImpact::Suspected,
+               .accuracyImpact = AccuracyImpact::Yes,
                .applies = hasFloat,
                .valuesFn =
                  [](const Env&, const FFTConfig& f, const UseConfig&) {
@@ -348,7 +348,7 @@ vector<Option> buildTable() {
   t.push_back({.key = "MM2_CHAIN",
                .group = Group::Middle,
                .touches = KG_MIDDLE_IN | KG_MIDDLE_OUT,
-               .accuracyImpact = AccuracyImpact::Suspected,
+               .accuracyImpact = AccuracyImpact::Yes,
                .dependsOn = {"MM_CHAIN"},
                .applies = hasFloat,
                .valuesFn =
@@ -428,12 +428,15 @@ vector<Option> buildTable() {
                .scope = Scope::Variant,
                .group = Group::Tail,
                .touches = KG_TAIL,
+               .accuracyImpact = AccuracyImpact::Yes,
+               .defaultRounding = {3},
                .values = {0, 1, 2, 3},
                .defaultValue = 2});
   t.push_back({.key = "TAIL_TRIGS",
                .scope = Scope::Family,
                .group = Group::Tail,
                .touches = KG_TAIL,
+               .accuracyImpact = AccuracyImpact::Yes,
                .applies = hasFP64,
                .values = {0, 1, 2},
                .defaultValue = 2});
@@ -464,6 +467,7 @@ vector<Option> buildTable() {
      .scope = Scope::Family,
      .group = Group::Tail,
      .touchesFn = tabMulChainTouches,
+     .accuracyImpact = AccuracyImpact::Yes,
      .applies = hasFP64,
      .values = {0, 1},
      .defaultValue = 0,
@@ -1117,9 +1121,19 @@ u32 selfCheck() {
       }
       if (o.inert && !*o.inertWhen) { fail(o.key + " has an inert rule but does not say when"); }
       if (!o.touchesFn && o.touches == 0) { fail(o.key + " touches no kernel"); }
+      if (!o.defaultRounding.empty()) {
+        if (o.accuracyImpact == AccuracyImpact::None) {
+          fail(o.key + " lists values that round as the default, but none that round otherwise");
+        }
+        for (int v : o.defaultRounding) {
+          if (o.valuesFn || o.defaultFn || std::ranges::find(o.values, v) == o.values.end() || v == o.defaultValue) {
+            fail(o.key + ": " + to_string(v) + " is not a fixed value other than its fixed default");
+          }
+        }
+      }
     } else if (o.group != Group::None || o.structural || o.compound || o.accuracyImpact != AccuracyImpact::None ||
-               !o.dependsOn.empty() || o.applies || o.touchesFn || o.valuesFn || !o.values.empty() || o.defaultFn ||
-               o.inert) {
+               !o.defaultRounding.empty() || !o.dependsOn.empty() || o.applies || o.touchesFn || o.valuesFn ||
+               !o.values.empty() || o.defaultFn || o.inert) {
       fail(o.key + " is never searched but declares search metadata");
     }
   }

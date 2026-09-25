@@ -2,6 +2,7 @@
 
 #include "Tuner.h"
 
+#include "Accuracy.h"
 #include "Args.h"
 #include "BuildId.h"
 #include "Emit.h"
@@ -109,6 +110,24 @@ void parseWorkload(std::string_view text, ScopeArgs& out) {
   out.lo = asExponent(text.substr(0, dash), "workload=");
   out.hi = dash == std::string_view::npos ? out.lo : asExponent(text.substr(dash + 1), "workload=");
   if (out.hi < out.lo) { throw std::string{"-tune: workload= is empty: its first exponent is the larger"}; }
+}
+
+std::vector<Group> parseGroups(std::string_view text) {
+  std::vector<Group> out;
+  for (size_t at = 0; at <= text.size();) {
+    size_t const plus = text.find('+', at);
+    std::string_view const one = text.substr(at, plus == std::string_view::npos ? plus : plus - at);
+    at = plus == std::string_view::npos ? text.size() + 1 : plus + 1;
+
+    auto const group = std::ranges::find_if(allGroups(), [&](Group g) { return one == toString(g); });
+    if (group == allGroups().end()) {
+      std::string names;
+      for (Group const g : allGroups()) { names += (names.empty() ? "" : ", ") + std::string{toString(g)}; }
+      throw "-tune accuracy: groups= does not know '" + std::string{one} + "'. Accepted: " + names;
+    }
+    if (std::ranges::find(out, *group) == out.end()) { out.push_back(*group); }
+  }
+  return out;
 }
 
 void parseKinds(std::string_view text, ScopeArgs& out) {
@@ -467,9 +486,12 @@ const char* toString(TuneVerb verb) {
   case TuneVerb::Compact: return "compact";
   case TuneVerb::Scope: return "scope";
   case TuneVerb::Run: return "run";
+  case TuneVerb::Accuracy: return "accuracy";
   }
   return "?";
 }
+
+bool opensDevice(TuneVerb verb) { return verb == TuneVerb::Run || verb == TuneVerb::Accuracy; }
 
 std::optional<TuneCommand> parseTuneCommand(std::string_view text) {
   size_t const firstComma = text.find(',');
@@ -487,6 +509,8 @@ std::optional<TuneCommand> parseTuneCommand(std::string_view text) {
     out.verb = TuneVerb::Compact;
   } else if (verb == "scope") {
     out.verb = TuneVerb::Scope;
+  } else if (verb == "accuracy") {
+    out.verb = TuneVerb::Accuracy;
   } else {
     // Settings alone, or none: the first word is one of them rather than a subcommand.
     out.verb = TuneVerb::Run;
@@ -495,7 +519,8 @@ std::optional<TuneCommand> parseTuneCommand(std::string_view text) {
 
   bool const isRun = out.verb == TuneVerb::Run;
   std::string const who = isRun ? "-tune" : "-tune " + std::string{verb};
-  bool const takesScope = out.verb == TuneVerb::Scope || out.verb == TuneVerb::Emit || isRun;
+  bool const isAccuracy = out.verb == TuneVerb::Accuracy;
+  bool const takesScope = out.verb == TuneVerb::Scope || out.verb == TuneVerb::Emit || isRun || isAccuracy;
 
   // Applied once the strategy they belong to is known, whichever order the settings come in.
   std::optional<u32> comboTop;
@@ -517,7 +542,7 @@ std::optional<TuneCommand> parseTuneCommand(std::string_view text) {
     std::string_view const val = token.substr(eq + 1);
 
     // A run's env is the device it opens.
-    bool const wantsEnv = out.verb != TuneVerb::Compact && !isRun;
+    bool const wantsEnv = out.verb != TuneVerb::Compact && !opensDevice(out.verb);
 
     if (key == "env" && wantsEnv) {
       out.env = asEnvId(val, "env=");
@@ -525,18 +550,20 @@ std::optional<TuneCommand> parseTuneCommand(std::string_view text) {
       out.env = asEnvId(val, "into=");
     } else if (key == "from" && out.verb == TuneVerb::Adopt) {
       out.from = asEnvId(val, "from=");
-    } else if (key == "fft" && out.verb == TuneVerb::Reset) {
-      if (val.empty()) { throw std::string{"-tune reset: fft= takes an FFT specification"}; }
+    } else if (key == "fft" && (out.verb == TuneVerb::Reset || isAccuracy)) {
+      if (val.empty()) { throw who + ": fft= takes an FFT specification"; }
       out.fft = std::string{val};
+    } else if (key == "groups" && isAccuracy) {
+      out.groups = parseGroups(val);
     } else if (key == "workload" && takesScope) {
       parseWorkload(val, out.scope);
     } else if (key == "probe" && takesScope) {
       out.scope.probe = asExponent(val, "probe=");
-    } else if (key == "probeWeight" && takesScope) {
+    } else if (key == "probeWeight" && takesScope && !isAccuracy) {
       std::optional<double> const weight = parseNonNegative(val);
       if (!weight || *weight > 1) { throw std::string{"-tune: probeWeight= takes a fraction between 0 and 1"}; }
       out.scope.probeWeight = *weight;
-    } else if (key == "kinds" && takesScope) {
+    } else if (key == "kinds" && takesScope && !isAccuracy) {
       parseKinds(val, out.scope);
     } else if (key == "bootstrap" && isRun) {
       if (val != "0" && val != "1") { throw std::string{"-tune: bootstrap= takes 0 or 1"}; }
@@ -568,8 +595,9 @@ std::optional<TuneCommand> parseTuneCommand(std::string_view text) {
       case TuneVerb::Run:
         accepted = "workload=<lo>-<hi>, probe=<E>, probeWeight=<0..1>, kinds=prp, bootstrap=0|1,"
                    " strategy=hybrid|single|groups|permute:<KEY>+<KEY>..., comboTop=<N>, comboTiers=1|2|3, stop=<P>%|0,"
-                   " or a subcommand: emit, reset, adopt, compact, scope";
+                   " or a subcommand: emit, reset, adopt, compact, scope, accuracy";
         break;
+      case TuneVerb::Accuracy: accepted = "workload=<lo>-<hi>, probe=<E>, fft=<spec>, groups=<Group>+<Group>..."; break;
       }
       throw who + ": '" + std::string{key} + "=' is not understood. Accepted: " + accepted;
     }
@@ -641,7 +669,8 @@ bool rewriteFor(TuneDB& db, const TuneCommand& command, u32 env) {
 
   // Neither rewrites anything, and they are here only so that the switch is complete.
   case TuneVerb::Scope:
-  case TuneVerb::Run: return false;
+  case TuneVerb::Run:
+  case TuneVerb::Accuracy: return false;
 
   case TuneVerb::Compact: return db.compact();
 
@@ -725,6 +754,8 @@ bool runTuneCommand(const TuneCommand& command, const Args& args, const fs::path
 }
 
 MeasureOutcome runTune(const GpuCommon& shared, const TuneCommand& command) {
+  if (command.verb == TuneVerb::Accuracy) { return runAccuracy(shared, command); }
+
   Args& args = *shared.args;
   fs::path const dir = fs::current_path();
 
