@@ -120,6 +120,30 @@ const Exclusion* exclusionFor(const SelectionFile& file, const Env& env, const F
   return nullptr;
 }
 
+std::string uncoveredNote(const SelectionFile& file, const Args& args, u64 E, TestKind kind) {
+  std::string const path = selectionPath(args).string();
+  std::string const untuned = "under the file's default lines, which were not measured on it";
+
+  if (std::optional<FFTConfig> const pinned = pinnedFft(args)) {
+    return "Note: no " + std::string{toString(kind)} + " entry of " + pinned->spec() + " in " + path + " covers " +
+      to_string(E) + "; running it " + untuned + "\n";
+  }
+
+  std::optional<std::pair<u64, u64>> span;
+  for (const SelectionEntry& e : file.entries) {
+    if (e.kind != kind) { continue; }
+    span =
+      span ? std::pair{std::min(span->first, e.emin), std::max(span->second, e.reach)} : std::pair{e.emin, e.reach};
+  }
+
+  std::string const fallback = "PRPLL's own choice of FFT runs it " + untuned;
+  if (!span) { return "Note: " + path + " publishes no " + toString(kind) + " entry yet, so " + fallback + "\n"; }
+  return "Note: no entry in " + path + " covers " + to_string(E) + " (its " + toString(kind) + " entries cover " +
+    to_string(span->first) + "-" + to_string(span->second) + "), so " + fallback + "; a tuning run over it, such as " +
+    "-tune workload=" + to_string(std::min(span->first, E)) + "-" + to_string(std::max(span->second, E)) +
+    ", would publish one\n";
+}
+
 std::optional<Choice> chooseFrom(const SelectionFile& file, const Args& args, const Env& env, u64 E, TestKind kind) {
   std::optional<FFTConfig> const pinned = pinnedFft(args);
 
@@ -205,6 +229,8 @@ Choice choose(const Args& args, const Env& env, u64 E, TestKind kind) {
       return std::move(*chosen);
     }
   }
+
+  if (file && fs::exists(selectionPath(args))) { logOnce(uncoveredNote(*file, args, E, kind)); }
 
   SelectionLayers layers;
   if (file) { layers = SelectionLayers{.global = file->global, .family = file->family, .entry = {}}; }

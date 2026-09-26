@@ -7,8 +7,10 @@
 #include "Bootstrap.h"
 
 #include "Anchor.h"
+#include "Eligibility.h"
 #include "FFTVariants.h"
 #include "Gate.h"
+#include "Scheduler.h"
 
 #include "test.h"
 
@@ -458,6 +460,62 @@ TEST(what_the_families_agree_on_is_global_and_the_rest_is_theirs) {
 
   // A family nobody raced runs at the global line, less what does not reach it.
   CHECK_EQ(configText(underDefaults(nvidia(), FFTConfig{"512:15:512:212"}, TestKind::PRP, d)),
+           std::string{"TAIL_KERNELS=3"});
+}
+
+namespace {
+
+// A published entry of `spec` over the band that holds `E`.
+SelectionEntry publishedAt(const std::string& spec, u64 E, double cost, UseConfig opts, TestKind kind = TestKind::PRP) {
+  FFTConfig const fft{spec};
+  Interval const band = interval(fft, E);
+  SelectionEntry e{.id = {},
+                   .cost = cost,
+                   .fft = fft.spec(),
+                   .kind = kind,
+                   .emin = band.lo,
+                   .reach = band.hi,
+                   .regime = band.regime,
+                   .evidence = Evidence::Unvalidated,
+                   .opts = std::move(opts)};
+  e.id = entryId(e.fft, e.kind, e.regime, e.opts);
+  return e;
+}
+
+}  // namespace
+
+TEST(the_lines_follow_the_best_set_published_for_each_type) {
+  u64 const probe = 118'063'003;
+  Family const fp64 = familyOf("512:15:512:212");
+  Family const fp32 = familyOf("2:1K:8:256:212");
+
+  // Both families raced, and both moved WMUL to 1.
+  BootstrapState bootstrap;
+  bootstrap.families = {{.family = fp64, .phase = FamilyPhase::Done, .decided = {{"WMUL", "1"}}},
+                        {.family = fp32, .phase = FamilyPhase::Done, .decided = {{"WMUL", "1"}}}};
+  bootstrap.defaults = defaultLines(nvidia(), {{fp64, {{"WMUL", "1"}}}, {fp32, {{"WMUL", "1"}}}});
+  CHECK_EQ(linesText(publishedLines(nvidia(), probe, TestKind::PRP, {}, bootstrap)), std::string{"WMUL=1"});
+
+  // FP64's evidence is now what production runs at the probe: the cheapest entry there, not a dearer one there, a
+  // cheaper one of another size that does not reach it, or one of the other kind.  Its TABMUL_CHAIN=1 changes the
+  // rounding, which nothing reads for what the lines reach, so it is left out.  The hybrid has nothing published, so
+  // its race still speaks for it.
+  std::vector<SelectionEntry> const published{
+    publishedAt("512:15:512:101", probe, 1700, {{"TABMUL_CHAIN", "1"}, {"TAIL_KERNELS", "3"}}),
+    publishedAt("512:15:512:212", probe, 1800, {{"WMUL", "1"}}),
+    publishedAt("256:13:512:101", 60'000'000, 900, {{"WMUL", "1"}}),
+    publishedAt("512:15:512:102", probe, 1500, {{"WMUL", "1"}}, TestKind::LL)};
+  Defaults const d = publishedLines(nvidia(), probe, TestKind::PRP, published, bootstrap);
+  CHECK_EQ(configText(underDefaults(nvidia(), FFTConfig{"512:15:512:101"}, TestKind::PRP, d)),
+           std::string{"TAIL_KERNELS=3"});
+  CHECK_EQ(configText(underDefaults(nvidia(), fp32.fft, TestKind::PRP, d)), std::string{"WMUL=1"});
+
+  // Where nothing of a type covers the probe, the entry nearest it speaks for the type, however much it costs.
+  CHECK(maxExp(FFTConfig{"256:14:512:101"}) < probe);
+  std::vector<SelectionEntry> const below{publishedAt("256:13:512:101", 60'000'000, 900, {{"WMUL", "1"}}),
+                                          publishedAt("256:14:512:101", 64'000'000, 950, {{"TAIL_KERNELS", "3"}})};
+  Defaults const nearest = publishedLines(nvidia(), probe, TestKind::PRP, below, bootstrap);
+  CHECK_EQ(configText(underDefaults(nvidia(), FFTConfig{"512:15:512:212"}, TestKind::PRP, nearest)),
            std::string{"TAIL_KERNELS=3"});
 }
 

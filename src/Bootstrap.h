@@ -9,8 +9,9 @@
 // read, which races are decided and what they decided -- is recomputed from the database each time it is asked for, so
 // a race interrupted by a stop loses nothing and a later process carries it on from the rows.
 //
-// The winners become the selection file's default lines: keys every tuned family agrees on make the global line, keys
-// they disagree on a line per family.  Both are transcripts of races that actually ran.
+// The winners are the selection file's first default lines: keys every tuned family agrees on make the global line,
+// keys they disagree on a line per family.  Both are transcripts of races that actually ran.  Once entries are
+// published, publishedLines() draws the lines from them instead, the same way.
 
 #pragma once
 
@@ -55,6 +56,10 @@ inline constexpr double RACE_GAIN = 0.32;
 // The tunable part of `config` as the kernels would see it: a key that does not apply, that the kernels cannot read, or
 // that is at its default is dropped, since leaving it in would give one configuration two names.
 [[nodiscard]] UseConfig canonicalConfig(const Env& env, const FFTConfig& fft, const UseConfig& config);
+
+// What tells two builds of `fft` apart: canonical where the option table knows a key well enough to say it changes
+// nothing, and as written everywhere else.
+[[nodiscard]] UseConfig builtAs(const Env& env, const FFTConfig& fft, const UseConfig& config);
 
 // Every configuration one step from `background` within `group`: one key moved to another of its values, or for LOADS
 // and STORES one access class moved to another of its modes.  Canonical, without duplicates, and without `background`
@@ -218,5 +223,14 @@ private:
 
 // What a configuration with no option set of its own runs at under `defaults`, canonical.
 [[nodiscard]] UseConfig underDefaults(const Env& env, const FFTConfig& fft, TestKind kind, const Defaults& defaults);
+
+// The lines published beside `published`, and what the tuner baselines an entry at: the best evidence there is for
+// each FFT type, split as defaultLines() splits the bootstrap's.  A type's evidence is its `kind` entry that production
+// would run at `probe`, or where none covers it the entry nearest it, and failing both the set its bootstrap decided.
+// So the lines start as the bootstrap's and, as entries are tuned further, carry what they found to every FFT nothing
+// has been published for.  A key held at a value that changes the rounding is left at its default, since nothing reads
+// the accuracy of what the lines are applied to.
+[[nodiscard]] Defaults publishedLines(const Env& env, u64 probe, TestKind kind,
+                                      const std::vector<SelectionEntry>& published, const BootstrapState& bootstrap);
 
 }  // namespace tune

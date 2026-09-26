@@ -45,9 +45,9 @@ struct Partial {
 }  // namespace
 
 struct Progress {
-  // Settled by a concluded row emission would publish beside the current lines -- the baseline is the first
-  // measurement, and whatever measured it second is not one -- but not by one the lines have since shadowed, whose
-  // options are no longer what the configuration runs at.
+  // Settled by any concluded row: the baseline is the first measurement, and whatever measured it second is not one.
+  // Not by the lines it was taken under, which move as entries are tuned: every row names all it ran, so one taken
+  // under earlier lines is still a measurement of what it ran.
   std::set<EntryKey> settled;
 
   // A failure is a verdict on the options it was taken under, which a repeat would only repeat; by the canonical set.
@@ -56,8 +56,7 @@ struct Progress {
   // By the canonical option set as well: calls under other options do not pool with the ones a baseline will make.
   std::map<std::pair<EntryKey, std::string>, Partial> partial;
 
-  // Every option set a row has concluded, canonical, shadowed or not: what a probe asks may already be answered by a
-  // row the lines have since withdrawn from publication.
+  // Every option set a row has concluded, canonical: what a probe asks may already be answered by one.
   std::map<EntryKey, std::vector<UseConfig>> concluded;
 
   // The option sets a row has concluded or failed, and how many sets each entry has rows of at all.
@@ -69,7 +68,7 @@ namespace {
 
 // Where each entry stands, from the rows `env` has.  A row the device lost under is not recorded, so it says nothing
 // either way.
-[[nodiscard]] Progress progressOf(const TuneDB& db, u32 env, const Env& device, const Defaults& defaults) {
+[[nodiscard]] Progress progressOf(const TuneDB& db, u32 env, const Env& device) {
   Progress out;
 
   for (const RunRow& row : db.mergedRuns()) {
@@ -89,7 +88,7 @@ namespace {
       continue;
     }
     if (concluded(row.m)) {
-      if (!shadowedBy(defaults, device, *fft, row.kind, *opts)) { out.settled.insert(key); }
+      out.settled.insert(key);
       out.concluded[key].push_back(canonical);
       out.answered.insert({key, text});
       continue;
@@ -136,36 +135,6 @@ namespace {
 }
 
 }  // namespace
-
-UseConfig besideLines(const Env& env, const FFTConfig& fft, TestKind kind, const Defaults& defaults, UseConfig config) {
-  if (defaults.global.empty() && defaults.family.empty()) { return config; }
-  UseConfig const canonical = config;
-
-  // Fitted against the set as it stands, as emission fits them: whether a line's value is one the table offers can
-  // turn on the set's own keys -- a probe back to MULTI_Q=0 makes an L2_STRIPING line legal again -- and each key named
-  // here can do the same to another.
-  for (bool changed = true; changed;) {
-    changed = false;
-    SelectionLayers const layers = fittedTo({.global = {defaults.global.begin(), defaults.global.end()},
-                                             .family = defaults.family,
-                                             .entry = {config.begin(), config.end()}},
-                                            env, fft, kind);
-
-    for (const auto& [key, value] : resolveConfig(Args{true}, fft, kind, layers)) {
-      const Option* const option = findOption(key);
-      if (config.contains(key) || !option || option->kind != Kind::Tunable || !option->appliesTo(env, fft, canonical) ||
-          option->isInert(env, fft, canonical)) {
-        continue;
-      }
-      int const own = option->defaultFor(env, fft, canonical);
-      if (parseInt<int>(value) != own) {
-        config[key] = std::to_string(own);
-        changed = true;
-      }
-    }
-  }
-  return config;
-}
 
 double CallClock::iterSeconds(double usPerIt) const {
   return double(WARMUP_BLOCKS + BLOCKS_PER_CALL) * blockSize_ * usPerIt * 1e-6;
@@ -289,9 +258,7 @@ const UseConfig& Scheduler::draw(size_t index, u32 k) const {
   return at->second;
 }
 
-std::optional<Item> Scheduler::nextRestart(const TuneDB& db, u32 env, const Progress& progress,
-                                           const Defaults& defaults, size_t index) const {
-  const Env& device = bootstrap_.env();
+std::optional<Item> Scheduler::nextRestart(const TuneDB& db, u32 env, const Progress& progress, size_t index) const {
   const Baseline& b = baselines_[index];
   std::string const spec = b.fft.spec();
   std::string const regime = b.band.regime.label();
@@ -312,7 +279,7 @@ std::optional<Item> Scheduler::nextRestart(const TuneDB& db, u32 env, const Prog
     const UseConfig& drawn = draw(index, k);
     Item item{.kind = ItemKind::Restart,
               .index = index,
-              .options = besideLines(device, b.fft, b.kind, defaults, drawn),
+              .options = drawn,
               .moved = {},
               .what = "#" + std::to_string(k + 1) + " " + (drawn.empty() ? "the built-in defaults" : configText(drawn)),
               .exponent = b.exponent,
@@ -334,9 +301,8 @@ std::optional<Item> Scheduler::nextRestart(const TuneDB& db, u32 env, const Prog
     Item const item = itemOf(k);
     u32 const cfg = db.findCfgId(item.options);
     auto const attempts = probeAttempts_.find(keyOf(item));
-    return !shadowedBy(defaults, device, b.fft, b.kind, item.options) &&
-      (attempts == probeAttempts_.end() || attempts->second < MAX_ATTEMPTS) && !db.isNogo(env, spec, item.options) &&
-      !(cfg && db.diedOn(env, cfg, b.kind, spec, item.exponent));
+    return (attempts == probeAttempts_.end() || attempts->second < MAX_ATTEMPTS) &&
+      !db.isNogo(env, spec, item.options) && !(cfg && db.diedOn(env, cfg, b.kind, spec, item.exponent));
   };
 
   std::optional<u32> const k = nextRunnable(scan, [&](u32 k) { return configText(draw(index, k)); }, runnable);
@@ -385,6 +351,11 @@ BootstrapState Scheduler::bootstrapState(const TuneDB& db, u32 env) const {
   return bootstrap_.state(db, env, excluded);
 }
 
+Defaults Scheduler::lines(const TuneDB& db, u32 env, const BootstrapState& state) const {
+  TestKind const kind = scope_.grid(TestKind::PRP) || !scope_.grid(TestKind::LL) ? TestKind::PRP : TestKind::LL;
+  return publishedLines(bootstrap_.env(), scope_.probe, kind, candidatesFor(db, env), state);
+}
+
 std::vector<Item> Scheduler::bootstrapItems(const BootstrapState& state, const Objective& objective) const {
   std::vector<Item> out;
   for (const Turn& turn : state.turns) {
@@ -425,14 +396,14 @@ std::map<EntryKey, size_t> Scheduler::entryIndex() const {
   return out;
 }
 
-std::vector<Item> Scheduler::gateItems(const TuneDB& db, u32 env, const Defaults& defaults) const {
+std::vector<Item> Scheduler::gateItems(const TuneDB& db, u32 env) const {
   if (!gate_) { return {}; }
   const Env& device = bootstrap_.env();
   std::map<EntryKey, size_t> const indexOf = entryIndex();
 
   std::vector<Item> out;
   std::set<std::string> offered;
-  for (const OptionSet& s : gatesOwed(db, env, defaults)) {
+  for (const OptionSet& s : gatesOwed(db, env)) {
     const SelectionEntry& e = s.entry;
 
     // An entry of a run over another workload waits for a run whose workload weighs it.
@@ -570,14 +541,12 @@ std::vector<Item> Scheduler::reachItems(const TuneDB& db, u32 env, std::span<con
 }
 
 std::vector<Item> Scheduler::baselineItems(const TuneDB& db, u32 env, const Objective& objective) const {
-  BootstrapState const state = bootstrapState(db, env);
-  Progress const progress = progressOf(db, env, bootstrap_.env(), state.defaults);
-  return baselineItems(db, env, state, progress, gainsOf(db, env), objective);
+  Progress const progress = progressOf(db, env, bootstrap_.env());
+  return baselineItems(db, env, lines(db, env, bootstrapState(db, env)), progress, gainsOf(db, env), objective);
 }
 
-std::vector<Item> Scheduler::baselineItems(const TuneDB& db, u32 env, const BootstrapState& state,
-                                           const Progress& progress, const GainModel& gains,
-                                           const Objective& objective) const {
+std::vector<Item> Scheduler::baselineItems(const TuneDB& db, u32 env, const Defaults& lines, const Progress& progress,
+                                           const GainModel& gains, const Objective& objective) const {
   const Env& device = bootstrap_.env();
   GainDist const unmeasured = gains.global();
 
@@ -590,7 +559,7 @@ std::vector<Item> Scheduler::baselineItems(const TuneDB& db, u32 env, const Boot
     if (progress.settled.contains(key)) { continue; }
     if (auto const at = attempts_.find(i); at != attempts_.end() && at->second >= MAX_ATTEMPTS) { continue; }
 
-    UseConfig options = underDefaults(device, b.fft, b.kind, state.defaults);
+    UseConfig options = underDefaults(device, b.fft, b.kind, lines);
     if (progress.failed.contains({key, configText(options)})) { continue; }
 
     Partial p{};
@@ -628,18 +597,17 @@ std::vector<Item> Scheduler::baselineItems(const TuneDB& db, u32 env, const Boot
 std::vector<Item> Scheduler::admissible(const TuneDB& db, u32 env, const Objective& objective) const {
   BootstrapState const state = bootstrapState(db, env);
   if (!state.turns.empty()) { return bootstrapItems(state, objective); }
-  if (std::vector<Item> gates = gateItems(db, env, state.defaults); !gates.empty()) { return gates; }
+  if (std::vector<Item> gates = gateItems(db, env); !gates.empty()) { return gates; }
 
   const Env& device = bootstrap_.env();
-  Progress const progress = progressOf(db, env, device, state.defaults);
+  Progress const progress = progressOf(db, env, device);
   GainModel const gains = gainsOf(db, env);
 
-  std::vector<Item> out = baselineItems(db, env, state, progress, gains, objective);
+  std::vector<Item> out = baselineItems(db, env, lines(db, env, state), progress, gains, objective);
   if (std::vector<Item> cover = coverItems(out, objective); !cover.empty()) { return cover; }
 
   // The option sets of each entry, which also say how much each option set costs where it was measured.
-  std::vector<OptionSet> const sets =
-    strategy_ || gate_ ? optionSetsFor(db, env, state.defaults) : std::vector<OptionSet>{};
+  std::vector<OptionSet> const sets = strategy_ || gate_ ? optionSetsFor(db, env) : std::vector<OptionSet>{};
   std::ranges::move(reachItems(db, env, sets, objective), std::back_inserter(out));
 
   if (strategy_) {
@@ -709,12 +677,9 @@ std::vector<Item> Scheduler::admissible(const TuneDB& db, u32 env, const Objecti
           std::string const text = configText(probe.config);
           if (progress.failed.contains({key, text})) { continue; }
 
-          UseConfig options = besideLines(device, b.fft, b.kind, state.defaults, probe.config);
-          if (shadowedBy(state.defaults, device, b.fft, b.kind, options)) { continue; }
-
           Item item{.kind = probe.tier > 1 ? ItemKind::Combo : ItemKind::Probe,
                     .index = i,
-                    .options = std::move(options),
+                    .options = probe.config,
                     .moved = probe.key,
                     .what = probe.stage + " " + probe.text,
                     .exponent = b.exponent,
@@ -753,9 +718,8 @@ std::vector<Item> Scheduler::admissible(const TuneDB& db, u32 env, const Objecti
       // to rank below them.
       double const value =
         expectedSaving(objective.points(), b.kind, b.band, ofEntry.front().cost, gains.restartForEntry(key));
-      std::optional<Item> next = restarts_ && value > 0 && out.size() == before
-        ? nextRestart(db, env, progress, state.defaults, i)
-        : std::nullopt;
+      std::optional<Item> next =
+        restarts_ && value > 0 && out.size() == before ? nextRestart(db, env, progress, i) : std::nullopt;
       if (next) {
         Item item = std::move(*next);
         item.value = value;
@@ -864,6 +828,15 @@ void Scheduler::ran(const Item& item, double seconds, double usPerIt, bool recor
   }
 }
 
+std::string linesText(const Defaults& lines) {
+  std::string out = configText(lines.global);
+  for (const UseLine& line : lines.family) {
+    UseConfig const uses{line.uses.begin(), line.uses.end()};
+    out += "; ! " + line.selector.spec() + " " + configText(uses);
+  }
+  return out;
+}
+
 namespace {
 
 // Says once what the bootstrap has come to: each family it will not tune and why, each race as it is decided, and the
@@ -897,12 +870,7 @@ public:
 
     if (enabled && state.complete && !complete_) {
       complete_ = true;
-      std::string lines = configText(state.defaults.global);
-      for (const UseLine& line : state.defaults.family) {
-        UseConfig const uses{line.uses.begin(), line.uses.end()};
-        lines += "; ! " + line.selector.spec() + " " + configText(uses);
-      }
-      log("tune: bootstrap complete; the defaults are %s\n", lines.c_str());
+      log("tune: bootstrap complete; the defaults are %s\n", linesText(state.defaults).c_str());
     }
   }
 
@@ -956,9 +924,8 @@ private:
 }
 
 // The best option set of the entry `b`, canonical, and its cost; nothing where no row of it could be published.
-[[nodiscard]] std::optional<std::string> bestOf(const TuneDB& db, u32 envId, const Env& env, const Defaults& defaults,
-                                                const Baseline& b) {
-  std::vector<SelectionEntry> const candidates = candidatesFor(db, envId, defaults, Gating::Assumed);
+[[nodiscard]] std::optional<std::string> bestOf(const TuneDB& db, u32 envId, const Env& env, const Baseline& b) {
+  std::vector<SelectionEntry> const candidates = candidatesFor(db, envId, Gating::Assumed);
   std::map<EntryKey, const SelectionEntry*> const best = bestEntries(candidates);
   auto const at = best.find({b.fft.spec(), b.kind, b.band.regime.label()});
   if (at == best.end()) { return {}; }
@@ -980,16 +947,27 @@ QueueReport runQueue(Scheduler& scheduler, TuneDB& db, u32 env, Bench& bench, co
   // What is published, and what the items are valued against: the same but for the sets the gate still owes, whose
   // readings are taken before anything is valued.
   BootstrapState state = scheduler.bootstrapState(db, env);
-  Objective objective{db, env, scheduler.scope(), state.defaults};
-  Objective valuing{db, env, scheduler.scope(), state.defaults, Gating::Assumed};
+  Objective objective{db, env, scheduler.scope()};
+  Objective valuing{db, env, scheduler.scope(), Gating::Assumed};
+  Defaults lines = scheduler.lines(db, env, state);
+  std::string said = linesText(lines);
   out.startT = objective.T();
-  publish(objective, state.defaults);
+  publish(objective, lines);
 
   auto rescore = [&] {
     state = scheduler.bootstrapState(db, env);
-    objective = Objective{db, env, scheduler.scope(), state.defaults};
-    valuing = Objective{db, env, scheduler.scope(), state.defaults, Gating::Assumed};
+    objective = Objective{db, env, scheduler.scope()};
+    valuing = Objective{db, env, scheduler.scope(), Gating::Assumed};
+    lines = scheduler.lines(db, env, state);
     bootstrapLog.report(state, bootstrapping);
+
+    // The bootstrap's own lines are said as it completes; after that they move only with what is published.
+    if (std::string text = linesText(lines); text != said) {
+      if (state.complete && text != linesText(state.defaults)) {
+        log("tune: the default lines are now %s, from the best sets published\n", text.c_str());
+      }
+      said = std::move(text);
+    }
   };
 
   while (!bench.stopped()) {
@@ -1032,7 +1010,7 @@ QueueReport runQueue(Scheduler& scheduler, TuneDB& db, u32 env, Bench& bench, co
       : item->what.empty()              ? baseline->label()
                                         : baseline->label() + " " + item->what;
     std::optional<std::string> const bestBefore =
-      probing ? bestOf(db, env, scheduler.bootstrap().env(), state.defaults, *baseline) : std::nullopt;
+      probing ? bestOf(db, env, scheduler.bootstrap().env(), *baseline) : std::nullopt;
 
     // Once, before its first call; a resumed one was declared by the process that started it.
     if (item->kind == ItemKind::Restart && item->calls == 0) {
@@ -1083,7 +1061,7 @@ QueueReport runQueue(Scheduler& scheduler, TuneDB& db, u32 env, Bench& bench, co
 
     double const before = objective.T();
     rescore();
-    publish(objective, state.defaults);
+    publish(objective, lines);
 
     if (reads && result.completed) {
       const Env& device = scheduler.bootstrap().env();
@@ -1103,8 +1081,7 @@ QueueReport runQueue(Scheduler& scheduler, TuneDB& db, u32 env, Bench& bench, co
     }
 
     if (probing) {
-      std::optional<std::string> const bestAfter =
-        bestOf(db, env, scheduler.bootstrap().env(), state.defaults, *baseline);
+      std::optional<std::string> const bestAfter = bestOf(db, env, scheduler.bootstrap().env(), *baseline);
       if (bestAfter && bestAfter != bestBefore) {
         log("tune: %s is now best at %s\n", baseline->label().c_str(), bestAfter->c_str());
       }

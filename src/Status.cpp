@@ -87,8 +87,8 @@ TuneStatus statusOf(const Scheduler& scheduler, TuneDB& db, u32 env, double stop
   if (out.measuring && !db.attached()) { (void)db.add(DoneRow{.sess = out.measuring->row.sess, .ts = activity.now}); }
 
   BootstrapState const state = scheduler.bootstrapState(db, env);
-  Objective const published{db, env, scheduler.scope(), state.defaults};
-  Objective const valuing{db, env, scheduler.scope(), state.defaults, Gating::Assumed};
+  Objective const published{db, env, scheduler.scope()};
+  Objective const valuing{db, env, scheduler.scope(), Gating::Assumed};
   out.T = published.T();
   out.measured = published.measured();
   out.valuedT = valuing.T();
@@ -114,7 +114,8 @@ TuneStatus statusOf(const Scheduler& scheduler, TuneDB& db, u32 env, double stop
   }
 
   TuneStatus::Accuracy& a = out.accuracy;
-  if (std::optional<SelectionFile> const file = emit(db, state.defaults, Provenance{.ts = 0, .db = {}, .env = env})) {
+  if (std::optional<SelectionFile> const file =
+        emit(db, scheduler.lines(db, env, state), Provenance{.ts = 0, .db = {}, .env = env})) {
     for (const SelectionEntry& e : file->entries) {
       ++a.entries;
       a.exact += e.evidence == Evidence::NotApplicable;
@@ -128,8 +129,8 @@ TuneStatus statusOf(const Scheduler& scheduler, TuneDB& db, u32 env, double stop
       a.aboveTable += e.reach > table;
     }
   }
-  a.owed = u32(gatesOwed(db, env, state.defaults).size());
-  a.rejected = u32(rejectedSets(db, env, state.defaults).size());
+  a.owed = u32(gatesOwed(db, env).size());
+  a.rejected = u32(rejectedSets(db, env).size());
   return out;
 }
 

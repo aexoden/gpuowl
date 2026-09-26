@@ -24,15 +24,8 @@ namespace {
   return buf;
 }
 
-// The set as the gate tells builds apart: canonical where the table knows a key well enough to say it changes nothing,
-// and as written everywhere else.
 [[nodiscard]] std::string identity(const Env& env, const FFTConfig& fft, const UseConfig& opts) {
-  UseConfig out = canonicalConfig(env, fft, opts);
-  for (const auto& [key, value] : opts) {
-    const Option* const option = findOption(key);
-    if (!option || option->kind != Kind::Tunable) { out.emplace(key, value); }
-  }
-  return configText(out);
+  return configText(builtAs(env, fft, opts));
 }
 
 [[nodiscard]] ZReading toZ(const RoeRow& row) {

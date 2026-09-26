@@ -76,14 +76,13 @@ RunSummary summarize(const Scheduler& scheduler, const TuneDB& db, u32 env, u32 
   out.anchors = report.anchors;
   out.spent = report.spent;
 
-  BootstrapState const state = scheduler.bootstrapState(db, env);
-  Objective const valuing{db, env, scheduler.scope(), state.defaults, Gating::Assumed};
-  Objective const published{db, env, scheduler.scope(), state.defaults};
+  Objective const valuing{db, env, scheduler.scope(), Gating::Assumed};
+  Objective const published{db, env, scheduler.scope()};
   GainModel const gains = gainsOf(db, env);
   GainDist const unmeasured = gains.global();
 
   std::set<EntryKey> measured;
-  for (const OptionSet& s : optionSetsFor(db, env, state.defaults)) {
+  for (const OptionSet& s : optionSetsFor(db, env)) {
     measured.insert({s.entry.fft, s.entry.kind, s.entry.regime.label()});
   }
 

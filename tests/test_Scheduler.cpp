@@ -7,9 +7,11 @@
 #include "Scheduler.h"
 
 #include "Anchor.h"
+#include "Args.h"
 #include "Emit.h"
 #include "FFTVariants.h"
 #include "Primes.h"
+#include "Production.h"
 #include "Progress.h"
 #include "Selection.h"
 #include "Status.h"
@@ -537,7 +539,7 @@ TEST(what_failed_or_what_an_earlier_generation_died_on_is_not_offered_again) {
   u32 const defaults = f.db.internCfg({});
 
   auto offered = [&](const std::string& spec) {
-    Objective const objective{f.db, f.env, scheduler.scope(), {}, Gating::Assumed};
+    Objective const objective{f.db, f.env, scheduler.scope(), Gating::Assumed};
     for (const Item& item : scheduler.admissible(f.db, f.env, objective)) {
       if (scheduler.baselines()[item.index].fft.spec() == spec) { return true; }
     }
@@ -601,7 +603,7 @@ TEST(a_started_entry_is_finished_where_it_was_started) {
                         .m = {.mean = 1720, .stddev = 1, .blocks = 4, .calls = 1, .status = Status::Ok, .ts = 1}}));
 
   Scheduler scheduler{scope(), baselines(nvidia(), scope(), shapes())};
-  Objective const objective{f.db, f.env, scheduler.scope(), {}, Gating::Assumed};
+  Objective const objective{f.db, f.env, scheduler.scope(), Gating::Assumed};
   std::vector<Item> const ranked = scheduler.admissible(f.db, f.env, objective);
 
   auto const at = std::ranges::find_if(
@@ -776,18 +778,65 @@ TEST(a_candidate_the_host_builds_otherwise_drops_out_of_its_race) {
   CHECK_EQ(run.defaults.family.size(), size_t(1));
 }
 
-TEST(baselines_measured_under_earlier_defaults_are_measured_again_under_new_ones) {
+TEST(a_baseline_measured_under_earlier_lines_is_not_measured_again) {
   // A run with the bootstrap off measures every baseline at the built-in defaults; turned on, the races decide lines
-  // those rows do not match, emission would drop them, and so the baselines are owed again at the lines.
+  // those rows do not match.  A row names everything it ran, so it is still a measurement of its entry: the second run
+  // makes its bootstrap calls and nothing else, and what the first measured is published beside the new lines, naming
+  // what they would change.
   Fixture f;
   BootstrapRun const off = runBootstrapped(f, ~0u, {}, false);
   CHECK(std::ranges::none_of(off.order, [](const std::string& s) { return s.find(' ') != std::string::npos; }));
 
   f.newSession();
   BootstrapRun const on = runBootstrapped(f);
-  CHECK_EQ(configText(on.defaults.global), std::string{"WMUL=1"});
-  CHECK(std::ranges::count(on.order, std::string{"512:15:512:101@118063003 TAIL_KERNELS=3,WMUL=1"}) == MIN_CALLS);
-  CHECK(std::ranges::count(on.order, std::string{"3:1K:8:512:202@118063003 WMUL=1"}) == MIN_CALLS);
+  CHECK(!on.order.empty());
+  CHECK(std::ranges::all_of(on.order, isFamilyCall));
+  CHECK(!on.defaults.global.empty() || !on.defaults.family.empty());
+
+  auto const file = emit(f.db, on.defaults, Provenance{.ts = 0, .db = {}, .env = f.env});
+  CHECK(file.has_value());
+  if (!file) { return; }
+  CHECK(!file->entries.empty());
+  for (const SelectionEntry& e : file->entries) {
+    CHECK(shadowedKeys(Args{true}, nvidia(), *file, e, FFTConfig{e.fft}).empty());
+  }
+}
+
+TEST(a_baseline_is_taken_under_the_set_the_best_published_entry_runs) {
+  // With the bootstrap off the lines start empty.  FFT61 rounds nothing, so a row of it is published as soon as it
+  // concludes: here one at the probe under WMUL=1, the set a search of it found.  The lines then carry WMUL=1, and each
+  // baseline still owed is taken under it where it applies, which is what production runs an FFT with no entry at.
+  Fixture f;
+  Scheduler scheduler{scope(), baselines(nvidia(), scope(), shapes()), 1000, twoFamilies(false)};
+  std::string const spec = "3:1K:8:512:202";
+  CHECK(f.db.add(RunRow{.sess = f.sess,
+                        .fft = spec,
+                        .kind = TestKind::PRP,
+                        .exponent = 118'063'003,
+                        .regime = regimeOf(FFTConfig{spec}, 118'063'003),
+                        .cfg = f.db.internCfg({{"WMUL", "1"}}),
+                        .m = {.mean = 2000,
+                              .stddev = 0.1,
+                              .blocks = 4 * MIN_CALLS,
+                              .calls = MIN_CALLS,
+                              .drift = 1,
+                              .status = Status::Ok,
+                              .ts = 0}}));
+
+  Defaults const lines = scheduler.lines(f.db, f.env, scheduler.bootstrapState(f.db, f.env));
+  CHECK_EQ(linesText(lines), std::string{"WMUL=1"});
+
+  Objective const objective{f.db, f.env, scheduler.scope(), Gating::Assumed};
+  u32 underIt = 0;
+  for (const Item& item : scheduler.admissible(f.db, f.env, objective)) {
+    if (item.kind != ItemKind::Baseline) { continue; }
+    const Baseline& b = scheduler.baselines()[item.index];
+    CHECK(!(b.fft.spec() == spec && b.band.contains(118'063'003)));
+    CHECK(item.options == underDefaults(nvidia(), b.fft, b.kind, lines));
+    auto const wmul = item.options.find("WMUL");
+    underIt += wmul != item.options.end() && wmul->second == "1";
+  }
+  CHECK(underIt > 0);
 }
 
 namespace {
@@ -838,8 +887,8 @@ ProbeRun runProbed(Fixture& f, u32 stopAfter = ~0u, const std::function<UseConfi
   // As the search sees it: with the gate turned off nothing is published but what rounds nothing.
   out.report = runQueue(
     scheduler, f.db, f.env, bench,
-    [&](const Objective&, const Defaults& defaults) {
-      for (const SelectionEntry& e : entriesFor(f.db, f.env, defaults, Gating::Assumed)) {
+    [&](const Objective&, const Defaults&) {
+      for (const SelectionEntry& e : entriesFor(f.db, f.env, Gating::Assumed)) {
         if (e.fft == PROBED) {
           out.best = configText(canonicalConfig(nvidia(), FFTConfig{PROBED}, e.opts));
           break;
@@ -952,35 +1001,33 @@ TEST(the_bootstrap_still_runs_first_when_entries_are_probed) {
     return s.find(' ') != std::string::npos && opts != "WMUL=1" && opts != "TAIL_KERNELS=3,WMUL=1";
   }));
 
-  // A probe that moves a key back to its built-in value beside a line that sets it otherwise names it, since a row
-  // that left it out would be one the line shadows, and emission would never publish it.
+  // A probe back to a key's built-in value beside a line that sets it otherwise records the set it ran, and what it
+  // would publish names the key, so that it runs as it was measured.
   CHECK_EQ(configText(lines.global), std::string{"WMUL=1"});
-  std::vector<Item> const items = scheduler.admissible(f.db, f.env, Objective{f.db, f.env, scope(), lines});
+  std::vector<Item> const items = scheduler.admissible(f.db, f.env, Objective{f.db, f.env, scope(), Gating::Assumed});
   bool wmulBack = false;
   for (const Item& item : items) {
-    if (item.kind != ItemKind::Probe) { continue; }
+    if (item.kind != ItemKind::Probe || !item.what.ends_with("WMUL=2")) { continue; }
     const Baseline& b = scheduler.baselines()[item.index];
-    CHECK(!shadowedBy(lines, nvidia(), b.fft, b.kind, item.options));
-    wmulBack = wmulBack || (item.what.ends_with("WMUL=2") && item.options.at("WMUL") == "2");
+    wmulBack = true;
+    CHECK(!item.options.contains("WMUL"));
+    UseConfig const published = besideLines(nvidia(), b.fft, b.kind, lines, item.options);
+    CHECK_EQ(published.at("WMUL"), std::string{"2"});
   }
   CHECK(wmulBack);
 }
 
-TEST(a_probe_names_every_key_a_line_would_set_once_its_own_keys_are_in_place) {
+TEST(an_entry_names_every_key_a_line_would_set_once_its_own_keys_are_in_place) {
   // FFT3161 at width 512 offers L2_STRIPING up to 512/64 = 8 alone and 512/128 = 4 beside MULTI_Q=1, so under these
-  // lines L2_STRIPING=8 is fitted away.  A probe back to MULTI_Q=0 makes it legal again: the probe must name
-  // L2_STRIPING at its own value, or the line shadows its row and emission never publishes it.
+  // lines L2_STRIPING=8 is fitted away.  A set back at MULTI_Q=0 makes it legal again: the entry must name L2_STRIPING
+  // at its own value, or production would run it at 8.
   FFTConfig const fft{"1:512:8:512:202"};
   Defaults const lines{.global = {{"L2_STRIPING", "8"}, {"MULTI_Q", "1"}}, .family = {}};
 
-  UseConfig const probe = besideLines(nvidia(), fft, TestKind::PRP, lines, {});
-  CHECK_EQ(configText(probe), std::string{"L2_STRIPING=0,MULTI_Q=0"});
-  CHECK(!shadowedBy(lines, nvidia(), fft, TestKind::PRP, probe));
+  CHECK_EQ(configText(besideLines(nvidia(), fft, TestKind::PRP, lines, {})), std::string{"L2_STRIPING=0,MULTI_Q=0"});
 
-  // Beside MULTI_Q=1 the line is fitted away, and nothing needs naming but the probe's own key.
-  UseConfig const kept = besideLines(nvidia(), fft, TestKind::PRP, lines, {{"MULTI_Q", "1"}});
-  CHECK_EQ(configText(kept), std::string{"MULTI_Q=1"});
-  CHECK(!shadowedBy(lines, nvidia(), fft, TestKind::PRP, kept));
+  // Beside MULTI_Q=1 the line is fitted away, and nothing needs naming but the set's own key.
+  CHECK_EQ(configText(besideLines(nvidia(), fft, TestKind::PRP, lines, {{"MULTI_Q", "1"}})), std::string{"MULTI_Q=1"});
 }
 
 TEST(two_contested_entries_are_alternated_not_batched) {
@@ -1050,7 +1097,7 @@ TEST(an_entry_whose_moves_have_paid_is_probed_ahead_of_one_whose_have_not) {
   add("512:15:512:212", {{"ZEROHACK_W", "0"}}, 1710);
   add("512:15:512:212", {{"LDSPAD_W", "0"}}, 1705);
 
-  Objective const objective{f.db, f.env, scheduler.scope(), {}, Gating::Assumed};
+  Objective const objective{f.db, f.env, scheduler.scope(), Gating::Assumed};
   double paid = -1;
   double flat = -1;
   for (const Item& item : scheduler.admissible(f.db, f.env, objective)) {
@@ -1102,7 +1149,7 @@ TEST(an_unmeasured_entry_is_valued_under_the_gains_the_device_has_shown) {
   CHECK(near(gainsOf(f.db, f.env).all().n(), moves));
   CHECK(shown.mean() > 2 * GAIN_PRIOR.mean());
 
-  Objective const objective{f.db, f.env, scheduler.scope(), {}, Gating::Assumed};
+  Objective const objective{f.db, f.env, scheduler.scope(), Gating::Assumed};
   u32 checked = 0;
   for (const Item& item : scheduler.admissible(f.db, f.env, objective)) {
     const Baseline& b = scheduler.baselines()[item.index];
@@ -1386,8 +1433,8 @@ SearchRun runSearched(const Strategy& strategy, double (*factor)(const FFTConfig
   Scheduler scheduler{scope(), one, 1000, Bootstrap{nvidia(), 118'063'003, {}, false}, strategy};
 
   SearchRun out;
-  QueueReport const report = runQueue(scheduler, f.db, f.env, bench, [&](const Objective&, const Defaults& defaults) {
-    for (const SelectionEntry& e : entriesFor(f.db, f.env, defaults, Gating::Assumed)) {
+  QueueReport const report = runQueue(scheduler, f.db, f.env, bench, [&](const Objective&, const Defaults&) {
+    for (const SelectionEntry& e : entriesFor(f.db, f.env, Gating::Assumed)) {
       if (e.fft == PROBED) { out.best = configText(canonicalConfig(nvidia(), FFTConfig{PROBED}, e.opts)); }
     }
   });
@@ -1518,7 +1565,7 @@ TEST(a_probe_answered_in_one_regime_is_still_owed_in_another) {
 
   Scheduler const scheduler{wide, both, 1000, Bootstrap{nvidia(), 80'000'023, {}, false},
                             Strategy{.kind = Strategy::Kind::Single}};
-  Objective const objective{f.db, f.env, wide, {}, Gating::Assumed};
+  Objective const objective{f.db, f.env, wide, Gating::Assumed};
   for (int round = 0; round < 2; ++round) {
     std::vector<Item> const items = scheduler.admissible(f.db, f.env, objective);
     auto owed = [&](size_t index) {
@@ -1583,7 +1630,7 @@ TEST(a_combination_waits_for_the_tier_below_and_is_valued_by_the_combination_gai
     if (p.tier == 1) { measure(p.config); }
   }
 
-  Objective const objective{f.db, f.env, scope(), {}, Gating::Assumed};
+  Objective const objective{f.db, f.env, scope(), Gating::Assumed};
   std::vector<Item> const late = scheduler.admissible(f.db, f.env, objective);
   CHECK(kindsOf(late, ItemKind::Combo) > 0);
 
@@ -1592,7 +1639,7 @@ TEST(a_combination_waits_for_the_tier_below_and_is_valued_by_the_combination_gai
   const Baseline& b = one.front();
   EntryKey const key{PROBED, b.kind, b.band.regime.label()};
   double best = 0;
-  for (const OptionSet& s : optionSetsFor(f.db, f.env, {})) {
+  for (const OptionSet& s : optionSetsFor(f.db, f.env)) {
     if (s.entry.fft == PROBED && (!best || s.entry.cost < best)) { best = s.entry.cost; }
   }
   GainModel const gains = gainsOf(f.db, f.env);
@@ -1788,7 +1835,7 @@ TEST(a_reading_the_gate_owes_is_taken_before_anything_valued) {
   Scheduler scheduler{scope(), baselines(nvidia(), scope(), shapes()), 1000, {}, {}, false, true};
   conclude(f, "1K:8:1K:112", {}, 2900);
 
-  Objective const objective{f.db, f.env, scheduler.scope(), {}, Gating::Assumed};
+  Objective const objective{f.db, f.env, scheduler.scope(), Gating::Assumed};
   std::vector<Item> const owed = scheduler.admissible(f.db, f.env, objective);
   CHECK_EQ(owed.size(), size_t{1});
   CHECK(owed.at(0).kind == ItemKind::Gate);
@@ -1885,7 +1932,7 @@ TEST(a_gap_is_offered_only_to_the_baselines_that_can_fill_it) {
                         .checkOk = true,
                         .ts = 1}));
 
-  Objective const objective{f.db, f.env, scheduler.scope(), {}, Gating::Assumed};
+  Objective const objective{f.db, f.env, scheduler.scope(), Gating::Assumed};
   CHECK(!covered(objective));
   std::vector<Item> const offered = scheduler.admissible(f.db, f.env, objective);
   CHECK(!offered.empty());
@@ -1943,7 +1990,7 @@ TEST(a_set_that_spends_accuracy_has_its_defaults_read_as_well) {
                         .checkOk = true,
                         .ts = 1}));
 
-  Objective const objective{f.db, f.env, scheduler.scope(), {}, Gating::Assumed};
+  Objective const objective{f.db, f.env, scheduler.scope(), Gating::Assumed};
   std::vector<Item> const owed = scheduler.admissible(f.db, f.env, objective);
   CHECK_EQ(owed.size(), size_t{1});
   if (owed.empty()) { return; }
@@ -2015,7 +2062,7 @@ TEST(a_reach_item_is_worth_what_the_set_would_save_between_its_reach_and_the_rea
     readAt(f, fft, top, 32, 1);
     readAt(f, larger, gateExponent(interval(larger, scope.probe)), 24, 2);
 
-    Objective const objective{f.db, f.env, scheduler.scope(), {}, Gating::Assumed};
+    Objective const objective{f.db, f.env, scheduler.scope(), Gating::Assumed};
     std::vector<Item> const items = scheduler.admissible(f.db, f.env, objective);
     auto const reach = std::ranges::find(items, ItemKind::Reach, &Item::kind);
 
@@ -2049,7 +2096,7 @@ TEST(a_reach_item_is_worth_what_the_set_would_save_between_its_reach_and_the_rea
     if (entry == published.end()) { continue; }
     CHECK_EQ(entry->reach, reach->exponent);
     CHECK(entry->evidence == Evidence::Confirmed);
-    Objective const after{f.db, f.env, scheduler.scope(), {}, Gating::Assumed};
+    Objective const after{f.db, f.env, scheduler.scope(), Gating::Assumed};
     CHECK(after.T() < objective.T());
     CHECK(std::ranges::none_of(scheduler.admissible(f.db, f.env, after),
                                [](const Item& i) { return i.kind == ItemKind::Reach; }));
@@ -2095,7 +2142,7 @@ TEST(a_raise_is_offered_for_a_workload_wholly_past_the_band_that_holds_its_set) 
   readAt(f, fft, top, 32, 1);
   readAt(f, larger, gateExponent(interval(larger, span.hi + 1'000'000)), 24, 2);
 
-  Objective const objective{f.db, f.env, scheduler.scope(), {}, Gating::Assumed};
+  Objective const objective{f.db, f.env, scheduler.scope(), Gating::Assumed};
   std::vector<Item> const items = scheduler.admissible(f.db, f.env, objective);
   auto const reach = std::ranges::find(items, ItemKind::Reach, &Item::kind);
   CHECK(reach != items.end());
@@ -2130,7 +2177,7 @@ TEST(one_reading_that_raises_several_kinds_is_worth_what_it_saves_in_each) {
   readAt(f, fft, top, 32, 1);
   readAt(f, larger, gateExponent(interval(larger, top - 1'000'000)), 24, 2);
 
-  Objective const objective{f.db, f.env, scheduler.scope(), {}, Gating::Assumed};
+  Objective const objective{f.db, f.env, scheduler.scope(), Gating::Assumed};
   std::vector<Item> const items = scheduler.admissible(f.db, f.env, objective);
   CHECK_EQ(std::ranges::count(items, ItemKind::Reach, &Item::kind), 1);
   auto const reach = std::ranges::find(items, ItemKind::Reach, &Item::kind);
@@ -2263,8 +2310,7 @@ void checkSummary(SummaryRun& run, double stop) {
   const TuneDB& db = run.f.db;
   u32 const env = run.f.env;
 
-  BootstrapState const state = run.scheduler.bootstrapState(db, env);
-  Objective const valuing{db, env, scope(), state.defaults, Gating::Assumed};
+  Objective const valuing{db, env, scope(), Gating::Assumed};
   std::vector<Item> const left = run.scheduler.admissible(db, env, valuing);
   CHECK(!left.empty());
 
@@ -2476,8 +2522,7 @@ TEST(a_status_is_the_queues_own_view_of_the_database_it_reads) {
   CHECK(std::abs(s.floor - run.summary.floor) <= 1e-6 * run.summary.floor);
 
   // Every item the queue offers is accounted for, and those named are worth running, best rate first.
-  BootstrapState const state = fresh.bootstrapState(db, run.f.env);
-  Objective const valuing{db, run.f.env, scope(), state.defaults, Gating::Assumed};
+  Objective const valuing{db, run.f.env, scope(), Gating::Assumed};
   std::vector<Item> const left = fresh.admissible(db, run.f.env, valuing);
   CHECK_EQ(s.next.size(), STATUS_NEXT);
   CHECK_EQ(s.next.size() + s.moreWorth + s.notWorth, left.size());

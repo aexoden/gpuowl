@@ -93,12 +93,6 @@ struct Baseline {
   [[nodiscard]] std::string label() const;
 };
 
-// `config`, canonical, with every key the lines would set to something else named at the value `config` runs it at,
-// so that the row it records is one emission can publish beside them: a probe that moves a key back to its built-in
-// value drops it from the canonical set, and a line setting it would then shadow the row.
-[[nodiscard]] UseConfig besideLines(const Env& env, const FFTConfig& fft, TestKind kind, const Defaults& defaults,
-                                    UseConfig config);
-
 // Every entry `env` could publish that the workload gives any weight to: each shape, at each variant `env` can compile,
 // in each regime band of the automatic carry that holds a grid point.
 [[nodiscard]] std::vector<Baseline> baselines(const Env& env, const RunScope& scope,
@@ -119,10 +113,9 @@ struct Item {
   // which the workload need not weigh at all, and one reading raises every kind of the set at once.
   std::optional<FFTConfig> fft{};
 
-  // What the configuration is built with: a bootstrap candidate, for a baseline the defaults the bootstrap decided, for
-  // a probe, a combo or a restart its option set with every key the lines would set otherwise named at its own value,
-  // for a refine the option set its row was recorded under, for a gate the set it reads: the one waiting on it, or that
-  // set's accuracy reference, and for a reach the set whose reach it raises.
+  // What the configuration is built with: a bootstrap candidate, for a baseline the lines as they stand, for a probe, a
+  // combo or a restart its option set, for a refine the option set its row was recorded under, for a gate the set it
+  // reads: the one waiting on it, or that set's accuracy reference, and for a reach the set whose reach it raises.
   UseConfig options{};
 
   // A gate's or a reach's: the option set the reading is for, and the interval the fitted table gives it, which the
@@ -215,6 +208,11 @@ public:
 
   [[nodiscard]] BootstrapState bootstrapState(const TuneDB& db, u32 env) const;
 
+  // The default lines as they stand -- what the selection file publishes beside its entries, and what a baseline is
+  // taken under, so that it measures what production runs an FFT nothing has been published for at: publishedLines()
+  // over the sets the gate has passed, at the probe, from `state`.
+  [[nodiscard]] Defaults lines(const TuneDB& db, u32 env, const BootstrapState& state) const;
+
   // Every item that may run now, scored against what `env` has measured, by `objective` -- which should count the sets
   // the gate still owes a reading, Gating::Assumed, since those readings are taken first.  While a family still has a
   // bootstrap call to make, those calls are all there is, most wanted first: every other configuration runs at what the
@@ -260,11 +258,11 @@ private:
 
   [[nodiscard]] std::vector<Item> bootstrapItems(const BootstrapState& state, const Objective& objective) const;
 
-  [[nodiscard]] std::vector<Item> baselineItems(const TuneDB& db, u32 env, const BootstrapState& state,
+  [[nodiscard]] std::vector<Item> baselineItems(const TuneDB& db, u32 env, const Defaults& lines,
                                                 const Progress& progress, const GainModel& gains,
                                                 const Objective& objective) const;
 
-  [[nodiscard]] std::vector<Item> gateItems(const TuneDB& db, u32 env, const Defaults& defaults) const;
+  [[nodiscard]] std::vector<Item> gateItems(const TuneDB& db, u32 env) const;
 
   [[nodiscard]] std::vector<Item> coverItems(std::span<const Item> baselines, const Objective& objective) const;
 
@@ -299,7 +297,7 @@ private:
 
   // The restart `baselines_[index]` would make next, if its space has anything left to offer.
   [[nodiscard]] std::optional<Item> nextRestart(const TuneDB& db, u32 env, const Progress& progress,
-                                                const Defaults& defaults, size_t index) const;
+                                                size_t index) const;
 
   RunScope scope_;
   std::vector<Baseline> baselines_;
@@ -410,7 +408,10 @@ struct QueueReport {
   double floor = 0;
 };
 
-// What a run publishes: the objective the entries give, and the default lines the bootstrap has decided so far.
+// The lines as the log says them: the global line, then each family's after a "; ! <type>".
+[[nodiscard]] std::string linesText(const Defaults& lines);
+
+// What a run publishes: the objective the entries give, and the default lines as they stand (Scheduler::lines()).
 using Publisher = std::function<void(const Objective&, const Defaults&)>;
 
 class Watch;

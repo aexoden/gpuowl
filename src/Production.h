@@ -81,6 +81,11 @@ struct Choice {
 // Where the selection file is looked for: beside the work, else in the pool directory, as tune.txt is.
 [[nodiscard]] fs::path selectionPath(const Args& args);
 
+// What choose() says where `file` exists but no entry of it covers `E`: that what runs was not tuned, what the file
+// does cover, and a workload that would. Where there is no file at all there is nothing to say: the run is untuned as
+// a matter of course.
+[[nodiscard]] std::string uncoveredNote(const SelectionFile& file, const Args& args, u64 E, TestKind kind);
+
 // What to run, warning once about anything a published entry lost to the user's own settings. Falls back to the shape
 // scan where there is no file, no entry for the exponent, or an -fft spec nothing was published for -- and asks it
 // again for something larger where its answer is a configuration published as reaching less far than this exponent, or
