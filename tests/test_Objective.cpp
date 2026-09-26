@@ -25,9 +25,9 @@ namespace {
 const char* const DB =
   "# prpll tunedb v1\n"
   "env   1 gpu=\"NVIDIA RTX A4000\" name=\"NVIDIA RTX A4000\" drv=550.163.01 vendor=nvidia be=ocl cc=806 noasm=0"
-  " pdl=0 machine=01:00.0 build=9a3f21c0d1e2f304\n"
+  " pdl=0 fp64=1 builtins=1 machine=01:00.0 build=9a3f21c0d1e2f304\n"
   "env   2 gpu=\"Tesla P100-PCIE-16GB\" name=\"Tesla P100-PCIE-16GB\" drv=550.163.01 vendor=nvidia be=ocl cc=600"
-  " noasm=0 pdl=0 machine=4d:00.0 build=9a3f21c0d1e2f304\n"
+  " noasm=0 pdl=0 fp64=1 builtins=1 machine=4d:00.0 build=9a3f21c0d1e2f304\n"
   "cfg   17 INPLACE=1,PAD=256,TAIL_KERNELS=3\n"
   "cfg   21 INPLACE=1,PAD=256\n"
   "sess  4 env=1 start=1753471200 gen=0 anchor=512:15:512:212@100000000\n"
@@ -80,7 +80,8 @@ TEST(with_nothing_measured_T_is_finite_and_every_point_is_priced) {
 
   // Both ways of having nothing: no database at all, and an env with no rows.
   TuneDB const empty = loaded("# prpll tunedb v1\n"
-                              "env   1 gpu=\"X\" name=\"X\" drv=1 vendor=nvidia be=ocl cc=806 noasm=0 pdl=0 machine=-"
+                              "env   1 gpu=\"X\" name=\"X\" drv=1 vendor=nvidia be=ocl cc=806 noasm=0 pdl=0"
+                              " fp64=1 builtins=1 machine=-"
                               " build=9a3f21c0d1e2f304\n");
   for (const Objective& objective : {Objective{Env{}, scope}, Objective{empty, 1, scope}}) {
     CHECK(std::isfinite(objective.T()));
@@ -161,7 +162,8 @@ TEST(c_star_is_the_cheapest_entry_of_its_own_kind_that_covers_the_exponent) {
 
 TEST(a_kind_with_nothing_measured_of_its_own_is_priced_by_the_prior) {
   TuneDB const db = loaded("# prpll tunedb v1\n"
-                           "env   1 gpu=\"X\" name=\"X\" drv=1 vendor=nvidia be=ocl cc=806 noasm=0 pdl=0 machine=-"
+                           "env   1 gpu=\"X\" name=\"X\" drv=1 vendor=nvidia be=ocl cc=806 noasm=0 pdl=0"
+                           " fp64=1 builtins=1 machine=-"
                            " build=9a3f21c0d1e2f304\n"
                            "cfg   17 INPLACE=1\n"
                            "sess  4 env=1 start=1753471200 gen=0 anchor=512:15:512:212@100000000\n"

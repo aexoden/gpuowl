@@ -8,6 +8,8 @@
 #include "fs.h"
 
 #include "BuildId.h"
+#include "FFTConfig.h"
+#include "FFTVariants.h"
 #include "File.h"
 #include "test.h"
 
@@ -24,7 +26,7 @@ namespace {
 const char* const FIXTURE =
   "# prpll tunedb v1\n"
   "env   1 gpu=\"NVIDIA RTX A4000\" name=\"NVIDIA RTX A4000\" drv=550.163.01 vendor=nvidia be=ocl cc=806 noasm=0"
-  " pdl=0 machine=01:00.0 build=9a3f21c0d1e2f304 fanspeed=42 \"note=two words\"\n"
+  " pdl=0 fp64=1 builtins=1 machine=01:00.0 build=9a3f21c0d1e2f304 fanspeed=42 \"note=two words\"\n"
   "cfg   1 -\n"
   "cfg   17 INPLACE=1,PAD=256,TAIL_KERNELS=3\n"
   "sess  4 env=1 start=1753471200 gen=0 anchor=512:15:512:212@143400073\n"
@@ -81,6 +83,7 @@ TEST(rows_are_read) {
   DbEnv const& env = db.envs().at(0);
   CHECK_EQ(env.gpu, std::string{"NVIDIA RTX A4000"});
   CHECK(env.isNvidia && !env.isAmd && !env.cudaBackend && !env.noAsm && !env.pdlLaunch);
+  CHECK(env.hasFP64 && env.amdBuiltins);
   CHECK_EQ(env.computeCapability, 806u);
   CHECK_EQ(env.machine, std::string{"01:00.0"});
   CHECK_EQ(env.build, u64{0x9a3f21c0d1e2f304});
@@ -315,6 +318,32 @@ TEST(an_environment_this_build_cannot_name_is_refused) {
   CHECK(!db.envs().at(0).isAmd && !db.envs().at(0).isNvidia);
 }
 
+TEST(an_env_row_says_what_the_card_can_build) {
+  // Without them, a command that opens no device would offer a card FFTs it cannot build.
+  rejects("fp64=1 builtins=1 machine=01:00.0", "builtins=1 machine=01:00.0");
+  rejects("fp64=1 builtins=1 machine=01:00.0", "fp64=1 machine=01:00.0");
+  rejects("fp64=1 builtins=1 machine=01:00.0", "fp64=yes builtins=1 machine=01:00.0");
+
+  std::string text = withRow("vendor=nvidia", "vendor=amd");
+  text.replace(text.find("fp64=1 builtins=1"), 17, "fp64=0 builtins=0");
+  TuneDB const amd = loaded(text);
+  CHECK_EQ(amd.text(), text);
+  const DbEnv& row = amd.envs().at(0);
+  CHECK(!row.hasFP64 && !row.amdBuiltins);
+
+  Env const card = row.toEnv();
+  CHECK(!card.hasFP64 && !card.amdBuiltins);
+  CHECK(runnableVariants(card, FFTConfig{"1K:8:1K"}.shape).empty());
+  std::vector<u32> const variants = runnableVariants(card, FFTConfig{"2:1K:8:1K"}.shape);
+  CHECK(!variants.empty());
+  for (u32 const v : variants) { CHECK(variant_W(v) != 0 && variant_H(v) != 0); }
+
+  // The same card with and without the compiler's builtins is not the same card: it builds other kernels.
+  DbEnv other = row;
+  other.amdBuiltins = true;
+  CHECK(!row.sameCard(other));
+}
+
 TEST(a_machine_or_an_anchor_holding_a_space_survives) {
   DbEnv env;
   env.id = 1;
@@ -368,7 +397,8 @@ TEST(specs_are_canonical) {
   // 1K is 1024, so two spellings of one configuration land on one database key rather than being measured twice under
   // two names.
   std::string text = "# prpll tunedb v1\n"
-                     "env   1 gpu=x name=x drv=1 vendor=amd be=ocl cc=0 noasm=0 pdl=0 machine=- build=0\n"
+                     "env   1 gpu=x name=x drv=1 vendor=amd be=ocl cc=0 noasm=0 pdl=0"
+                     " fp64=1 builtins=1 machine=- build=0\n"
                      "cfg   1 -\n"
                      "sess  1 env=1 start=1 gen=0 anchor=-\n"
                      "run   1 1024:8:1024:102 prp 143400073 short32 1 1.000 0.100 4 1 1.0000 ok 9\n";
@@ -728,26 +758,27 @@ namespace {
 
 // Two envs that are the same card under two kernel builds, each with readings of its own, plus a pair of duplicate
 // readings inside one env and a second spelling of one option set.
-const char* const FOLDING =
-  "# prpll tunedb v1\n"
-  "env   1 gpu=\"a card\" name=\"a card\" drv=1.0 vendor=nvidia be=ocl cc=806 noasm=0 pdl=0 machine=01:00.0"
-  " build=1111111111111111\n"
-  "env   2 gpu=\"a card\" name=\"a card\" drv=1.0 vendor=nvidia be=ocl cc=806 noasm=0 pdl=0 machine=01:00.0"
-  " build=2222222222222222\n"
-  "cfg   1 PAD=256\n"
-  "cfg   2 PAD=256\n"
-  "cfg   3 PAD=128\n"
-  "sess  1 env=1 start=1000 gen=0 anchor=512:15:512:212@143400073\n"
-  "sess  2 env=1 start=2000 gen=0 anchor=512:15:512:212@143400073\n"
-  "sess  3 env=2 start=3000 gen=0 anchor=512:15:512:212@143400073\n"
-  "run   1 512:15:512:212 prp 143400073 short32 1 1000.000 0.000 4 1 1.0000 ok 1100\n"
-  "run   2 512:15:512:212 prp 143400073 short32 2 1010.000 0.000 4 1 1.0000 ok 2100\n"
-  "run   1 512:15:512:212 prp 143400073 short32 3 1500.000 0.000 4 1 1.0000 ok 1200\n"
-  "run   3 512:15:512:212 prp 143400073 short32 1 1400.000 0.000 4 1 1.0000 ok 3100\n"
-  "nogo  1 256:2:256:212 SHUFL_BYTES_W=16 1150\n"
-  "roe   1 512:15:512:212 143400073 1 29.40 118 0.371094 ok - 1300\n"
-  "roe   2 512:15:512:212 143400073 1 31.00 200 0.400000 fail - 2300\n"
-  "ref   1 512:15:512:212 1000151 2000 171f3662c332472f 1500\n";
+const char* const FOLDING = "# prpll tunedb v1\n"
+                            "env   1 gpu=\"a card\" name=\"a card\" drv=1.0 vendor=nvidia be=ocl cc=806 noasm=0 pdl=0"
+                            " fp64=1 builtins=1 machine=01:00.0"
+                            " build=1111111111111111\n"
+                            "env   2 gpu=\"a card\" name=\"a card\" drv=1.0 vendor=nvidia be=ocl cc=806 noasm=0 pdl=0"
+                            " fp64=1 builtins=1 machine=01:00.0"
+                            " build=2222222222222222\n"
+                            "cfg   1 PAD=256\n"
+                            "cfg   2 PAD=256\n"
+                            "cfg   3 PAD=128\n"
+                            "sess  1 env=1 start=1000 gen=0 anchor=512:15:512:212@143400073\n"
+                            "sess  2 env=1 start=2000 gen=0 anchor=512:15:512:212@143400073\n"
+                            "sess  3 env=2 start=3000 gen=0 anchor=512:15:512:212@143400073\n"
+                            "run   1 512:15:512:212 prp 143400073 short32 1 1000.000 0.000 4 1 1.0000 ok 1100\n"
+                            "run   2 512:15:512:212 prp 143400073 short32 2 1010.000 0.000 4 1 1.0000 ok 2100\n"
+                            "run   1 512:15:512:212 prp 143400073 short32 3 1500.000 0.000 4 1 1.0000 ok 1200\n"
+                            "run   3 512:15:512:212 prp 143400073 short32 1 1400.000 0.000 4 1 1.0000 ok 3100\n"
+                            "nogo  1 256:2:256:212 SHUFL_BYTES_W=16 1150\n"
+                            "roe   1 512:15:512:212 143400073 1 29.40 118 0.371094 ok - 1300\n"
+                            "roe   2 512:15:512:212 143400073 1 31.00 200 0.400000 fail - 2300\n"
+                            "ref   1 512:15:512:212 1000151 2000 171f3662c332472f 1500\n";
 
 // The fixture above with one row replaced.
 std::string withRow(const std::string& original, const std::string& replacement, const std::string& text) {
@@ -984,9 +1015,9 @@ TEST(adopt_refuses_two_envs_that_measure_against_different_anchors) {
 
 TEST(adopt_refuses_an_env_that_is_not_the_card) {
   std::string const otherCard = withRow("env   2 gpu=\"a card\" name=\"a card\" drv=1.0 vendor=nvidia be=ocl cc=806"
-                                        " noasm=0 pdl=0 machine=01:00.0 build=2222222222222222",
+                                        " noasm=0 pdl=0 fp64=1 builtins=1 machine=01:00.0 build=2222222222222222",
                                         "env   2 gpu=\"a card\" name=\"a card\" drv=1.0 vendor=nvidia be=ocl cc=806"
-                                        " noasm=0 pdl=0 machine=02:00.0 build=2222222222222222",
+                                        " noasm=0 pdl=0 fp64=1 builtins=1 machine=02:00.0 build=2222222222222222",
                                         FOLDING);
 
   TuneDB db = loaded(otherCard);
@@ -1020,7 +1051,8 @@ TEST(an_env_whose_sessions_raced_is_pinned_by_its_first_anchor_reading) {
   TuneDB db;
   CHECK(db.parse(std::string{TuneDB::HEADER} +
                    "\n"
-                   "env   1 gpu=\"a card\" name=\"a card\" drv=1 vendor=nvidia be=ocl cc=806 noasm=0 pdl=0 machine=-"
+                   "env   1 gpu=\"a card\" name=\"a card\" drv=1 vendor=nvidia be=ocl cc=806 noasm=0 pdl=0"
+                   " fp64=1 builtins=1 machine=-"
                    " build=0000000000000001\n"
                    "cfg   1 -\n"
                    "sess  1 env=1 start=1753471200 gen=0 anchor=-\n"

@@ -243,6 +243,8 @@ Env DbEnv::toEnv() const {
              .isNvidia = isNvidia,
              .cudaBackend = cudaBackend,
              .noAsm = noAsm,
+             .hasFP64 = hasFP64,
+             .amdBuiltins = amdBuiltins,
              .computeCapability = computeCapability,
              .pdlLaunch = pdlLaunch,
              .deviceName = gpu,
@@ -254,7 +256,8 @@ bool DbEnv::sameMachine(const DbEnv& other) const { return sameCard(other) && bu
 bool DbEnv::sameCard(const DbEnv& other) const {
   return gpu == other.gpu && name == other.name && driver == other.driver && isAmd == other.isAmd &&
     isNvidia == other.isNvidia && cudaBackend == other.cudaBackend && noAsm == other.noAsm &&
-    pdlLaunch == other.pdlLaunch && computeCapability == other.computeCapability && machine == other.machine;
+    pdlLaunch == other.pdlLaunch && computeCapability == other.computeCapability && hasFP64 == other.hasFP64 &&
+    amdBuiltins == other.amdBuiltins && machine == other.machine;
 }
 
 DbEnv dbEnvOf(const Env& env) {
@@ -267,6 +270,8 @@ DbEnv dbEnvOf(const Env& env) {
                .noAsm = env.noAsm,
                .pdlLaunch = env.pdlLaunch,
                .computeCapability = env.computeCapability,
+               .hasFP64 = env.hasFP64,
+               .amdBuiltins = env.amdBuiltins,
                .machine = {},
                .build = buildFingerprint(),
                .extra = {}};
@@ -279,8 +284,9 @@ std::string formatRow(const DbEnv& row) {
        : row.isNvidia ? "nvidia"
                       : "-") +
     " be=" + (row.cudaBackend ? "cuda" : "ocl") + " cc=" + to_string(row.computeCapability) +
-    " noasm=" + (row.noAsm ? "1" : "0") + " pdl=" + (row.pdlLaunch ? "1" : "0") +
-    " machine=" + (row.machine.empty() ? "-" : quoted(row.machine)) + " build=" + hex16(row.build);
+    " noasm=" + (row.noAsm ? "1" : "0") + " pdl=" + (row.pdlLaunch ? "1" : "0") + " fp64=" + (row.hasFP64 ? "1" : "0") +
+    " builtins=" + (row.amdBuiltins ? "1" : "0") + " machine=" + (row.machine.empty() ? "-" : quoted(row.machine)) +
+    " build=" + hex16(row.build);
   for (const std::string& field : row.extra) { out += ' ' + quoted(field); }
   return out;
 }
@@ -1022,6 +1028,8 @@ bool TuneDB::parse(std::string_view text, std::string_view name) {
       e.id = *id;
 
       bool bad = false;
+      bool sawFP64 = false;
+      bool sawBuiltins = false;
       for (size_t i = 2; i < f.size() && !bad; ++i) {
         auto const [key, val] = keyValue(f[i]);
 
@@ -1070,6 +1078,12 @@ bool TuneDB::parse(std::string_view text, std::string_view name) {
           flag(e.noAsm);
         } else if (key == "pdl") {
           flag(e.pdlLaunch);
+        } else if (key == "fp64") {
+          flag(e.hasFP64);
+          sawFP64 = true;
+        } else if (key == "builtins") {
+          flag(e.amdBuiltins);
+          sawBuiltins = true;
         } else if (key == "machine") {
           e.machine = val == "-" ? "" : std::string{val};
         } else if (key == "build") {
@@ -1086,6 +1100,11 @@ bool TuneDB::parse(std::string_view text, std::string_view name) {
       }
 
       if (bad) { continue; }
+      // Read as present, either would offer a card FFTs it cannot build to every command that opens no device.
+      if (!sawFP64 || !sawBuiltins) {
+        refuse("env " + to_string(e.id) + " does not say whether the card has fp64= and builtins=");
+        continue;
+      }
       if (findEnv(e.id)) {
         refuse("env " + to_string(e.id) + " declared twice" + TWO_WRITERS);
       } else if (!add(e)) {
