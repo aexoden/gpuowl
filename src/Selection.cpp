@@ -14,6 +14,7 @@
 #include <map>
 #include <set>
 #include <system_error>
+#include <tuple>
 
 namespace tune {
 
@@ -54,6 +55,8 @@ bool entryIsSound(const SelectionEntry& e, const FFTConfig& fft, std::string_vie
 
   return true;
 }
+
+auto exclusionKey(const Exclusion& x) { return std::tuple{x.fft, x.kind, x.regime.label(), configText(x.opts)}; }
 
 }  // namespace
 
@@ -105,6 +108,23 @@ bool finalize(SelectionFile& file) {
   }
 
   std::ranges::stable_sort(file.entries, {}, &SelectionEntry::cost);
+
+  for (Exclusion& x : file.excluded) {
+    auto const fft = parseFft(x.fft);
+    if (!fft) {
+      log("Selection exclusion '%s' is not an FFT spec\n", x.fft.c_str());
+      return false;
+    }
+    if (!isWriteableConfig(x.opts)) {
+      log("Selection exclusion '%s' holds an option this format cannot write back\n", x.fft.c_str());
+      return false;
+    }
+    x.fft = fft->spec();
+  }
+
+  std::ranges::sort(file.excluded, {}, exclusionKey);
+  auto const repeats = std::ranges::unique(file.excluded);
+  file.excluded.erase(repeats.begin(), repeats.end());
   return true;
 }
 
@@ -233,6 +253,23 @@ std::optional<SelectionFile> parseSelection(std::string_view text, std::string_v
       } else if (!opts.emplace(f[1], *config).second) {
         refuse("a second option set for entry " + f[1]);
       }
+    } else if (tag == "exclude") {
+      if (f.size() != 5) {
+        refuse("exclude has " + to_string(f.size()) + " fields, expected 5");
+        continue;
+      }
+
+      auto const fft = parseFft(f[1]);
+      auto const kind = parseTestKind(f[2]);
+      auto const regime = parseRegime(f[3]);
+      auto const config = parseConfigText(f[4]);
+      if (!fft) { refuse("'" + f[1] + "' is not an FFT spec"); }
+      if (!kind) { refuse("'" + f[2] + "' is not a test kind"); }
+      if (!regime) { refuse("'" + f[3] + "' is not a regime"); }
+      if (!config) { refuse("'" + f[4] + "' is not an option set"); }
+      if (!fft || !kind || !regime || !config) { continue; }
+
+      file.excluded.push_back(Exclusion{.fft = fft->spec(), .kind = *kind, .regime = *regime, .opts = *config});
     } else {
       file.unknown.push_back(line);
     }
@@ -299,6 +336,10 @@ std::string text(const SelectionFile& file) {
     out += "entry " + e.id + ' ' + costText(e.cost) + ' ' + e.fft + ' ' + toString(e.kind) + ' ' + to_string(e.emin) +
       ' ' + to_string(e.reach) + ' ' + toString(e.evidence) + '\n';
     out += "opts  " + e.id + ' ' + configText(e.opts) + '\n';
+  }
+
+  for (const Exclusion& x : file.excluded) {
+    out += "exclude " + x.fft + ' ' + toString(x.kind) + ' ' + x.regime.label() + ' ' + configText(x.opts) + '\n';
   }
 
   for (const std::string& line : file.unknown) { out += line + '\n'; }

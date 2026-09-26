@@ -3,6 +3,7 @@
 #include "Emit.h"
 
 #include "Args.h"
+#include "Bootstrap.h"
 #include "CycleFile.h"
 #include "Gate.h"
 #include "log.h"
@@ -64,13 +65,16 @@ Configuration configurationOf(const RunRow& row, const UseConfig& opts) {
 // reason an entry covers one -- so such a row withdraws the configuration from the whole of it rather than from the
 // exponent that happened to catch it.  A build that would not compile or a run the backend refused says nothing about
 // the answers the configuration computes, and a lost device is attributed to the fault and not to what was running.
-std::set<Configuration> condemned(const TuneDB& db, u32 env, const std::vector<RunRow>& runs) {
-  std::set<Configuration> out;
+std::map<Configuration, Exclusion> condemned(const TuneDB& db, u32 env, const std::vector<RunRow>& runs) {
+  std::map<Configuration, Exclusion> out;
 
   for (const RunRow& row : runs) {
     if (db.envOf(row.sess) != env || row.m.status != Status::Err) { continue; }
     const UseConfig* const opts = db.findCfg(row.cfg);
-    if (opts) { out.insert(configurationOf(row, *opts)); }
+    if (opts) {
+      out.try_emplace(configurationOf(row, *opts),
+                      Exclusion{.fft = row.fft, .kind = row.kind, .regime = row.regime, .opts = *opts});
+    }
   }
 
   return out;
@@ -200,7 +204,7 @@ std::vector<Candidate> publishedFor(const TuneDB& db, u32 env, const Defaults& d
   Gates const gates{db, env, built};
 
   std::vector<RunRow> const runs = db.mergedRuns();
-  std::set<Configuration> const failed = condemned(db, env, runs);
+  std::map<Configuration, Exclusion> const failed = condemned(db, env, runs);
 
   // One candidate per option set of an identity.  A configuration measured at two exponents of one regime is two rows
   // of one thing -- the cost is per iteration, and the regime is what decides which kernels ran -- so the better
@@ -308,9 +312,16 @@ std::optional<SelectionFile> emit(const TuneDB& db, const Defaults& defaults, co
                      .global = {defaults.global.begin(), defaults.global.end()},
                      .family = defaults.family,
                      .entries = {},
+                     .excluded = {},
                      .unknown = {}};
 
   for (Candidate& c : publishedFor(db, from.env, defaults)) { file.entries.push_back(std::move(c.entry)); }
+
+  // Leaving a configuration out of the entries only keeps the walk from it; production reaches configurations by other
+  // paths, and needs to be told which ones it must not arrive at.
+  for (auto& [configuration, exclusion] : condemned(db, from.env, db.mergedRuns())) {
+    if (isWriteableConfig(exclusion.opts)) { file.excluded.push_back(std::move(exclusion)); }
+  }
 
   if (!finalize(file)) { return {}; }
   return file;
@@ -319,6 +330,13 @@ std::optional<SelectionFile> emit(const TuneDB& db, const Defaults& defaults, co
 std::vector<TuneEntry> compatibilityView(const SelectionFile& file, const Env& env) {
   std::map<std::string, TuneEntry> cheapest;
   std::set<std::string> shortOfTable;
+
+  // An older binary runs a listed FFT at its defaults, and reads no exclusion that would stop it.
+  std::set<std::string> wrongAtDefaults;
+  for (const Exclusion& x : file.excluded) {
+    auto const fft = parseFft(x.fft);
+    if (fft && canonicalConfig(env, *fft, x.opts).empty()) { wrongAtDefaults.insert(fft->spec()); }
+  }
 
   for (const SelectionEntry& e : file.entries) {
     auto const fft = parseFft(e.fft);
@@ -343,7 +361,7 @@ std::vector<TuneEntry> compatibilityView(const SelectionFile& file, const Env& e
 
   std::vector<TuneEntry> lines;
   for (const auto& [spec, line] : cheapest) {
-    if (!shortOfTable.contains(spec)) { lines.push_back(line); }
+    if (!shortOfTable.contains(spec) && !wrongAtDefaults.contains(spec)) { lines.push_back(line); }
   }
   std::ranges::sort(lines, [](const TuneEntry& a, const TuneEntry& b) { return a.cost < b.cost; });
 

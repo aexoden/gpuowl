@@ -65,6 +65,12 @@ struct Choice {
 [[nodiscard]] std::vector<std::string> shadowedKeys(const Args& args, const Env& env, const SelectionFile& file,
                                                     const SelectionEntry& entry, const FFTConfig& fft);
 
+// The exclusion running `options` on `fft` in `regime` would run into, or none.  Compared as the kernels see them -- a
+// key at its default, or one that does not apply, builds the same kernels written either way -- and by the keys the
+// tuner searches alone: the rest were the measuring run's own settings, and a wrong answer is not excused by them.
+[[nodiscard]] const Exclusion* exclusionFor(const SelectionFile& file, const Env& env, const FFTConfig& fft,
+                                            TestKind kind, Regime regime, const UseConfig& options);
+
 // The cheapest published entry that covers `E` once shadowing has been accounted for, or nothing where none does.
 // Entries are compared by cost rather than walked in file order, so a hand-edited file that is out of order still
 // answers with its cheapest eligible entry rather than with whichever one was typed first; only those `env` can build
@@ -77,7 +83,9 @@ struct Choice {
 
 // What to run, warning once about anything a published entry lost to the user's own settings. Falls back to the shape
 // scan where there is no file, no entry for the exponent, or an -fft spec nothing was published for -- and asks it
-// again for something larger where its answer is a configuration published as reaching less far than this exponent.
+// again for something larger where its answer is a configuration published as reaching less far than this exponent, or
+// one the file excludes. An excluded configuration runs only where -fft names it; where the scan offers nothing else,
+// the task fails.
 [[nodiscard]] Choice choose(const Args& args, const Env& env, u64 E, TestKind kind);
 
 // Says once, at startup, which config-file keys would shadow what the selection file publishes. Silent where the file

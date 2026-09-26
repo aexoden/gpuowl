@@ -95,15 +95,17 @@ struct OptionSet {
 [[nodiscard]] bool shadowedBy(const Defaults& defaults, const Env& env, const FFTConfig& fft, TestKind kind,
                               const UseConfig& opts);
 
-// The file as it would be published.  Empty of entries where the database holds none for the env, which is a fact
-// about the database and is published as such.
+// The file as it would be published, with an exclusion for every configuration the env measured computing a wrong
+// answer.  Empty of entries where the database holds none for the env, which is a fact about the database and is
+// published as such.
 [[nodiscard]] std::optional<SelectionFile> emit(const TuneDB& db, const Defaults& defaults, const Provenance& from);
 
 // Upstream's tune.txt for a binary that reads no selection file: one line per FFT the file publishes at the fitted
 // table's own reach, at default rounding, or with exact arithmetic, and no other -- nor any FFT whose default rounding
-// was held short of the end of a band in any regime, since a line says nothing of regimes. Such a binary runs an FFT up
-// to the table's reach under options of its own, so a line is safe only where the table's reach holds at default
-// rounding; its cost is the cheapest entry of that FFT, and the lines form the cost/reach frontier its reader keeps.
+// was held short of the end of a band in any regime, since a line says nothing of regimes, nor any whose defaults are
+// excluded in any regime. Such a binary runs an FFT up to the table's reach under options of its own, so a line is
+// safe only where the table's reach holds at default rounding; its cost is the cheapest entry of that FFT, and the
+// lines form the cost/reach frontier its reader keeps.
 [[nodiscard]] std::vector<TuneEntry> compatibilityView(const SelectionFile& file, const Env& env);
 
 // The view in upstream's own format.

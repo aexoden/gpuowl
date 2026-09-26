@@ -23,11 +23,13 @@ std::string joined(const UseConfig& config) { return configText(config); }
 
 // A file built and finalized here rather than typed out, so that the ids are the ones the grammar computes, and then
 // read back through the reader production reads it with.
-SelectionFile published(std::vector<SelectionEntry> entries, const Defaults& defaults = {}) {
+SelectionFile published(std::vector<SelectionEntry> entries, const Defaults& defaults = {},
+                        std::vector<Exclusion> excluded = {}) {
   SelectionFile file{.provenance = "written 1753471500 by test from tunedb.txt env 1",
                      .global = {defaults.global.begin(), defaults.global.end()},
                      .family = defaults.family,
                      .entries = std::move(entries),
+                     .excluded = std::move(excluded),
                      .unknown = {}};
 
   CHECK(finalize(file));
@@ -610,4 +612,138 @@ TEST(a_raise_is_held_by_what_alike_entries_measured_and_not_by_the_tables_reach)
   // And the shape scan, landing on the raised arithmetic, is told how far it was measured to.
   CHECK_EQ(publishedReach(file, Env{}, small, TestKind::PRP, {}, band.hi), raised);
   CHECK_EQ(publishedReach(held, Env{}, small, TestKind::PRP, {}, band.hi), reduced);
+}
+
+// An exclusion is of what the kernels are built from, so it is matched as they see it, and only where it applies.
+TEST(an_exclusion_matches_the_build_not_the_spelling) {
+  FFTConfig const fft{"1K:8:1K:202"};
+  Regime const regime = regimeOf(fft, 120'000'000);
+  Regime const other{.longCarry = !regime.longCarry, .carry64 = regime.carry64};
+  Env const env{.isNvidia = true};
+
+  SelectionFile const file = published(
+    {}, {},
+    {Exclusion{
+      .fft = fft.spec(), .kind = TestKind::PRP, .regime = regime, .opts = {{"TAIL_KERNELS", "3"}, {"WMUL", "2"}}}});
+  UseConfig const condemned{{"TAIL_KERNELS", "3"}};
+
+  CHECK(exclusionFor(file, env, fft, TestKind::PRP, regime, condemned));  // WMUL=2 is its default here
+  CHECK(exclusionFor(file, env, fft, TestKind::PRP, regime, {{"TAIL_KERNELS", "3"}, {"DEBUG", "1"}}));
+  CHECK(!exclusionFor(file, env, fft, TestKind::PRP, regime, {}));
+  CHECK(!exclusionFor(file, env, fft, TestKind::PRP, regime, {{"TAIL_KERNELS", "3"}, {"WMUL", "1"}}));
+  CHECK(!exclusionFor(file, env, fft, TestKind::LL, regime, condemned));
+  CHECK(!exclusionFor(file, env, fft, TestKind::PRP, other, condemned));
+  CHECK(!exclusionFor(file, env, FFTConfig{"1K:8:1K:212"}, TestKind::PRP, regime, condemned));
+}
+
+// Emission publishes no excluded entry, but a user's setting can resolve an entry it did publish into one; the walk
+// then moves on as it would past an entry that does not cover the exponent.
+TEST(an_entry_the_users_settings_turn_into_an_excluded_configuration_is_passed_over) {
+  u64 const E = 120'000'000;
+  FFTConfig const cheap{"512:15:512:212"};
+  Args const args = configured({"-use TAIL_KERNELS=2"});
+
+  SelectionFile const plain = twoEntries();
+  CHECK_EQ(specOf(chooseFrom(plain, args, Env{}, E, TestKind::PRP)), cheap.spec());
+
+  SelectionFile const file =
+    published(plain.entries, Defaults{.global = UseConfig{{"INPLACE", "1"}}, .family = {}},
+              {Exclusion{.fft = cheap.spec(), .kind = TestKind::PRP, .regime = regimeOf(cheap, E), .opts = DEAR_OPTS}});
+  CHECK_EQ(specOf(chooseFrom(file, args, Env{}, E, TestKind::PRP)), std::string{"1K:8:1K:202"});
+
+  // As measured, the entry is not the excluded configuration, and still answers.
+  CHECK_EQ(specOf(chooseFrom(file, configured({}), Env{}, E, TestKind::PRP)), cheap.spec());
+}
+
+// The whole sequence: a configuration published from a clean row, then condemned by a wrong answer at another exponent
+// of its regime.  Its entry goes, and the fallback -- an older tune.txt that still lists the FFT, and the file's lines
+// that resolve to the very options it ran -- must not hand it back.
+TEST(the_fallback_does_not_re_select_a_configuration_that_answered_wrongly) {
+  fs::path const dir = fs::temp_directory_path() / "prpll-test-production-excluded";
+  fs::remove_all(dir);
+  fs::create_directories(dir);
+  WorkingDirectory const here{dir};
+
+  FFTConfig const small{"3:256:2:256:202"};
+  Interval const band = intervals(small, minExp(small), maxExp(small)).back();
+  u64 const clean = band.lo + (band.hi - band.lo) / 4;
+  u64 const wrong = band.hi - (band.hi - band.lo) / 4;
+
+  auto runRow = [&](u64 exponent, const char* status) {
+    return "run   4 " + small.spec() + " prp " + std::to_string(exponent) + ' ' + band.regime.label() +
+      " 1 100.000 1.000 16 4 1.0000 " + status + " 1753471274\n";
+  };
+  std::string const db =
+    "# prpll tunedb v1\n"
+    "env   1 gpu=\"NVIDIA RTX A4000\" name=\"NVIDIA RTX A4000\" drv=550.163.01 vendor=nvidia be=ocl cc=806 noasm=0"
+    " pdl=0 fp64=1 builtins=1 machine=01:00.0 build=9a3f21c0d1e2f304\n"
+    "cfg   1 -\n"
+    "sess  4 env=1 start=1753471200 gen=0 anchor=-\n" +
+    runRow(clean, "ok");
+  Provenance const from{.ts = 1'753'471'500, .db = "tunedb.txt", .env = 1, .T = 0, .workloadLo = 0, .workloadHi = 0};
+
+  auto publishFrom = [&](const std::string& text) {
+    TuneDB loaded;
+    CHECK(loaded.parse(text, "fixture"));
+    auto const file = emit(loaded, {}, from);
+    CHECK(file.has_value());
+    writeSelection("selection.txt", file.value_or(SelectionFile{}));
+  };
+
+  Args const args = configured({});
+
+  publishFrom(db);
+  Choice const before = choose(args, Env{}, clean, TestKind::PRP);
+  CHECK_EQ(before.fft.spec(), small.spec());
+  CHECK(before.entry.has_value());
+
+  publishFrom(db + runRow(wrong, "err"));
+  CHECK(readSelection("selection.txt").value_or(SelectionFile{}).entries.empty());
+  { File::openWrite("tune.txt").printf("100.0 %s # %llu\n", small.spec().c_str(), (unsigned long long)maxExp(small)); }
+
+  Choice const after = choose(args, Env{}, clean, TestKind::PRP);
+  CHECK(after.fft.spec() != small.spec());
+  CHECK(isEligible(after.fft, clean));
+
+  // Another configuration of the same FFT is not what answered wrongly.
+  CHECK_EQ(choose(configured({}, {"-use TAIL_KERNELS=3"}), Env{}, clean, TestKind::PRP).fft.spec(), small.spec());
+
+  // And -fft naming it is the user's explicit choice, which runs with a warning.
+  Args pinned = configured({});
+  pinned.fftSpec = small.spec();
+  CHECK_EQ(choose(pinned, Env{}, clean, TestKind::PRP).fft.spec(), small.spec());
+
+  fs::remove_all(dir);
+}
+
+// Where the only thing the scan offers is excluded, the task fails rather than run it.
+TEST(an_excluded_configuration_with_nothing_past_it_is_not_run) {
+  fs::path const dir = fs::temp_directory_path() / "prpll-test-production-excluded-top";
+  fs::remove_all(dir);
+  fs::create_directories(dir);
+  WorkingDirectory const here{dir};
+
+  Args const args = configured({});
+  FFTConfig top = FFTConfig::bestFit(args, 1'000'000'000, "", true);
+  for (bool larger = true; larger;) {
+    try {
+      top = FFTConfig::bestFit(args, maxExp(top) + 1, "", true);
+    } catch (...) { larger = false; }
+  }
+  u64 const E = maxExp(top) - 1000;
+
+  writeSelection(
+    "selection.txt",
+    published({}, {}, {Exclusion{.fft = top.spec(), .kind = TestKind::PRP, .regime = regimeOf(top, E), .opts = {}}}));
+
+  bool threw = false;
+  try {
+    (void)choose(args, Env{}, E, TestKind::PRP);
+  } catch (...) { threw = true; }
+  CHECK(threw);
+
+  // The same exponent under another configuration runs.
+  CHECK_EQ(choose(configured({}, {"-use TAIL_KERNELS=3"}), Env{}, E, TestKind::PRP).fft.spec(), top.spec());
+
+  fs::remove_all(dir);
 }
