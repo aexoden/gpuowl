@@ -317,10 +317,21 @@ std::string formatRow(const SessRow& row) {
 
 namespace {
 
+// A reading in microseconds per iteration, as a run or an anchor line spells it.
+std::string readingText(double us) {
+  char buf[64];
+  snprintf(buf, sizeof(buf), "%.3f", us);
+  return buf;
+}
+
+// What a line keeps of `value`, spelled by `text`.  A race decided within a margin on readings held to more digits than
+// the file keeps would be undecided again in the process that reloads it.
+double asWritten(double value, const std::string& text) { return parseDouble(text).value_or(value); }
+
 std::string measurementText(const Measurement& m) {
   char buf[192];
-  snprintf(buf, sizeof(buf), "%.3f %.3f %u %u %s %s %" PRIu64, m.mean, m.stddev, m.blocks, m.calls,
-           driftText(m.drift).c_str(), toString(m.status), m.ts);
+  snprintf(buf, sizeof(buf), "%s %s %u %u %s %s %" PRIu64, readingText(m.mean).c_str(), readingText(m.stddev).c_str(),
+           m.blocks, m.calls, driftText(m.drift).c_str(), toString(m.status), m.ts);
   return buf;
 }
 
@@ -378,10 +389,8 @@ std::string formatRow(const RoeRow& row) {
 }
 
 std::string formatRow(const AnchorRow& row) {
-  char reading[64];
-  snprintf(reading, sizeof(reading), "%.3f", row.mean);
   return "anchor " + to_string(row.sess) + ' ' + row.fft + ' ' + to_string(row.exponent) + ' ' + to_string(row.cfg) +
-    ' ' + reading + ' ' + driftText(row.ratio) + ' ' + to_string(row.ts);
+    ' ' + readingText(row.mean) + ' ' + driftText(row.ratio) + ' ' + to_string(row.ts);
 }
 
 std::string formatRow(const AlarmRow& row) { return "alarm " + to_string(row.sess) + ' ' + to_string(row.ts); }
@@ -573,8 +582,14 @@ bool TuneDB::add(const RunRow& row) {
   Measurement const& m = row.m;
   if (!std::isfinite(m.mean) || m.mean < 0 || !std::isfinite(m.stddev) || m.stddev < 0) { return false; }
   if (!parsePositive(driftText(m.drift))) { return false; }
+
+  RunRow held = row;
+  held.m.mean = asWritten(m.mean, readingText(m.mean));
+  held.m.stddev = asWritten(m.stddev, readingText(m.stddev));
+  held.m.drift = asWritten(m.drift, driftText(m.drift));
+
   u64 const ts = m.ts;
-  if (!record(runs_, row)) { return false; }
+  if (!record(runs_, held)) { return false; }
   noteRow(row.sess, ts);
   return true;
 }
@@ -626,8 +641,8 @@ bool TuneDB::add(const RoeRow& row) {
 
   // Held as the file will hold it, so that what this process derives from it a later one derives too.
   RoeRow held = row;
-  held.z = parseDouble(zText(row.z)).value_or(row.z);
-  held.maxRoe = parseDouble(maxRoeText(row.maxRoe)).value_or(row.maxRoe);
+  held.z = asWritten(row.z, zText(row.z));
+  held.maxRoe = asWritten(row.maxRoe, maxRoeText(row.maxRoe));
 
   u64 const ts = row.ts;
   if (!record(roes_, held)) { return false; }
@@ -638,8 +653,13 @@ bool TuneDB::add(const RoeRow& row) {
 bool TuneDB::add(const AnchorRow& row) {
   if (!findSession(row.sess) || !findCfg(row.cfg) || isSealed(row.sess)) { return false; }
   if (!std::isfinite(row.mean) || row.mean < 0 || !parsePositive(driftText(row.ratio))) { return false; }
+
+  AnchorRow held = row;
+  held.mean = asWritten(row.mean, readingText(row.mean));
+  held.ratio = asWritten(row.ratio, driftText(row.ratio));
+
   u64 const ts = row.ts;
-  if (!record(anchors_, row)) { return false; }
+  if (!record(anchors_, held)) { return false; }
   noteRow(row.sess, ts);
   return true;
 }
