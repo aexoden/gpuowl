@@ -3,6 +3,7 @@
 #include "LLCheck.h"
 
 #include "Anchor.h"
+#include "Bootstrap.h"
 #include "FFTVariants.h"
 #include "Objective.h"
 
@@ -15,11 +16,8 @@
 
 namespace tune {
 
-bool atBuiltInDefaults(const UseConfig& ran) {
-  return std::ranges::none_of(ran, [](const auto& kv) {
-    const Option* const option = findOption(kv.first);
-    return option && option->kind == Kind::Tunable;
-  });
+bool atBuiltInDefaults(const Env& env, const FFTConfig& fft, const UseConfig& ran) {
+  return canonicalConfig(env, fft, ran).empty();
 }
 
 std::vector<RefRow> referenceReadings(const TuneDB& db, u32 env, u64 exponent, u64 iters) {

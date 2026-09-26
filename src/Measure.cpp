@@ -292,7 +292,7 @@ void Session::raceAnchor() {
         continue;
       }
       const UseConfig* const opts = db_.findCfg(row.cfg);
-      bool const defaults = opts && atBuiltInDefaults(*opts);
+      bool const defaults = opts && atBuiltInDefaults(env_, FFTConfig{c.fft}, *opts);
       if (defaults && (!best || row.m.cost() < best)) { best = row.m.cost(); }
     }
     return best;
@@ -583,7 +583,7 @@ std::optional<u64> Session::llReference(const FFTConfig& fft, u64 exponent, u32 
 
     Call const c = attempt(witnessShared, witness, TestKind::LL, exponent, {}, nBlocks, blockSize);
     if (!c.measurement.ok()) { return {}; }
-    if (!atBuiltInDefaults(c.ran)) {
+    if (!atBuiltInDefaults(env_, witness, c.ran)) {
       log("measure: %s was built under -use %s rather than the built-in defaults, so it cannot vote on the LL\n"
           "measure:   reference\n",
           witness.spec().c_str(), configText(c.ran).c_str());
