@@ -29,8 +29,10 @@ namespace tune {
 // unless one of them was hit by a fault or computes LL wrongly, so four leaves room for one of each.
 inline constexpr u32 LL_MAX_WITNESSES = 4;
 
-// Whether `ran` sets no tunable key: the configuration upstream would run.
-[[nodiscard]] bool atBuiltInDefaults(const UseConfig& ran);
+// Whether `ran` is the configuration upstream would run on `fft`: every tunable key it sets is at its default there, or
+// does not apply.  Not whether it sets none, since the host writes the values it clamps into what it builds with (a
+// 4K width always gets WMUL=1 and LDSPAD_W=0).
+[[nodiscard]] bool atBuiltInDefaults(const Env& env, const FFTConfig& fft, const UseConfig& ran);
 
 // The env's readings of built-in defaults at (exponent, iters), in the order they were taken.
 [[nodiscard]] std::vector<RefRow> referenceReadings(const TuneDB& db, u32 env, u64 exponent, u64 iters);

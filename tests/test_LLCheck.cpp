@@ -116,10 +116,29 @@ TEST(readings_count_only_at_their_exponent_iterations_and_env) {
 }
 
 TEST(only_a_set_that_moves_no_tunable_key_is_at_built_in_defaults) {
-  CHECK(atBuiltInDefaults({}));
-  CHECK(atBuiltInDefaults({{"DEBUG", "1"}}));  // recognised, never searched
-  CHECK(!atBuiltInDefaults({{"TAIL_KERNELS", "3"}}));
-  CHECK(!atBuiltInDefaults({{"DEBUG", "1"}, {"IN_WG", "128"}}));
+  Env const env{.isNvidia = true};
+  FFTConfig const fft{"1K:8:1K:202"};
+
+  CHECK(atBuiltInDefaults(env, fft, {}));
+  CHECK(atBuiltInDefaults(env, fft, {{"DEBUG", "1"}}));  // recognised, never searched
+  CHECK(!atBuiltInDefaults(env, fft, {{"TAIL_KERNELS", "3"}}));
+  CHECK(!atBuiltInDefaults(env, fft, {{"DEBUG", "1"}, {"WMUL", "1"}}));
+  CHECK(atBuiltInDefaults(env, fft, {{"TAIL_KERNELS", "2"}}));  // its default
+}
+
+// What the host writes into every 4K-wide build it is given no -use for, and so what every witness at an exponent that
+// only 4K widths hold is built with.
+TEST(the_values_the_host_clamps_to_are_still_the_built_in_defaults) {
+  Env const env{.isNvidia = true};
+  FFTConfig const wide{"4K:9:512:202"};
+
+  CHECK(atBuiltInDefaults(env, wide, {{"WMUL", "1"}, {"LDSPAD_W", "0"}}));
+  CHECK(!atBuiltInDefaults(env, wide, {{"WMUL", "1"}, {"LDSPAD_W", "0"}, {"TAIL_KERNELS", "3"}}));
+
+  for (const FFTConfig& witness : witnessOrder(env, wide, 2'000'000'011)) {
+    CHECK_EQ(witness.shape.width, 4096u);
+    CHECK(atBuiltInDefaults(env, witness, {{"WMUL", "1"}, {"LDSPAD_W", "0"}}));
+  }
 }
 
 TEST(witnesses_start_with_the_fft_timed_then_share_as_little_with_it_as_the_device_allows) {
