@@ -244,56 +244,48 @@ TEST(the_prior_is_fitted_to_the_nearest_measured_size_of_the_type) {
   CHECK(prior.cost(middle) < 1800);
   CHECK(near(prior.cost(large) / prior.cost(middle), priorWork(large.size()) / priorWork(middle.size())));
 
-  // A second, smaller size takes over the shapes nearer to it.
+  // A second, smaller size, cheaper per unit of work, prices the sizes it neighbours, its measured neighbour included;
+  // the sizes past that neighbour are not its to price.
   prior.add(small, 30);
   double const kSmall = 30 * 1e6 / priorWork(small.size());
+  CHECK(kSmall < kMiddle);
   CHECK(near(prior.k(small), kSmall));
   CHECK(near(prior.k(FFTShape{"256:4:256"}), kSmall));
   CHECK(near(prior.k(FFTShape{"1K:12:512"}), kMiddle));
+  CHECK(near(prior.k(middle), kSmall));
   CHECK(near(prior.k(large), kMiddle));
 
   // At a size read twice the cheaper reading is the fit, whichever came first.
-  prior.add(middle, 2000);
-  CHECK(near(prior.k(middle), kMiddle));
-  prior.add(middle, 1500);
-  CHECK(near(prior.k(middle), 1500 * 1e6 / priorWork(middle.size())));
+  prior.add(large, 1e9);
+  CHECK(near(prior.k(large), kMiddle));
+  prior.add(large, 1);
+  CHECK(near(prior.k(large), 1 * 1e6 / priorWork(large.size())));
 }
 
-TEST(a_size_equally_far_from_two_measurements_takes_the_cheaper) {
+TEST(a_size_read_only_at_its_slowest_is_priced_by_its_neighbours) {
+  // One reading at 256:15:512, of a configuration far slower than the best of the size below: the size's own reading
+  // would price every shape of it at that, and none of its other configurations would be worth measuring.
+  FFTShape const below{"512:7:512"};
+  FFTShape const slow{"256:15:512"};
+  FFTShape const above{"1K:8:1K"};
   Prior prior;
-  // 256:4:256 is twice 256:2:256 and half 256:8:256, so it is one octave from each.
-  prior.add(FFTShape{"256:2:256"}, 100);
-  prior.add(FFTShape{"256:8:256"}, 300);
-  double const kLow = 100 * 1e6 / priorWork(FFTShape{"256:2:256"}.size());
-  double const kHigh = 300 * 1e6 / priorWork(FFTShape{"256:8:256"}.size());
-  CHECK(kHigh < kLow);
-  CHECK(near(prior.k(FFTShape{"256:4:256"}), kHigh));
-}
+  prior.add(below, 390);
+  prior.add(slow, 624);
+  double const kBelow = 390 * 1e6 / priorWork(below.size());
+  CHECK(near(prior.k(slow), kBelow));
+  CHECK(near(prior.k(FFTShape{"512:15:256"}), kBelow));
+  CHECK(prior.cost(slow) < 390 * priorWork(slow.size()) / priorWork(below.size()));
 
-TEST(a_tie_off_a_power_of_two_is_still_a_tie) {
-  // 256:6:256 is 1.5 times 256:4:256 and two thirds of 256:9:256, so it is exactly as far from each -- which a
-  // difference of two logarithms does not reliably say.
-  FFTShape const low{"256:4:256"};
-  FFTShape const middle{"256:6:256"};
-  FFTShape const high{"256:9:256"};
-  CHECK_EQ(u64(middle.size()) * middle.size(), u64(low.size()) * high.size());
+  // Past it, only its own reading neighbours a larger size, however cheap the size before it was.
+  double const kSlow = 624 * 1e6 / priorWork(slow.size());
+  CHECK(near(prior.k(above), kSlow));
 
-  Prior prior;
-  prior.add(low, 900);
-  prior.add(high, 100);
-  double const kLow = 900 * 1e6 / priorWork(low.size());
-  double const kHigh = 100 * 1e6 / priorWork(high.size());
-  CHECK(kHigh < kLow);
-  CHECK(near(prior.k(middle), kHigh));
-
-  // And the other way round, so that neither side wins the tie by position.
+  // And a size between two readings takes the cheaper, whichever side it is on.
   Prior reversed;
-  reversed.add(low, 100);
-  reversed.add(high, 900);
-  CHECK(near(reversed.k(middle), 100 * 1e6 / priorWork(low.size())));
-
-  // Off the tie, the nearer size wins however cheap the farther one is: 256:5:256 is nearer 256:4:256.
-  CHECK(near(prior.k(FFTShape{"256:5:256"}), kLow));
+  reversed.add(FFTShape{"256:4:256"}, 900);
+  reversed.add(FFTShape{"256:9:256"}, 100);
+  CHECK(near(reversed.k(FFTShape{"256:5:256"}), 100 * 1e6 / priorWork(FFTShape{"256:9:256"}.size())));
+  CHECK(near(reversed.k(FFTShape{"256:6:256"}), 100 * 1e6 / priorWork(FFTShape{"256:9:256"}.size())));
 }
 
 TEST(the_prior_is_fitted_from_the_env_it_is_asked_about) {
@@ -305,11 +297,13 @@ TEST(the_prior_is_fitted_from_the_env_it_is_asked_about) {
   CHECK(!one.fitted(FFT3161));
 
   // The cheapest FP64 reading at 512:15:512 on env 1 is the LL one, 1760 -- a prior prices a shape, whichever kind
-  // runs on it.  The one-call 100 at 1K:8:1K is a reading too, so it fits its own size and 4K:8:1K, its nearest; the
-  // failed 100 at 4K:8:1K is not a cost and fits nothing, even at its own size.
+  // runs on it, and it prices the sizes below it.  The one-call 100 at 1K:8:1K is a reading too, so it fits its own
+  // size, 4K:8:1K, and 512:15:512 beside it, being cheaper; the failed 100 at 4K:8:1K is not a cost and fits nothing,
+  // even at its own size.
   double const k = 1760 * 1e6 / priorWork(FFTShape{"512:15:512"}.size());
   double const one1K = 100 * 1e6 / priorWork(FFTShape{"1K:8:1K"}.size());
-  CHECK(near(one.k(FFTShape{"512:15:512"}), k));
+  CHECK(near(one.k(FFTShape{"256:2:256"}), k));
+  CHECK(near(one.k(FFTShape{"512:15:512"}), one1K));
   CHECK(near(one.k(FFTShape{"1K:8:1K"}), one1K));
   CHECK(near(one.k(FFTShape{"4K:8:1K"}), one1K));
 
