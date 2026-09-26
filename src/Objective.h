@@ -21,6 +21,7 @@
 #include "TuneDB.h"
 #include "Tuner.h"
 
+#include <functional>
 #include <map>
 #include <optional>
 #include <string>
@@ -131,6 +132,9 @@ private:
   };
 
   Objective(const Env& env, std::vector<SelectionEntry> entries, Prior prior, const RunScope& scope);
+
+  // Of the whole weight of the grids, the share on the points `which` accepts.
+  [[nodiscard]] double shareOf(const std::function<bool(const ObjectivePoint&)>& which) const;
 
   std::vector<SelectionEntry> entries_;
   Prior prior_;
