@@ -24,7 +24,10 @@
 #include <system_error>
 #include <tuple>
 
-#ifndef _WIN32
+#ifdef _WIN32
+#include <io.h>
+#include <sys/locking.h>
+#else
 #include <fcntl.h>
 #include <sys/file.h>
 #include <sys/stat.h>
@@ -441,16 +444,25 @@ bool TuneDB::append(const std::string& line) {
 void TuneDB::attach(const fs::path& path) { appendTo_ = path; }
 
 bool TuneDB::lockForWriting(const fs::path& path) {
-#ifdef _WIN32
-  (void)path;
-  return true;
-#else
   // A sibling rather than the database itself: `save` replaces the database through a rename, so a claim on its inode
   // ends up guarding a file that is no longer the database, and the next writer opens the new inode and finds nothing
   // held.  Nothing renames or removes the sibling, so every writer meets the same one.
   fs::path const claimPath = path + ".lock";
 
   File claim = File::openAppend(claimPath);
+
+#ifdef _WIN32
+  // Its first byte, which nothing reads or writes; the lock ends when the file is closed or the process ends.  Nothing
+  // re-executes the image here, so no descriptor outlives the process that took it.
+  int const fd = _fileno(claim.get());
+  if (_lseek(fd, 0, SEEK_SET) == -1 || _locking(fd, _LK_NBLCK, 1)) {
+    log("tune-db: another process is writing '%s', so this one will not touch it (%s)\n", path.string().c_str(),
+        strerror(errno));
+    return false;
+  }
+  lock_ = std::move(claim);
+  return true;
+#else
   int const fd = fileno(claim.get());
 
   // Close on exec, or the lock outlives the image that took it: a flock belongs to the open file description, exec
