@@ -348,6 +348,10 @@ public:
   // costs are comparable only across measurements taken at the same blockSize.
   IterSamples timeIters(u32 nBlocks, u32 blockSize, u32 warmupBlocks = 1);
 
+  // The LL counterpart: from the LL seed, a block is blockSize LL iterations and nothing else, since there is no check
+  // for a modMul to serve.  checkOk stays true; the residue is the only check there is, and the caller makes it.
+  IterSamples timeItersLL(u32 nBlocks, u32 blockSize, u32 warmupBlocks = 1);
+
   tuple<bool, u64, RoeInfo, RoeInfo> measureROE(bool quick);
   tuple<bool, RoeInfo> measureCarry();
 

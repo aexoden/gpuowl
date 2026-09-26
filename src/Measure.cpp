@@ -7,6 +7,7 @@
 #include "Context.h"
 #include "Gpu.h"
 #include "GpuFault.h"
+#include "LLCheck.h"
 #include "log.h"
 #include "Primes.h"
 #include "Restart.h"
@@ -88,6 +89,7 @@ Call summarize(const IterSamples& samples) {
            .declined = core.declined,
            .res64 = samples.res64,
            .checkOk = samples.checkOk,
+           .iters = samples.iters,
            .ran = {}};
 
   if (!samples.checkOk) { out.measurement.status = Status::Err; }
@@ -96,17 +98,24 @@ Call summarize(const IterSamples& samples) {
 
 Call timeCall(GpuCommon shared, const FFTConfig& fft, TestKind kind, u64 exponent, const UseConfig& options,
               u32 nBlocks, u32 blockSize) {
-  if (kind != TestKind::PRP) { throw "LL timing is not implemented"; }
-
   Timer t;
   auto gpu = Gpu::make(exponent, shared, fft, asExtraConf(options), false, kind);
   double const buildSec = t.reset();
 
-  Call out = summarize(gpu->timeIters(nBlocks, blockSize));
+  Call out = summarize(kind == TestKind::LL ? gpu->timeItersLL(nBlocks, blockSize, CALL_WARMUP_BLOCKS)
+                                            : gpu->timeIters(nBlocks, blockSize, CALL_WARMUP_BLOCKS));
   out.timedSec = t.at();
   out.buildSec = buildSec;
   out.ran = gpu->args.flags;
   return out;
+}
+
+Call checkedAgainst(u64 reference, Call first, const std::function<Call()>& again) {
+  if (!first.measurement.ok() || first.res64 == reference) { return first; }
+
+  Call second = again();
+  if (second.measurement.ok() && second.res64 != reference) { second.measurement.status = Status::Err; }
+  return second;
 }
 
 RoeCheck roeCheck(GpuCommon shared, const FFTConfig& fft, const UseConfig& options, u64 exponent) {
@@ -283,10 +292,7 @@ void Session::raceAnchor() {
         continue;
       }
       const UseConfig* const opts = db_.findCfg(row.cfg);
-      bool const defaults = opts && std::ranges::none_of(*opts, [](const auto& kv) {
-                              const Option* const option = findOption(kv.first);
-                              return option && option->kind == Kind::Tunable;
-                            });
+      bool const defaults = opts && atBuiltInDefaults(*opts);
       if (defaults && (!best || row.m.cost() < best)) { best = row.m.cost(); }
     }
     return best;
@@ -473,6 +479,21 @@ Call Session::runCall(const FFTConfig& fft, TestKind kind, u64 exponent, const U
     return out;
   }
 
+  std::optional<u64> reference;
+  if (record && kind == TestKind::LL) {
+    reference = llReference(fft, exponent, nBlocks, blockSize);
+    if (stopped_) {
+      out.measurement.status = Status::Lost;
+      return out;
+    }
+    // Nothing is recorded: the reference is missing at this exponent and length, which says nothing of the
+    // configuration, and the `ref` rows already say it.
+    if (!reference) {
+      out.measurement.status = Status::Unsupported;
+      return out;
+    }
+  }
+
   if (!warmed_) {
     warmed_ = true;
     for (u32 w = 0; w < SESSION_WARM_CALLS && !stopped_; ++w) {
@@ -484,29 +505,30 @@ Call Session::runCall(const FFTConfig& fft, TestKind kind, u64 exponent, const U
     }
   }
 
-  u32 const cfg = db_.internCfg(options);
-
-  Attempt const attempt{
-    db_, session_, deviceLost_,
-    TryRow{.sess = session_, .fft = fft.spec(), .kind = kind, .exponent = exponent, .cfg = cfg, .ts = now()},
-    attemptText(fft, kind, exponent, options)};
-  if (!attempt.declared()) {
-    cannotDeclare(fft, options);
-    return out;
-  }
-
-  if (Status const status = caught([&] { out = timeCall(shared_, fft, kind, exponent, options, nBlocks, blockSize); },
-                                   fft, kind, exponent, options, "timing");
-      status != Status::Ok) {
-    out.measurement.status = status;
-  }
-
+  out = attempt(shared_, fft, kind, exponent, options, nBlocks, blockSize);
   // Nothing is recorded for a stop, nor for a reading taken only to warm the device.
   if (stopped_ || !record) { return out; }
+
+  if (reference && out.measurement.ok() && out.res64 != *reference) {
+    log("measure: %s -use %s read LL residue %016" PRIx64 " at %" PRIu64 " after %" PRIu64 " iterations, where the\n"
+        "measure:   reference is %016" PRIx64 "; reading it again, since one reading decides nothing\n",
+        fft.spec().c_str(), configText(options).c_str(), out.res64, exponent, out.iters, *reference);
+    out = checkedAgainst(*reference, std::move(out),
+                         [&] { return attempt(shared_, fft, kind, exponent, options, nBlocks, blockSize); });
+    if (stopped_) { return out; }
+    if (out.measurement.status == Status::Err) {
+      log("measure: %s -use %s read %016" PRIx64 " again: it computes LL wrongly, and is recorded as an error\n",
+          fft.spec().c_str(), configText(options).c_str(), out.res64);
+    } else if (out.measurement.ok()) {
+      log("measure: %s -use %s read the reference the second time, so the first reading was a fault of its own\n",
+          fft.spec().c_str(), configText(options).c_str());
+    }
+  }
 
   out.measurement.drift = anchorState_.ratio;
 
   // Keyed on what the kernels were built with.
+  u32 const cfg = db_.internCfg(options);
   u32 const ran = out.ran.empty() ? cfg : db_.internCfg(out.ran);
   (void)db_.add(RunRow{.sess = session_,
                        .fft = fft.spec(),
@@ -516,6 +538,83 @@ Call Session::runCall(const FFTConfig& fft, TestKind kind, u64 exponent, const U
                        .cfg = ran,
                        .m = out.measurement});
   return out;
+}
+
+Call Session::attempt(GpuCommon shared, const FFTConfig& fft, TestKind kind, u64 exponent, const UseConfig& options,
+                      u32 nBlocks, u32 blockSize) {
+  Call out;
+  Attempt const attempt{db_, session_, deviceLost_,
+                        TryRow{.sess = session_,
+                               .fft = fft.spec(),
+                               .kind = kind,
+                               .exponent = exponent,
+                               .cfg = db_.internCfg(options),
+                               .ts = now()},
+                        attemptText(fft, kind, exponent, options)};
+  if (!attempt.declared()) {
+    cannotDeclare(fft, options);
+    out.measurement.status = Status::Lost;
+    return out;
+  }
+
+  if (Status const status = caught([&] { out = timeCall(shared, fft, kind, exponent, options, nBlocks, blockSize); },
+                                   fft, kind, exponent, options, "timing");
+      status != Status::Ok) {
+    out.measurement.status = status;
+  }
+  return out;
+}
+
+std::optional<u64> Session::llReference(const FFTConfig& fft, u64 exponent, u32 nBlocks, u32 blockSize) {
+  u64 const iters = callIterations(nBlocks, blockSize);
+  if (auto const agreed = agreedResidue(referenceReadings(db_, envId_, exponent, iters))) { return agreed; }
+  if (unreferenced_.contains({exponent, iters})) { return {}; }
+
+  // Built from the defaults whatever the caller's own -use says: -measure's is the configuration under test.
+  Args builtIn = shared_.args ? *shared_.args : Args{true};
+  (void)takeOverConfig(builtIn);
+  GpuCommon witnessShared = shared_;
+  witnessShared.args = &builtIn;
+
+  // A witness is not what the caller varied, so a build that fails is not evidence against the key it names.
+  std::vector<std::string> const keys = std::exchange(varying_, {});
+  auto read = [&](const FFTConfig& witness) -> std::optional<u64> {
+    if (stopped_ || !held(witness, TestKind::LL, exponent, {}).empty()) { return {}; }
+
+    Call const c = attempt(witnessShared, witness, TestKind::LL, exponent, {}, nBlocks, blockSize);
+    if (!c.measurement.ok()) { return {}; }
+    if (!atBuiltInDefaults(c.ran)) {
+      log("measure: %s was built under -use %s rather than the built-in defaults, so it cannot vote on the LL\n"
+          "measure:   reference\n",
+          witness.spec().c_str(), configText(c.ran).c_str());
+      return {};
+    }
+    log("measure: LL reference at %" PRIu64 " after %" PRIu64 " iterations: %s reads %016" PRIx64 "\n", exponent, iters,
+        witness.spec().c_str(), c.res64);
+    return c.res64;
+  };
+  std::optional<u64> const agreed =
+    settleReference(db_, session_, exponent, iters, witnessOrder(env_, fft, exponent), read);
+  varying_ = keys;
+
+  if (stopped_) { return {}; }
+  if (agreed) {
+    log("measure: LL reference at %" PRIu64 " after %" PRIu64 " iterations is %016" PRIx64 ", read alike on two FFTs\n",
+        exponent, iters, *agreed);
+    return agreed;
+  }
+
+  std::string readings;
+  for (const RefRow& row : referenceReadings(db_, envId_, exponent, iters)) {
+    char one[80];
+    snprintf(one, sizeof(one), "%s%s %016" PRIx64, readings.empty() ? "" : ", ", row.fft.c_str(), row.res64);
+    readings += one;
+  }
+  log("measure: no LL reference could be agreed at %" PRIu64 " after %" PRIu64 " iterations (%s), so no LL\n"
+      "measure:   configuration is timed there by this session; -tune reset clears the readings\n",
+      exponent, iters, readings.empty() ? "no FFT's built-in defaults gave a reading" : readings.c_str());
+  unreferenced_.insert({exponent, iters});
+  return {};
 }
 
 RoeCheck Session::checkRoe(const FFTConfig& fft, const UseConfig& options, u64 exponent) {
@@ -630,10 +729,14 @@ MeasureArgs parseMeasureArgs(std::string_view text) {
       out.drain = number(val, "drain=") != 0;
     } else if (key == "drift") {
       out.drift = number(val, "drift=") != 0;
+    } else if (key == "kind") {
+      std::optional<TestKind> const kind = parseTestKind(val);
+      if (!kind) { throw "-measure: kind= takes prp or ll, not '" + std::string{val} + "'"; }
+      out.kind = *kind;
     } else {
       throw "-measure: '" + std::string{key} +
         "=' is not understood. Accepted: fft=<spec>, exp=<E>, n=<calls>, blocks=<per call>, block=<iterations>,"
-        " anchor=<spec>, roe=0|1, drain=0|1, drift=0|1";
+        " kind=prp|ll, anchor=<spec>, roe=0|1, drain=0|1, drift=0|1";
     }
   }
 
@@ -646,6 +749,9 @@ MeasureArgs parseMeasureArgs(std::string_view text) {
   }
   if (out.blocks < 2) { throw std::string{"-measure: blocks= must be at least 2"}; }
   if (out.blockSize == 1) { throw std::string{"-measure: block= must be at least 2 iterations"}; }
+  if (out.drain && out.kind == TestKind::LL) {
+    throw std::string{"-measure: drain= compares the PRP loop's block boundaries, so it takes kind=prp"};
+  }
 
   // The scheduled anchor and the alternating one correct for the same thing, and applying both describes neither.
   if (!out.anchorFft.empty()) { out.drift = false; }
@@ -669,7 +775,7 @@ void logBlocks(const char* what, const Call& c) {
   log("measure: %s:%s us/it | mean %.3f sd %.3f (%.3f%%) dropped %u%s, %s %016" PRIx64 "\n", what, blocks.c_str(),
       c.measurement.mean, c.measurement.stddev,
       c.measurement.mean > 0 ? c.measurement.stddev / c.measurement.mean * 100 : 0, c.dropped,
-      c.declined ? " (declined)" : "", c.checkOk ? "OK" : "EE", c.res64);
+      c.declined ? " (declined)" : "", c.measurement.status == Status::Err ? "EE" : "OK", c.res64);
 }
 
 void logSpread(const char* what, const Spread& s) {
@@ -721,8 +827,9 @@ MeasureOutcome runMeasure(GpuCommon shared, const MeasureArgs& want) {
   }
 
   std::string const anchoredOn = anchor ? ", anchored on " + anchor->spec() : std::string{};
-  log("measure: %s at exponent %" PRIu64 " (%.2f bpw), %u calls of %u blocks of %u%s\n", fft.spec().c_str(), exponent,
-      double(exponent) / fft.shape.size(), want.calls, nBlocks, blockSize, anchoredOn.c_str());
+  log("measure: %s %s at exponent %" PRIu64 " (%.2f bpw), %u calls of %u blocks of %u%s\n", fft.spec().c_str(),
+      toString(want.kind), exponent, double(exponent) / fft.shape.size(), want.calls, nBlocks, blockSize,
+      anchoredOn.c_str());
 
   fs::path const dbPath = TuneDB::DEFAULT_NAME;
   TuneDB db;
@@ -738,15 +845,15 @@ MeasureOutcome runMeasure(GpuCommon shared, const MeasureArgs& want) {
   }
   if (u32 const gen = restart::generation()) { log("measure: generation %u\n", gen); }
 
-  UseConfig const options = resolveConfig(*shared.args, fft, TestKind::PRP);
-  UseConfig const anchorOptions = anchor ? resolveConfig(*shared.args, *anchor, TestKind::PRP) : UseConfig{};
+  UseConfig const options = resolveConfig(*shared.args, fft, want.kind);
+  UseConfig const anchorOptions = anchor ? resolveConfig(*shared.args, *anchor, want.kind) : UseConfig{};
 
   std::vector<std::string> varied;
   for (const auto& [key, value] : shared.args->flags) { varied.push_back(key); }
   session.varying(varied);
 
   auto skip = [&](const FFTConfig& what, const UseConfig& with, u64 at) {
-    std::string const why = session.held(what, TestKind::PRP, at, with);
+    std::string const why = session.held(what, want.kind, at, with);
     if (why.empty()) { return false; }
     log("measure: skipping %s -use %s: %s.\n"
         "measure:   It will not be built again on this device.\n",
@@ -767,7 +874,7 @@ MeasureOutcome runMeasure(GpuCommon shared, const MeasureArgs& want) {
   std::vector<double> timedSecs;
 
   for (u32 w = 0; w < SESSION_WARM_CALLS && !session.stopped(); ++w) {
-    Call const c = session.warmUp(fft, TestKind::PRP, exponent, options, nBlocks, blockSize);
+    Call const c = session.warmUp(fft, want.kind, exponent, options, nBlocks, blockSize);
     if (session.stopped() || !c.measurement.ok()) {
       ok = false;
       break;
@@ -784,7 +891,7 @@ MeasureOutcome runMeasure(GpuCommon shared, const MeasureArgs& want) {
 
   for (u32 call = 0; call < want.calls && !session.stopped(); ++call) {
     if (anchor) {
-      Call const a = session.run(*anchor, TestKind::PRP, anchorExp, anchorOptions, nBlocks, blockSize);
+      Call const a = session.run(*anchor, want.kind, anchorExp, anchorOptions, nBlocks, blockSize);
       if (session.stopped() || !a.measurement.ok()) {
         ok = false;
         break;
@@ -794,7 +901,7 @@ MeasureOutcome runMeasure(GpuCommon shared, const MeasureArgs& want) {
       log("measure: anchor %u: %.3f us/it, drift %.4f\n", call, a.measurement.mean, drift);
     }
 
-    Call const c = session.run(fft, TestKind::PRP, exponent, options, nBlocks, blockSize);
+    Call const c = session.run(fft, want.kind, exponent, options, nBlocks, blockSize);
     if (session.stopped() || !c.measurement.ok()) {
       ok = false;
       break;

@@ -127,10 +127,12 @@ TEST(settings_alone_or_nothing_at_all_is_a_tuning_run) {
   // The env of a run is the device it opens.
   CHECK(!refusal("env=1").empty());
 
-  // LL is not timed, so a run for it could record only failures; scope still reports its grid.
-  CHECK(!refusal("kinds=prp+ll").empty());
-  CHECK(!refusal("kinds=ll").empty());
+  // A run tunes either kind, or both.
+  CHECK(parsed("kinds=ll").scope.kinds == std::vector<TestKind>{TestKind::LL});
+  std::vector<TestKind> const both{TestKind::PRP, TestKind::LL};
+  CHECK(parsed("kinds=prp+ll").scope.kinds == both);
   CHECK(refusal("scope,kinds=prp+ll").empty());
+  CHECK(!refusal("kinds=pr").empty());
 
   // The two settings still have to agree.
   CHECK(!refusal("workload=100M-400M,probe=500000003").empty());
