@@ -119,7 +119,7 @@ tune: prp grid: 2 exponents, from the pending work
 tune:   118063003  75.0%    870.302 us/it  prior, from 1K:13:256  (probe)
 tune:   136279841  25.0%   1013.328 us/it  prior, from 1K:15:256
 tune: T = 906.059 us/it against env 1, 0.0% of the weight on measured entries
-tune: 945 entries could serve the workload; each measured one is searched by strategy=hybrid (comboTop=3, comboTiers=3), then by random restarts; the run goes on until nothing is expected to lower T by 0.1% of it
+tune: 945 entries could serve the workload; each measured one is searched by strategy=hybrid (maxPermute=4, maxPoints=64, comboTop=3, comboTiers=3), then by random restarts; the run goes on until nothing is expected to lower T by 0.1% of it
 tune: bootstrap at 118063003 over FFT64 1K:13:256:212, FFT3161 1:1K:8:256:202, FFT3261 2:1K:8:256:212, FFT61 3:1K:16:256:202, FFT323161 4:1K:8:256:212, FFT6431 51:1K:8:256:212
 ```
 
@@ -204,8 +204,8 @@ against.
 **`strategy=<S>`**: what one step of the per-FFT search is.
 
 - `hybrid` (default): options are searched in groups of related options, trying combinations within a group (a large
-  group in pieces of a few options, and at most 64 combinations each), then the best answers of different groups are
-  combined.
+  group in pieces of `maxPermute` options, and at most `maxPoints` combinations each), then the best answers of
+  different groups are combined.
 - `groups`: the groups alone, without combining them. The same as `hybrid` with `comboTiers=1`.
 - `single`: one option at a time.
 - `permute:<KEY>+<KEY>...`: every combination of exactly the options named, e.g.
@@ -213,6 +213,19 @@ against.
 
 Whatever the strategy, an FFT whose search has run out of steps is occasionally tried with a random option set, which
 is what lets the search find combinations no step would reach.
+
+**`maxPermute=<N>|all`** (`hybrid` and `groups`): how many options of one group are permuted together. A group with
+more is split into pieces of this many, in a fixed order, and no step moves options in two pieces at once. `all` keeps
+each group whole. Default `4`.
+
+**`maxPoints=<N>|all`** (`hybrid` and `groups`): how many combinations are tried in each piece of a group, and in each
+combination of groups. A piece's combinations are listed one option moved first, then two, and so on, so a cut keeps
+the smaller moves: with the defaults, the larger groups are cut before any step moves all four of their options at
+once. `all` tries every combination. Default `64`.
+
+Raising either is how to spend more time on each FFT; every combination is a measurement, and `all` together with
+`maxPermute=all` can mean thousands of them for the larger groups. Neither changes the bootstrap, which always races
+single options and then combines their best answers.
 
 **`comboTop=<N>`** (`hybrid` only): how many of each group's best answers are carried into the combinations. Default
 `3`.
@@ -369,7 +382,7 @@ prpll -tune status,stop=1%        # what would a run with stop=1% still do?
 tune: status: env 1, Tesla P100-PCIE-16GB (nvidia,ocl,cc600); tunedb.txt last written 5 min ago
 tune: status: nothing holds the database
 tune: status: the latest session on env 1 is session 1, a run started 2026-09-25 22:34
-tune: status: valued as session 1's run, over the 2 assignments pending when it started: workload=112159852-143093833,probe=118063003,probeWeight=0.5,kinds=prp,bootstrap=1,strategy=hybrid,comboTop=3,comboTiers=3,stop=0.1%
+tune: status: valued as session 1's run, over the 2 assignments pending when it started: workload=112159852-143093833,probe=118063003,probeWeight=0.5,kinds=prp,bootstrap=1,strategy=hybrid,maxPermute=4,maxPoints=64,comboTop=3,comboTiers=3,stop=0.1%
 tune: status: T 888.322 us/it, 0.0% of the weight on measured entries
 tune: status: FFT64: 1 of 600 entries measured, 599 waiting on the bootstrap
 ...

@@ -275,6 +275,8 @@ selection.txt, which a normal run in the same directory (or its -pool) reads.  T
                          bootstrap=0|1       first race each FFT type's options to set the defaults of every FFT [1]
                          strategy=<S>        what one step of the per-FFT search is: hybrid, groups, single, or
                                              permute:<KEY>+<KEY>... [hybrid]
+                         maxPermute=<N>|all  hybrid, groups: how many options of a group are permuted together [4]
+                         maxPoints=<N>|all   hybrid, groups: how many combinations each of those tries [64]
                          comboTop=<N>        hybrid: how many of each group's best answers are combined [3]
                          comboTiers=1|2|3    hybrid: how widely groups are combined; 1 is strategy=groups [3]
                          tunetxt=0|1         also write tune.txt, for binaries that do not read selection.txt [0]

@@ -921,7 +921,7 @@ string clusterPictureMismatch(const ClusterGraph& g) {
   for (size_t i = 0; i < g.clusters.size(); ++i) {
     const vector<Group>& cluster = g.clusters[i];
     string const name = "cluster {" + join(cluster) + "}";
-    if (cluster.size() > MAX_PERMUTE) { return name + " has more than " + to_string(MAX_PERMUTE) + " groups"; }
+    if (cluster.size() > MAX_CLUSTER) { return name + " has more than " + to_string(MAX_CLUSTER) + " groups"; }
 
     bool const hasWidth = std::ranges::find(cluster, Group::Width) != cluster.end();
     for (Group group : cluster) {

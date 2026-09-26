@@ -163,6 +163,30 @@ void parseKinds(std::string_view text, ScopeArgs& out) {
   return *value / 100;
 }
 
+// A count of 1 or more, or `all` for no limit.
+[[nodiscard]] u32 parseLimit(std::string_view key, std::string_view text) {
+  if (text == "all") { return NO_LIMIT; }
+  std::optional<u32> const value = parseInt<u32>(text);
+  if (!value || *value < 1 || *value == NO_LIMIT) {
+    throw "-tune: " + std::string{key} + "= takes a count of 1 or more, or all";
+  }
+  return *value;
+}
+
+[[nodiscard]] std::string limitText(u32 limit) { return limit == NO_LIMIT ? "all" : std::to_string(limit); }
+
+// The settings that shape `strategy` beyond its name, as key=value words; none where it searches no groups.
+[[nodiscard]] std::vector<std::string> strategySettings(const Strategy& strategy) {
+  if (!strategy.branches()) { return {}; }
+  std::vector<std::string> out{"maxPermute=" + limitText(strategy.maxPermute),
+                               "maxPoints=" + limitText(strategy.maxPoints)};
+  if (strategy.kind == Strategy::Kind::Hybrid) {
+    out.push_back("comboTop=" + std::to_string(strategy.comboTop));
+    out.push_back("comboTiers=" + std::to_string(strategy.comboTiers));
+  }
+  return out;
+}
+
 // The prime at or below `E`, which is what the tuner can actually time, raised back into the range where there is no
 // prime below `E` in it. Nothing at all where the range holds no prime: it then names no exponent that could be timed.
 [[nodiscard]] std::optional<u64> primeAtOrBelow(const Primes& primes, u64 E, u64 lo, u64 hi) {
@@ -563,6 +587,8 @@ TuneCommand parseTuneCommand(std::string_view text) {
   bool const queues = isRun || isStatus;
 
   // Applied once the strategy they belong to is known, whichever order the settings come in.
+  std::optional<u32> maxPermute;
+  std::optional<u32> maxPoints;
   std::optional<u32> comboTop;
   std::optional<u32> comboTiers;
 
@@ -619,6 +645,10 @@ TuneCommand parseTuneCommand(std::string_view text) {
     } else if (key == "tunetxt" && (isRun || out.verb == TuneVerb::Emit)) {
       if (val != "0" && val != "1") { throw who + ": tunetxt= takes 0 or 1"; }
       out.tuneTxt = val == "1";
+    } else if (key == "maxPermute" && queues) {
+      maxPermute = parseLimit(key, val);
+    } else if (key == "maxPoints" && queues) {
+      maxPoints = parseLimit(key, val);
     } else if (key == "comboTop" && queues) {
       comboTop = parseInt<u32>(val);
       if (!comboTop || *comboTop < 1) { throw std::string{"-tune: comboTop= takes a count of 1 or more"}; }
@@ -642,13 +672,14 @@ TuneCommand parseTuneCommand(std::string_view text) {
         break;
       case TuneVerb::Run:
         accepted = "workload=<lo>-<hi>, probe=<E>, probeWeight=<0..1>, kinds=prp|ll|prp+ll, bootstrap=0|1,"
-                   " strategy=hybrid|single|groups|permute:<KEY>+<KEY>..., comboTop=<N>, comboTiers=1|2|3, stop=<P>%|0,"
-                   " tunetxt=0|1,"
+                   " strategy=hybrid|single|groups|permute:<KEY>+<KEY>..., maxPermute=<N>|all, maxPoints=<N>|all,"
+                   " comboTop=<N>, comboTiers=1|2|3, stop=<P>%|0, tunetxt=0|1,"
                    " or a subcommand: emit, reset, adopt, compact, scope, status, accuracy";
         break;
       case TuneVerb::Status:
         accepted = "env=<id>, and a run's workload=<lo>-<hi>, probe=<E>, probeWeight=<0..1>, kinds=prp|ll|prp+ll,"
-                   " bootstrap=0|1, strategy=<S>, comboTop=<N>, comboTiers=1|2|3, stop=<P>%|0";
+                   " bootstrap=0|1, strategy=<S>, maxPermute=<N>|all, maxPoints=<N>|all, comboTop=<N>,"
+                   " comboTiers=1|2|3, stop=<P>%|0";
         break;
       case TuneVerb::Accuracy: accepted = "workload=<lo>-<hi>, probe=<E>, fft=<spec>, groups=<Group>+<Group>..."; break;
       }
@@ -656,6 +687,15 @@ TuneCommand parseTuneCommand(std::string_view text) {
     }
 
     if (isStatus && key != "env") { out.settings += (out.settings.empty() ? "" : ",") + std::string{token}; }
+  }
+
+  if (maxPermute || maxPoints) {
+    if (!out.strategy.branches()) {
+      throw "-tune: maxPermute= and maxPoints= size the groups of strategy=hybrid and groups, not of strategy=" +
+        out.strategy.text();
+    }
+    out.strategy.maxPermute = maxPermute.value_or(MAX_PERMUTE);
+    out.strategy.maxPoints = maxPoints.value_or(MAX_POINTS);
   }
 
   if (comboTop || comboTiers) {
@@ -686,10 +726,7 @@ std::string runSettings(const RunScope& scope, const TuneCommand& command) {
   std::string out = "workload=" + std::to_string(scope.lo) + "-" + std::to_string(scope.hi) +
     ",probe=" + std::to_string(scope.probe) + ",probeWeight=" + shortest(scope.probeWeight) + ",kinds=" + kinds +
     ",bootstrap=" + (command.bootstrap ? "1" : "0") + ",strategy=" + command.strategy.text();
-  if (command.strategy.kind == Strategy::Kind::Hybrid) {
-    out += ",comboTop=" + std::to_string(command.strategy.comboTop) +
-      ",comboTiers=" + std::to_string(command.strategy.comboTiers);
-  }
+  for (const std::string& setting : strategySettings(command.strategy)) { out += "," + setting; }
   return out + ",stop=" + (command.stop > 0 ? shortest(command.stop * 100) + "%" : "0");
 }
 
@@ -728,7 +765,7 @@ std::string statusSettings(std::string_view run, std::string_view asked) {
   for (std::string_view const token : settingTokens(run)) {
     std::string_view const key = settingKey(token);
     if (named.contains(key) || (rescoped && (key == "workload" || key == "probe")) ||
-        (restrategied && (key == "comboTop" || key == "comboTiers"))) {
+        (restrategied && (key == "maxPermute" || key == "maxPoints" || key == "comboTop" || key == "comboTiers"))) {
       continue;
     }
     add(token);
@@ -1027,10 +1064,11 @@ MeasureOutcome runTune(const GpuCommon& shared, const TuneCommand& command) {
   reportScope(scope, files, Objective{db, envId, scope}, "against env " + std::to_string(envId));
 
   Scheduler scheduler = schedulerFor(env, scope, command, args.blockSize);
-  std::string const combo = command.strategy.kind == Strategy::Kind::Hybrid
-    ? " (comboTop=" + std::to_string(command.strategy.comboTop) +
-      ", comboTiers=" + std::to_string(command.strategy.comboTiers) + ")"
-    : "";
+  std::string shaping;
+  for (const std::string& setting : strategySettings(command.strategy)) {
+    shaping += (shaping.empty() ? " (" : ", ") + setting;
+  }
+  if (!shaping.empty()) { shaping += ")"; }
   char until[96];
   if (command.stop > 0) {
     snprintf(until, sizeof(until), "until nothing is expected to lower T by %g%% of it", command.stop * 100);
@@ -1039,7 +1077,7 @@ MeasureOutcome runTune(const GpuCommon& shared, const TuneCommand& command) {
   }
   log("tune: %zu entries could serve the workload; each measured one is searched by strategy=%s%s, then by random "
       "restarts; the run goes on %s\n",
-      scheduler.baselines().size(), command.strategy.text().c_str(), combo.c_str(), until);
+      scheduler.baselines().size(), command.strategy.text().c_str(), shaping.c_str(), until);
   if (command.bootstrap) {
     std::string names;
     for (const Family& f : scheduler.bootstrap().families()) {

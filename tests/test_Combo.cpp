@@ -194,7 +194,7 @@ TEST(an_answer_the_background_cannot_hold_is_passed_over) {
                                   "L2_STRIPING=2,LOADS=2,MULTI_Q=0"}));
 }
 
-TEST(a_stage_is_cut_at_64_points_in_falling_order_of_gain) {
+TEST(a_stage_is_cut_at_its_limit_in_falling_order_of_gain) {
   // Every one-step move of the entry read once, each a little dearer than the last: seven dimensions of three answers
   // at the top tier would be 3^7 - 1 points.
   FFTConfig const fft{"512:15:512:212"};
@@ -227,6 +227,12 @@ TEST(a_stage_is_cut_at_64_points_in_falling_order_of_gain) {
     CHECK(gain <= last + 1e-12);
     last = gain;
   }
+  // The cut is the strategy's: a lower one keeps the head of the same order, and none keeps every point.
+  std::vector<std::string> const ten = textsOf(probesOf(nvidia(), fft, {}, {.maxPoints = 10}, readings), "all");
+  CHECK(ten == std::vector<std::string>(all.begin(), all.begin() + 10));
+  std::vector<std::string> const every = textsOf(probesOf(nvidia(), fft, {}, {.maxPoints = NO_LIMIT}, readings), "all");
+  CHECK(every.size() > all.size());
+  CHECK(std::equal(all.begin(), all.end(), every.begin()));
 }
 
 TEST(branches_are_the_structural_values_the_readings_hold_cheapest_first) {
