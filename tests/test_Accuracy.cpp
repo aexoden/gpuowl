@@ -252,15 +252,15 @@ TEST(a_key_nothing_was_read_for_has_no_verdict_and_a_failed_check_is_one) {
 }
 
 TEST(the_accuracy_command_is_parsed) {
-  std::optional<TuneCommand> const c = parseTuneCommand("accuracy,fft=512:8:512,groups=Middle+Tail,probe=100M");
-  CHECK(c && c->verb == TuneVerb::Accuracy);
-  CHECK(c && c->fft == "512:8:512");
-  CHECK(c && c->groups == (std::vector<Group>{Group::Middle, Group::Tail}));
+  TuneCommand const c = parseTuneCommand("accuracy,fft=512:8:512,groups=Middle+Tail,probe=100M");
+  CHECK(c.verb == TuneVerb::Accuracy);
+  CHECK(c.fft == "512:8:512");
+  CHECK(c.groups == (std::vector<Group>{Group::Middle, Group::Tail}));
   CHECK(opensDevice(TuneVerb::Accuracy));
   CHECK(!opensDevice(TuneVerb::Emit));
 
-  std::optional<TuneCommand> const bare = parseTuneCommand("accuracy");
-  CHECK(bare && bare->verb == TuneVerb::Accuracy && bare->groups.empty() && bare->fft.empty());
+  TuneCommand const bare = parseTuneCommand("accuracy");
+  CHECK(bare.verb == TuneVerb::Accuracy && bare.groups.empty() && bare.fft.empty());
 
   auto refused = [](std::string_view text) {
     try {

@@ -45,7 +45,8 @@ runs `genbundle.sh`. Pass `/p:Bash=path\to\bash.exe` to use another bash, and
 
 
 ## Use
-See `prpll -h` for the command line options.
+See `prpll -h` for the command line options, and [TUNING.md](TUNING.md) for finding the fastest settings for your GPU
+with `-tune`.
 
 
 ## License

@@ -43,7 +43,8 @@ constexpr const char* TUNE_TXT_NAME = "tune.txt";
 // How many grid points a report prints in full before it falls back to the heaviest few.
 constexpr size_t GRID_SHOWN = 12;
 
-// Upstream's own tuner is known by its option words (tune.cpp), and a -tune whose first word is one of them is its.
+// Upstream's own tuner's option words (tune.cpp).  That tuner took -tune before this one did, so a word of its given
+// here is a command meant for -oldtune.
 [[nodiscard]] bool isUpstreamWord(std::string_view token) {
   std::string_view const key = token.substr(0, token.find('='));
   for (std::string_view const word :
@@ -528,10 +529,9 @@ const char* toString(TuneVerb verb) {
 
 bool opensDevice(TuneVerb verb) { return verb == TuneVerb::Run || verb == TuneVerb::Accuracy; }
 
-std::optional<TuneCommand> parseTuneCommand(std::string_view text) {
+TuneCommand parseTuneCommand(std::string_view text) {
   size_t const firstComma = text.find(',');
   std::string_view const verb = text.substr(0, firstComma);
-  if (isUpstreamWord(verb)) { return {}; }
 
   TuneCommand out;
   if (verb == "emit") {
@@ -571,6 +571,10 @@ std::optional<TuneCommand> parseTuneCommand(std::string_view text) {
     size_t const comma = text.find(',', at);
     std::string_view const token = text.substr(at, comma == std::string_view::npos ? comma : comma - at);
     at = comma == std::string_view::npos ? text.size() + 1 : comma + 1;
+
+    if (isUpstreamWord(token)) {
+      throw who + ": '" + std::string{token} + "' is an option of the previous tuner, which is now -oldtune";
+    }
 
     size_t const eq = token.find('=');
     if (eq == std::string_view::npos) {
@@ -848,7 +852,7 @@ namespace {
     log("tune: status: '%s' is not a run's settings: %s\n", word.c_str(), why.c_str());
     return false;
   }
-  if (!settings || settings->verb != TuneVerb::Run) {
+  if (settings->verb != TuneVerb::Run) {
     log("tune: status: '%s' is not a run's settings\n", word.c_str());
     return false;
   }

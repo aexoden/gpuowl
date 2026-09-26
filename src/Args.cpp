@@ -99,7 +99,7 @@ vector<KeyVal> Args::splitUses(string ss) { // pass by value is intentional
   return ret;
 }
 
-// Checks the comma separated -tune options up front: Tune::tune() silently skips anything it does not recognise,
+// Checks the comma separated -oldtune options up front: Tune::tune() silently skips anything it does not recognise,
 // so a typo such as "maxexponent=" would otherwise tune the default exponent range for hours without a word.
 static void checkTuneOptions(const string& options) {
   for (const string& s : split(options, ',')) {
@@ -111,13 +111,13 @@ static void checkTuneOptions(const string& options) {
       u64 n = 0;
       auto [end, ec] = std::from_chars(val.data(), val.data() + val.size(), n);
       if (val.empty() || ec != std::errc{} || end != val.data() + val.size() || (key == "quick" && (n < 1 || n > 10))) {
-        log("-tune %s expects %s (found '%s')\n", key.c_str(), key == "quick" ? "a value from 1 to 10" : "a whole number, e.g. 5000000000", val.c_str());
-        throw "-tune option value";
+        log("-oldtune %s expects %s (found '%s')\n", key.c_str(), key == "quick" ? "a value from 1 to 10" : "a whole number, e.g. 5000000000", val.c_str());
+        throw "-oldtune option value";
       }
       continue;
     }
-    log("-tune option '%s' not understood; valid options are noconfig, inplace, fp64, ntt, nofp32, fp6431, minexp=<val>, maxexp=<val>, quick=<val>\n", s.c_str());
-    throw "-tune option";
+    log("-oldtune option '%s' not understood; valid options are noconfig, inplace, fp64, ntt, nofp32, fp6431, minexp=<val>, maxexp=<val>, quick=<val>\n", s.c_str());
+    throw "-oldtune option";
   }
 }
 
@@ -182,15 +182,6 @@ its reach.
 
 -h                 : print general help, list of FFTs, list of devices
 -info <fft>        : print detailed information about the given FFT; e.g. -info 1K:13:256
--options [<fft>]   : print the -use options this build knows, resolved for this GPU and <fft> (default 512:15:512),
-                     with the tuner's groups and combo clusters, then check the option table (exit 1 if it fails)
--measure <fft>[,<k>=<v>...] : time <fft> repeatedly in production-sized blocks and report whether the error bar it
-                     declares describes how far its readings move, plus its per-call construction cost, its residue
-                     and its rounding error, at the exponent given by -prp or, without one, the top of its range.
-                     Settings: n=<calls> (8), blocks=<per call>, block=<iterations>, exp=<E>, anchor=<fft> (time a
-                     second configuration alternately and correct for its drift, which turns off the scheduled one),
-                     kind=prp|ll (an LL residue is checked against the one two FFTs agree on), roe=0|1, drain=0|1,
-                     drift=0|1 (time the session's drift anchor, on by default)
 -dir <folder>      : specify local work directory (containing worktodo-<N>.txt, results-<N>.txt, config.txt,
                      gpuowl-<N>.log)
 -pool <dir>        : specify a directory with the shared (pooled) worktodo.txt and config.txt
@@ -265,7 +256,55 @@ its reach.
   -use STATS=<val> : enable carry statistics collection & logging (developers), for the kernel according to <val>:
                      1 = CarryFused, 2 = CarryFusedMul, 4 = CarryA, 8 = CarryMul
 
--tune <options>    : Looks for best settings to include in config.txt.  Times many FFTs to find fastest one to test exponents -- written to tune.txt.
+Tuning: -tune finds the fastest FFT and -use options for the exponents you test on this GPU, and publishes them in
+selection.txt, which a normal run in the same directory (or its -pool) reads.  TUNING.md explains how to use it.
+
+-tune [<subcommand>][,<setting>=<value>...] : one comma-separated word.  With no subcommand, tune: measurements are
+                     kept in tunedb.txt and selection.txt is rewritten after each one.  Ctrl-C stops cleanly and running
+                     it again resumes.  The -use options from config.txt and the command line, and -carry, are set
+                     aside while tuning.
+                     Settings (defaults in brackets):
+                         workload=<lo>-<hi>  exponents to tune for, e.g. 100M-400M [the worktodo's range +-5%%,
+                                             else 100M-400M]
+                         probe=<E>           the exponent that matters most [the commonest worktodo exponent, else the
+                                             middle of the workload]
+                         probeWeight=<0..1>  share of the weight on the probe alone; 0 weighs the workload evenly [0.5]
+                         kinds=prp|ll|prp+ll test kinds to tune [prp]
+                         stop=<P>%%|0         stop once nothing left is worth <P>%% of the time per iteration;
+                                             0 runs until Ctrl-C [0.1%%]
+                         bootstrap=0|1       first race each FFT type's options to set the defaults of every FFT [1]
+                         strategy=<S>        what one step of the per-FFT search is: hybrid, groups, single, or
+                                             permute:<KEY>+<KEY>... [hybrid]
+                         comboTop=<N>        hybrid: how many of each group's best answers are combined [3]
+                         comboTiers=1|2|3    hybrid: how widely groups are combined; 1 is strategy=groups [3]
+                         tunetxt=0|1         also write tune.txt, for binaries that do not read selection.txt [0]
+                     Subcommands that open no device (env=<id> picks a database env where there is more than one):
+                         scope     what a run would tune for, and the time per iteration measured over it so far;
+                                   takes workload=, probe=, probeWeight=, kinds=
+                         status    what the latest run has measured and what it would measure next; safe beside a
+                                   running one; takes the run's settings, to see what they would change
+                         emit      rewrite selection.txt from tunedb.txt; takes workload=, probe=, probeWeight=,
+                                   kinds=, tunetxt=
+                         reset     drop every measurement, or with fft=<spec> one FFT's
+                         adopt     keep measurements taken with other kernels (from=<id>, into=<id>)
+                         compact   rewrite tunedb.txt without duplicate rows
+                     Subcommand that runs on the device:
+                         accuracy  read which -use options change the rounding error; takes workload=, probe=,
+                                   fft=<spec>, groups=<Group>+<Group>...
+                     e.g. -tune    -tune workload=100M-140M,probe=118063003    -tune status    -tune emit
+-measure <fft>[,<k>=<v>...] : time <fft> repeatedly in production-sized blocks and report whether the error bar it
+                     declares describes how far its readings move, plus its per-call construction cost, its residue
+                     and its rounding error, at the exponent given by -prp or, without one, the top of its range.
+                     Settings: n=<calls> (8), blocks=<per call>, block=<iterations>, exp=<E>, anchor=<fft> (time a
+                     second configuration alternately and correct for its drift, which turns off the scheduled one),
+                     kind=prp|ll (an LL residue is checked against the one two FFTs agree on), roe=0|1, drain=0|1,
+                     drift=0|1 (time the session's drift anchor, on by default)
+-options [<fft>]   : print the -use options this build knows, resolved for this GPU and <fft> (default 512:15:512),
+                     with the tuner's groups and combo clusters, then check the option table (exit 1 if it fails)
+
+-oldtune <options> : The previous tuner (upstream's -tune), kept for comparison.  The -use lines it adds to config.txt
+                     take precedence over selection.txt, so remove them before running what -tune found.
+                     Looks for best settings to include in config.txt.  Times many FFTs to find fastest one to test exponents -- written to tune.txt.
                      An -fft <spec> can be given on the command line to limit which FFTs are timed.
                      Options are not required.  If present, the options are a comma separated list from below.
                          noconfig     - Skip timings to find best config.txt settings.
@@ -277,45 +316,9 @@ its reach.
                          maxexp=<val> - Time FFTs to find the best one for exponents less than <val>.  Default 350000000.
                                         Without an -fft <spec>, only FFTs in [minexp, maxexp] are timed, so tuning
                                         for a small exponent (e.g. PRP-CF at 18M) needs both ends set low, e.g.
-                                        -tune minexp=10000000,maxexp=20000000
+                                        -oldtune minexp=10000000,maxexp=20000000
                          fp6431       - Time FP64+M31 FFTs for tune.txt.  Only GPUs with great FP64 performance will find this beneficial.
                          quick=<val>  - Use higher values for a quicker, potentially less accurate tune.  Val ranges from 1 to 10.
-                     These subcommands open no device, so they run on a machine that has none.  Those working on
-                     the measurement database, without an env= (into= for adopt), act on the one env whose rows were
-                     measured against the kernels this binary carries.
-                         emit[,env=<id>]               - write selection.txt from what the database supports
-                         reset[,env=<id>][,fft=<spec>] - drop what was measured, for an env or for one of its FFTs
-                         adopt[,into=<id>][,from=<id>] - take an earlier env's rows as the current kernels' own
-                         compact                       - fold duplicate rows, and drop option sets nothing names
-                         scope[,env=<id>]              - report the exponents a tuning run would work over, and the
-                                                         expected iteration time over them that the database supports
-                         status[,env=<id>]             - report what the latest run has measured and not, and what it
-                                                         would take next; safe beside a running one, and taking a run's
-                                                         settings in place of the latest run's
-                     scope and emit take the settings that bound a run, each defaulting from the pending worktodo
-                     (emit, so that it finds the races a run held at the probe and writes the lines they decided):
-                         workload=<lo>-<hi>  - the exponents worth covering, e.g. workload=100M-400M
-                         probe=<E>           - the exponent that matters most, rounded to the prime at or below it
-                         probeWeight=<0..1>  - how much of the weight the probe carries on its own (0.5)
-                         kinds=prp|ll|prp+ll - which test kinds to tune for (prp)
-                     Given only those settings, or nothing, -tune runs the new tuner on the device instead: it
-                     times what is worth timing for the workload into tunedb.txt, publishes selection.txt after every
-                     measurement, and stops cleanly on Ctrl-C; a re-run resumes. An LL timing is checked against the
-                     residue the built-in defaults of two FFTs agree on at its exponent.
-                     It first races the -use options of each FFT type worth tuning on one FFT at the probe, and
-                     publishes the winners as selection.txt's default lines; bootstrap=0 skips that.
-                     Then each FFT it has measured is searched one step at a time from its best option set, where
-                     strategy= says what a step is: groups of related options together (hybrid, groups), one
-                     option at a time (single), or every combination of named options (permute:PAD+IN_SIZEX).
-                     hybrid then combines the best comboTop=<N> (3) answers of each group, over comboTiers=<1..3>
-                     (3) tiers: groups alone, groups that share kernels, everything; comboTiers=1 is groups.
-                     tunetxt=1 (a run, or emit) also writes tune.txt beside selection.txt, for binaries that read
-                     only tune.txt: just the FFTs measured to hold their fitted reach at default rounding.
-                     The option words above (noconfig, fp64, quick=, ...) still select the previous tuner.
-                         accuracy[,fft=<spec>][,groups=<Group>+...] - on the device: read the rounding error of
-                             every value of every -use option against the set it moved from, on each FFT type's
-                             bootstrap FFT (or on fft=) at the probe, recording the readings in tunedb.txt, and say
-                             which options change the rounding. Takes workload= and probe= as a run does.
 -device <N>        : select the GPU at position N in the list of devices
 -uid    <UID>      : select the GPU with the given UID (on ROCm/AMDGPU, Linux)
 -pci    <BDF>      : select the GPU with the given PCI BDF, e.g. "0c:00.0"
@@ -420,12 +423,15 @@ void Args::parse(const string& line, bool fromConfigFile) {
     } else if (key == "-roe") {
       assert(s.empty());
       logROE = true;
-    } else if (key == "-tune") {
+    } else if (key == "-oldtune") {
       doTune = true;
-      if (!s.empty()) { tune = s; }
-      // The database-only subcommands are dispatched by main() before a device exists; validated here, so a mistyped
-      // setting is a usage error rather than a silent fall-through to the tuner that takes the same flag.
-      if (!tune::parseTuneCommand(tune)) { checkTuneOptions(tune); }
+      if (!s.empty()) { checkTuneOptions(s); tune = s; }
+    } else if (key == "-tune") {
+      // Dispatched by main(), the database-only subcommands before a device exists; validated here, so a mistyped
+      // setting is a usage error rather than a failure once the device is open.
+      doTuneCommand = true;
+      tuneCommand = s;
+      (void)tune::parseTuneCommand(tuneCommand);
     } else if (key == "-measure") {
       // Resolving the options and building a Gpu need the device, so main() does this once a
       // context exists.
