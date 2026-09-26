@@ -55,7 +55,8 @@ public:
   // the fit uses, since the prior is of the cheapest configuration and not of a typical one.
   void add(const FFTShape& shape, double cost);
 
-  // In picoseconds per unit of priorWork().  Between two measured sizes equally far away, the lower k.
+  // In picoseconds per unit of priorWork(): the lowest k among the shape's own size and the nearest measured size on
+  // either side of it.
   [[nodiscard]] double k(const FFTShape& shape) const;
 
   // Microseconds per iteration, optimism included.

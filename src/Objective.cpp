@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <cmath>
 #include <iterator>
+#include <limits>
 #include <utility>
 
 namespace tune {
@@ -61,21 +62,20 @@ double Prior::k(const FFTShape& shape) const {
   auto const type = measured_.find(shape.fft_type);
   if (type == measured_.end()) { return statedPriorK(shape.fft_type); }
 
+  // Not its own size's reading alone: a size read a few times may have been read only at its slowest configuration --
+  // one call of a broadcast variant once priced every shape of its size 60% above the best of the size below -- and
+  // every other configuration of that size would then be valued as if it could not beat it.
   const std::map<u32, double>& bySize = type->second;
-  u64 const size = shape.size();
+  auto at = bySize.lower_bound(shape.size());
 
-  // The measured sizes either side of this one, nearest in log size because the shapes are spaced that way.  Compared
-  // as products rather than as differences of logarithms: `below` is nearer exactly when size / below < above / size,
-  // and a difference of two rounded logarithms can split a tie such as 256:6:256 between 256:4:256 and 256:9:256.
-  auto const above = bySize.lower_bound(shape.size());
-  if (above == bySize.end()) { return std::prev(above)->second; }
-  if (above->first == size || above == bySize.begin()) { return above->second; }
-
-  auto const below = std::prev(above);
-  u64 const squared = size * size;
-  u64 const spanned = u64(below->first) * above->first;
-  if (squared == spanned) { return std::min(below->second, above->second); }
-  return squared < spanned ? below->second : above->second;
+  double out = std::numeric_limits<double>::infinity();
+  if (at != bySize.begin()) { out = std::prev(at)->second; }
+  if (at != bySize.end() && at->first == shape.size()) {
+    out = std::min(out, at->second);
+    ++at;
+  }
+  if (at != bySize.end()) { out = std::min(out, at->second); }
+  return out;
 }
 
 double Prior::cost(const FFTShape& shape) const {
