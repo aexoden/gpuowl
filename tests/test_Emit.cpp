@@ -210,6 +210,22 @@ TEST(emit_withdraws_a_configuration_that_answered_wrongly_in_the_regime) {
   CHECK(publishes(db, "0a567e7dbc3e06d4"));
 }
 
+// The failure that follows a wrong answer is usually a refusal -- the next attempt's build, or a backend that no longer
+// runs it -- and that says nothing the wrong answer did not, so the rows it merges into still withdraw the configuration
+// though another exponent of the regime measured it cleanly.
+TEST(emit_withdraws_a_wrong_answer_whatever_failure_follows_it) {
+  for (const char* later : {"unsupported", "nocompile", "lost"}) {
+    TuneDB db = loaded(withRecord("16 4 1.0000 ok 1753471294",
+                                  "16 4 1.0000 err 1753471294\n"
+                                  "run   4 512:15:512:212 prp 120000000 short32 18 0.000 0.000 0 0 1.0000 " +
+                                    std::string{later} + " 1753471299"));
+    CHECK(!publishes(db, TWICE_MEASURED));
+
+    CHECK(db.compact());
+    CHECK(!publishes(db, TWICE_MEASURED));
+  }
+}
+
 // A build that would not compile and a run the backend refused say nothing about the answers the configuration
 // computes, so neither reaches past the exponent it happened at.
 TEST(emit_keeps_a_configuration_a_refusal_never_ran) {
