@@ -213,6 +213,12 @@ void reportScope(const RunScope& scope, const std::vector<fs::path>& files, cons
 // nothing here that can tell two cards apart, and publishing the wrong card's measurements is worse than asking.
 [[nodiscard]] u32 commandEnv(const TuneDB& db, const TuneCommand& command, u64 build);
 
+// The env `adopt` folds into: the one named; else, for a from= env, that card's env under `build`; else the single env
+// measured against `build`.  Where no env was measured against `build` -- straight after an update, before anything
+// has been timed with the new kernels -- the card's env under them is added to `db` from the env being adopted, which
+// is from= or, where the database holds a single card, its most recent env.  0 with the reason logged.
+[[nodiscard]] u32 adoptTarget(TuneDB& db, const TuneCommand& command, u64 build);
+
 // Everything `command` changes about a loaded database, `emit` aside -- that one reads.  False with the reason logged.
 [[nodiscard]] bool rewriteFor(TuneDB& db, const TuneCommand& command, u32 env);
 
