@@ -1162,6 +1162,51 @@ TEST(a_roe_row_is_held_as_its_line_reads_back) {
   CHECK_EQ(db.roes().at(0).z, 20.83);
 }
 
+TEST(a_run_and_an_anchor_row_are_held_as_their_lines_read_back) {
+  // A race decided by margin on the readings this process holds has to stay decided in the one that reloads them: a
+  // rival 1.2190 us/it behind a leader at 486.917, against a margin of 1.2173, was decided live and pending on reload
+  // when the process kept the digits the file does not.
+  TuneDB db;
+  u32 const env = db.internEnv(DbEnv{.gpu = "a card", .name = "a card", .driver = "1.0"});
+  u32 const sess = db.beginSession(env, "-");
+  CHECK(db.add(RunRow{.sess = sess,
+                      .fft = "1K:7:256:212",
+                      .kind = TestKind::PRP,
+                      .exponent = 67'513'549,
+                      .regime = regimeOf(FFTConfig{"1K:7:256:212"}, 67'513'549),
+                      .cfg = db.internCfg({}),
+                      .m = {.mean = 488.13649876,
+                            .stddev = 0.40412345,
+                            .blocks = 4,
+                            .calls = 7,
+                            .drift = 1.00304567,
+                            .status = Status::Ok,
+                            .ts = 1}}));
+  CHECK(db.add(AnchorRow{.sess = sess,
+                         .fft = "1K:7:256:212",
+                         .exponent = 67'513'549,
+                         .cfg = db.internCfg({}),
+                         .mean = 520.90749,
+                         .ratio = 1.00304567,
+                         .ts = 2}));
+
+  TuneDB const again = loaded(db.text());
+  CHECK_EQ(db.runs().size(), size_t{1});
+  CHECK_EQ(again.runs().size(), size_t{1});
+  CHECK_EQ(again.anchors().size(), size_t{1});
+  if (db.runs().empty() || again.runs().empty() || db.anchors().empty() || again.anchors().empty()) { return; }
+  const Measurement& held = db.runs().at(0).m;
+  const Measurement& read = again.runs().at(0).m;
+  CHECK_EQ(held.mean, read.mean);
+  CHECK_EQ(held.stddev, read.stddev);
+  CHECK_EQ(held.drift, read.drift);
+  CHECK_EQ(held.cost(), read.cost());
+  CHECK_EQ(held.mean, 488.136);
+  CHECK_EQ(db.anchors().at(0).mean, again.anchors().at(0).mean);
+  CHECK_EQ(db.anchors().at(0).ratio, again.anchors().at(0).ratio);
+  CHECK_EQ(db.anchors().at(0).ratio, 1.0030);
+}
+
 TEST(a_roe_rows_fingerprint_survives_the_file_exactly) {
   TuneDB db;
   u32 const env = db.internEnv(DbEnv{.gpu = "a card", .name = "a card", .driver = "1.0"});
