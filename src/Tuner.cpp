@@ -6,6 +6,7 @@
 #include "Args.h"
 #include "BuildId.h"
 #include "Emit.h"
+#include "File.h"
 #include "GpuCommon.h"
 #include "log.h"
 #include "Measure.h"
@@ -14,17 +15,21 @@
 #include "Restart.h"
 #include "Scheduler.h"
 #include "Signal.h"
+#include "Status.h"
 #include "Summary.h"
 #include "Task.h"
 #include "TuneDB.h"
 #include "Worktodo.h"
 
 #include <algorithm>
+#include <charconv>
+#include <chrono>
 #include <cinttypes>
 #include <cmath>
 #include <cstdio>
 #include <ctime>
 #include <map>
+#include <set>
 #include <vector>
 
 namespace tune {
@@ -287,6 +292,33 @@ private:
   return bootstrapFor(device, scope, baselines(device, scope), true).state(db, env).defaults;
 }
 
+// The queue a run with `command`'s settings works through on `device`.
+[[nodiscard]] Scheduler schedulerFor(const Env& device, const RunScope& scope, const TuneCommand& command,
+                                     u32 blockSize) {
+  std::vector<Baseline> entries = baselines(device, scope);
+  Bootstrap bootstrap = bootstrapFor(device, scope, entries, command.bootstrap);
+  return Scheduler{scope, std::move(entries), blockSize, std::move(bootstrap), command.strategy, true, true};
+}
+
+// The shortest text that reads back as `value`.
+[[nodiscard]] std::string shortest(double value) {
+  char buf[32];
+  auto const [end, ec] = std::to_chars(buf, buf + sizeof(buf), value);
+  return ec == std::errc{} ? std::string(buf, end) : std::to_string(value);
+}
+
+[[nodiscard]] std::vector<std::string_view> settingTokens(std::string_view text) {
+  std::vector<std::string_view> out;
+  for (size_t at = 0; at < text.size();) {
+    size_t const comma = std::min(text.find(',', at), text.size());
+    if (comma > at) { out.push_back(text.substr(at, comma - at)); }
+    at = comma + 1;
+  }
+  return out;
+}
+
+[[nodiscard]] std::string_view settingKey(std::string_view token) { return token.substr(0, token.find('=')); }
+
 }  // namespace
 
 bool ScopeArgs::wantsKind(TestKind kind) const { return std::ranges::find(kinds, kind) != kinds.end(); }
@@ -488,6 +520,7 @@ const char* toString(TuneVerb verb) {
   case TuneVerb::Scope: return "scope";
   case TuneVerb::Run: return "run";
   case TuneVerb::Accuracy: return "accuracy";
+  case TuneVerb::Status: return "status";
   }
   return "?";
 }
@@ -512,6 +545,8 @@ std::optional<TuneCommand> parseTuneCommand(std::string_view text) {
     out.verb = TuneVerb::Scope;
   } else if (verb == "accuracy") {
     out.verb = TuneVerb::Accuracy;
+  } else if (verb == "status") {
+    out.verb = TuneVerb::Status;
   } else {
     // Settings alone, or none: the first word is one of them rather than a subcommand.
     out.verb = TuneVerb::Run;
@@ -521,7 +556,10 @@ std::optional<TuneCommand> parseTuneCommand(std::string_view text) {
   bool const isRun = out.verb == TuneVerb::Run;
   std::string const who = isRun ? "-tune" : "-tune " + std::string{verb};
   bool const isAccuracy = out.verb == TuneVerb::Accuracy;
-  bool const takesScope = out.verb == TuneVerb::Scope || out.verb == TuneVerb::Emit || isRun || isAccuracy;
+  bool const isStatus = out.verb == TuneVerb::Status;
+  bool const takesScope = out.verb == TuneVerb::Scope || out.verb == TuneVerb::Emit || isRun || isAccuracy || isStatus;
+  // A status values what a run would do next, so it takes whatever shapes the run's queue.
+  bool const queues = isRun || isStatus;
 
   // Applied once the strategy they belong to is known, whichever order the settings come in.
   std::optional<u32> comboTop;
@@ -566,20 +604,20 @@ std::optional<TuneCommand> parseTuneCommand(std::string_view text) {
       out.scope.probeWeight = *weight;
     } else if (key == "kinds" && takesScope && !isAccuracy) {
       parseKinds(val, out.scope);
-    } else if (key == "bootstrap" && isRun) {
+    } else if (key == "bootstrap" && queues) {
       if (val != "0" && val != "1") { throw std::string{"-tune: bootstrap= takes 0 or 1"}; }
       out.bootstrap = val == "1";
-    } else if (key == "strategy" && isRun) {
+    } else if (key == "strategy" && queues) {
       out.strategy = parseStrategy(val);
-    } else if (key == "stop" && isRun) {
+    } else if (key == "stop" && queues) {
       out.stop = parseStop(val);
     } else if (key == "tunetxt" && (isRun || out.verb == TuneVerb::Emit)) {
       if (val != "0" && val != "1") { throw who + ": tunetxt= takes 0 or 1"; }
       out.tuneTxt = val == "1";
-    } else if (key == "comboTop" && isRun) {
+    } else if (key == "comboTop" && queues) {
       comboTop = parseInt<u32>(val);
       if (!comboTop || *comboTop < 1) { throw std::string{"-tune: comboTop= takes a count of 1 or more"}; }
-    } else if (key == "comboTiers" && isRun) {
+    } else if (key == "comboTiers" && queues) {
       comboTiers = parseInt<u32>(val);
       if (!comboTiers || *comboTiers < 1 || *comboTiers > COMBO_TIERS) {
         throw std::string{"-tune: comboTiers= takes 1, 2 or 3"};
@@ -601,12 +639,18 @@ std::optional<TuneCommand> parseTuneCommand(std::string_view text) {
         accepted = "workload=<lo>-<hi>, probe=<E>, probeWeight=<0..1>, kinds=prp|ll|prp+ll, bootstrap=0|1,"
                    " strategy=hybrid|single|groups|permute:<KEY>+<KEY>..., comboTop=<N>, comboTiers=1|2|3, stop=<P>%|0,"
                    " tunetxt=0|1,"
-                   " or a subcommand: emit, reset, adopt, compact, scope, accuracy";
+                   " or a subcommand: emit, reset, adopt, compact, scope, status, accuracy";
+        break;
+      case TuneVerb::Status:
+        accepted = "env=<id>, and a run's workload=<lo>-<hi>, probe=<E>, probeWeight=<0..1>, kinds=prp|ll|prp+ll,"
+                   " bootstrap=0|1, strategy=<S>, comboTop=<N>, comboTiers=1|2|3, stop=<P>%|0";
         break;
       case TuneVerb::Accuracy: accepted = "workload=<lo>-<hi>, probe=<E>, fft=<spec>, groups=<Group>+<Group>..."; break;
       }
       throw who + ": '" + std::string{key} + "=' is not understood. Accepted: " + accepted;
     }
+
+    if (isStatus && key != "env") { out.settings += (out.settings.empty() ? "" : ",") + std::string{token}; }
   }
 
   if (comboTop || comboTiers) {
@@ -627,6 +671,64 @@ std::optional<TuneCommand> parseTuneCommand(std::string_view text) {
       "-" + std::to_string(out.scope.hi);
   }
 
+  return out;
+}
+
+std::string runSettings(const RunScope& scope, const TuneCommand& command) {
+  std::string kinds;
+  for (TestKind const kind : command.scope.kinds) { kinds += (kinds.empty() ? "" : "+") + std::string{toString(kind)}; }
+
+  std::string out = "workload=" + std::to_string(scope.lo) + "-" + std::to_string(scope.hi) +
+    ",probe=" + std::to_string(scope.probe) + ",probeWeight=" + shortest(scope.probeWeight) + ",kinds=" + kinds +
+    ",bootstrap=" + (command.bootstrap ? "1" : "0") + ",strategy=" + command.strategy.text();
+  if (command.strategy.kind == Strategy::Kind::Hybrid) {
+    out += ",comboTop=" + std::to_string(command.strategy.comboTop) +
+      ",comboTiers=" + std::to_string(command.strategy.comboTiers);
+  }
+  return out + ",stop=" + (command.stop > 0 ? shortest(command.stop * 100) + "%" : "0");
+}
+
+std::vector<WorkRow> workRows(u32 sess, const std::vector<PendingWork>& pending) {
+  std::map<std::pair<TestKind, u64>, u32> counts;
+  for (const PendingWork& work : pending) { ++counts[{work.kind, work.exponent}]; }
+
+  std::vector<WorkRow> out;
+  for (const auto& [at, count] : counts) {
+    out.push_back({.sess = sess, .kind = at.first, .exponent = at.second, .count = count});
+  }
+  return out;
+}
+
+std::vector<PendingWork> pendingOf(const TuneDB& db, u32 sess) {
+  std::vector<PendingWork> out;
+  for (const WorkRow& row : db.works()) {
+    if (row.sess != sess) { continue; }
+    out.insert(out.end(), row.count, PendingWork{.kind = row.kind, .exponent = row.exponent});
+  }
+  return out;
+}
+
+std::vector<PendingWork> statusWork(const TuneDB& db, const SessRow* run, const Args& args, const fs::path& dir) {
+  return run ? pendingOf(db, run->id) : scanWorktodo(worktodoFiles(args, dir));
+}
+
+std::string statusSettings(std::string_view run, std::string_view asked) {
+  std::set<std::string_view> named;
+  for (std::string_view const token : settingTokens(asked)) { named.insert(settingKey(token)); }
+  bool const rescoped = named.contains("workload") || named.contains("probe");
+  bool const restrategied = named.contains("strategy");
+
+  std::string out;
+  auto add = [&out](std::string_view token) { out += (out.empty() ? "" : ",") + std::string{token}; };
+  for (std::string_view const token : settingTokens(run)) {
+    std::string_view const key = settingKey(token);
+    if (named.contains(key) || (rescoped && (key == "workload" || key == "probe")) ||
+        (restrategied && (key == "comboTop" || key == "comboTiers"))) {
+      continue;
+    }
+    add(token);
+  }
+  for (std::string_view const token : settingTokens(asked)) { add(token); }
   return out;
 }
 
@@ -667,8 +769,9 @@ bool rewriteFor(TuneDB& db, const TuneCommand& command, u32 env) {
   switch (command.verb) {
   case TuneVerb::Emit: return true;
 
-  // Neither rewrites anything, and they are here only so that the switch is complete.
+  // None rewrites anything, and they are here only so that the switch is complete.
   case TuneVerb::Scope:
+  case TuneVerb::Status:
   case TuneVerb::Run:
   case TuneVerb::Accuracy: return false;
 
@@ -696,7 +799,77 @@ bool rewriteFor(TuneDB& db, const TuneCommand& command, u32 env) {
   return false;
 }
 
+namespace {
+
+// Where the database in `dir` stands.  Read without the lock, so that a run holding it can be asked about, and taking
+// only the lines already complete, since that run may be part-way through appending one.
+[[nodiscard]] bool reportStatus(const TuneCommand& command, const Args& args, const fs::path& dir) {
+  fs::path const dbPath = dir / TuneDB::DEFAULT_NAME;
+  std::error_code ec;
+  if (!fs::exists(dbPath, ec)) {
+    log("tune: status: nothing has been measured in %s, which holds no %s\n", dir.string().c_str(),
+        TuneDB::DEFAULT_NAME);
+    return true;
+  }
+
+  Activity activity{.held = TuneDB::writerHolds(dbPath), .written = 0, .now = u64(std::time(nullptr))};
+  if (auto const when = fs::last_write_time(dbPath, ec); !ec) {
+    auto const since = std::chrono::file_clock::to_sys(when).time_since_epoch();
+    activity.written = u64(std::chrono::duration_cast<std::chrono::seconds>(since).count());
+  }
+
+  std::string text;
+  {
+    File file = File::openRead(dbPath);
+    if (!file) {
+      log("Can't read '%s'\n", dbPath.string().c_str());
+      return false;
+    }
+    text = file.readAll();
+  }
+  TuneDB db;
+  if (!db.parse(completeLines(text), dbPath.string())) { return false; }
+
+  u32 const env = commandEnv(db, command, buildFingerprint());
+  if (!env) { return false; }
+  const DbEnv& row = *db.findEnv(env);
+
+  const SessRow* run = nullptr;
+  for (const SessRow& s : db.sessions()) {
+    if (s.env == env && !s.tune.empty() && (!run || s.id > run->id)) { run = &s; }
+  }
+
+  std::string const word = statusSettings(run ? run->tune : "", command.settings);
+  std::optional<TuneCommand> settings;
+  try {
+    settings = parseTuneCommand(word);
+  } catch (const std::string& why) {
+    log("tune: status: '%s' is not a run's settings: %s\n", word.c_str(), why.c_str());
+    return false;
+  }
+  if (!settings || settings->verb != TuneVerb::Run) {
+    log("tune: status: '%s' is not a run's settings\n", word.c_str());
+    return false;
+  }
+
+  std::vector<PendingWork> const pending = statusWork(db, run, args, dir);
+  RunScope const scope = makeScope(settings->scope, pending);
+  Scheduler const scheduler = schedulerFor(row.toEnv(), scope, *settings, args.blockSize);
+
+  std::string const work = std::to_string(pending.size()) + (pending.size() == 1 ? " assignment" : " assignments");
+  std::string const whose = !run
+    ? "a run started here now, there being none on env " + std::to_string(env) + ", over the " + work + " pending"
+    : "session " + std::to_string(run->id) + "'s run" + (command.settings.empty() ? "" : " with " + command.settings) +
+      ", over the " + work + " pending when it started";
+  logStatus(statusOf(scheduler, db, env, settings->stop, activity), row, whose + ": " + runSettings(scope, *settings));
+  return true;
+}
+
+}  // namespace
+
 bool runTuneCommand(const TuneCommand& command, const Args& args, const fs::path& dir) {
+  if (command.verb == TuneVerb::Status) { return reportStatus(command, args, dir); }
+
   fs::path const dbPath = dir / TuneDB::DEFAULT_NAME;
 
   std::vector<fs::path> files;
@@ -773,7 +946,8 @@ MeasureOutcome runTune(const GpuCommon& shared, const TuneCommand& command) {
   if (!args.fftSpec.empty()) { log("tune: -fft is not used by the tuner, which chooses among every FFT itself\n"); }
 
   std::vector<fs::path> const files = worktodoFiles(args, dir);
-  RunScope const scope = makeScope(command.scope, scanWorktodo(files));
+  std::vector<PendingWork> const pending = scanWorktodo(files);
+  RunScope const scope = makeScope(command.scope, pending);
   Env const env = detectEnv(*shared.context, args);
 
   fs::path const dbPath = dir / TuneDB::DEFAULT_NAME;
@@ -783,18 +957,22 @@ MeasureOutcome runTune(const GpuCommon& shared, const TuneCommand& command) {
   db.attach(dbPath);
 
   Session session{shared, db, env};
-  if (!session.begin(scope.probe)) {
+  if (!session.begin(scope.probe, runSettings(scope, command))) {
     log("tune: '%s' would not take a session\n", dbPath.string().c_str());
     return MeasureOutcome::Failed;
+  }
+  for (const WorkRow& row : workRows(session.id(), pending)) {
+    if (!db.add(row)) {
+      log("tune: the pending work was not recorded, so -tune status cannot weight this run as it does\n");
+      break;
+    }
   }
   if (u32 const gen = restart::generation()) { log("tune: generation %u\n", gen); }
 
   u32 const envId = session.envId();
   reportScope(scope, files, Objective{db, envId, scope}, "against env " + std::to_string(envId));
 
-  std::vector<Baseline> entries = baselines(env, scope);
-  Bootstrap bootstrap = bootstrapFor(env, scope, entries, command.bootstrap);
-  Scheduler scheduler{scope, std::move(entries), args.blockSize, std::move(bootstrap), command.strategy, true, true};
+  Scheduler scheduler = schedulerFor(env, scope, command, args.blockSize);
   std::string const combo = command.strategy.kind == Strategy::Kind::Hybrid
     ? " (comboTop=" + std::to_string(command.strategy.comboTop) +
       ", comboTiers=" + std::to_string(command.strategy.comboTiers) + ")"

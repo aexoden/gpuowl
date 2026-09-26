@@ -78,6 +78,9 @@ struct OptionSet {
 // costs; one it still owes a reading is.
 [[nodiscard]] std::vector<OptionSet> optionSetsFor(const TuneDB& db, u32 env, const Defaults& defaults = {});
 
+// The option sets optionSetsFor() leaves out because the accuracy gate rejected them.
+[[nodiscard]] std::vector<OptionSet> rejectedSets(const TuneDB& db, u32 env, const Defaults& defaults = {});
+
 // What entriesFor() chooses the table from: every option set of every identity that no other of the same identity
 // dominates, including those that another identity's entry would keep out of the table.
 [[nodiscard]] std::vector<SelectionEntry> candidatesFor(const TuneDB& db, u32 env, const Defaults& defaults = {},

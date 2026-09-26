@@ -17,6 +17,8 @@
 #include <cstdio>
 #include <cstring>
 #include <ctime>
+#include <fstream>
+#include <iterator>
 #include <limits>
 #include <ranges>
 #include <system_error>
@@ -25,6 +27,10 @@
 #ifndef _WIN32
 #include <fcntl.h>
 #include <sys/file.h>
+#include <sys/stat.h>
+#ifdef __linux__
+#include <sys/sysmacros.h>
+#endif
 #endif
 
 namespace tune {
@@ -295,10 +301,15 @@ std::string formatCfgRow(u32 id, const UseConfig& config) {
   return "cfg   " + to_string(id) + ' ' + configText(config);
 }
 
+std::string formatRow(const WorkRow& row) {
+  return "work  " + to_string(row.sess) + ' ' + toString(row.kind) + ' ' + to_string(row.exponent) + ' ' +
+    to_string(row.count);
+}
+
 std::string formatRow(const SessRow& row) {
   return "sess  " + to_string(row.id) + " env=" + to_string(row.env) + " start=" + to_string(row.start) +
     " gen=" + to_string(row.gen) + " anchor=" + (row.anchor.empty() ? "-" : quoted(row.anchor)) +
-    (row.alarmed ? " alarmed=1" : "");
+    (row.tune.empty() ? "" : " tune=" + quoted(row.tune)) + (row.alarmed ? " alarmed=1" : "");
 }
 
 namespace {
@@ -461,6 +472,54 @@ bool TuneDB::lockForWriting(const fs::path& path) {
 #endif
 }
 
+std::optional<bool> TuneDB::writerHolds(const fs::path& path) {
+#ifdef __linux__
+  // Read off the kernel's table of locks rather than asked by taking one: any probe that takes the lock, even shared
+  // and for an instant, turns away a writer that tries for it in that instant.
+  struct stat claim{};
+  if (stat((path + ".lock").c_str(), &claim)) {
+    if (errno == ENOENT) { return false; }
+    return {};
+  }
+
+  std::ifstream in{"/proc/locks"};
+  if (!in) { return {}; }
+  std::string const locks{std::istreambuf_iterator<char>{in}, std::istreambuf_iterator<char>{}};
+  return lockListed(locks, major(claim.st_dev), minor(claim.st_dev), claim.st_ino);
+#else
+  (void)path;
+  return {};
+#endif
+}
+
+bool lockListed(std::string_view locks, u32 major, u32 minor, u64 inode) {
+  for (size_t at = 0; at < locks.size();) {
+    size_t const eol = std::min(locks.find('\n', at), locks.size());
+    std::string_view const line = locks.substr(at, eol - at);
+    at = eol + 1;
+
+    std::vector<std::string_view> fields;
+    for (size_t from = 0; from < line.size();) {
+      size_t const space = std::min(line.find(' ', from), line.size());
+      if (space > from) { fields.push_back(line.substr(from, space - from)); }
+      from = space + 1;
+    }
+
+    // "<n>: <class> <mode> <type> <pid> <maj>:<min>:<inode> <start> <end>", with "->" after the number for a waiter.
+    if (fields.size() < 6 || fields[1] == "->") { continue; }
+    std::string_view const where = fields[5];
+    size_t const first = where.find(':');
+    size_t const second = first == std::string_view::npos ? first : where.find(':', first + 1);
+    if (second == std::string_view::npos) { continue; }
+
+    auto const maj = parseInt<u32>(where.substr(0, first), 16);
+    auto const min = parseInt<u32>(where.substr(first + 1, second - first - 1), 16);
+    auto const ino = parseInt<u64>(where.substr(second + 1));
+    if (maj == major && min == minor && ino == inode) { return true; }
+  }
+  return false;
+}
+
 template<typename Row> bool TuneDB::record(std::vector<Row>& into, Row row) {
   auto const fft = canonicalFft(row.fft);
   if (!fft) { return false; }
@@ -583,6 +642,17 @@ bool TuneDB::add(const AlarmRow& row) {
   return true;
 }
 
+bool TuneDB::add(const WorkRow& row) {
+  if (!findSession(row.sess) || isSealed(row.sess) || row.count == 0 || row.exponent == 0) { return false; }
+  auto const same = [&](const WorkRow& w) {
+    return w.sess == row.sess && w.kind == row.kind && w.exponent == row.exponent;
+  };
+  if (std::ranges::any_of(works_, same)) { return false; }
+  if (!append(formatRow(row))) { return false; }
+  works_.push_back(row);
+  return true;
+}
+
 bool TuneDB::add(const RefRow& row) {
   if (!findSession(row.sess) || isSealed(row.sess)) { return false; }
   u64 const ts = row.ts;
@@ -627,12 +697,13 @@ u32 TuneDB::internCfg(const UseConfig& config) {
   return addCfg(id, config) ? id : 0;
 }
 
-u32 TuneDB::beginSession(u32 env, const std::string& anchor, u32 gen, u64 start) {
+u32 TuneDB::beginSession(u32 env, const std::string& anchor, u32 gen, u64 start, const std::string& tune) {
   SessRow row{.id = nextId(sessions_, &SessRow::id),
               .env = env,
               .start = start ? start : u64(std::time(nullptr)),
               .gen = gen,
               .anchor = anchor,
+              .tune = tune,
               .alarmed = false};
   if (!add(row)) { return 0; }
   live_.insert(row.id);
@@ -925,6 +996,7 @@ void TuneDB::clear() {
   envs_.clear();
   cfgs_.clear();
   sessions_.clear();
+  works_.clear();
   runs_.clear();
   tries_.clear();
   nogos_.clear();
@@ -985,8 +1057,8 @@ bool TuneDB::parse(std::string_view text, std::string_view name) {
 
     std::string const& tag = f[0];
 
-    auto const known = tag == "env" || tag == "cfg" || tag == "sess" || tag == "run" || tag == "try" || tag == "done" ||
-      tag == "nogo" || tag == "roe" || tag == "ref" || tag == "jump" || tag == "combo";
+    auto const known = tag == "env" || tag == "cfg" || tag == "sess" || tag == "work" || tag == "run" || tag == "try" ||
+      tag == "done" || tag == "nogo" || tag == "roe" || tag == "ref" || tag == "jump" || tag == "combo";
     if (known && f.size() < 2) {
       refuse(tag + " row has no fields");
       continue;
@@ -1158,6 +1230,8 @@ bool TuneDB::parse(std::string_view text, std::string_view name) {
           number(s.gen);
         } else if (key == "anchor") {
           s.anchor = val == "-" ? "" : std::string{val};
+        } else if (key == "tune") {
+          s.tune = val;
         } else if (key == "alarmed") {
           auto const v = val.empty() ? std::optional{true} : parseBool(val);
           if (v) {
@@ -1177,7 +1251,7 @@ bool TuneDB::parse(std::string_view text, std::string_view name) {
         refuse("session " + to_string(s.id) + " names env " + to_string(s.env) + ", which is not declared");
         continue;
       }
-      if (!isWriteableField(s.anchor)) {
+      if (!isWriteableField(s.anchor) || !isWriteableField(s.tune)) {
         refuse("session " + to_string(s.id) + " holds a value this format cannot write back");
       } else if (!add(s)) {
         refuse("session " + to_string(s.id) + " declared twice" + TWO_WRITERS);
@@ -1192,6 +1266,21 @@ bool TuneDB::parse(std::string_view text, std::string_view name) {
       if (!ts) { refuse("'" + f[2] + "' is not a timestamp"); }
       if (!sess || !ts) { continue; }
       if (!add(DoneRow{.sess = *sess, .ts = *ts})) { refuse("done row names a session that is not declared"); }
+    } else if (tag == "work") {
+      if (f.size() != 5) {
+        refuse("work row has " + to_string(f.size()) + " fields, expected 5");
+        continue;
+      }
+      std::optional<u32> const sess = sessionOf();
+      auto const kind = parseTestKind(f[2]);
+      auto const exponent = parseInt<u64>(f[3]);
+      auto const count = parseInt<u32>(f[4]);
+      if (!kind) { refuse("'" + f[2] + "' is not a test kind"); }
+      if (!exponent || !count || !*exponent || !*count) { refuse("work row has a malformed exponent or count"); }
+      if (!sess || !kind || !exponent || !count || !*exponent || !*count) { continue; }
+      if (!add(WorkRow{.sess = *sess, .kind = *kind, .exponent = *exponent, .count = *count})) {
+        refuse("work row names an exponent its session already has" + std::string{TWO_WRITERS});
+      }
     } else if (tag == "alarm") {
       if (f.size() != 3) {
         refuse("alarm row has " + to_string(f.size()) + " fields, expected 3");
@@ -1396,6 +1485,7 @@ std::string TuneDB::text() const {
   for (const DbEnv& e : envs_) { out += formatRow(e) + '\n'; }
   for (const auto& [id, config] : cfgs_) { out += formatCfgRow(id, config) + '\n'; }
   for (const SessRow& s : sessions_) { out += formatRow(s) + '\n'; }
+  for (const WorkRow& w : works_) { out += formatRow(w) + '\n'; }
   for (const RunRow& r : runs_) { out += formatRow(r) + '\n'; }
   for (const NogoRow& r : nogos_) { out += formatRow(r) + '\n'; }
   for (const RoeRow& r : roes_) { out += formatRow(r) + '\n'; }

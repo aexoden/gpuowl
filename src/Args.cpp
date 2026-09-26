@@ -289,6 +289,9 @@ its reach.
                          compact                       - fold duplicate rows, and drop option sets nothing names
                          scope[,env=<id>]              - report the exponents a tuning run would work over, and the
                                                          expected iteration time over them that the database supports
+                         status[,env=<id>]             - report what the latest run has measured and not, and what it
+                                                         would take next; safe beside a running one, and taking a run's
+                                                         settings in place of the latest run's
                      scope and emit take the settings that bound a run, each defaulting from the pending worktodo
                      (emit, so that it finds the races a run held at the probe and writes the lines they decided):
                          workload=<lo>-<hi>  - the exponents worth covering, e.g. workload=100M-400M

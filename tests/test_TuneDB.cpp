@@ -13,8 +13,10 @@
 #include "File.h"
 #include "test.h"
 
+#include <atomic>
 #include <limits>
 #include <string>
+#include <thread>
 #include <vector>
 
 using namespace tune;
@@ -29,8 +31,10 @@ const char* const FIXTURE =
   " pdl=0 fp64=1 builtins=1 machine=01:00.0 build=9a3f21c0d1e2f304 fanspeed=42 \"note=two words\"\n"
   "cfg   1 -\n"
   "cfg   17 INPLACE=1,PAD=256,TAIL_KERNELS=3\n"
-  "sess  4 env=1 start=1753471200 gen=0 anchor=512:15:512:212@143400073\n"
+  "sess  4 env=1 start=1753471200 gen=0 anchor=512:15:512:212@143400073 tune=workload=100000000-400000000,stop=0.1%\n"
   "sess  5 env=1 start=1753481200 gen=1 anchor=- alarmed=1\n"
+  "work  4 prp 124647911 3\n"
+  "work  4 ll 286472227 1\n"
   "run   4 512:15:512:212 prp 143400073 short32 17 1774.230 2.100 24 6 1.0000 ok 1753471274\n"
   "run   4 512:15:512:212 ll 143400073 short32 1 1801.000 3.000 8 2 0.9980 err 1753471300\n"
   "nogo  4 512:15:512:212 SHUFL_BYTES_W=16 1753471260\n"
@@ -99,6 +103,14 @@ TEST(rows_are_read) {
   CHECK(db.sessions().at(1).alarmed);
   CHECK_EQ(db.sessions().at(1).gen, 1u);
   CHECK_EQ(db.sessions().at(1).anchor, std::string{});
+  CHECK_EQ(db.sessions().at(0).tune, std::string{"workload=100000000-400000000,stop=0.1%"});
+  CHECK_EQ(db.sessions().at(1).tune, std::string{});
+
+  CHECK_EQ(db.works().size(), size_t{2});
+  CHECK(db.works().at(0).sess == 4 && db.works().at(0).kind == TestKind::PRP);
+  CHECK_EQ(db.works().at(0).exponent, u64(124'647'911));
+  CHECK_EQ(db.works().at(0).count, 3u);
+  CHECK(db.works().at(1).kind == TestKind::LL);
 
   CHECK_EQ(db.cfgs().size(), size_t{2});
   CHECK(db.findCfg(1)->empty());
@@ -189,6 +201,11 @@ TEST(malformed_rows_are_rejected) {
   rejects("run   4 512:15:512:212 prp 143400073 short32 17", "run   9 512:15:512:212 prp 143400073 short32 17");
   rejects("run   4 512:15:512:212 prp 143400073 short32 17", "run   4 512:15:512:212 prp 143400073 short32 99");
   rejects("sess  4 env=1", "sess  4 env=9");
+  rejects("work  4 prp 124647911 3", "work  4 prp 124647911 0");                // no assignments
+  rejects("work  4 prp 124647911 3", "work  4 cert 124647911 3");               // not a test kind
+  rejects("work  4 prp 124647911 3", "work  9 prp 124647911 3");                // an undeclared session
+  rejects("work  4 prp 124647911 3", "work  4 prp 124647911");                  // a column short
+  rejects("work  4 ll 286472227 1", "work  4 prp 124647911 1");                 // the same exponent twice
   rejects("sess  5 env=1 start=1753481200", "sess  4 env=1 start=1753481200");  // a second session 4
   rejects("cfg   17 INPLACE=1,PAD=256,TAIL_KERNELS=3", "cfg   1 INPLACE=1,PAD=256,TAIL_KERNELS=3");
   rejects("cfg   17 INPLACE=1,PAD=256,TAIL_KERNELS=3", "cfg   17 INPLACE=1,,PAD=256");
@@ -356,6 +373,56 @@ TEST(a_machine_or_an_anchor_holding_a_space_survives) {
   CHECK_EQ(db.envs().at(0).machine, std::string{"01 00"});
   CHECK_EQ(db.sessions().at(0).anchor, std::string{"512:15:512:212 @143400073"});
   CHECK_EQ(db.text(), text);
+}
+
+TEST(a_lock_is_read_off_the_kernels_table_by_the_file_it_is_on) {
+  const char* const locks = "1: POSIX  ADVISORY  WRITE 2656 00:1c:155578 0 EOF\n"
+                            "2: FLOCK  ADVISORY  WRITE 1177997 00:2c:499972 0 EOF\n"
+                            "3: FLOCK  ADVISORY  WRITE 4242 103:02:77 0 EOF\n"
+                            "3: -> FLOCK  ADVISORY  WRITE 4243 fd:01:88 0 EOF\n";
+  CHECK(lockListed(locks, 0x00, 0x2c, 499'972));
+  CHECK(lockListed(locks, 0x103, 0x02, 77));
+  CHECK(lockListed(locks, 0x00, 0x1c, 155'578));
+  CHECK(!lockListed(locks, 0x00, 0x2c, 499'973));
+  CHECK(!lockListed(locks, 0x00, 0x2d, 499'972));
+
+  // A process waiting for a lock does not hold it.
+  CHECK(!lockListed(locks, 0xfd, 0x01, 88));
+  CHECK(!lockListed("", 0, 0x2c, 499'972));
+}
+
+TEST(whether_another_process_is_writing_can_be_asked_without_keeping_it_out) {
+#ifdef __linux__
+  fs::path const path = fs::temp_directory_path() / "prpll-test-writer-holds.txt";
+  fs::path const claim = path + ".lock";
+  fs::remove(claim);
+
+  // Asking creates nothing.
+  CHECK(TuneDB::writerHolds(path) == false);
+  CHECK(!fs::exists(claim));
+
+  {
+    TuneDB writer;
+    CHECK(writer.lockForWriting(path));
+    CHECK(TuneDB::writerHolds(path) == true);
+  }
+  CHECK(TuneDB::writerHolds(path) == false);
+
+  // Asked over and over while writers come and go, it never once turns one away.
+  std::atomic<bool> done{false};
+  std::thread asker{[&] {
+    while (!done) { (void)TuneDB::writerHolds(path); }
+  }};
+  u32 refused = 0;
+  for (u32 i = 0; i < 2000; ++i) {
+    TuneDB writer;
+    if (!writer.lockForWriting(path)) { ++refused; }
+  }
+  done = true;
+  asker.join();
+  CHECK_EQ(refused, 0u);
+  fs::remove(claim);
+#endif
 }
 
 TEST(an_empty_file_is_an_empty_database_but_an_unreadable_one_is_not) {

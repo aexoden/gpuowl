@@ -11,6 +11,7 @@
 #include "FFTVariants.h"
 #include "Primes.h"
 #include "Selection.h"
+#include "Status.h"
 #include "Summary.h"
 
 #include "test.h"
@@ -2138,15 +2139,19 @@ TEST(a_run_with_nothing_worth_the_stop_fraction_reads_no_anchor) {
 namespace {
 
 // Everything shapes() offers, searched one key at a time, jumping once searched, and gated, the way a run is.
+Scheduler summaryQueue() {
+  return Scheduler{scope(),
+                   baselines(nvidia(), scope(), shapes()),
+                   1000,
+                   Bootstrap{nvidia(), 118'063'003, {}, false},
+                   Strategy{.kind = Strategy::Kind::Single},
+                   true,
+                   true};
+}
+
 struct SummaryRun {
   Fixture f;
-  Scheduler scheduler{scope(),
-                      baselines(nvidia(), scope(), shapes()),
-                      1000,
-                      Bootstrap{nvidia(), 118'063'003, {}, false},
-                      Strategy{.kind = Strategy::Kind::Single},
-                      true,
-                      true};
+  Scheduler scheduler = summaryQueue();
   QueueReport report;
   RunSummary summary;
 
@@ -2328,4 +2333,174 @@ TEST(entries_held_back_by_rule_are_waiting_not_ruled_out) {
     measured += fam.measured;
   }
   CHECK_EQ(measured, 1u);
+}
+
+// ---------------------------------------------------------------------------------------------------------------
+// Status: the same queue, asked from outside the run.
+
+namespace {
+
+// What a bench records for `item`'s call, as it spells its order.
+std::string called(const Scheduler& scheduler, const Item& item) {
+  const FFTConfig& fft = item.fft ? *item.fft : scheduler.baselines()[item.index].fft;
+  bool const reads = item.kind == ItemKind::Gate || item.kind == ItemKind::Reach;
+  return (reads ? "gate " : "") + fft.spec() + "@" + std::to_string(item.exponent) +
+    (item.options.empty() ? "" : " " + configText(item.options));
+}
+
+// The database as a status reads it, from outside every process that wrote it.
+TuneDB readBack(const TuneDB& db) {
+  TuneDB out;
+  CHECK(out.parse(db.text(), "status"));
+  return out;
+}
+
+}  // namespace
+
+TEST(a_status_is_the_queues_own_view_of_the_database_it_reads) {
+  // A run stopped part-way, its file read while another row is half written.
+  SummaryRun run{60, STOP};
+  TuneDB db;
+  CHECK(db.parse(completeLines(run.f.db.text() + "run   1 512:15:512:212 prp 1180"), "status"));
+  CHECK_EQ(db.text(), run.f.db.text());
+
+  Scheduler const fresh = summaryQueue();
+  TuneStatus const s = statusOf(fresh, db, run.f.env, STOP, {});
+
+  // Its counts are the run's own summary's.
+  CHECK_EQ(s.families.size(), run.summary.families.size());
+  for (size_t i = 0; i < std::min(s.families.size(), run.summary.families.size()); ++i) {
+    const RunSummary::Family& mine = s.families[i];
+    const RunSummary::Family& theirs = run.summary.families[i];
+    CHECK(mine.type == theirs.type);
+    CHECK_EQ(mine.entries, theirs.entries);
+    CHECK_EQ(mine.measured, theirs.measured);
+    CHECK_EQ(mine.unmeasured, theirs.unmeasured);
+    CHECK_EQ(mine.waiting, theirs.waiting);
+  }
+  // To the precision the file holds a mean to, which is all a later process has of it.
+  CHECK(std::abs(s.valuedT - run.summary.T) <= 1e-6 * run.summary.T);
+  CHECK(std::abs(s.floor - run.summary.floor) <= 1e-6 * run.summary.floor);
+
+  // Every item the queue offers is accounted for, and those named are worth running, best rate first.
+  BootstrapState const state = fresh.bootstrapState(db, run.f.env);
+  Objective const valuing{db, run.f.env, scope(), state.defaults, Gating::Assumed};
+  std::vector<Item> const left = fresh.admissible(db, run.f.env, valuing);
+  CHECK_EQ(s.next.size(), STATUS_NEXT);
+  CHECK_EQ(s.next.size() + s.moreWorth + s.notWorth, left.size());
+  for (size_t i = 0; i < s.next.size(); ++i) {
+    CHECK(worthRunning(s.next[i].item, s.floor));
+    CHECK(i == 0 || s.next[i].item.rate() <= s.next[i - 1].item.rate());
+  }
+
+  // And the first is what the next process runs first.
+  u32 const sess = db.beginSession(run.f.env, "512:15:512:212@118063003", 0, 1'753'491'200);
+  FakeBench bench{db, sess, false, 1};
+  Scheduler again = summaryQueue();
+  (void)runQueue(again, db, run.f.env, bench, [](const Objective&, const Defaults&) {}, STOP);
+  CHECK_EQ(bench.order.size(), size_t{1});
+  if (!bench.order.empty()) { CHECK_EQ(bench.order.front(), called(fresh, s.next.front().item)); }
+}
+
+TEST(a_status_counts_what_the_gate_made_of_what_is_published) {
+  // 1K:8:1K:112 reads 17 at its top, so its reach is derived below the table's (as in the test above that derives it).
+  Fixture f;
+  FakeBench bench{f.db, f.sess};
+  FFTConfig const cheapest{"1K:8:1K:112"};
+  u64 const top = 167'772'107;
+  bench.zOf = [&](const FFTConfig& fft, const UseConfig&, u64 E) {
+    return fft.spec() == cheapest.spec() ? 17.0 + (double(top) - double(E)) / double(cheapest.size()) / 0.012 : 24.0;
+  };
+  Scheduler scheduler{scope(), baselines(nvidia(), scope(), shapes()), 1000, {}, {}, false, true};
+  (void)runQueue(scheduler, f.db, f.env, bench, [](const Objective&, const Defaults&) {});
+
+  Scheduler const fresh{scope(), baselines(nvidia(), scope(), shapes()), 1000, {}, {}, false, true};
+  TuneDB readF = readBack(f.db);
+  TuneStatus const s = statusOf(fresh, readF, f.env, 0, {});
+  const TuneStatus::Accuracy& a = s.accuracy;
+  CHECK(a.entries > 0);
+  CHECK_EQ(a.exact + a.confirmed + a.unvalidated, a.entries);
+  CHECK(a.exact > 0);  // the hybrids
+  CHECK(a.confirmed > 0);
+  CHECK_EQ(a.belowTable, 1u);
+  CHECK_EQ(a.aboveTable, 0u);
+  CHECK_EQ(a.owed, 0u);
+  CHECK_EQ(a.rejected, 0u);
+  CHECK(s.next.empty());
+
+  // A set measured and not yet read is owed, and its reading is the next thing a run takes, by rule.
+  Fixture g;
+  conclude(g, "1K:8:1K:112", {}, 2900);
+  TuneDB readG = readBack(g.db);
+  TuneStatus const owed = statusOf(fresh, readG, g.env, STOP, {});
+  CHECK_EQ(owed.accuracy.owed, 1u);
+  CHECK_EQ(owed.accuracy.entries, 0u);
+  CHECK_EQ(owed.next.size(), size_t{1});
+  CHECK(!owed.next.empty() && owed.next.front().item.kind == ItemKind::Gate);
+  CHECK_EQ(owed.heldBy, std::string{"the accuracy gate"});
+
+  // One that reads below the floor wherever it is read is rejected, and never published.
+  Fixture h;
+  FakeBench below{h.db, h.sess};
+  below.zOf = [&](const FFTConfig& fft, const UseConfig&, u64) { return fft.spec() == cheapest.spec() ? 17.0 : 24.0; };
+  Scheduler queue{scope(), baselines(nvidia(), scope(), shapes()), 1000, {}, {}, false, true};
+  (void)runQueue(queue, h.db, h.env, below, [](const Objective&, const Defaults&) {});
+  TuneDB readH = readBack(h.db);
+  TuneStatus const rejected = statusOf(fresh, readH, h.env, 0, {});
+  CHECK_EQ(rejected.accuracy.rejected, 1u);
+  CHECK_EQ(rejected.accuracy.owed, 0u);
+}
+
+TEST(an_attempt_is_being_measured_while_its_process_holds_the_database_and_a_fault_once_it_is_gone) {
+  Fixture f;
+  CHECK(f.db.add(TryRow{.sess = f.sess,
+                        .fft = "1K:8:1K:212",
+                        .kind = TestKind::PRP,
+                        .exponent = 118'063'003,
+                        .cfg = f.db.internCfg({{"TAIL_KERNELS", "3"}}),
+                        .ts = 100}));
+  u32 const died = f.sess;
+
+  // Another card's fault is that card's.
+  u32 const other = f.db.internEnv(DbEnv{.gpu = "another card", .name = "another card", .driver = "1.0"});
+  u32 const otherSess = f.db.beginSession(other, "", 0, 1'753'400'000);
+  CHECK(f.db.add(TryRow{.sess = otherSess,
+                        .fft = "1K:8:1K:202",
+                        .kind = TestKind::PRP,
+                        .exponent = 118'063'003,
+                        .cfg = f.db.internCfg({}),
+                        .ts = 50}));
+
+  f.newSession();
+  CHECK(f.db.add(TryRow{.sess = f.sess,
+                        .fft = "512:15:512:212",
+                        .kind = TestKind::PRP,
+                        .exponent = 118'063'003,
+                        .cfg = f.db.internCfg({}),
+                        .ts = 200}));
+  TuneDB db = readBack(f.db);
+  Scheduler const scheduler{scope(), {}};
+
+  // Held: the newest session is the process holding the database, and its open attempt is what it is measuring.
+  TuneStatus const held = statusOf(scheduler, db, f.env, STOP, {.held = true, .written = 250, .now = 260});
+  CHECK(held.measuring.has_value());
+  if (held.measuring) {
+    CHECK_EQ(held.measuring->row.fft, std::string{"512:15:512:212"});
+    CHECK_EQ(held.measuring->options, std::string{"-"});
+  }
+  CHECK_EQ(held.faults.size(), size_t{1});
+  if (!held.faults.empty()) {
+    CHECK_EQ(held.faults.front().row.sess, died);
+    CHECK_EQ(held.faults.front().options, std::string{"TAIL_KERNELS=3"});
+  }
+  CHECK(held.latest.has_value() && held.latest->id == f.sess);
+
+  // What it is measuring is not held against it, as the process holding it will answer it.
+  CHECK(!db.diedOn(f.env, db.findCfgId({}), TestKind::PRP, "512:15:512:212", 118'063'003));
+
+  // Nothing holding it, the newest session died holding its attempt too.
+  TuneDB again = readBack(f.db);
+  TuneStatus const gone = statusOf(scheduler, again, f.env, STOP, {.held = false, .written = 250, .now = 260});
+  CHECK(!gone.measuring.has_value());
+  CHECK_EQ(gone.faults.size(), size_t{2});
 }

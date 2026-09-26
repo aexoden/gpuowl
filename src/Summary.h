@@ -97,6 +97,12 @@ struct RunSummary {
   Drift drift;
 };
 
+// What an item is, for the log: its entry and what it does there.
+[[nodiscard]] std::string itemLabel(const Scheduler& scheduler, const Item& item);
+
+// "<n> of <m> entries measured", and those not, those waiting on `heldBy` and those ruled out, where there are any.
+[[nodiscard]] std::string familyCounts(const RunSummary::Family& family, const std::string& heldBy);
+
 // Where `scheduler` left `env` in `report`, with `sess` the session the run was.
 [[nodiscard]] RunSummary summarize(const Scheduler& scheduler, const TuneDB& db, u32 env, u32 sess,
                                    const QueueReport& report, double stop);
