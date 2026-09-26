@@ -132,6 +132,13 @@ TEST(an_entry_whose_interval_excludes_a_band_does_not_cover_it) {
   CHECK_EQ(above->entry, entryOf(objective, "3:1K:8:512:202").id);
 
   CHECK(near(objective.measured(), 0.75));
+
+  // Each kind's grid carries a whole weight, and the share is of both: an LL grid nothing measured covers halves it.
+  RunScope both = scope;
+  both.grids.push_back({.kind = TestKind::LL, .fromWorktodo = true, .points = {{SHORT32_LO - 1, 1.0}}});
+  Objective const twoKinds{db, 1, both};
+  CHECK(near(twoKinds.measured(), 0.375));
+  CHECK_EQ(twoKinds.unservable(), 0.0);
 }
 
 TEST(c_star_is_the_cheapest_entry_of_its_own_kind_that_covers_the_exponent) {

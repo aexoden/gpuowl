@@ -112,16 +112,23 @@ Objective::Objective(const Env& env, std::vector<SelectionEntry> entries, Prior 
   }
 }
 
-double Objective::unservable() const {
+double Objective::shareOf(const std::function<bool(const ObjectivePoint&)>& which) const {
+  // Each kind's grid carries a whole weight of its own, so a run over two kinds carries two.
   double out = 0;
-  for (const ObjectivePoint& point : points_) { out += point.cost ? 0 : point.weight; }
-  return out;
+  double total = 0;
+  for (const ObjectivePoint& point : points_) {
+    total += point.weight;
+    out += which(point) ? point.weight : 0;
+  }
+  return total > 0 ? out / total : 0;
+}
+
+double Objective::unservable() const {
+  return shareOf([](const ObjectivePoint& point) { return !point.cost; });
 }
 
 double Objective::measured() const {
-  double out = 0;
-  for (const ObjectivePoint& point : points_) { out += point.cost && point.cost->measured() ? point.weight : 0; }
-  return out;
+  return shareOf([](const ObjectivePoint& point) { return point.cost && point.cost->measured(); });
 }
 
 std::optional<Cost> Objective::cStar(TestKind kind, u64 E) const {
