@@ -129,6 +129,43 @@ TEST(the_cheapest_entry_that_covers_the_exponent_wins) {
   CHECK(!chooseFrom(file, args, Env{}, 120'000'000, TestKind::LL));
 }
 
+// A file can be read by a device it was not published for: an FP64 entry on a card without FP64, or digit 0's broadcast
+// where the compiler has no way to write it.  Either is passed over for the next entry this device can build.
+TEST(an_entry_the_device_cannot_build_is_passed_over) {
+  auto entry = [](const char* fft, double cost) {
+    return SelectionEntry{.id = {},
+                          .cost = cost,
+                          .fft = fft,
+                          .kind = TestKind::PRP,
+                          .emin = 100'000'000,
+                          .reach = 150'000'000,
+                          .regime = {},
+                          .evidence = Evidence::Unvalidated,
+                          .opts = {}};
+  };
+  SelectionFile const file =
+    published({entry("1K:8:512:000", 1500), entry("1K:8:512:202", 1600), entry("3:1K:8:512:202", 1700)});
+  Args const args = configured({});
+  u64 const E = 120'000'000;
+
+  Env const cuda{.isNvidia = true, .cudaBackend = true, .computeCapability = 806};
+  Env const nvidiaOpenCl{.isNvidia = true, .computeCapability = 806};
+  Env const nvidiaNoAsm{.isNvidia = true, .noAsm = true, .computeCapability = 806};
+  Env const amd{.isAmd = true};
+  Env const amdWithoutBuiltins{.isAmd = true, .amdBuiltins = false};
+  Env const noFp64{.isNvidia = true, .cudaBackend = true, .hasFP64 = false, .computeCapability = 806};
+
+  CHECK_EQ(specOf(chooseFrom(file, args, cuda, E, TestKind::PRP)), std::string{"1K:8:512:000"});
+  CHECK_EQ(specOf(chooseFrom(file, args, nvidiaOpenCl, E, TestKind::PRP)), std::string{"1K:8:512:000"});
+  CHECK_EQ(specOf(chooseFrom(file, args, amd, E, TestKind::PRP)), std::string{"1K:8:512:000"});
+  CHECK_EQ(specOf(chooseFrom(file, args, nvidiaNoAsm, E, TestKind::PRP)), std::string{"1K:8:512:202"});
+  CHECK_EQ(specOf(chooseFrom(file, args, amdWithoutBuiltins, E, TestKind::PRP)), std::string{"1K:8:512:202"});
+  CHECK_EQ(specOf(chooseFrom(file, args, noFp64, E, TestKind::PRP)), std::string{"3:1K:8:512:202"});
+
+  // A pinned spec the device cannot build is not run from its entry either; the shape scan answers for it.
+  CHECK(!chooseFrom(file, configured({}, {"-fft 1K:8:512:000"}), nvidiaNoAsm, E, TestKind::PRP));
+}
+
 TEST(a_shadowed_entry_clamps_and_names_the_keys) {
   SelectionFile const file = twoEntries();
   Args const args = configured({"-use TAIL_KERNELS=1"});

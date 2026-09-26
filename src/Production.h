@@ -67,7 +67,8 @@ struct Choice {
 
 // The cheapest published entry that covers `E` once shadowing has been accounted for, or nothing where none does.
 // Entries are compared by cost rather than walked in file order, so a hand-edited file that is out of order still
-// answers with its cheapest eligible entry rather than with whichever one was typed first.
+// answers with its cheapest eligible entry rather than with whichever one was typed first; only those `env` can build
+// are considered.
 [[nodiscard]] std::optional<Choice> chooseFrom(const SelectionFile& file, const Args& args, const Env& env, u64 E,
                                                TestKind kind);
 
