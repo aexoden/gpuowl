@@ -10,6 +10,7 @@
 #include "Emit.h"
 #include "FFTVariants.h"
 #include "Primes.h"
+#include "Progress.h"
 #include "Selection.h"
 #include "Status.h"
 #include "Summary.h"
@@ -2503,4 +2504,72 @@ TEST(an_attempt_is_being_measured_while_its_process_holds_the_database_and_a_fau
   TuneStatus const gone = statusOf(scheduler, again, f.env, STOP, {.held = false, .written = 250, .now = 260});
   CHECK(!gone.measuring.has_value());
   CHECK_EQ(gone.faults.size(), size_t{2});
+}
+
+TEST(a_watch_is_told_each_call_as_the_log_names_it_and_where_the_run_stands_after_it) {
+  // What the queue tells a watch, in the order it tells it: "?" before a call, "=" for where the run stands.
+  struct Recorder final : Watch {
+    std::vector<std::string> events;
+    std::vector<RunProgress> stands;
+
+    void measuring(const std::string& what) override { events.push_back("? " + what); }
+    void progress(const RunProgress& p) override {
+      events.push_back("=");
+      stands.push_back(p);
+    }
+  };
+
+  Fixture f;
+  FakeBench bench{f.db, f.sess};
+  Scheduler scheduler{scope(), baselines(nvidia(), scope(), shapes()), 1000, {}, {}, false, true};
+  Recorder watch;
+  QueueReport const report =
+    runQueue(scheduler, f.db, f.env, bench, [](const Objective&, const Defaults&) {}, STOP, &watch);
+
+  // Where the run stands comes first, and again after every call, so a call is never left as the last word.
+  CHECK(!watch.events.empty() && watch.events.front() == "=");
+  CHECK(!watch.events.empty() && watch.events.back() == "=");
+  for (size_t i = 1; i < watch.events.size(); ++i) {
+    CHECK(!(watch.events[i].starts_with("?") && watch.events[i - 1].starts_with("?")));
+  }
+
+  // Each call is named as the bench was asked for it, numbered as the log numbers it, and the anchor by name.
+  std::vector<std::string> calls;
+  u32 anchors = 0;
+  for (const std::string& e : watch.events) {
+    if (e == "? the drift anchor") {
+      ++anchors;
+    } else if (e.starts_with("? ")) {
+      calls.push_back(e.substr(2));
+    }
+  }
+  CHECK_EQ(anchors, report.anchors);
+  CHECK_EQ(calls.size(), size_t{report.items});
+  std::vector<std::string> asked;
+  for (const std::string& o : bench.order) {
+    if (o != "anchor") { asked.push_back(o); }
+  }
+  CHECK_EQ(asked.size(), calls.size());
+  for (size_t i = 0; i < std::min(asked.size(), calls.size()); ++i) {
+    CHECK(calls[i].starts_with(std::to_string(i + 1) + ". "));
+    std::string const at = asked[i].starts_with("gate ") ? asked[i].substr(5) : asked[i];
+    std::string const spec = at.substr(0, at.find('@'));
+    std::string const exponent = at.substr(at.find('@') + 1, at.find(' ') - at.find('@') - 1);
+    CHECK(calls[i].find(" " + spec) != std::string::npos);
+    CHECK(calls[i].find(" at " + exponent) != std::string::npos);
+  }
+
+  // The last word is the run's own: what it ran and the T it ended on.
+  CHECK(!watch.stands.empty());
+  if (!watch.stands.empty()) {
+    const RunProgress& last = watch.stands.back();
+    CHECK_EQ(last.items, report.items);
+    CHECK_EQ(last.anchors, report.anchors);
+    CHECK(near(last.T, report.endT));
+    CHECK(near(last.startT, report.startT));
+    CHECK(last.measured > 0 && last.measured <= 1);
+    CHECK(last.spent.size() == report.spent.size());
+    CHECK_EQ(last.worthRunning, 0u);
+    CHECK(near(last.floor, report.floor));
+  }
 }

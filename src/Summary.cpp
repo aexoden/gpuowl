@@ -167,14 +167,18 @@ RunSummary summarize(const Scheduler& scheduler, const TuneDB& db, u32 env, u32 
   return out;
 }
 
-void logSummary(const RunSummary& s) {
-  std::string ran;
-  for (const auto& [kind, spent] : s.spent) {
+std::string spentText(const std::map<ItemKind, QueueReport::Spent>& spent) {
+  std::string out;
+  for (const auto& [kind, s] : spent) {
     char buf[96];
-    snprintf(buf, sizeof(buf), "%s%u %s (%.1f min)", ran.empty() ? "" : ", ", spent.items, toString(kind),
-             spent.seconds / 60);
-    ran += buf;
+    snprintf(buf, sizeof(buf), "%s%u %s (%.1f min)", out.empty() ? "" : ", ", s.items, toString(kind), s.seconds / 60);
+    out += buf;
   }
+  return out;
+}
+
+void logSummary(const RunSummary& s) {
+  std::string const ran = spentText(s.spent);
   log("tune: summary: %u %s and %u anchor %s%s%s\n", s.items, s.items == 1 ? "item" : "items", s.anchors,
       s.anchors == 1 ? "reading" : "readings", ran.empty() ? "" : ": ", ran.c_str());
 

@@ -9,6 +9,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <mutex>
 #include <string>
 #include <system_error>
 #include <vector>
@@ -28,6 +29,9 @@ constexpr u32 DEFAULT_MAX_RESTARTS = 16;
 std::vector<std::string> savedArgv;
 
 fs::path startDir;
+
+std::mutex hookMutex;
+std::function<void()> hook;
 
 u32 readGeneration() {
   const char* const text = getenv(CARRY);
@@ -67,6 +71,11 @@ u32 generation() {
   return value;
 }
 
+void beforeExec(std::function<void()> f) {
+  std::unique_lock const lock{hookMutex};
+  hook = std::move(f);
+}
+
 u32 maxRestarts() { return env("PRPLL_MAX_RESTARTS", DEFAULT_MAX_RESTARTS); }
 
 string reexec() {
@@ -81,6 +90,12 @@ string reexec() {
   if (savedArgv.empty()) { return "the command line was not recorded"; }
   if (setenv(CARRY, to_string(next).c_str(), 1)) { return "could not pass the generation count on"; }
 
+  std::function<void()> first;
+  {
+    std::unique_lock const lock{hookMutex};
+    first = hook;
+  }
+  if (first) { first(); }
   fflush(nullptr);
 
   if (!startDir.empty()) {

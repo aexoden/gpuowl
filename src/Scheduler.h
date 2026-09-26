@@ -402,11 +402,14 @@ struct QueueReport {
 // What a run publishes: the objective the entries give, and the default lines the bootstrap has decided so far.
 using Publisher = std::function<void(const Objective&, const Defaults&)>;
 
+class Watch;
+
 // Runs items until none is worth `stop` of T, or none is worth anything where `stop` is 0, or the bench stops,
 // re-scoring from the database after each.  `publish` is given the objective of what is published once before the
 // first item and again after every one, so that whatever interrupts the run finds a selection file describing
-// everything measured and gated before it.
-QueueReport runQueue(Scheduler& scheduler, TuneDB& db, u32 env, Bench& bench, const Publisher& publish,
-                     double stop = 0);
+// everything measured and gated before it.  `watch`, where there is one, is told what each call is before it is made
+// and where the run stands after it.
+QueueReport runQueue(Scheduler& scheduler, TuneDB& db, u32 env, Bench& bench, const Publisher& publish, double stop = 0,
+                     Watch* watch = nullptr);
 
 }  // namespace tune

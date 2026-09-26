@@ -6,6 +6,8 @@
 
 #include "common.h"
 
+#include <functional>
+
 namespace restart {
 
 // The generation count a parent passes to its child.
@@ -19,6 +21,10 @@ void init(int argc, char** argv);
 
 // The cap on restarts, from PRPLL_MAX_RESTARTS.
 [[nodiscard]] u32 maxRestarts();
+
+// What reexec() does first, on whichever thread calls it, or nullptr for nothing: something the image is showing that
+// the next one would otherwise inherit half-drawn.
+void beforeExec(std::function<void()> f);
 
 // Replaces the application with a fresh one running the same command.
 [[nodiscard]] string reexec();

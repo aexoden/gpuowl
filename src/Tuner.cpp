@@ -12,6 +12,7 @@
 #include "Measure.h"
 #include "Objective.h"
 #include "Primes.h"
+#include "Progress.h"
 #include "Restart.h"
 #include "Scheduler.h"
 #include "Signal.h"
@@ -1008,7 +1009,11 @@ MeasureOutcome runTune(const GpuCommon& shared, const TuneCommand& command) {
   };
 
   SessionBench bench{session, args.blockSize};
-  QueueReport const report = runQueue(scheduler, db, envId, bench, publishNow, command.stop);
+  QueueReport const report = [&] {
+    // Gone before the summary, which is the run's last word and belongs on a terminal with nothing drawn over it.
+    RunView view{liveTerminal()};
+    return runQueue(scheduler, db, envId, bench, publishNow, command.stop, &view);
+  }();
 
   logSummary(summarize(scheduler, db, envId, session.id(), report, command.stop));
   log("tune: T %.3f -> %.3f us/it%s\n", report.startT, report.endT,

@@ -6,6 +6,7 @@
 #include "FFTVariants.h"
 #include "log.h"
 #include "Primes.h"
+#include "Progress.h"
 
 #include <algorithm>
 #include <cinttypes>
@@ -926,7 +927,8 @@ private:
 
 }  // namespace
 
-QueueReport runQueue(Scheduler& scheduler, TuneDB& db, u32 env, Bench& bench, const Publisher& publish, double stop) {
+QueueReport runQueue(Scheduler& scheduler, TuneDB& db, u32 env, Bench& bench, const Publisher& publish, double stop,
+                     Watch* watch) {
   QueueReport out;
   BootstrapLog bootstrapLog;
   bool const bootstrapping = scheduler.bootstrap().enabled();
@@ -948,6 +950,11 @@ QueueReport runQueue(Scheduler& scheduler, TuneDB& db, u32 env, Bench& bench, co
 
   while (!bench.stopped()) {
     std::vector<Item> const ranked = scheduler.admissible(db, env, valuing);
+    // From the ranking the pick is made from, so that the figures are the ones the stopping rule is about to use.
+    if (watch) {
+      watch->progress(
+        progressOf(out, objective.T(), objective.measured(), ranked, stop, stop * valuing.T(), state.complete));
+    }
     std::optional<Item> const item = scheduler.pick(ranked, stop * valuing.T());
     if (!item) {
       out.end =
@@ -958,6 +965,7 @@ QueueReport runQueue(Scheduler& scheduler, TuneDB& db, u32 env, Bench& bench, co
     // Scheduled by the clock rather than by value, and ahead of everything else when it is due, but only while there
     // is something to divide by it: the first reading is what every row of the session is divided by.
     if (bench.anchorDue()) {
+      if (watch) { watch->measuring("the drift anchor"); }
       bench.timeAnchor();
       scheduler.ran({.kind = ItemKind::Anchor}, 0, 0);
       ++out.anchors;
@@ -990,6 +998,16 @@ QueueReport runQueue(Scheduler& scheduler, TuneDB& db, u32 env, Bench& bench, co
         !declaredCombo(db, env, scheduler.bootstrap().env(), fft, kind, item->exponent, item->options)) {
       bench.declareCombo(fft, kind, item->exponent, item->options, item->tier);
     }
+    // A refine is the next call of a row that is already concluded, not a resumption of one that was interrupted.
+    bool const counted = item->kind == ItemKind::Bootstrap || item->kind == ItemKind::Refine;
+    std::string const call = counted ? " (call " + std::to_string(item->calls + 1) + ")"
+      : item->calls                  ? " (resumed at call " + std::to_string(item->calls + 1) + ")"
+                                     : "";
+    if (watch) {
+      watch->measuring(std::to_string(out.items + 1) + ". " + toString(item->kind) + " " + label + " at " +
+                       std::to_string(item->exponent) + (reads ? "" : call));
+    }
+
     Bench::Result result;
     Bench::Reading reading;
     if (reads) {
@@ -1023,11 +1041,6 @@ QueueReport runQueue(Scheduler& scheduler, TuneDB& db, u32 env, Bench& bench, co
     rescore();
     publish(objective, state.defaults);
 
-    // A refine is the next call of a row that is already concluded, not a resumption of one that was interrupted.
-    bool const counted = item->kind == ItemKind::Bootstrap || item->kind == ItemKind::Refine;
-    std::string const call = counted ? " (call " + std::to_string(item->calls + 1) + ")"
-      : item->calls                  ? " (resumed at call " + std::to_string(item->calls + 1) + ")"
-                                     : "";
     if (reads && result.completed) {
       const Env& device = scheduler.bootstrap().env();
       std::string const outcome = item->kind == ItemKind::Gate ? gateOutcome(db, env, device, fft, *item)
