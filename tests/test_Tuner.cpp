@@ -7,6 +7,7 @@
 #include "Tuner.h"
 
 #include "Args.h"
+#include "BuildId.h"
 #include "Emit.h"
 #include "File.h"
 #include "Objective.h"
@@ -321,6 +322,100 @@ TEST(adopt_refuses_what_was_never_this_card) {
     TuneDB db = loaded();
     CHECK(!rewriteFor(db, parsed("adopt"), 2));
   }
+}
+
+// The A4000 of DB after an update: every env it holds was measured against other kernels than the binary's.
+const char* const UPDATED =
+  "# prpll tunedb v1\n"
+  "env   3 gpu=\"NVIDIA RTX A4000\" name=\"NVIDIA RTX A4000\" drv=550.163.01 vendor=nvidia be=ocl cc=806 noasm=0"
+  " pdl=0 fp64=1 builtins=1 machine=01:00.0 build=1111222233334444\n"
+  "env   5 gpu=\"NVIDIA RTX A4000\" name=\"NVIDIA RTX A4000\" drv=550.163.01 vendor=nvidia be=ocl cc=806 noasm=0"
+  " pdl=0 fp64=1 builtins=1 machine=01:00.0 build=5555666677778888\n"
+  "cfg   17 INPLACE=1,PAD=256,TAIL_KERNELS=3\n"
+  "sess  9 env=3 start=1753471100 gen=0 anchor=512:15:512:212@100000000\n"
+  "sess  10 env=5 start=1753471200 gen=0 anchor=512:15:512:212@100000000\n"
+  "anchor 10 512:15:512:212 100000000 17 1774.000 1.0000 1753471210\n"
+  "run   9 512:15:512:212 prp 100000000 short32 17 1900.000 2.000 16 4 1.0000 ok 1753471204\n"
+  "run   10 512:15:512:212 prp 100000000 short32 17 1774.230 2.100 12 3 1.0000 ok 1753471274\n";
+
+TEST(adopt_after_an_update_takes_the_latest_env_over_under_the_new_kernels) {
+  TuneDB db = loaded(UPDATED);
+
+  // Nothing has been measured with BUILD, so there is no env for it until adopt makes one, for the one card there is.
+  u32 const into = adoptTarget(db, parsed("adopt"), BUILD);
+  CHECK(into != 0u);
+  CHECK(db.findEnv(into) && db.findEnv(into)->build == BUILD);
+  CHECK(db.findEnv(into)->sameCard(*db.findEnv(5)));
+
+  // The most recent earlier env is the one taken over, as when the env already existed.
+  CHECK(rewriteFor(db, parsed("adopt"), into));
+  CHECK(db.findEnv(5) == nullptr);
+  CHECK(db.findEnv(3) != nullptr);
+  CHECK_EQ(runsOn(db, into), 1u);
+
+  // Its anchor readings were taken under the kernels being adopted, so they go; the configuration it is pinned to
+  // stays.
+  CHECK(db.anchors().empty());
+  CHECK_EQ(db.envAnchor(into), std::string{"512:15:512:212@100000000"});
+}
+
+TEST(adopt_after_an_update_takes_the_env_named) {
+  TuneDB db = loaded(UPDATED);
+  u32 const into = adoptTarget(db, parsed("adopt,from=3"), BUILD);
+  CHECK(into != 0u);
+  CHECK(rewriteFor(db, parsed("adopt,from=3"), into));
+  CHECK(db.findEnv(3) == nullptr);
+  CHECK(db.findEnv(5) != nullptr);
+}
+
+TEST(adopt_goes_to_the_card_from_names) {
+  // Env 3 is the A4000 under other kernels, and env 1 the A4000 under these: from=3 names its target by the card, even
+  // though the P100 has an env under these kernels too.
+  TuneDB db = loaded();
+  CHECK_EQ(adoptTarget(db, parsed("adopt,from=3"), BUILD), 1u);
+  CHECK_EQ(db.envs().size(), 3u);
+
+  // An env this build measured has nothing to take over from itself.
+  CHECK_EQ(adoptTarget(db, parsed("adopt,from=1"), BUILD), 1u);
+  CHECK(!rewriteFor(db, parsed("adopt,from=1"), 1));
+
+  CHECK_EQ(adoptTarget(db, parsed("adopt,from=7"), BUILD), 0u);
+}
+
+TEST(adopt_does_not_guess_between_cards) {
+  // Every env is under other kernels and there are two cards, so which one this is cannot be told without a device.
+  TuneDB db = loaded();
+  CHECK_EQ(adoptTarget(db, parsed("adopt"), 0x0123456789abcdefull), 0u);
+  CHECK_EQ(db.envs().size(), 3u);
+
+  // Two envs under these kernels cannot be told apart either; naming one settles it.
+  CHECK_EQ(adoptTarget(db, parsed("adopt"), BUILD), 0u);
+  CHECK_EQ(adoptTarget(db, parsed("adopt,into=1"), BUILD), 1u);
+}
+
+TEST(adopt_after_an_update_rewrites_the_database) {
+  Dir const dir{"prpll-test-tuner-adopt"};
+  dir.write(TuneDB::DEFAULT_NAME, UPDATED);
+
+  CHECK(runTuneCommand(parsed("adopt"), Args{}, dir.path));
+
+  TuneDB after;
+  CHECK(after.load(dir.path / TuneDB::DEFAULT_NAME));
+  auto const current = std::ranges::find_if(after.envs(), [](const DbEnv& e) { return e.build == buildFingerprint(); });
+  CHECK(current != after.envs().end());
+  CHECK(after.findEnv(5) == nullptr);
+  CHECK_EQ(runsOn(after, current->id), 1u);
+}
+
+TEST(a_failed_adopt_leaves_no_env_behind) {
+  Dir const dir{"prpll-test-tuner-adopt-refused"};
+  dir.write(TuneDB::DEFAULT_NAME, DB);
+
+  // Two cards and nothing named: refused, and the file is as it was.
+  CHECK(!runTuneCommand(parsed("adopt"), Args{}, dir.path));
+  TuneDB after;
+  CHECK(after.load(dir.path / TuneDB::DEFAULT_NAME));
+  CHECK_EQ(after.envs().size(), 3u);
 }
 
 TEST(emit_publishes_the_selection_file_beside_the_database) {

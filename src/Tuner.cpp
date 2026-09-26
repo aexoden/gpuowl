@@ -757,7 +757,7 @@ u32 commandEnv(const TuneDB& db, const TuneCommand& command, u64 build) {
 
   if (matching.empty()) {
     log("tune: nothing in the database was measured against the kernels this binary carries (%s), so there is no env"
-        " to work on; name one with env=<id>, or adopt it into one\n",
+        " to work on; name one with env=<id>, or take one over with -tune adopt\n",
         hex16(build).c_str());
     listEnvs(all);
   } else {
@@ -768,6 +768,49 @@ u32 commandEnv(const TuneDB& db, const TuneCommand& command, u64 build) {
   }
 
   return 0;
+}
+
+u32 adoptTarget(TuneDB& db, const TuneCommand& command, u64 build) {
+  if (command.env) { return commandEnv(db, command, build); }
+
+  auto const currentOf = [&db, build](const DbEnv& card) -> const DbEnv* {
+    auto const at =
+      std::ranges::find_if(db.envs(), [&card, build](const DbEnv& e) { return e.build == build && e.sameCard(card); });
+    return at == db.envs().end() ? nullptr : &*at;
+  };
+
+  // Rows are only comparable within one card, so the env they go to is that card's under these kernels, made here
+  // where nothing has been measured with them yet -- which is the usual case straight after an update.
+  auto const intoCardOf = [&](const DbEnv& card) -> u32 {
+    if (const DbEnv* const current = currentOf(card)) { return current->id; }
+    DbEnv row = card;
+    row.build = build;
+    return db.internEnv(row);
+  };
+
+  if (command.from) {
+    const DbEnv* const from = db.findEnv(command.from);
+    if (!from) {
+      log("tune: there is no env %u in the database\n", command.from);
+      return 0;
+    }
+    return intoCardOf(*from);
+  }
+
+  bool const anyCurrent = std::ranges::any_of(db.envs(), [build](const DbEnv& e) { return e.build == build; });
+  if (anyCurrent || db.envs().empty()) { return commandEnv(db, command, build); }
+
+  // With no device open, "this card" can only be read off the database when it holds one card.
+  const DbEnv& latest = *std::ranges::max_element(db.envs(), {}, &DbEnv::id);
+  if (!std::ranges::all_of(db.envs(), [&latest](const DbEnv& e) { return e.sameCard(latest); })) {
+    log("tune: the database holds more than one card, and nothing here opens a device to tell which is this one; name"
+        " the env to adopt with from=<id>\n");
+    std::vector<const DbEnv*> all;
+    for (const DbEnv& e : db.envs()) { all.push_back(&e); }
+    listEnvs(all);
+    return 0;
+  }
+  return intoCardOf(latest);
 }
 
 bool rewriteFor(TuneDB& db, const TuneCommand& command, u32 env) {
@@ -897,7 +940,10 @@ bool runTuneCommand(const TuneCommand& command, const Args& args, const fs::path
   if (!db.load(dbPath)) { return false; }
 
   u32 env = 0;
-  if (command.verb != TuneVerb::Compact) {
+  if (command.verb == TuneVerb::Adopt) {
+    env = adoptTarget(db, command, buildFingerprint());
+    if (!env) { return false; }
+  } else if (command.verb != TuneVerb::Compact) {
     env = commandEnv(db, command, buildFingerprint());
     if (!env) { return false; }
   }

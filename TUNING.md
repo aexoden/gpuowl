@@ -422,21 +422,24 @@ When you update PRPLL and its kernels have changed, the old measurements are no 
 changes do not matter for your GPU, `adopt` takes the old measurements over as the new kernels' own:
 
 ```sh
-prpll -tune adopt                  # the latest earlier env of this card, into the current one
+prpll -tune adopt                  # this GPU's latest measurements, as the current kernels' own
+prpll -tune adopt,from=1           # env 1's measurements, into its card's env under the current kernels
 prpll -tune adopt,from=1,into=3
 ```
-
-The current kernels need an env of their own to adopt into, and one is created when a tuning run starts. So after an
-update: start `-tune`, stop it with Ctrl-C as soon as it has printed `against env <N>` (before it prints
-`anchoring this env on ...`), then run `-tune adopt`, then `-tune` again:
 
 ```text
 tune: env 2 has taken over the rows of env 1
 tune: adopt rewrote tunedb.txt
 ```
- It is refused between different GPUs, drivers
-or backends, and between envs whose drift anchors are different configurations. Takes `from=<id>` and `into=<id>` (or
-`env=<id>`).
+
+Then run `-tune` as usual: it carries on from where the adopted measurements left off. The old drift-anchor readings
+were taken under the old kernels and are not kept, so the run may first spend a few minutes choosing its anchor again.
+
+Without `from=`, `adopt` takes the most recent earlier env of the GPU. With no GPU open it cannot tell which card it is
+running on, so where nothing has been measured under the current kernels yet and the database holds measurements from
+more than one GPU (or driver, or backend), it lists them and asks for `from=<id>`. It is refused between different GPUs, drivers or backends, and between envs whose drift
+anchors are different configurations. Run `-tune emit` afterwards to update `selection.txt`, or just start `-tune`.
+Takes `from=<id>` and `into=<id>` (or `env=<id>`).
 
 ### `-tune compact`
 
