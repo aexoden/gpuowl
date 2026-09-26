@@ -26,9 +26,14 @@
 
 namespace tune {
 
-// A stage -- one bin of a group, or one combination of groups -- whose cross product is larger than this is cut short:
-// a bin fewest axes moved first, a combination most promising first.
+// The defaults of how many axes one bin of a group permutes, and how many points a stage -- one bin of a group, or one
+// combination of groups -- offers before it is cut short: a bin fewest axes moved first, a combination most promising
+// first.
+inline constexpr u32 MAX_PERMUTE = 4;
 inline constexpr u32 MAX_POINTS = 64;
+
+// Either limit, lifted.
+inline constexpr u32 NO_LIMIT = ~0u;
 
 // How many of each group's best answers the combo tiers combine, and how many tiers the search has: 1 is the groups
 // alone, 2 adds the groups that share kernels combined, 3 everything combined.
@@ -51,6 +56,10 @@ struct Strategy {
   // Permute only, as named.
   std::vector<std::string> keys{};
 
+  // Hybrid and groups.
+  u32 maxPermute = MAX_PERMUTE;
+  u32 maxPoints = MAX_POINTS;
+
   // Hybrid only.
   u32 comboTop = COMBO_TOP;
   u32 comboTiers = COMBO_TIERS;
@@ -61,7 +70,7 @@ struct Strategy {
   // Whether there is a tier above the groups.
   [[nodiscard]] bool combines() const { return kind == Kind::Hybrid && comboTiers > 1 && comboTop > 1; }
 
-  // As parseStrategy() reads it; the combo settings are not part of it.
+  // As parseStrategy() reads it; the limits and the combo settings are not part of it.
   [[nodiscard]] std::string text() const;
 };
 
@@ -153,8 +162,8 @@ struct Branch {
 //
 // Groups: each group in declaration order, its structural keys one step at a time -- a structural value opens a
 // different set of keys, so it is a branch rather than a dimension to permute, and a step into one is offered only
-// with `structuralSteps` -- and its other axes split into bins of at most MAX_PERMUTE in declaration order, each bin's
-// cross product enumerated fewest axes moved first and cut at MAX_POINTS.  Single: every axis one step at a time.
+// with `structuralSteps` -- and its other axes split into bins of at most `maxPermute` in declaration order, each bin's
+// cross product enumerated fewest axes moved first and cut at `maxPoints`.  Single: every axis one step at a time.
 // Permute: the axes of the keys named, as one cross product, in the same order and not cut short.
 //
 // Hybrid: what groups offers, then the combo tiers over the readings in `best`'s branch.  The seeds of a group are
@@ -162,7 +171,7 @@ struct Branch {
 // the groups of each cluster of more than one (clusterGraph()), and tier 3 the seeds of each top-tier group and of
 // each cluster taken whole.  A stage is its cross product without the background, most promising first -- the highest
 // summed gain of its seeds, a seed's gain being 1 - cost / the cost of `best`, and no more than 0 -- and cut at
-// MAX_POINTS.  `best` must be the first of the readings in its branch, and the rest must follow cheapest first.
+// `maxPoints`.  `best` must be the first of the readings in its branch, and the rest must follow cheapest first.
 //
 // A point is dropped where some key it sets is at a value the table would not offer it alongside the rest.
 [[nodiscard]] ProbeList probesOf(const Env& env, const FFTConfig& fft, const UseConfig& best, const Strategy& strategy,

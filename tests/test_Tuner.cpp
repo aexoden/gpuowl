@@ -128,10 +128,12 @@ TEST(every_setting_the_help_names_is_accepted_where_it_says) {
         "strategy=single",
         "strategy=permute:PAD+TAIL_KERNELS+IN_SIZEX",
         "comboTop=2,comboTiers=1",
+        "maxPermute=2,maxPoints=all",
+        "strategy=groups,maxPermute=all,maxPoints=500",
         "tunetxt=1",
         "scope,workload=330M-340M,probe=335M,probeWeight=0.5,kinds=prp,env=1",
         "status,stop=1%,env=1,workload=100M-140M,probe=118063003,probeWeight=0.5,kinds=prp+ll,bootstrap=1,"
-        "strategy=hybrid,comboTop=3,comboTiers=3",
+        "strategy=hybrid,maxPermute=4,maxPoints=64,comboTop=3,comboTiers=3",
         "emit,tunetxt=1,env=1,workload=100M-140M,probe=118063003,probeWeight=0.5,kinds=prp",
         "reset",
         "reset,env=2",
@@ -194,6 +196,33 @@ TEST(the_combo_settings_shape_hybrid_in_either_order) {
   CHECK(!refusal("comboTop=0").empty());
   CHECK(!refusal("comboTop=three").empty());
   CHECK(!refusal("emit,comboTop=3").empty());
+}
+
+TEST(the_group_limits_are_the_users_to_raise_or_lower) {
+  Strategy const byDefault = parsed("").strategy;
+  CHECK_EQ(byDefault.maxPermute, MAX_PERMUTE);
+  CHECK_EQ(byDefault.maxPoints, MAX_POINTS);
+
+  Strategy const raised = parsed("maxPermute=all,maxPoints=1000").strategy;
+  CHECK_EQ(raised.maxPermute, NO_LIMIT);
+  CHECK_EQ(raised.maxPoints, 1000u);
+
+  // Given before the strategy they belong to, they still shape it, and the one not named keeps its default.
+  Strategy const groups = parsed("maxPoints=all,strategy=groups").strategy;
+  CHECK(groups.kind == Strategy::Kind::Groups);
+  CHECK_EQ(groups.maxPoints, NO_LIMIT);
+  CHECK_EQ(groups.maxPermute, MAX_PERMUTE);
+  CHECK_EQ(parsed("maxPermute=1").strategy.maxPermute, 1u);
+
+  // single and permute: search no groups, so for them the limits are a mistyped command.
+  CHECK(!refusal("strategy=single,maxPermute=2").empty());
+  CHECK(!refusal("maxPoints=10,strategy=permute:PAD+IN_SIZEX").empty());
+  CHECK(!refusal("maxPermute=0").empty());
+  CHECK(!refusal("maxPoints=0").empty());
+  CHECK(!refusal("maxPoints=-1").empty());
+  CHECK(!refusal("maxPoints=4294967295").empty());
+  CHECK(!refusal("maxPermute=every").empty());
+  CHECK(!refusal("emit,maxPoints=all").empty());
 }
 
 TEST(stop_is_a_percentage_of_T_or_nothing) {
@@ -936,11 +965,12 @@ TEST(a_runs_settings_read_back_as_the_same_run) {
   // Resolved from the pending work, the range and the probe are named in the word.
   CHECK_EQ(runSettings(makeScope(parsed("").scope, pending), parsed("")),
            std::string{"workload=118415515-137643123,probe=124647911,probeWeight=0.5,kinds=prp,bootstrap=1,"
-                       "strategy=hybrid,comboTop=3,comboTiers=3,stop=0.1%"});
+                       "strategy=hybrid,maxPermute=4,maxPoints=64,comboTop=3,comboTiers=3,stop=0.1%"});
 
   for (const char* const text :
        {"", "workload=100M-400M,probe=136279841,stop=0", "kinds=prp+ll,probeWeight=0.3,bootstrap=0,stop=0.25%",
-        "strategy=permute:PAD+IN_SIZEX", "comboTop=2,comboTiers=1", "strategy=single,stop=2%"}) {
+        "strategy=permute:PAD+IN_SIZEX", "comboTop=2,comboTiers=1", "strategy=single,stop=2%",
+        "maxPermute=all,maxPoints=200", "strategy=groups,maxPermute=2,maxPoints=all"}) {
     TuneCommand const command = parsed(text);
     RunScope const scope = makeScope(command.scope, pending);
     std::string const word = runSettings(scope, command);
@@ -954,6 +984,8 @@ TEST(a_runs_settings_read_back_as_the_same_run) {
     CHECK(sameGrids(back, scope));
     CHECK(again.bootstrap == command.bootstrap);
     CHECK_EQ(again.strategy.text(), command.strategy.text());
+    CHECK_EQ(again.strategy.maxPermute, command.strategy.maxPermute);
+    CHECK_EQ(again.strategy.maxPoints, command.strategy.maxPoints);
     CHECK_EQ(again.strategy.comboTop, command.strategy.comboTop);
     CHECK_EQ(again.strategy.comboTiers, command.strategy.comboTiers);
     CHECK(near(again.stop, command.stop));
@@ -999,19 +1031,19 @@ TEST(a_run_is_weighted_by_the_work_it_recorded_whatever_the_worktodo_says_now) {
 
 TEST(a_status_takes_the_latest_runs_settings_with_its_own_in_their_place) {
   std::string const run = "workload=100000000-400000000,probe=136279841,probeWeight=0.5,kinds=prp,bootstrap=1,"
-                          "strategy=hybrid,comboTop=3,comboTiers=3,stop=0.1%";
+                          "strategy=hybrid,maxPermute=4,maxPoints=64,comboTop=3,comboTiers=3,stop=0.1%";
   CHECK_EQ(statusSettings(run, ""), run);
   CHECK_EQ(statusSettings(run, "kinds=ll"),
            std::string{"workload=100000000-400000000,probe=136279841,probeWeight=0.5,bootstrap=1,strategy=hybrid,"
-                       "comboTop=3,comboTiers=3,stop=0.1%,kinds=ll"});
+                       "maxPermute=4,maxPoints=64,comboTop=3,comboTiers=3,stop=0.1%,kinds=ll"});
 
   // The run's range and probe were resolved together, so naming either replaces both.
   CHECK_EQ(statusSettings(run, "probe=200000033"),
-           std::string{"probeWeight=0.5,kinds=prp,bootstrap=1,strategy=hybrid,comboTop=3,comboTiers=3,stop=0.1%,"
-                       "probe=200000033"});
+           std::string{"probeWeight=0.5,kinds=prp,bootstrap=1,strategy=hybrid,maxPermute=4,maxPoints=64,comboTop=3,"
+                       "comboTiers=3,stop=0.1%,probe=200000033"});
   CHECK_EQ(statusSettings(run, "workload=50M-60M").find("probe=136279841"), std::string::npos);
 
-  // Another strategy takes hybrid's combination settings with it, which would otherwise refuse it.
+  // Another strategy takes hybrid's group and combination settings with it, which would otherwise refuse it.
   std::string const single = statusSettings(run, "strategy=single");
   CHECK_EQ(single,
            std::string{"workload=100000000-400000000,probe=136279841,probeWeight=0.5,kinds=prp,bootstrap=1,"
@@ -1036,6 +1068,8 @@ TEST(status_reads_a_runs_settings_and_an_env) {
   CHECK(!refusal("status,tunetxt=1").empty());
   CHECK(!refusal("status,fft=1K:8:1K:202").empty());
   CHECK(!refusal("status,comboTop=2,strategy=single").empty());
+  CHECK(!refusal("status,maxPoints=2,strategy=single").empty());
+  CHECK_EQ(parsed("status,maxPoints=all").strategy.maxPoints, NO_LIMIT);
 }
 
 TEST(status_reads_the_database_beside_a_run_that_holds_it) {

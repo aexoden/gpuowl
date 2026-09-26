@@ -146,6 +146,39 @@ TEST(a_bin_holds_at_most_four_axes_and_a_stage_at_most_64_points) {
   CHECK_EQ(memorySingles, size_t(4 + 2 + 1 + 4));
 }
 
+TEST(how_many_axes_a_bin_permutes_and_where_it_is_cut_are_the_strategys) {
+  FFTConfig const fft{"2:1K:8:256:212"};
+
+  // Two axes a bin: Tail's five are 4 x 3, 2 x 2 and 2.
+  ProbeList const pairs = probesOf(nvidia(), fft, {}, {.maxPermute = 2});
+  std::map<std::string, size_t> const paired = stagesOf(pairs);
+  CHECK_EQ(paired.at("Tail 1"), size_t(4 * 3 - 1));
+  CHECK_EQ(paired.at("Tail 2"), size_t(2 * 2 - 1));
+  CHECK_EQ(paired.at("Tail 3"), size_t(1));
+  CHECK(std::ranges::all_of(pairs.probes, [](const Probe& p) { return p.tier > 1 || p.moves.size() <= 2; }));
+
+  // Uncut, Memory's first bin is its whole cross product, and its last points move every axis of the bin.
+  std::vector<std::string> const uncut = textsOf(probesOf(nvidia(), fft, {}, {.maxPoints = NO_LIMIT}), "Memory 1");
+  CHECK_EQ(uncut.size(), size_t(5 * 3 * 2 * 5 - 1));
+  std::vector<std::string> const cut = textsOf(probesOf(nvidia(), fft, {}, {}), "Memory 1");
+  CHECK(std::equal(cut.begin(), cut.end(), uncut.begin()));
+
+  // A group kept whole is one stage, whose points reach every axis it has.
+  ProbeList const whole = probesOf(nvidia(), fft, {}, {.maxPermute = NO_LIMIT, .maxPoints = NO_LIMIT});
+  std::map<std::string, size_t> const stages = stagesOf(whole);
+  CHECK(!stages.contains("Memory 1"));
+  CHECK(!stages.contains("Tail 1"));
+  CHECK_EQ(stages.at("Tail"), size_t(4 * 3 * 2 * 2 * 2 - 1));
+  size_t const memoryAxes =
+    size_t(std::ranges::count_if(whole.axes, [](const Axis& a) { return a.option->group == Group::Memory; }));
+  size_t most = 0;
+  for (const Probe& p : whole.probes) {
+    if (p.stage == "Memory") { most = std::max(most, p.moves.size()); }
+  }
+  CHECK_EQ(most, memoryAxes);
+  CHECK(stages.at("Memory") > uncut.size());
+}
+
 TEST(a_structural_step_stands_alone_and_opens_its_dependents) {
   FFTConfig const fft{"1K:13:256:212"};
 

@@ -19,8 +19,8 @@ class Context;
 
 namespace tune {
 
-// The maximum number of keys permuted in one bin.
-constexpr u32 MAX_PERMUTE = 4;
+// The most groups one cluster of the combo tiers may hold.
+constexpr u32 MAX_CLUSTER = 4;
 
 // The LDS budget, in bytes, that clDefines() in Gpu.cpp clamps WMUL and LDSPAD_W against.
 constexpr u32 LDS_BUDGET = 32'768;

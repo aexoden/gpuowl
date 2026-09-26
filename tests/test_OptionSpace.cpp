@@ -617,7 +617,7 @@ TEST(cluster_picture_check_catches_departures) {
   queues.clusters[1].insert(queues.clusters[1].begin(), Group::Queues);
   CHECK(!clusterPictureMismatch(queues).empty());
 
-  ClusterGraph wide = good;  // more than MAX_PERMUTE groups
+  ClusterGraph wide = good;  // more than MAX_CLUSTER groups
   wide.touches[Group::Queues] = KG_CARRY;
   wide.topTier = {Group::Placement, Group::Memory};
   wide.clusters[1] = {Group::Queues, Group::Tail, Group::Width, Group::Height, Group::Height};

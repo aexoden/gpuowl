@@ -135,11 +135,11 @@ public:
   }
 
   // Every choice of one seed per dimension other than the background, highest summed gain first, ties by the seeds
-  // chosen, earlier dimensions first.  Stops once MAX_POINTS probes have been offered.  Each dimension's seeds fall in
+  // chosen, earlier dimensions first.  Stops once `limit` probes have been offered.  Each dimension's seeds fall in
   // gain, so a choice never outranks the one with any of its seeds moved back a place, and the choices can be taken
   // from a frontier in order without counting out the cross product, which with seven dimensions of eight seeds
   // would be millions.
-  void combine(const std::vector<std::vector<Seed>>& dims, const std::string& stage, u32 tier) {
+  void combine(const std::vector<std::vector<Seed>>& dims, const std::string& stage, u32 tier, u32 limit) {
     using Point = std::pair<double, std::vector<size_t>>;
     auto const before = [](const Point& a, const Point& b) {
       return a.first != b.first ? a.first > b.first : a.second < b.second;
@@ -173,7 +173,7 @@ public:
         moves.insert(moves.end(), seed.begin(), seed.end());
       }
       // The background itself has no moves, and is not a point.
-      if (!moves.empty() && offer(std::move(moves), stage, tier) && ++taken >= MAX_POINTS) { return; }
+      if (!moves.empty() && offer(std::move(moves), stage, tier) && ++taken >= limit) { return; }
     }
   }
 
@@ -415,7 +415,7 @@ void combos(const Env& env, const FFTConfig& fft, const UseConfig& best, const S
     for (const std::vector<Seed>& seeds : dims) {
       if (seeds.size() > 1) { useful.push_back(seeds); }
     }
-    if (!useful.empty()) { enumerator.combine(useful, stage, tier); }
+    if (!useful.empty()) { enumerator.combine(useful, stage, tier, strategy.maxPoints); }
   };
 
   ClusterGraph const graph = clusterGraph(env, fft, canonicalConfig(env, fft, best));
@@ -480,11 +480,13 @@ ProbeList probesOf(const Env& env, const FFTConfig& fft, const UseConfig& best, 
 
       std::vector<size_t> const rest =
         axesWhere([&](const Axis& a) { return a.option->group == group && !a.option->structural; });
-      size_t const bins = (rest.size() + MAX_PERMUTE - 1) / MAX_PERMUTE;
+      if (rest.empty()) { continue; }
+      size_t const width = std::min<size_t>(strategy.maxPermute, rest.size());
+      size_t const bins = (rest.size() + width - 1) / width;
       for (size_t b = 0; b < bins; ++b) {
-        auto const first = rest.begin() + ptrdiff_t(b * MAX_PERMUTE);
-        std::vector<size_t> const bin{first, first + ptrdiff_t(std::min<size_t>(MAX_PERMUTE, rest.end() - first))};
-        enumerator.enumerate(bin, bins > 1 ? name + " " + std::to_string(b + 1) : name, MAX_POINTS);
+        auto const first = rest.begin() + ptrdiff_t(b * width);
+        std::vector<size_t> const bin{first, first + ptrdiff_t(std::min<size_t>(width, rest.end() - first))};
+        enumerator.enumerate(bin, bins > 1 ? name + " " + std::to_string(b + 1) : name, strategy.maxPoints);
       }
     }
     for (size_t const i : axesWhere([](const Axis& a) { return a.option->group == Group::None; })) {
