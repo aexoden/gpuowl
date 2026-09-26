@@ -208,6 +208,11 @@ TEST(a_failure_is_not_a_sample) {
     failed.status = s;
     CHECK(merged(good, failed).status == s);
     CHECK(parseStatus(toString(s)) == s);
+
+    // Nor does any later failure take its place, which would leave nothing saying the answers were wrong.
+    CHECK(merged(spoiled, failed).status == Status::Err);
+    CHECK(merged(merged(spoiled, failed), good).status == Status::Err);
+    CHECK(merged(failed, bad).status == Status::Err);
   }
   CHECK(!parseStatus("ok "));
 }

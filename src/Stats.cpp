@@ -193,7 +193,8 @@ NoiseReport noiseOf(std::span<const CallSummary> calls, u32 callsPerRow) {
 
 void mergeInto(Measurement& into, const Measurement& add) {
   if (add.status != Status::Ok) {
-    into = add;
+    // A wrong answer is evidence about the kernels; a later refusal to build or run them says nothing against it.
+    if (into.status != Status::Err) { into = add; }
     return;
   }
 
