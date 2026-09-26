@@ -259,7 +259,7 @@ TEST(every_entry_emit_publishes_resolves_to_the_row_it_transcribes) {
   const char* const DB =
     "# prpll tunedb v1\n"
     "env   1 gpu=\"NVIDIA RTX A4000\" name=\"NVIDIA RTX A4000\" drv=550.163.01 vendor=nvidia be=ocl cc=806 noasm=0"
-    " pdl=0 machine=01:00.0 build=9a3f21c0d1e2f304\n"
+    " pdl=0 fp64=1 builtins=1 machine=01:00.0 build=9a3f21c0d1e2f304\n"
     "cfg   1 -\n"
     "cfg   17 INPLACE=1,PAD=256,TAIL_KERNELS=3\n"
     "cfg   18 INPLACE=1,PAD=128,TAIL_KERNELS=3\n"

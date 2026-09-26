@@ -61,6 +61,10 @@ struct DbEnv {
   bool pdlLaunch = false;
   u32 computeCapability = 0;
 
+  // What a command with no device open cannot ask the card: which FFT types and variants it can build at all.
+  bool hasFP64 = true;
+  bool amdBuiltins = true;
+
   // Which physical card, as a PCI address; empty for a machine that cannot tell.
   std::string machine{};
 

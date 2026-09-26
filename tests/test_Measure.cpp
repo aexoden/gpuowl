@@ -362,17 +362,17 @@ TEST(a_session_with_no_probe_is_unanchored) {
 TEST(a_later_session_takes_the_anchor_its_env_is_pinned_to) {
   // The first session of the env chose 512:15:512:212 at an exponent this one is not probing; it still divides by the
   // movement of that, since a ratio against anything else says nothing about the rows already stored.
-  TuneDB db =
-    dbOf("env   1 gpu=\"a card\" name=\"a card\" drv=1 vendor=nvidia be=ocl cc=806 noasm=0 pdl=0 machine=- build=" +
-         [] {
-           char b[32];
-           snprintf(b, sizeof(b), "%016llx", (unsigned long long)buildFingerprint());
-           return std::string{b};
-         }() +
-         "\n"
-         "cfg   1 -\n"
-         "sess  1 env=1 start=1753471200 gen=0 anchor=512:15:512:212@143400073\n"
-         "anchor 1 512:15:512:212 143400073 1 1774.230 1.0000 1753471410\n");
+  TuneDB db = dbOf("env   1 gpu=\"a card\" name=\"a card\" drv=1 vendor=nvidia be=ocl cc=806 noasm=0 pdl=0"
+                   " fp64=1 builtins=1 machine=- build=" +
+                   [] {
+                     char b[32];
+                     snprintf(b, sizeof(b), "%016llx", (unsigned long long)buildFingerprint());
+                     return std::string{b};
+                   }() +
+                   "\n"
+                   "cfg   1 -\n"
+                   "sess  1 env=1 start=1753471200 gen=0 anchor=512:15:512:212@143400073\n"
+                   "anchor 1 512:15:512:212 143400073 1 1774.230 1.0000 1753471410\n");
 
   Session session{GpuCommon{}, db, NVIDIA};
   CHECK(session.begin(118'063'003));
@@ -385,11 +385,11 @@ TEST(a_later_session_takes_the_anchor_its_env_is_pinned_to) {
 TEST(an_env_of_other_kernels_is_not_this_ones_anchor) {
   // Same card, another build: a new env, so the anchor and the baseline are chosen afresh rather than inherited from
   // measurements taken against kernels this binary no longer has.
-  TuneDB db =
-    dbOf("env   1 gpu=\"a card\" name=\"a card\" drv=1 vendor=nvidia be=ocl cc=806 noasm=0 pdl=0 machine=- build=dead\n"
-         "cfg   1 -\n"
-         "sess  1 env=1 start=1753471200 gen=0 anchor=512:15:512:212@143400073\n"
-         "anchor 1 512:15:512:212 143400073 1 1774.230 1.0000 1753471410\n");
+  TuneDB db = dbOf("env   1 gpu=\"a card\" name=\"a card\" drv=1 vendor=nvidia be=ocl cc=806 noasm=0 pdl=0"
+                   " fp64=1 builtins=1 machine=- build=dead\n"
+                   "cfg   1 -\n"
+                   "sess  1 env=1 start=1753471200 gen=0 anchor=512:15:512:212@143400073\n"
+                   "anchor 1 512:15:512:212 143400073 1 1774.230 1.0000 1753471410\n");
 
   Session session{GpuCommon{}, db, NVIDIA};
   CHECK(session.begin(118'063'003));
@@ -412,7 +412,8 @@ TEST(an_anchor_a_generation_died_on_is_not_built_again) {
   CHECK(!candidates.empty());
   std::optional<AnchorSpec> const anchor = candidates.front();
 
-  TuneDB db = dbOf("env   1 gpu=\"a card\" name=\"a card\" drv=1 vendor=nvidia be=ocl cc=806 noasm=0 pdl=0 machine=-"
+  TuneDB db = dbOf("env   1 gpu=\"a card\" name=\"a card\" drv=1 vendor=nvidia be=ocl cc=806 noasm=0 pdl=0"
+                   " fp64=1 builtins=1 machine=-"
                    " build=" +
                    build +
                    "\n"
@@ -448,7 +449,8 @@ TEST(a_race_the_env_has_readings_for_builds_nothing_and_pins_the_cheapest) {
   CHECK(candidates.size() >= 3);
 
   // Dearest first, so the last is the cheapest; the second-last is dearer only by a little.
-  std::string rows = "env   1 gpu=\"a card\" name=\"a card\" drv=1 vendor=nvidia be=ocl cc=806 noasm=0 pdl=0 machine=-"
+  std::string rows = "env   1 gpu=\"a card\" name=\"a card\" drv=1 vendor=nvidia be=ocl cc=806 noasm=0 pdl=0"
+                     " fp64=1 builtins=1 machine=-"
                      " build=" +
     build +
     "\n"
@@ -492,7 +494,8 @@ TEST(a_race_passes_over_a_candidate_an_earlier_generation_died_on) {
   CHECK(candidates.size() >= 2);
 
   // The cheapest reading's configuration later took the device down; the next cheapest is the anchor.
-  std::string rows = "env   1 gpu=\"a card\" name=\"a card\" drv=1 vendor=nvidia be=ocl cc=806 noasm=0 pdl=0 machine=-"
+  std::string rows = "env   1 gpu=\"a card\" name=\"a card\" drv=1 vendor=nvidia be=ocl cc=806 noasm=0 pdl=0"
+                     " fp64=1 builtins=1 machine=-"
                      " build=" +
     build +
     "\n"
