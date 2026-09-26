@@ -52,6 +52,10 @@ public:
   bool carryTune{};
   bool logROE{};
   bool dumpOptions{};
+
+  // -tune's word, parsed by tune::parseTuneCommand.  `tune` and `doTune` above are -oldtune's, upstream's own tuner.
+  string tuneCommand;
+  bool doTuneCommand{};
   string optionsFft = "512:15:512";
 
   bool doMeasure{};

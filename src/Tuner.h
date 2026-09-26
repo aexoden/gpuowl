@@ -185,10 +185,9 @@ struct RunScope {
 void reportScope(const RunScope& scope, const std::vector<fs::path>& files, const Objective& objective,
                  const std::string& against);
 
-// What `text` asks this tuner for, or nothing where it is upstream's own tuner's -- that one takes the same flag, and
-// is known by its own option words.  Throws a message for anything else it cannot read, so a mistyped setting is a
-// usage error rather than a silent fall-through to the other tuner.
-[[nodiscard]] std::optional<TuneCommand> parseTuneCommand(std::string_view text);
+// What `text` asks this tuner for.  Throws a message for anything it cannot read, naming -oldtune for an option word of
+// upstream's own tuner, which took this flag before this one did.
+[[nodiscard]] TuneCommand parseTuneCommand(std::string_view text);
 
 // A run's settings as one word a run takes: its scope resolved, and every other setting named, so that it values its
 // items the same way whatever the worktodo says by then.

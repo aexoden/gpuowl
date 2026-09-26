@@ -55,11 +55,7 @@ TuneDB loaded(const char* text = DB) {
   return db;
 }
 
-TuneCommand parsed(const char* text) {
-  std::optional<TuneCommand> const command = parseTuneCommand(text);
-  CHECK(command.has_value());
-  return *command;
-}
+TuneCommand parsed(const char* text) { return parseTuneCommand(text); }
 
 // The message a malformed subcommand is refused with, or "" where it was accepted.
 std::string refusal(const char* text) {
@@ -105,12 +101,47 @@ struct Dir {
 
 }  // namespace
 
-TEST(a_subcommand_of_another_tuner_is_not_one_of_these) {
-  // Upstream's own -tune takes the same flag, and is known by its own option words.
-  CHECK(!parseTuneCommand("noconfig,fp64").has_value());
-  CHECK(!parseTuneCommand("quick=5").has_value());
-  CHECK(!parseTuneCommand("minexp=100000000,maxexp=200000000").has_value());
-  CHECK(!parseTuneCommand("fp6431").has_value());
+TEST(an_option_of_the_previous_tuner_is_refused_naming_its_flag) {
+  for (const char* text : {"noconfig,fp64", "quick=5", "minexp=100000000,maxexp=200000000", "fp6431",
+                           "workload=100M-400M,inplace", "emit,ntt", "status,maxexp=200000000"}) {
+    CHECK(refusal(text).find("-oldtune") != std::string::npos);
+  }
+  CHECK(refusal("fp65").find("-oldtune") == std::string::npos);
+}
+
+TEST(every_setting_the_help_names_is_accepted_where_it_says) {
+  for (const char* text :
+       {"",
+        "workload=100M-140M,probe=118063003",
+        "workload=118063003",
+        "probeWeight=0",
+        "probeWeight=1",
+        "kinds=prp",
+        "kinds=ll",
+        "kinds=prp+ll",
+        "stop=0.5%",
+        "stop=0",
+        "bootstrap=0",
+        "strategy=hybrid",
+        "strategy=groups",
+        "strategy=single",
+        "strategy=permute:PAD+TAIL_KERNELS+IN_SIZEX",
+        "comboTop=2,comboTiers=1",
+        "tunetxt=1",
+        "scope,workload=330M-340M,probe=335M,probeWeight=0.5,kinds=prp,env=1",
+        "status,stop=1%,env=1,workload=100M-140M,probe=118063003,probeWeight=0.5,kinds=prp+ll,bootstrap=1,"
+        "strategy=hybrid,comboTop=3,comboTiers=3",
+        "emit,tunetxt=1,env=1,workload=100M-140M,probe=118063003,probeWeight=0.5,kinds=prp",
+        "reset",
+        "reset,env=2",
+        "reset,fft=1K:13:256:212",
+        "adopt",
+        "adopt,from=1,into=3",
+        "adopt,env=3",
+        "compact",
+        "accuracy,workload=100M-140M,probe=118063003,fft=1K:13:256,groups=Tail+Middle"}) {
+    CHECK_EQ(refusal(text), std::string{});
+  }
 }
 
 TEST(settings_alone_or_nothing_at_all_is_a_tuning_run) {
@@ -338,10 +369,10 @@ TEST(emit_writes_tune_txt_only_when_asked) {
 }
 
 TEST(tune_txt_is_written_by_a_run_or_by_emit) {
-  CHECK(!parseTuneCommand("workload=100M-400M")->tuneTxt);
-  CHECK(parseTuneCommand("workload=100M-400M,tunetxt=1")->tuneTxt);
-  CHECK(parseTuneCommand("emit,tunetxt=1")->tuneTxt);
-  CHECK(!parseTuneCommand("emit,tunetxt=0")->tuneTxt);
+  CHECK(!parseTuneCommand("workload=100M-400M").tuneTxt);
+  CHECK(parseTuneCommand("workload=100M-400M,tunetxt=1").tuneTxt);
+  CHECK(parseTuneCommand("emit,tunetxt=1").tuneTxt);
+  CHECK(!parseTuneCommand("emit,tunetxt=0").tuneTxt);
 
   CHECK(!refusal("tunetxt=2").empty());
   CHECK(!refusal("emit,tunetxt=").empty());
@@ -769,9 +800,9 @@ TEST(one_worktodo_reached_two_ways_is_read_once) {
 }
 
 TEST(the_bootstrap_is_on_unless_a_run_turns_it_off) {
-  CHECK(parseTuneCommand("workload=100M-400M")->bootstrap);
-  CHECK(!parseTuneCommand("workload=100M-400M,bootstrap=0")->bootstrap);
-  CHECK(parseTuneCommand("bootstrap=1")->bootstrap);
+  CHECK(parseTuneCommand("workload=100M-400M").bootstrap);
+  CHECK(!parseTuneCommand("workload=100M-400M,bootstrap=0").bootstrap);
+  CHECK(parseTuneCommand("bootstrap=1").bootstrap);
 
   CHECK(!refusal("bootstrap=2").empty());
   CHECK(!refusal("bootstrap=").empty());

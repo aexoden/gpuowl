@@ -205,7 +205,7 @@ int main(int argc, char **argv) {
     // scope a run would work within, and never build a kernel -- so they are answered here, before a device is
     // opened, and work where there is none.
     std::optional<tune::TuneCommand> const tuneCommand =
-      args.doTune ? tune::parseTuneCommand(args.tune) : std::optional<tune::TuneCommand>{};
+      args.doTuneCommand ? tune::parseTuneCommand(args.tuneCommand) : std::optional<tune::TuneCommand>{};
     if (tuneCommand && !tune::opensDevice(tuneCommand->verb)) {
       exitCode = tune::runTuneCommand(*tuneCommand, args, fs::current_path()) ? EXIT_OK : EXIT_FAILED;
       log("Bye\n");
