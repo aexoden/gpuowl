@@ -2785,6 +2785,44 @@ IterSamples Gpu::timeIters(u32 nBlocks, u32 blockSize, u32 warmupBlocks) {
   return out;
 }
 
+IterSamples Gpu::timeItersLL(u32 nBlocks, u32 blockSize, u32 warmupBlocks) {
+  assert(nBlocks > 0 && blockSize > 1);
+
+  writeIn(bufData, makeWords(E, 4));
+
+  // Each block ends in a long carry, as a PRP block does, so that the blocks are interchangeable.
+  auto block = [&] {
+    enum LEAD_TYPE leadIn = LEAD_NONE;
+    enum LEAD_TYPE const leadOut = useLongCarry ? LEAD_NONE : LEAD_WIDTH;
+    for (u32 i = 0; i + 1 < blockSize; ++i) {
+      squareLL(bufData, leadIn, leadOut);
+      leadIn = leadOut;
+    }
+    squareLL(bufData, leadIn, LEAD_NONE);
+  };
+
+  for (u32 w = 0; w < warmupBlocks; ++w) { block(); }
+  queue.finish();
+  if (Signal::stopRequested()) { throw "stop requested"; }
+
+  IterSamples out;
+  out.usPerIt.reserve(nBlocks);
+
+  queue.setSquareTime(0);     // Busy wait on nVidia to get the most accurate timings while tuning
+  Timer t;
+  for (u32 b = 0; b < nBlocks; ++b) {
+    block();
+    queue.finish();
+    out.usPerIt.push_back(t.reset() * 1e6 / blockSize);
+
+    if (Signal::stopRequested()) { throw "stop requested"; }
+  }
+
+  out.res64 = dataResidue();
+  out.iters = u64(warmupBlocks + nBlocks) * blockSize;
+  return out;
+}
+
 double Gpu::timePRP(int quick) {        // Quick varies from 1 (slowest, longest) to 10 (quickest, shortest)
   u32 blockSize{}, iters{}, warmup{};
 

@@ -598,7 +598,7 @@ std::optional<TuneCommand> parseTuneCommand(std::string_view text) {
         accepted = "workload=<lo>-<hi>, probe=<E>, probeWeight=<0..1>, kinds=prp|ll|prp+ll, env=<id>";
         break;
       case TuneVerb::Run:
-        accepted = "workload=<lo>-<hi>, probe=<E>, probeWeight=<0..1>, kinds=prp, bootstrap=0|1,"
+        accepted = "workload=<lo>-<hi>, probe=<E>, probeWeight=<0..1>, kinds=prp|ll|prp+ll, bootstrap=0|1,"
                    " strategy=hybrid|single|groups|permute:<KEY>+<KEY>..., comboTop=<N>, comboTiers=1|2|3, stop=<P>%|0,"
                    " tunetxt=0|1,"
                    " or a subcommand: emit, reset, adopt, compact, scope, accuracy";
@@ -625,12 +625,6 @@ std::optional<TuneCommand> parseTuneCommand(std::string_view text) {
       (out.scope.probe < out.scope.lo || out.scope.probe > out.scope.hi)) {
     throw "-tune: probe=" + std::to_string(out.scope.probe) + " is outside workload=" + std::to_string(out.scope.lo) +
       "-" + std::to_string(out.scope.hi);
-  }
-
-  // The LL kernels are not timed yet, so a run for them could only record failures.  `scope` still reports an LL grid,
-  // which costs nothing.
-  if (isRun && out.scope.wantsKind(TestKind::LL)) {
-    throw std::string{"-tune: kinds= takes only prp for a tuning run; LL configurations are not timed yet"};
   }
 
   return out;

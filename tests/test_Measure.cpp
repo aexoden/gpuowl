@@ -11,6 +11,7 @@
 
 #include <cmath>
 #include <cstdio>
+#include <functional>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -112,18 +113,73 @@ TEST(roe_verdict_needs_evidence_to_reject) {
   CHECK(!broken.passed());
 }
 
-TEST(ll_timing_is_refused_rather_than_answered_with_prp) {
-  // The kind reaches only the option resolution, so an LL request would come back as a PRP timing
-  // with a PRP Gerbicz verdict.  The refusal happens before anything touches the device.
-  GpuCommon const shared{};
-  FFTConfig const fft{"512:15:512:202"};
+TEST(a_call_runs_its_warm_up_before_the_blocks_it_times) {
+  CHECK_EQ(callIterations(BLOCKS_PER_CALL, 1000), u64(5000));
+  CHECK_EQ(summarize(samplesOf({100.0, 100.1})).iters, u64(5000));
+}
 
-  bool threw = false;
-  try {
-    (void)timeCall(shared, fft, TestKind::LL, 142'438'559, {});
-  } catch (const char* mes) { threw = true; }
+namespace {
 
-  CHECK(threw);
+constexpr u64 REFERENCE = 0x3f45bf9bea7213ea;
+
+Call llCall(u64 res64, Status status = Status::Ok) {
+  Call c = summarize(samplesOf({100.0, 100.1, 100.0, 100.1}));
+  c.res64 = res64;
+  c.measurement.status = status;
+  return c;
+}
+
+// Reads `second` if asked, and counts the asking.
+struct Again {
+  Call second;
+  u32 asked = 0;
+
+  [[nodiscard]] std::function<Call()> reader() {
+    return [this] {
+      ++asked;
+      return second;
+    };
+  }
+};
+
+}  // namespace
+
+TEST(an_ll_reading_that_agrees_with_the_reference_is_taken_as_it_is) {
+  Again again{.second = llCall(REFERENCE)};
+  Call const c = checkedAgainst(REFERENCE, llCall(REFERENCE), again.reader());
+  CHECK(c.measurement.ok());
+  CHECK_EQ(again.asked, 0u);
+}
+
+TEST(an_ll_reading_that_disagrees_is_read_again_before_anything_is_concluded) {
+  Again again{.second = llCall(REFERENCE)};
+  Call const c = checkedAgainst(REFERENCE, llCall(0x1234), again.reader());
+  CHECK_EQ(again.asked, 1u);
+  CHECK(c.measurement.ok());
+  CHECK_EQ(c.res64, REFERENCE);
+}
+
+TEST(an_ll_reading_that_disagrees_twice_is_an_error) {
+  Again again{.second = llCall(0x1234)};
+  Call const c = checkedAgainst(REFERENCE, llCall(0x1234), again.reader());
+  CHECK_EQ(again.asked, 1u);
+  CHECK(c.measurement.status == Status::Err);
+
+  // Two different wrong residues are no better.
+  Again other{.second = llCall(0x5678)};
+  CHECK(checkedAgainst(REFERENCE, llCall(0x1234), other.reader()).measurement.status == Status::Err);
+}
+
+TEST(an_ll_call_that_gave_no_reading_says_nothing_about_the_residue) {
+  // A failed first call is recorded as its failure, and is not read again for a residue it never had.
+  Again again{.second = llCall(REFERENCE)};
+  CHECK(checkedAgainst(REFERENCE, llCall(0, Status::NoCompile), again.reader()).measurement.status ==
+        Status::NoCompile);
+  CHECK_EQ(again.asked, 0u);
+
+  // Nor is a second call cut short an error of the configuration.
+  Again stopped{.second = llCall(0, Status::Lost)};
+  CHECK(checkedAgainst(REFERENCE, llCall(0x1234), stopped.reader()).measurement.status == Status::Lost);
 }
 
 // What a thrown message means. A verdict here goes into the database and is read as final, so the cost of reading a
@@ -208,6 +264,17 @@ TEST(a_bare_spec_measures_with_every_default) {
   CHECK(a.roe);
   CHECK(!a.drain);
   CHECK(a.drift);
+  CHECK(a.kind == TestKind::PRP);
+}
+
+TEST(an_ll_configuration_is_measured_by_kind) {
+  CHECK(parseMeasureArgs("512:15:512:202,kind=ll").kind == TestKind::LL);
+  CHECK(parseMeasureArgs("512:15:512:202,kind=prp").kind == TestKind::PRP);
+  CHECK(rejected("512:15:512:202,kind=cert"));
+
+  // The drain control compares the PRP loop's block boundaries.
+  CHECK(rejected("512:15:512:202,kind=ll,drain=1"));
+  CHECK(parseMeasureArgs("512:15:512:202,kind=ll,drain=0").kind == TestKind::LL);
 }
 
 TEST(every_setting_is_read_off_the_spec) {
@@ -443,4 +510,33 @@ TEST(a_race_passes_over_a_candidate_an_earlier_generation_died_on) {
   CHECK(session.begin(E));
   session.raceAnchor();
   CHECK(session.anchor() == candidates[candidates.size() - 2]);
+}
+
+TEST(an_ll_call_with_no_agreed_reference_records_nothing_against_the_configuration) {
+  TuneDB db = dbOf("");
+  Session session{GpuCommon{}, db, NVIDIA};
+  CHECK(session.begin());
+
+  // Four FFTs' built-in defaults read at this exponent and length, no two alike: the witnesses are spent.
+  u64 constexpr E = 118'063'003;
+  u64 const iters = callIterations(BLOCKS_PER_CALL, 1000);
+  u64 residue = 1;
+  for (const char* spec : {"1K:8:1K:202", "2:1K:8:512:202", "3:1K:8:512", "51:1K:8:512"}) {
+    CHECK(db.add(RefRow{.sess = session.id(),
+                        .fft = FFTConfig{spec}.spec(),
+                        .exponent = E,
+                        .iters = iters,
+                        .res64 = residue++,
+                        .ts = 1}));
+  }
+
+  // Nothing is built, and no row stands against the configuration: the missing reference is scoped to (E, iters),
+  // while a failure row would hold the set out of its whole regime.
+  for (int attempt = 0; attempt < 2; ++attempt) {
+    Call const c = session.run(FFTConfig{"1K:8:1K:202"}, TestKind::LL, E, {}, BLOCKS_PER_CALL, 1000);
+    CHECK(c.measurement.status == Status::Unsupported);
+  }
+  CHECK(db.runs().empty());
+  CHECK(db.tries().empty());
+  CHECK(!session.stopped());
 }

@@ -189,7 +189,8 @@ its reach.
                      and its rounding error, at the exponent given by -prp or, without one, the top of its range.
                      Settings: n=<calls> (8), blocks=<per call>, block=<iterations>, exp=<E>, anchor=<fft> (time a
                      second configuration alternately and correct for its drift, which turns off the scheduled one),
-                     roe=0|1, drain=0|1, drift=0|1 (time the session's drift anchor, on by default)
+                     kind=prp|ll (an LL residue is checked against the one two FFTs agree on), roe=0|1, drain=0|1,
+                     drift=0|1 (time the session's drift anchor, on by default)
 -dir <folder>      : specify local work directory (containing worktodo-<N>.txt, results-<N>.txt, config.txt,
                      gpuowl-<N>.log)
 -pool <dir>        : specify a directory with the shared (pooled) worktodo.txt and config.txt
@@ -296,7 +297,8 @@ its reach.
                          kinds=prp|ll|prp+ll - which test kinds to tune for (prp)
                      Given only those settings, or nothing, -tune runs the new tuner on the device instead: it
                      times what is worth timing for the workload into tunedb.txt, publishes selection.txt after every
-                     measurement, and stops cleanly on Ctrl-C; a re-run resumes. It tunes prp only (kinds=prp).
+                     measurement, and stops cleanly on Ctrl-C; a re-run resumes. An LL timing is checked against the
+                     residue the built-in defaults of two FFTs agree on at its exponent.
                      It first races the -use options of each FFT type worth tuning on one FFT at the probe, and
                      publishes the winners as selection.txt's default lines; bootstrap=0 skips that.
                      Then each FFT it has measured is searched one step at a time from its best option set, where

@@ -16,7 +16,10 @@
 #include "UseResolve.h"
 
 #include <functional>
+#include <optional>
+#include <set>
 #include <string>
+#include <utility>
 #include <vector>
 
 struct IterSamples;  // Gpu.h
@@ -36,6 +39,9 @@ struct Call {
   u64 res64 = 0;
   bool checkOk = true;
 
+  // Iterations behind res64, the untimed warm-up included.
+  u64 iters = 0;
+
   // The options the kernels were built with.
   UseConfig ran;
 
@@ -52,9 +58,21 @@ struct Call {
 // Spike rejection and the statistics over what survives.  Pure; a failed Gerbicz check makes the row an error.
 [[nodiscard]] Call summarize(const IterSamples& samples);
 
+// Untimed blocks a call runs before its timed ones.
+inline constexpr u32 CALL_WARMUP_BLOCKS = 1;
+
+// The iterations a call of `nBlocks` blocks runs in all, which is what an LL call's residue is checked after.
+[[nodiscard]] constexpr u64 callIterations(u32 nBlocks, u32 blockSize) {
+  return u64(CALL_WARMUP_BLOCKS + nBlocks) * blockSize;
+}
+
 // Builds a Gpu for the configuration and times it.  Exceptions from the build or the run propagate.
 [[nodiscard]] Call timeCall(GpuCommon shared, const FFTConfig& fft, TestKind kind, u64 exponent,
                             const UseConfig& options, u32 nBlocks = BLOCKS_PER_CALL, u32 blockSize = 1000);
+
+// The call to record for an LL reading checked against `reference`.  One that disagrees is read again, since a fault
+// can flip a bit of any one reading: the second call is recorded, and as an error only where it disagrees too.
+[[nodiscard]] Call checkedAgainst(u64 reference, Call first, const std::function<Call()>& again);
 
 // Results from a rounding error check.
 struct RoeCheck {
@@ -167,6 +185,14 @@ private:
   [[nodiscard]] Call runCall(const FFTConfig& fft, TestKind kind, u64 exponent, const UseConfig& options, u32 nBlocks,
                              u32 blockSize, bool record);
 
+  // One call under a declared attempt, recording nothing.
+  [[nodiscard]] Call attempt(GpuCommon shared, const FFTConfig& fft, TestKind kind, u64 exponent,
+                             const UseConfig& options, u32 nBlocks, u32 blockSize);
+
+  // The residue an LL call of this shape at `exponent` must reproduce, reading built-in defaults on other FFTs where
+  // the env has no agreed one yet; empty where none can be agreed.
+  [[nodiscard]] std::optional<u64> llReference(const FFTConfig& fft, u64 exponent, u32 nBlocks, u32 blockSize);
+
   // Whether the context can still do anything at all.
   [[nodiscard]] bool deviceUsable();
 
@@ -215,6 +241,9 @@ private:
   bool deviceLost_ = false;
   bool cannotRecord_ = false;
   std::vector<std::string> varying_;
+
+  // The (exponent, iterations) this session found no LL reference at: asked once, not again.
+  std::set<std::pair<u64, u64>> unreferenced_;
 };
 
 enum class MeasureOutcome : u8 { Ok, Failed, DeviceLost };
@@ -232,6 +261,8 @@ struct MeasureArgs {
   u32 calls = 8;
   u32 blocks = BLOCKS_PER_CALL;
   u32 blockSize = 0;  // 0: the production block size
+
+  TestKind kind = TestKind::PRP;
 
   bool roe = true;
   bool drain = false;
