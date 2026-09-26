@@ -73,6 +73,9 @@ struct TuneStatus {
   u32 moreWorth = 0;
   u32 notWorth = 0;
 
+  // Past those, at most how many more points worth running the stages listed in part have.
+  u64 unlisted = 0;
+
   // The entries the selection file publishes, by what the gate made of them, and the sets it still owes a reading or
   // has refused.
   struct Accuracy {

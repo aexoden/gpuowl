@@ -1654,6 +1654,111 @@ TEST(a_combination_waits_for_the_tier_below_and_is_valued_by_the_combination_gai
   }
 }
 
+TEST(a_stage_listed_in_part_offers_its_next_points_once_its_first_are_answered) {
+  // Both limits lifted, and every option set a little dearer than the defaults, so that the best set stays where it is
+  // while its probes are answered.
+  Fixture f;
+  FakeBench bench{f.db, f.sess, false};
+  bench.optionFactor = [](const FFTConfig&, const UseConfig& options) { return 1 + 0.01 * double(options.size()); };
+  FFTConfig const fft{PROBED};
+  auto measure = [&](const UseConfig& options) {
+    for (u32 call = 0; call < MIN_CALLS; ++call) { (void)bench.run(fft, TestKind::PRP, 118'063'003, options, {}); }
+  };
+  measure({});
+
+  std::vector<Baseline> one;
+  for (const Baseline& b : baselines(nvidia(), scope(), {FFTShape{"512:15:512"}})) {
+    if (b.fft.spec() == PROBED) { one.push_back(b); }
+  }
+  CHECK_EQ(one.size(), size_t(1));
+  if (one.size() != 1) { return; }
+  Strategy const lifted{.maxPermute = NO_LIMIT, .maxPoints = NO_LIMIT};
+  Scheduler const scheduler{scope(), one, 1000, Bootstrap{nvidia(), 118'063'003, {}, false}, lifted};
+
+  // The largest part of the list, and its points in the order it lists them whole.
+  ProbeList const windowed = probesOf(nvidia(), fft, {}, lifted, {}, true, PROBE_WINDOW);
+  CHECK(!windowed.unlisted.empty());
+  if (windowed.unlisted.empty()) { return; }
+  ProbeList::Unlisted const big = *std::ranges::max_element(windowed.unlisted, {}, &ProbeList::Unlisted::most);
+  std::vector<std::string> whole;
+  for (const Probe& p : probesOf(nvidia(), fft, {}, lifted).probes) {
+    if (p.part == big.part) { whole.push_back(configText(p.config)); }
+  }
+  CHECK(whole.size() > 2 * PROBE_WINDOW);
+  if (whole.size() <= 2 * PROBE_WINDOW) { return; }
+  std::set<std::string> const inBig{whole.begin(), whole.end()};
+
+  auto offered = [&](const std::vector<Item>& items) {
+    std::vector<std::string> out;
+    for (const Item& item : items) {
+      if (item.kind == ItemKind::Probe && inBig.contains(configText(item.options))) {
+        out.push_back(configText(item.options));
+      }
+    }
+    return out;
+  };
+  auto combos = [](const std::vector<Item>& items) {
+    return std::ranges::count_if(items, [](const Item& i) { return i.kind == ItemKind::Combo; });
+  };
+
+  // One window at first, the head of the whole part, its first item saying how much of the part is left.
+  std::vector<Item> const first = scheduler.admissible(f.db, f.env, Objective{f.db, f.env, scope()});
+  CHECK(offered(first) == std::vector<std::string>(whole.begin(), whole.begin() + PROBE_WINDOW));
+  auto const head = std::ranges::find_if(first, [&](const Item& i) { return configText(i.options) == whole.front(); });
+  CHECK(head != first.end());
+  if (head != first.end()) { CHECK(head->unlisted >= whole.size() - PROBE_WINDOW); }
+
+  // Every probe offered answered: the part's next points follow, and the combinations of what was read wait for them.
+  for (const Item& item : first) {
+    if (item.kind == ItemKind::Probe) { measure(item.options); }
+  }
+  std::vector<Item> const second = scheduler.admissible(f.db, f.env, Objective{f.db, f.env, scope(), Gating::Assumed});
+  CHECK(offered(second) == std::vector<std::string>(whole.begin() + PROBE_WINDOW, whole.begin() + 2 * PROBE_WINDOW));
+  CHECK_EQ(combos(second), 0);
+}
+
+TEST(choosing_the_next_item_with_both_limits_lifted_costs_what_is_listed) {
+  // The run that stalled: an FFT6431 entry measured on a P100 under CUDA, searched with both limits lifted.  Its Cuda
+  // group alone is 2 x 4 x 14^7 points.
+  Env const p100{.isNvidia = true, .cudaBackend = true, .computeCapability = 600, .pdlLaunch = true};
+  TuneDB db;
+  u32 const env = db.internEnv(dbEnvOf(p100));
+  u32 const sess = db.beginSession(env, "51:1K:4:256:212@67513549", 0, 1'790'452'892);
+  RunScope const workload = makeScope(ScopeArgs{.lo = 67'000'000, .hi = 80'000'000, .probe = 67'513'549}, {});
+
+  std::vector<Baseline> one;
+  for (const Baseline& b : baselines(p100, workload, {FFTShape{"51:1K:4:256"}})) {
+    if (b.fft.spec() == "51:1K:4:256:212") { one.push_back(b); }
+  }
+  CHECK_EQ(one.size(), size_t(1));
+  if (one.size() != 1) { return; }
+  FFTConfig const fft = one.front().fft;
+  CHECK(db.add(RunRow{.sess = sess,
+                      .fft = fft.spec(),
+                      .kind = TestKind::PRP,
+                      .exponent = 67'513'549,
+                      .regime = regimeOf(fft, 67'513'549),
+                      .cfg = db.internCfg({}),
+                      .m = {.mean = 652.604,
+                            .stddev = 0.141,
+                            .blocks = MIN_CALLS * BLOCKS_PER_CALL,
+                            .calls = MIN_CALLS,
+                            .drift = 1,
+                            .status = Status::Ok,
+                            .ts = 1'790'452'979}}));
+
+  Scheduler const scheduler{workload, one, 1000, Bootstrap{p100, 67'513'549, {}, false},
+                            Strategy{.maxPermute = NO_LIMIT, .maxPoints = NO_LIMIT}};
+  std::vector<Item> const items = scheduler.admissible(db, env, Objective{db, env, workload, Gating::Assumed});
+
+  // A window of each part, and the rest of the space said rather than listed.
+  u64 unlisted = 0;
+  for (const Item& item : items) { unlisted += item.unlisted; }
+  CHECK(unlisted > 800'000'000);
+  CHECK(!items.empty());
+  CHECK(items.size() < 2000);
+}
+
 TEST(each_combination_is_declared_once_before_its_first_call) {
   // A whole search, and the same search stopped between the two calls of its first combination and carried on by a
   // later process: the second resumes it without declaring it again.

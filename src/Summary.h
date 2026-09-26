@@ -64,6 +64,9 @@ struct RunSummary {
     u32 count = 0;
     std::string best;
     double value = 0;
+
+    // Past those, at most how many more points the stages listed in part have.
+    u64 unlisted = 0;
   };
   std::vector<Remaining> remaining;
 

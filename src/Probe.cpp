@@ -6,6 +6,7 @@
 #include "TuneDB.h"
 
 #include <algorithm>
+#include <limits>
 #include <numeric>
 #include <set>
 
@@ -115,20 +116,43 @@ struct Seed {
   return out;
 }
 
+// The size of a cross product, saturating rather than wrapping.
+[[nodiscard]] u64 productOf(const std::vector<u64>& sizes) {
+  u64 out = 1;
+  for (u64 const n : sizes) {
+    if (n && out > std::numeric_limits<u64>::max() / n) { return std::numeric_limits<u64>::max(); }
+    out *= n;
+  }
+  return out;
+}
+
 class Enumerator {
 public:
-  Enumerator(const Env& env, const FFTConfig& fft, const UseConfig& best, ProbeList& out) :
-    env_{env}, fft_{fft}, from_{canonicalConfig(env, fft, best)}, out_{out}, seen_{configText(from_)} {}
+  Enumerator(const Env& env, const FFTConfig& fft, const UseConfig& best, u32 listed, ProbeList& out) :
+    env_{env},
+    fft_{fft},
+    from_{canonicalConfig(env, fft, best)},
+    listed_{listed},
+    out_{out},
+    seen_{configText(from_)} {}
 
   // Every point of `axes` other than where they stand now: fewest axes moved first, then the combinations of axes in
   // declaration order, then each axis's positions in ascending order.  Stops once `limit` probes have been offered.
   void enumerate(const std::vector<size_t>& axes, const std::string& stage, u32 limit) {
+    ++part_;
+    u32 const cap = std::min(limit, listed_);
     u32 taken = 0;
+    u64 visited = 0;
     for (size_t k = 1; k <= axes.size(); ++k) {
       std::vector<size_t> pick(k);
       std::iota(pick.begin(), pick.end(), 0);
       while (true) {
-        if (!positions(axes, pick, stage, limit, taken)) { return; }
+        if (!positions(axes, pick, stage, cap, taken, visited)) {
+          std::vector<u64> sizes;
+          for (size_t const a : axes) { sizes.push_back(out_.axes[a].values.size()); }
+          unlisted(stage, 1, limit, taken, productOf(sizes) - 1 - visited);
+          return;
+        }
         if (!nextCombination(pick, axes.size())) { break; }
       }
     }
@@ -140,6 +164,8 @@ public:
   // from a frontier in order without counting out the cross product, which with seven dimensions of eight seeds
   // would be millions.
   void combine(const std::vector<std::vector<Seed>>& dims, const std::string& stage, u32 tier, u32 limit) {
+    ++part_;
+    u32 const cap = std::min(limit, listed_);
     using Point = std::pair<double, std::vector<size_t>>;
     auto const before = [](const Point& a, const Point& b) {
       return a.first != b.first ? a.first > b.first : a.second < b.second;
@@ -156,9 +182,11 @@ public:
     push(std::vector<size_t>(dims.size(), 0));
 
     u32 taken = 0;
+    u64 visited = 0;
     while (!frontier.empty()) {
       std::vector<size_t> const pick = frontier.begin()->second;
       frontier.erase(frontier.begin());
+      ++visited;
       for (size_t d = 0; d < dims.size(); ++d) {
         if (pick[d] + 1 < dims[d].size()) {
           std::vector<size_t> next = pick;
@@ -173,7 +201,12 @@ public:
         moves.insert(moves.end(), seed.begin(), seed.end());
       }
       // The background itself has no moves, and is not a point.
-      if (!moves.empty() && offer(std::move(moves), stage, tier) && ++taken >= limit) { return; }
+      if (!moves.empty() && offer(std::move(moves), stage, tier) && ++taken >= cap) {
+        std::vector<u64> sizes;
+        for (const std::vector<Seed>& seeds : dims) { sizes.push_back(seeds.size()); }
+        unlisted(stage, tier, limit, taken, productOf(sizes) - visited);
+        return;
+      }
     }
   }
 
@@ -190,9 +223,18 @@ private:
     return false;
   }
 
+  // Where a stage stopped at `taken` points because they were all it was to list, and `left` it has not visited yet:
+  // at most as many more as its limit allows.
+  void unlisted(const std::string& stage, u32 tier, u32 limit, u32 taken, u64 left) {
+    u64 const most = std::min<u64>(left, limit - taken);
+    if (taken < limit && most > 0) {
+      out_.unlisted.push_back({.stage = stage, .part = part_ - 1, .tier = tier, .most = most});
+    }
+  }
+
   // Every assignment of the picked axes to positions other than their current ones.  False once the limit is reached.
   bool positions(const std::vector<size_t>& axes, const std::vector<size_t>& pick, const std::string& stage, u32 limit,
-                 u32& taken) {
+                 u32& taken, u64& visited) {
     std::vector<size_t> at(pick.size(), 0);
     while (true) {
       std::vector<std::pair<size_t, size_t>> moves;
@@ -200,6 +242,7 @@ private:
         const Axis& axis = out_.axes[axes[pick[j]]];
         moves.emplace_back(axes[pick[j]], at[j] < axis.current ? at[j] : at[j] + 1);
       }
+      ++visited;
       if (offer(std::move(moves), stage, 1) && ++taken >= limit) { return false; }
 
       size_t j = pick.size();
@@ -235,6 +278,7 @@ private:
     out_.probes.push_back({.config = config,
                            .stage = stage,
                            .tier = tier,
+                           .part = part_ - 1,
                            .moves = std::move(moves),
                            .key = changed.size() == 1 ? changed.front().first : std::string{},
                            .text = std::move(text),
@@ -245,8 +289,10 @@ private:
   const Env& env_;
   const FFTConfig& fft_;
   UseConfig from_;
+  u32 listed_;
   ProbeList& out_;
   std::set<std::string> seen_;
+  u32 part_ = 0;
 };
 
 }  // namespace
@@ -440,9 +486,9 @@ void combos(const Env& env, const FFTConfig& fft, const UseConfig& best, const S
 }  // namespace
 
 ProbeList probesOf(const Env& env, const FFTConfig& fft, const UseConfig& best, const Strategy& strategy,
-                   std::span<const Reading> readings, bool structuralSteps) {
+                   std::span<const Reading> readings, bool structuralSteps, u32 listed) {
   ProbeList out{.axes = axesOf(env, fft, best), .probes = {}};
-  Enumerator enumerator{env, fft, best, out};
+  Enumerator enumerator{env, fft, best, listed, out};
 
   auto axesWhere = [&](auto&& pred) {
     std::vector<size_t> indices;

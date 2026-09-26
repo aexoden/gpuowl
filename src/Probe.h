@@ -35,6 +35,12 @@ inline constexpr u32 MAX_POINTS = 64;
 // Either limit, lifted.
 inline constexpr u32 NO_LIMIT = ~0u;
 
+// How many points of one stage the queue lists at a time.  A stage the limits leave larger is listed in longer windows
+// as the ones before are used up, so that choosing the next item costs what has been measured rather than what the
+// limits allow: with both lifted, one group of a CUDA build can have hundreds of millions of points.  Equal to
+// MAX_POINTS, so that under the default limits every stage is listed whole.
+inline constexpr u32 PROBE_WINDOW = MAX_POINTS;
+
 // How many of each group's best answers the combo tiers combine, and how many tiers the search has: 1 is the groups
 // alone, 2 adds the groups that share kernels combined, 3 everything combined.
 inline constexpr u32 COMBO_TOP = 3;
@@ -120,6 +126,10 @@ struct Probe {
   // 1 for a step within a group, a single step, or a permutation; 2 or 3 for a combination of the tier below's answers.
   u32 tier = 1;
 
+  // Which enumeration of the list offered it, counted from 0: a group's structural steps and its bins share a stage
+  // name but not a part.
+  u32 part = 0;
+
   // The axes it moves, into ProbeList::axes, and the position each moves to.
   std::vector<std::pair<size_t, size_t>> moves;
 
@@ -136,6 +146,15 @@ struct Probe {
 struct ProbeList {
   std::vector<Axis> axes;
   std::vector<Probe> probes;
+
+  // A stage whose listing stopped at `listed` points short of its own limit, and at most how many more it would offer.
+  struct Unlisted {
+    std::string stage;
+    u32 part = 0;
+    u32 tier = 1;
+    u64 most = 0;
+  };
+  std::vector<Unlisted> unlisted{};
 };
 
 // An option set of an entry that a row could publish, canonical, and what that row says it costs.
@@ -174,8 +193,13 @@ struct Branch {
 // `maxPoints`.  `best` must be the first of the readings in its branch, and the rest must follow cheapest first.
 //
 // A point is dropped where some key it sets is at a value the table would not offer it alongside the rest.
+//
+// No stage lists more than `listed` points.  One stopped there before its own limit, with points it has not offered
+// yet, is named in `unlisted`.  What is listed of a stage is always the start of what a longer `listed` would list of
+// it.
 [[nodiscard]] ProbeList probesOf(const Env& env, const FFTConfig& fft, const UseConfig& best, const Strategy& strategy,
-                                 std::span<const Reading> readings = {}, bool structuralSteps = true);
+                                 std::span<const Reading> readings = {}, bool structuralSteps = true,
+                                 u32 listed = NO_LIMIT);
 
 // Whether a row measured under `row` already answers `probe`: it has every axis the probe moves where the probe puts
 // it, and agrees with the probe on every key those axes' keys depend on.  What else the row ran with does not matter,

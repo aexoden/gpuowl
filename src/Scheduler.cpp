@@ -22,6 +22,11 @@ namespace {
 // that records nothing, and trying it again would only repeat that.
 constexpr u32 MAX_ATTEMPTS = 2 * MIN_CALLS;
 
+// How often one re-score widens the listing of one branch whose partly listed stage offers nothing.  More than one, so
+// that a window used up is replaced at once; bounded, so that a long stretch of points that cannot run is read over
+// several re-scores rather than in one.
+constexpr u32 MAX_WIDENINGS = 4;
+
 [[nodiscard]] bool carriesWeight(const Grid& grid, const Interval& band) {
   return std::ranges::any_of(grid.points,
                              [&](const GridPoint& p) { return p.weight > 0 && band.contains(p.exponent); });
@@ -218,15 +223,16 @@ std::string Scheduler::builtKey(const FFTConfig& fft, const UseConfig& options) 
 }
 
 Scheduler::ListMemo& Scheduler::probeList(const Baseline& entry, const UseConfig& best,
-                                          std::span<const Reading> readings, bool structuralSteps,
-                                          std::string from) const {
+                                          std::span<const Reading> readings, bool structuralSteps, std::string from,
+                                          bool widen) const {
   const Env& env = bootstrap_.env();
   const FFTConfig& fft = entry.fft;
   UseConfig const canonical = canonicalConfig(env, fft, best);
   auto const [at, fresh] =
     probeLists_.try_emplace(entry.label() + " " + configText(canonical) + (structuralSteps ? "" : " within"));
   ListMemo& memo = at->second;
-  if (!fresh && memo.from == from) { return memo; }
+  if (!fresh && memo.from == from && !widen) { return memo; }
+  if (widen) { memo.listed = memo.listed > NO_LIMIT / 2 ? NO_LIMIT : 2 * memo.listed; }
 
   // Against the same background, so over the same axes.
   auto identity = [](const Probe& p) {
@@ -240,7 +246,7 @@ Scheduler::ListMemo& Scheduler::probeList(const Baseline& entry, const UseConfig
   }
 
   memo.from = std::move(from);
-  memo.list = probesOf(env, fft, canonical, *strategy_, readings, structuralSteps);
+  memo.list = probesOf(env, fft, canonical, *strategy_, readings, structuralSteps, memo.listed);
   memo.answered.assign(memo.list.probes.size(), false);
   for (size_t p = 0; p < memo.list.probes.size(); ++p) {
     memo.answered[p] = answered.contains(identity(memo.list.probes[p]));
@@ -657,59 +663,90 @@ std::vector<Item> Scheduler::admissible(const TuneDB& db, u32 env, const Objecti
         double const comboValue = expectedSaving(objective.points(), b.kind, b.band, branches[branch].cost, comboGains);
         if (value <= 0 && comboValue <= 0) { continue; }
 
-        ListMemo& memo = probeList(b, branches[branch].best, ofEntry, branch == 0, std::move(from[branch]));
-        const ProbeList& list = memo.list;
-        for (size_t r = 0; r < concluded.size(); ++r) {
-          if (!memo.checked.insert(texts[r]).second) { continue; }
+        // Offers what the listing in `memo` has not answered.  Unless it is the `last` listing, false where a stage
+        // listed in part offered nothing, having then offered nothing at all.
+        auto offerListed = [&](ListMemo& memo, bool last) {
+          const ProbeList& list = memo.list;
+          for (size_t r = 0; r < concluded.size(); ++r) {
+            if (!memo.checked.insert(texts[r]).second) { continue; }
+            for (size_t p = 0; p < list.probes.size(); ++p) {
+              if (!memo.answered[p]) {
+                memo.answered[p] = answeredBy(device, b.fft, list, list.probes[p], concluded[r]);
+              }
+            }
+          }
+
+          // The list is in tier order, and a combination waits for the tiers below it to be answered, the points of a
+          // stage not listed yet among them.
+          std::optional<u32> lowest;
+          for (const ProbeList::Unlisted& u : list.unlisted) { lowest = std::min(lowest.value_or(u.tier), u.tier); }
+          size_t const first = out.size();
+          std::vector<std::string> taken;
+          std::set<u32> fed;
           for (size_t p = 0; p < list.probes.size(); ++p) {
-            if (!memo.answered[p]) { memo.answered[p] = answeredBy(device, b.fft, list, list.probes[p], concluded[r]); }
-          }
-        }
+            if (memo.answered[p]) { continue; }
+            const Probe& probe = list.probes[p];
+            if (lowest && probe.tier > *lowest) { break; }
+            double const worth = probe.tier > 1 ? comboValue : value;
+            if (worth <= 0) { continue; }
+            std::string const text = configText(probe.config);
+            if (progress.failed.contains({key, text})) { continue; }
 
-        // The list is in tier order, and a combination waits for the tiers below it to be answered.
-        std::optional<u32> lowest;
-        for (size_t p = 0; p < list.probes.size(); ++p) {
-          if (memo.answered[p]) { continue; }
-          const Probe& probe = list.probes[p];
-          if (lowest && probe.tier > *lowest) { break; }
-          double const worth = probe.tier > 1 ? comboValue : value;
-          if (worth <= 0) { continue; }
-          std::string const text = configText(probe.config);
-          if (progress.failed.contains({key, text})) { continue; }
+            Item item{.kind = probe.tier > 1 ? ItemKind::Combo : ItemKind::Probe,
+                      .index = i,
+                      .options = probe.config,
+                      .moved = probe.key,
+                      .what = probe.stage + " " + probe.text,
+                      .exponent = b.exponent,
+                      .value = worth,
+                      .cost = branches[branch].cost,
+                      .seconds = 0,
+                      .fresh = true,
+                      .calls = 0,
+                      .draw = 0,
+                      .tier = probe.tier};
+            if (auto const n = probeAttempts_.find(keyOf(item));
+                n != probeAttempts_.end() && n->second >= MAX_ATTEMPTS) {
+              continue;
+            }
+            if (auto const partial = progress.partial.find({key, text});
+                partial != progress.partial.end() && b.band.contains(partial->second.exponent)) {
+              item.exponent = partial->second.exponent;
+              item.calls = partial->second.calls;
+            }
 
-          Item item{.kind = probe.tier > 1 ? ItemKind::Combo : ItemKind::Probe,
-                    .index = i,
-                    .options = probe.config,
-                    .moved = probe.key,
-                    .what = probe.stage + " " + probe.text,
-                    .exponent = b.exponent,
-                    .value = worth,
-                    .cost = branches[branch].cost,
-                    .seconds = 0,
-                    .fresh = true,
-                    .calls = 0,
-                    .draw = 0,
-                    .tier = probe.tier};
-          if (auto const n = probeAttempts_.find(keyOf(item)); n != probeAttempts_.end() && n->second >= MAX_ATTEMPTS) {
-            continue;
-          }
-          if (auto const p = progress.partial.find({key, text});
-              p != progress.partial.end() && b.band.contains(p->second.exponent)) {
-            item.exponent = p->second.exponent;
-            item.calls = p->second.calls;
+            if (db.isNogo(env, b.fft.spec(), item.options)) { continue; }
+            if (u32 const cfg = db.findCfgId(item.options);
+                cfg && db.diedOn(env, cfg, b.kind, b.fft.spec(), item.exponent)) {
+              continue;
+            }
+            if (!offered.insert(text).second) { continue; }
+            taken.push_back(text);
+            lowest = std::min(lowest.value_or(probe.tier), probe.tier);
+
+            if (fed.insert(probe.part).second) {
+              auto const u = std::ranges::find(list.unlisted, probe.part, &ProbeList::Unlisted::part);
+              if (u != list.unlisted.end()) { item.unlisted = u->most; }
+            }
+            item.fresh = !built_.contains(builtKey(b.fft, item.options));
+            item.seconds = clock_.seconds(branches[branch].cost, item.fresh);
+            out.push_back(std::move(item));
           }
 
-          if (db.isNogo(env, b.fft.spec(), item.options)) { continue; }
-          if (u32 const cfg = db.findCfgId(item.options);
-              cfg && db.diedOn(env, cfg, b.kind, b.fft.spec(), item.exponent)) {
-            continue;
-          }
-          if (!offered.insert(text).second) { continue; }
-          lowest = std::min(lowest.value_or(probe.tier), probe.tier);
+          // A part of a tier above the one offered is waiting for it, not starved.
+          bool const starved = std::ranges::any_of(
+            list.unlisted, [&](const ProbeList::Unlisted& u) { return u.tier <= *lowest && !fed.contains(u.part); });
+          if (!starved || last) { return true; }
+          out.erase(out.begin() + ptrdiff_t(first), out.end());
+          for (const std::string& text : taken) { offered.erase(text); }
+          return false;
+        };
 
-          item.fresh = !built_.contains(builtKey(b.fft, item.options));
-          item.seconds = clock_.seconds(branches[branch].cost, item.fresh);
-          out.push_back(std::move(item));
+        // A stage listed in part whose listed points offer nothing lists more of them, so that its next points are
+        // offered as they would be were it listed whole.
+        ListMemo* memo = &probeList(b, branches[branch].best, ofEntry, branch == 0, std::move(from[branch]));
+        for (u32 widened = 0; !offerListed(*memo, widened == MAX_WIDENINGS); ++widened) {
+          memo = &probeList(b, branches[branch].best, ofEntry, branch == 0, memo->from, true);
         }
       }
 

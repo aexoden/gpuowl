@@ -78,6 +78,13 @@ TEST(what_is_worth_running_is_the_stopping_rules_own_view_of_the_ranking) {
   CHECK_EQ(p.worthSeconds, 38.0);
   CHECK(p.bootstrapComplete);
 
+  // What stages listed in part have past what is listed counts where the item that says it is worth running.
+  std::vector<Item> listed = ranked;
+  listed[2].unlisted = 843'000'000;
+  listed[4].unlisted = 1000;
+  CHECK_EQ(progressOf(sofar, 200, 0.75, listed, 0.001, 0.2, true).unlisted, u64(843'000'000));
+  CHECK_EQ(progressOf(sofar, 200, 0.75, listed, 0, 0, true).unlisted, u64(843'001'000));
+
   // With no stop fraction everything worth anything runs, and nothing is worth running where nothing is valued.
   CHECK_EQ(progressOf(sofar, 200, 0.75, ranked, 0, 0, true).worthRunning, 5u);
   CHECK_EQ(progressOf(sofar, 200, 0.75, {item(ItemKind::Refine, 0, 4)}, 0, 0, true).worthRunning, 0u);
@@ -99,6 +106,13 @@ TEST(the_periodic_line_says_where_the_run_stands_against_its_start_and_its_stop)
   CHECK(progressLine(unbounded, 3725)
           .ends_with("; the most an item is worth is 0.3630 us/it, and stop=0 runs until stopped; 1 item is worth "
                      "running now, ~40 s by the queue's estimates"));
+
+  // Stages listed a window at a time say how much more they could list.
+  RunProgress lifted = unbounded;
+  lifted.unlisted = 5'906'934'895;
+  CHECK(progressLine(lifted, 3725)
+          .ends_with("; 1 item is worth running now, ~40 s by the queue's estimates, and up to 5906934895 more not "
+                     "listed yet"));
 
   // Before anything is valued only what runs by rule is worth running, and at the end nothing is.
   RunProgress byRule = midRun();

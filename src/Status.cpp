@@ -106,7 +106,10 @@ TuneStatus statusOf(const Scheduler& scheduler, TuneDB& db, u32 env, double stop
   for (const Item& item : report.left) {
     if (!worthRunning(item, out.floor)) {
       ++out.notWorth;
-    } else if (out.next.size() < STATUS_NEXT) {
+      continue;
+    }
+    out.unlisted += item.unlisted;
+    if (out.next.size() < STATUS_NEXT) {
       out.next.push_back({.item = item, .label = itemLabel(scheduler, item)});
     } else {
       ++out.moreWorth;
@@ -192,6 +195,7 @@ void logStatus(const TuneStatus& s, const DbEnv& env, const std::string& valuedA
       if (s.stop > 0) { snprintf(below, sizeof(below), "worth less than %s (%.4f us/it)", threshold.c_str(), s.floor); }
       log("tune: status:   and %u more worth running, %u %s\n", s.moreWorth, s.notWorth, below);
     }
+    if (s.unlisted) { log("tune: status:   and up to %" PRIu64 " more not listed yet\n", s.unlisted); }
   }
 
   if (!s.faults.empty()) {
