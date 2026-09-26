@@ -56,21 +56,20 @@ const char* const DB =
   "roe   4 1K:8:1K:202 296960407 21 25.10 2150 0.3021 ok - 1753471430\n"
   "roe   9 512:15:512:212 143413741 17 24.40 2150 0.3098 ok - 1753471440\n";
 
-// The accuracy reading of the set published as 2e51eaf52a48bfc9 and 0a567e7dbc3e06d4, prp and ll alike.
+// The accuracy reading of the set published as 2e51eaf52a48bfc9.
 const char* const PAD128_ROE = "roe   4 512:15:512:212 143413741 18 24.40 2150 0.3098 ok - 1753471410\n";
 
 // What env 1 supports.  Costs are the mean plus two standard errors, so the six calls behind PAD=256 buy it a smaller
 // penalty (+1.84) than the four behind PAD=128 (+3.35); PAD=256 at 1776.069 and PAD=512 at 1802.236 are dropped as
-// nothing cheaper than PAD=128 anywhere they run; the ll rows under PAD=256 are dropped because one of the two failed,
-// and that configuration is excluded; and the 1700.000 of one call is dropped as a reading nothing concluded.
+// nothing cheaper than PAD=128 anywhere they run; no ll entry is published, because one of the two ll rows under
+// PAD=256 failed and that configuration -- which PAD=128, PAD doing nothing here, builds too -- is excluded; and the
+// 1700.000 of one call is dropped as a reading nothing concluded.
 const char* const SELECTION = "# prpll selection v1\n"
                               "# %PROVENANCE%\n"
                               "use   INPLACE=1,PAD=256\n"
                               "use ! 1 TAIL_KERNELS=3\n"
                               "entry 2e51eaf52a48bfc9 1753.354 512:15:512:212 prp 78643196 143413744 unvalidated\n"
                               "opts  2e51eaf52a48bfc9 INPLACE=1,PAD=128,TAIL_KERNELS=3\n"
-                              "entry 0a567e7dbc3e06d4 1853.354 512:15:512:212 ll 78643196 143413744 unvalidated\n"
-                              "opts  0a567e7dbc3e06d4 INPLACE=1,PAD=128,TAIL_KERNELS=3\n"
                               "entry 688735b9ab069fec 2005.590 3:1K:8:512:202 prp 83886076 152674512 n/a\n"
                               "opts  688735b9ab069fec INPLACE=1,PAD=256\n"
                               "entry d5c85edcdda38629 3104.472 1K:8:1K:202 prp 167772152 296960416 unvalidated\n"
@@ -207,8 +206,18 @@ TEST(emit_withdraws_a_configuration_that_answered_wrongly_in_the_regime) {
   TuneDB const db = loaded(withRecord("16 4 1.0000 ok 1753471294", "16 4 1.0000 err 1753471294"));
   CHECK(!publishes(db, TWICE_MEASURED));
 
-  // And only that configuration: the same options in the other kind are untouched.
-  CHECK(publishes(db, "0a567e7dbc3e06d4"));
+  // And only that configuration: the same options in the other kind are untouched, where nothing failed there.
+  std::string text = withRecord("16 4 1.0000 ok 1753471294", "16 4 1.0000 err 1753471294");
+  std::string const llErr = "1.0000 err 1753471334";
+  text.replace(text.find(llErr), llErr.size(), "1.0000 ok 1753471334");
+  CHECK(publishes(loaded(text), "512:15:512:212", TestKind::LL));
+}
+
+// PAD does nothing on NVIDIA, so PAD=128 builds the kernels that answered wrongly under PAD=256, and goes with them --
+// as production, which matches an exclusion by the keys the tuner searches, would pass it over.
+TEST(emit_withdraws_every_spelling_of_a_configuration_that_answered_wrongly) {
+  CHECK(!publishes(loaded(DB), "512:15:512:212", TestKind::LL));
+  CHECK(publishes(loaded(withRecord("1.0000 err 1753471334", "1.0000 ok 1753471334")), "512:15:512:212", TestKind::LL));
 }
 
 // The failure that follows a wrong answer is usually a refusal -- the next attempt's build, or a backend that no longer
