@@ -17,12 +17,6 @@ namespace tune {
 
 namespace {
 
-[[nodiscard]] std::string labelOf(const Scheduler& scheduler, const Item& item) {
-  if (item.kind == ItemKind::Bootstrap || item.kind == ItemKind::Reach) { return item.what; }
-  std::string const entry = scheduler.baselines()[item.index].label();
-  return item.what.empty() ? entry : entry + " " + item.what;
-}
-
 [[nodiscard]] EntryKey keyOf(const Baseline& b) { return {b.fft.spec(), b.kind, b.band.regime.label()}; }
 
 [[nodiscard]] RunSummary::Drift driftOf(const TuneDB& db, u32 sess) {
@@ -55,6 +49,21 @@ namespace {
 }
 
 }  // namespace
+
+std::string itemLabel(const Scheduler& scheduler, const Item& item) {
+  if (item.kind == ItemKind::Bootstrap || item.kind == ItemKind::Reach) { return item.what; }
+  std::string const entry = scheduler.baselines()[item.index].label();
+  return item.what.empty() ? entry : entry + " " + item.what;
+}
+
+std::string familyCounts(const RunSummary::Family& f, const std::string& heldBy) {
+  u32 const out = f.entries - f.measured - f.unmeasured - f.waiting;
+  std::string counts = std::to_string(f.measured) + " of " + std::to_string(f.entries) + " entries measured";
+  if (f.unmeasured) { counts += ", " + std::to_string(f.unmeasured) + " not"; }
+  if (f.waiting) { counts += ", " + std::to_string(f.waiting) + " waiting on " + heldBy; }
+  if (out) { counts += ", " + std::to_string(out) + " ruled out or given up on"; }
+  return counts;
+}
 
 RunSummary summarize(const Scheduler& scheduler, const TuneDB& db, u32 env, u32 sess, const QueueReport& report,
                      double stop) {
@@ -97,7 +106,7 @@ RunSummary summarize(const Scheduler& scheduler, const TuneDB& db, u32 env, u32 
     ++r.count;
     if (r.count == 1 || item.value > r.value) {
       r.value = item.value;
-      r.best = labelOf(scheduler, item);
+      r.best = itemLabel(scheduler, item);
     }
 
     if (item.kind != ItemKind::Baseline) { continue; }
@@ -111,7 +120,7 @@ RunSummary summarize(const Scheduler& scheduler, const TuneDB& db, u32 env, u32 
     auto const [at, first] = closest.try_emplace(f.type, rank);
     if (!first && rank >= at->second) { continue; }
     at->second = rank;
-    f.closest = labelOf(scheduler, item);
+    f.closest = itemLabel(scheduler, item);
     f.closestValue = item.value;
     f.gain = gain;
     f.chance = gain ? unmeasured.chanceOfAtLeast(*gain) : 0;
@@ -184,11 +193,7 @@ void logSummary(const RunSummary& s) {
 
   std::string const worth = s.stop > 0 ? "to be worth " + threshold : "to save anything";
   for (const RunSummary::Family& f : s.families) {
-    u32 const out = f.entries - f.measured - f.unmeasured - f.waiting;
-    std::string counts = std::to_string(f.measured) + " of " + std::to_string(f.entries) + " entries measured";
-    if (f.unmeasured) { counts += ", " + std::to_string(f.unmeasured) + " not"; }
-    if (f.waiting) { counts += ", " + std::to_string(f.waiting) + " waiting on " + s.heldBy; }
-    if (out) { counts += ", " + std::to_string(out) + " ruled out or given up on"; }
+    std::string const counts = familyCounts(f, s.heldBy);
 
     if (!f.unmeasured) {
       log("tune: summary: %s: %s\n", typeName(f.type), counts.c_str());

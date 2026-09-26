@@ -2,10 +2,10 @@
 
 // The -tune command line, the scope a tuning run works within, and the run itself.
 //
-// Five of its subcommands open no device, build no kernels and take no readings: four read and rewrite the measurement
-// database, and the fifth reports the scope. They run wherever the files are rather than only on the card that was
-// measured.  `accuracy` reads which option keys change the rounding, on the device.  Everything else -- settings
-// alone, or nothing at all -- is a tuning run on the device.
+// Six of its subcommands open no device, build no kernels and take no readings: four read and rewrite the measurement
+// database, one reports the scope, and one where the database stands. They run wherever the files are rather than only
+// on the card that was measured.  `accuracy` reads which option keys change the rounding, on the device.  Everything
+// else -- settings alone, or nothing at all -- is a tuning run on the device.
 //
 // The scope is two things: the exponent range the user's work covers, and the one exponent within it that matters
 // most. Everything downstream is weighted by them, so a configuration nobody will run is never paid for.
@@ -31,6 +31,8 @@ enum class MeasureOutcome : u8;
 
 class Objective;
 class TuneDB;
+struct SessRow;
+struct WorkRow;
 
 // The exponent range used where there is no worktodo to derive one from: the span current Mersenne work covers.
 inline constexpr u64 DEFAULT_WORKLOAD_LO = 100'000'000;
@@ -68,6 +70,7 @@ enum class TuneVerb : u8 {
   Scope,     // report the range, the probe and the grid a tuning run would work within
   Run,       // tune: measure what is worth measuring, publishing after every item
   Accuracy,  // read which option keys change the rounding
+  Status,    // report where the database stands: what is measured, what is not, and what a run would take next
 };
 
 [[nodiscard]] const char* toString(TuneVerb verb);
@@ -116,6 +119,9 @@ struct TuneCommand {
 
   // `run` and `emit`: whether to write the tune.txt an older binary reads, beside every selection file published.
   bool tuneTxt = false;
+
+  // `status`: the settings named, as a run takes them, which replace those of the latest run.
+  std::string settings;
 };
 
 // One pending assignment, reduced to what the scope cares about.
@@ -183,6 +189,25 @@ void reportScope(const RunScope& scope, const std::vector<fs::path>& files, cons
 // is known by its own option words.  Throws a message for anything else it cannot read, so a mistyped setting is a
 // usage error rather than a silent fall-through to the other tuner.
 [[nodiscard]] std::optional<TuneCommand> parseTuneCommand(std::string_view text);
+
+// A run's settings as one word a run takes: its scope resolved, and every other setting named, so that it values its
+// items the same way whatever the worktodo says by then.
+[[nodiscard]] std::string runSettings(const RunScope& scope, const TuneCommand& command);
+
+// `pending`, as the rows session `sess` records it by: one per kind and exponent, with how many assignments it has.
+[[nodiscard]] std::vector<WorkRow> workRows(u32 sess, const std::vector<PendingWork>& pending);
+
+// The pending work session `sess` recorded, as makeScope() takes it.
+[[nodiscard]] std::vector<PendingWork> pendingOf(const TuneDB& db, u32 sess);
+
+// The pending work a status weights `run` by: what it recorded when it started, not what the worktodo in `dir` says
+// now; the worktodo only where there is no run.
+[[nodiscard]] std::vector<PendingWork> statusWork(const TuneDB& db, const SessRow* run, const Args& args,
+                                                  const fs::path& dir);
+
+// A run's settings word with `asked`'s settings in place of its own.  A range or a probe replaces both, since the run's
+// were resolved together, and a strategy the combination settings of the run's.
+[[nodiscard]] std::string statusSettings(std::string_view run, std::string_view asked);
 
 // Which env the command runs on: the one it names, or the single env whose rows were measured against `build`.  0
 // where there is no such env or more than one, having said which envs there are -- with no device open there is

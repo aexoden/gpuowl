@@ -95,8 +95,21 @@ struct SessRow {
 
   std::string anchor;  // "<spec>@<exponent>": the configuration this session's drift is measured against
 
+  // A tuning run's settings, resolved: what it valued its items against, so that its standing can be reported as it
+  // saw it.  Empty for a session that was not a tuning run.
+  std::string tune{};
+
   // The session had a drift alarm.
   bool alarmed = false;
+};
+
+// Pending work a tuning run was scoped against: `count` assignments of one kind at one exponent.  What its grid was
+// weighted by, which a later reader has no other way to recover once the worktodo has moved on.
+struct WorkRow {
+  u32 sess = 0;
+  TestKind kind = TestKind::PRP;
+  u64 exponent = 0;
+  u32 count = 0;
 };
 
 // One timing of one configuration at one exponent.
@@ -228,6 +241,10 @@ public:
   // Claims the right to write this database, or returns false and says why.
   [[nodiscard]] bool lockForWriting(const fs::path& path);
 
+  // Whether another process holds that right now, found without taking any lock, so that asking can never turn a
+  // writer away; nothing where this platform cannot tell.
+  [[nodiscard]] static std::optional<bool> writerHolds(const fs::path& path);
+
   // Appends every row added from now on to `path`, as it is added. Call after load(), and only while holding the lock
   // above.
   void attach(const fs::path& path);
@@ -236,6 +253,7 @@ public:
   [[nodiscard]] const std::vector<DbEnv>& envs() const { return envs_; }
   [[nodiscard]] const std::map<u32, UseConfig>& cfgs() const { return cfgs_; }
   [[nodiscard]] const std::vector<SessRow>& sessions() const { return sessions_; }
+  [[nodiscard]] const std::vector<WorkRow>& works() const { return works_; }
   [[nodiscard]] const std::vector<RunRow>& runs() const { return runs_; }
   [[nodiscard]] const std::vector<TryRow>& tries() const { return tries_; }
   [[nodiscard]] const std::vector<NogoRow>& nogos() const { return nogos_; }
@@ -279,6 +297,7 @@ public:
   [[nodiscard]] bool add(const DbEnv& row);
   [[nodiscard]] bool addCfg(u32 id, UseConfig config);
   [[nodiscard]] bool add(const SessRow& row);
+  [[nodiscard]] bool add(const WorkRow& row);
   [[nodiscard]] bool add(const RunRow& row);
   [[nodiscard]] bool add(const TryRow& row);
   [[nodiscard]] bool add(const NogoRow& row);
@@ -298,7 +317,8 @@ public:
   [[nodiscard]] u32 findCfgId(const UseConfig& config) const;
 
   // Opens a session on `env`. `start` is its wall-clock time, or 0 for now.
-  [[nodiscard]] u32 beginSession(u32 env, const std::string& anchor, u32 gen = 0, u64 start = 0);
+  [[nodiscard]] u32 beginSession(u32 env, const std::string& anchor, u32 gen = 0, u64 start = 0,
+                                 const std::string& tune = {});
 
   // The anchor this env is pinned to, as its earliest session that named one spells it, or else as its earliest anchor
   // reading does; empty when it has none. An env compares its rows against readings of one configuration at one
@@ -349,6 +369,7 @@ private:
   std::vector<DbEnv> envs_;
   std::map<u32, UseConfig> cfgs_;
   std::vector<SessRow> sessions_;
+  std::vector<WorkRow> works_;
   std::vector<RunRow> runs_;
   std::vector<TryRow> tries_;
   std::vector<NogoRow> nogos_;
@@ -370,6 +391,7 @@ private:
 [[nodiscard]] std::string formatRow(const DbEnv& row);
 [[nodiscard]] std::string formatCfgRow(u32 id, const UseConfig& config);
 [[nodiscard]] std::string formatRow(const SessRow& row);
+[[nodiscard]] std::string formatRow(const WorkRow& row);
 [[nodiscard]] std::string formatRow(const RunRow& row);
 [[nodiscard]] std::string formatRow(const TryRow& row);
 [[nodiscard]] std::string formatRow(const NogoRow& row);
@@ -380,6 +402,10 @@ private:
 [[nodiscard]] std::string formatRow(const JumpRow& row);
 [[nodiscard]] std::string formatRow(const ComboRow& row);
 [[nodiscard]] std::string formatRow(const DoneRow& row);
+
+// Whether `locks`, in the form of Linux's /proc/locks, lists a lock held on the file at (major, minor, inode); a
+// process waiting for one does not hold it.
+[[nodiscard]] bool lockListed(std::string_view locks, u32 major, u32 minor, u64 inode);
 
 [[nodiscard]] std::string configText(const UseConfig& config);
 [[nodiscard]] std::optional<UseConfig> parseConfigText(std::string_view text);

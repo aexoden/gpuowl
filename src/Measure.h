@@ -121,8 +121,9 @@ public:
 
   // `probe` is the exponent the session is measuring around. Where the env has no anchor pinned yet, the candidates
   // for one are raced there when the anchor is first due, and the winner is pinned for the env's life. Zero leaves the
-  // session unanchored: its rows are recorded as measured.
-  [[nodiscard]] bool begin(u64 probe = 0);
+  // session unanchored: its rows are recorded as measured.  `tune` is a tuning run's settings, recorded with the
+  // session.
+  [[nodiscard]] bool begin(u64 probe = 0, const std::string& tune = {});
   void end();
 
   // What every row of this session is divided by to compare it with a row of another one.

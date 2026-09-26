@@ -191,9 +191,8 @@ std::vector<Candidate> publishedFor(const TuneDB& db, u32 env, const Defaults& d
   return out;
 }
 
-}  // namespace
-
-std::vector<OptionSet> optionSetsFor(const TuneDB& db, u32 env, const Defaults& defaults) {
+// Every option set of every identity, each with the gate's verdict on it, the rejected ones included.
+[[nodiscard]] std::vector<Candidate> judgedSets(const TuneDB& db, u32 env, const Defaults& defaults) {
   const DbEnv* const row = db.findEnv(env);
   if (!row) { return {}; }
 
@@ -263,8 +262,6 @@ std::vector<OptionSet> optionSetsFor(const TuneDB& db, u32 env, const Defaults& 
   for (auto& [id, candidate] : byId) {
     SelectionEntry& e = candidate.entry;
     candidate.gate = gates(*parseFft(e.fft), Interval{.lo = e.emin, .hi = e.reach, .regime = e.regime}, e.opts);
-    if (candidate.gate.state == GateState::Rejected) { continue; }
-
     if (candidate.gate.state == GateState::Passed) {
       e.reach = candidate.gate.reach;
       e.evidence = candidate.gate.evidence;
@@ -272,6 +269,20 @@ std::vector<OptionSet> optionSetsFor(const TuneDB& db, u32 env, const Defaults& 
     candidates.push_back(std::move(candidate));
   }
   return candidates;
+}
+
+}  // namespace
+
+std::vector<OptionSet> optionSetsFor(const TuneDB& db, u32 env, const Defaults& defaults) {
+  std::vector<OptionSet> out = judgedSets(db, env, defaults);
+  std::erase_if(out, [](const OptionSet& s) { return s.gate.state == GateState::Rejected; });
+  return out;
+}
+
+std::vector<OptionSet> rejectedSets(const TuneDB& db, u32 env, const Defaults& defaults) {
+  std::vector<OptionSet> out = judgedSets(db, env, defaults);
+  std::erase_if(out, [](const OptionSet& s) { return s.gate.state != GateState::Rejected; });
+  return out;
 }
 
 std::vector<SelectionEntry> candidatesFor(const TuneDB& db, u32 env, const Defaults& defaults, Gating gating) {

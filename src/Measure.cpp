@@ -138,7 +138,7 @@ RoeCheck roeCheck(GpuCommon shared, const FFTConfig& fft, const UseConfig& optio
 
 Session::Session(GpuCommon shared, TuneDB& db, const Env& env) : shared_{shared}, db_{db}, env_{env} {}
 
-bool Session::begin(u64 probe) {
+bool Session::begin(u64 probe, const std::string& tune) {
   envId_ = db_.internEnv(dbEnvOf(env_));
   if (!envId_) { return false; }
 
@@ -163,7 +163,7 @@ bool Session::begin(u64 probe) {
     }
   }
 
-  session_ = db_.beginSession(envId_, anchor_.valid() ? anchor_.text() : "", restart::generation());
+  session_ = db_.beginSession(envId_, anchor_.valid() ? anchor_.text() : "", restart::generation(), 0, tune);
   return session_ != 0;
 }
 

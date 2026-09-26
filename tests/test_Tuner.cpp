@@ -9,6 +9,7 @@
 #include "Args.h"
 #include "Emit.h"
 #include "File.h"
+#include "Objective.h"
 #include "Selection.h"
 #include "TuneDB.h"
 
@@ -778,4 +779,163 @@ TEST(the_bootstrap_is_on_unless_a_run_turns_it_off) {
   // It is a run's setting: nothing else races anything.
   CHECK(!refusal("scope,bootstrap=0").empty());
   CHECK(!refusal("emit,bootstrap=0").empty());
+}
+
+// ---------------------------------------------------------------------------------------------------------------
+// Status: a run's settings, recorded with its session and read back.
+
+namespace {
+
+bool sameGrids(const RunScope& a, const RunScope& b) {
+  if (a.grids.size() != b.grids.size()) { return false; }
+  for (size_t i = 0; i < a.grids.size(); ++i) {
+    const Grid& x = a.grids[i];
+    const Grid& y = b.grids[i];
+    if (x.kind != y.kind || x.fromWorktodo != y.fromWorktodo || x.points.size() != y.points.size()) { return false; }
+    for (size_t j = 0; j < x.points.size(); ++j) {
+      if (x.points[j].exponent != y.points[j].exponent || !near(x.points[j].weight, y.points[j].weight)) {
+        return false;
+      }
+    }
+  }
+  return true;
+}
+
+}  // namespace
+
+TEST(a_runs_settings_read_back_as_the_same_run) {
+  std::vector<PendingWork> const pending{
+    {TestKind::PRP, 124'647'911}, {TestKind::PRP, 131'088'689}, {TestKind::LL, 286'472'227}};
+
+  // Resolved from the pending work, the range and the probe are named in the word.
+  CHECK_EQ(runSettings(makeScope(parsed("").scope, pending), parsed("")),
+           std::string{"workload=118415515-137643123,probe=124647911,probeWeight=0.5,kinds=prp,bootstrap=1,"
+                       "strategy=hybrid,comboTop=3,comboTiers=3,stop=0.1%"});
+
+  for (const char* const text :
+       {"", "workload=100M-400M,probe=136279841,stop=0", "kinds=prp+ll,probeWeight=0.3,bootstrap=0,stop=0.25%",
+        "strategy=permute:PAD+IN_SIZEX", "comboTop=2,comboTiers=1", "strategy=single,stop=2%"}) {
+    TuneCommand const command = parsed(text);
+    RunScope const scope = makeScope(command.scope, pending);
+    std::string const word = runSettings(scope, command);
+
+    TuneCommand const again = parsed(word.c_str());
+    RunScope const back = makeScope(again.scope, pending);
+    CHECK_EQ(runSettings(back, again), word);
+    CHECK_EQ(back.lo, scope.lo);
+    CHECK_EQ(back.hi, scope.hi);
+    CHECK_EQ(back.probe, scope.probe);
+    CHECK(sameGrids(back, scope));
+    CHECK(again.bootstrap == command.bootstrap);
+    CHECK_EQ(again.strategy.text(), command.strategy.text());
+    CHECK_EQ(again.strategy.comboTop, command.strategy.comboTop);
+    CHECK_EQ(again.strategy.comboTiers, command.strategy.comboTiers);
+    CHECK(near(again.stop, command.stop));
+  }
+}
+
+TEST(a_run_is_weighted_by_the_work_it_recorded_whatever_the_worktodo_says_now) {
+  std::vector<PendingWork> const pending{{TestKind::PRP, 131'088'689},
+                                         {TestKind::PRP, 124'647'911},
+                                         {TestKind::LL, 286'472'227},
+                                         {TestKind::PRP, 124'647'911}};
+  TuneDB db = loaded();
+  CHECK(db.add(SessRow{.id = 10, .env = 1, .start = 1, .gen = 0, .anchor = {}, .tune = "x", .alarmed = false}));
+  for (const WorkRow& row : workRows(10, pending)) { CHECK(db.add(row)); }
+  CHECK_EQ(db.works().size(), size_t{3});
+
+  // Read back from the file, as status reads it.
+  TuneDB back;
+  CHECK(back.parse(db.text(), "status"));
+  std::vector<PendingWork> const recorded = pendingOf(back, 10);
+  CHECK_EQ(recorded.size(), pending.size());
+  CHECK(pendingOf(back, 4).empty());
+
+  // The worktodo has since emptied; the run's own settings over its own work still give the grid and the T it had.
+  for (const char* const text : {"", "kinds=prp+ll,probeWeight=0.2"}) {
+    TuneCommand const command = parsed(text);
+    RunScope const then = makeScope(command.scope, pending);
+    TuneCommand const saved = parsed(runSettings(then, command).c_str());
+    RunScope const now = makeScope(saved.scope, {});
+    RunScope const restored = makeScope(saved.scope, recorded);
+    CHECK(sameGrids(restored, then));
+    CHECK(!sameGrids(now, then));
+    CHECK_EQ(Objective(back, 1, restored).T(), Objective(back, 1, then).T());
+  }
+
+  // Which is the work a status takes for the run, whatever the worktodo beside it holds; with no run, that worktodo.
+  Dir const dir{"prpll-test-tuner-status-work"};
+  dir.write("worktodo.txt", "PRP=1,2,332192831,-1,77,0\n");
+  CHECK(statusWork(back, back.findSession(10), Args{}, dir.path) == recorded);
+  std::vector<PendingWork> const beside{{TestKind::PRP, 332'192'831}};
+  CHECK(statusWork(back, nullptr, Args{}, dir.path) == beside);
+}
+
+TEST(a_status_takes_the_latest_runs_settings_with_its_own_in_their_place) {
+  std::string const run = "workload=100000000-400000000,probe=136279841,probeWeight=0.5,kinds=prp,bootstrap=1,"
+                          "strategy=hybrid,comboTop=3,comboTiers=3,stop=0.1%";
+  CHECK_EQ(statusSettings(run, ""), run);
+  CHECK_EQ(statusSettings(run, "kinds=ll"),
+           std::string{"workload=100000000-400000000,probe=136279841,probeWeight=0.5,bootstrap=1,strategy=hybrid,"
+                       "comboTop=3,comboTiers=3,stop=0.1%,kinds=ll"});
+
+  // The run's range and probe were resolved together, so naming either replaces both.
+  CHECK_EQ(statusSettings(run, "probe=200000033"),
+           std::string{"probeWeight=0.5,kinds=prp,bootstrap=1,strategy=hybrid,comboTop=3,comboTiers=3,stop=0.1%,"
+                       "probe=200000033"});
+  CHECK_EQ(statusSettings(run, "workload=50M-60M").find("probe=136279841"), std::string::npos);
+
+  // Another strategy takes hybrid's combination settings with it, which would otherwise refuse it.
+  std::string const single = statusSettings(run, "strategy=single");
+  CHECK_EQ(single,
+           std::string{"workload=100000000-400000000,probe=136279841,probeWeight=0.5,kinds=prp,bootstrap=1,"
+                       "stop=0.1%,strategy=single"});
+  CHECK(parsed(single.c_str()).strategy.kind == Strategy::Kind::Single);
+
+  // With no run, the status's own settings are all there is.
+  CHECK_EQ(statusSettings("", "kinds=ll"), std::string{"kinds=ll"});
+  CHECK_EQ(statusSettings("", ""), std::string{});
+}
+
+TEST(status_reads_a_runs_settings_and_an_env) {
+  TuneCommand const plain = parsed("status");
+  CHECK(plain.verb == TuneVerb::Status);
+  CHECK(!opensDevice(plain.verb));
+  CHECK(plain.settings.empty());
+
+  TuneCommand const named = parsed("status,env=2,stop=0,strategy=single,workload=100M-400M");
+  CHECK_EQ(named.env, 2u);
+  CHECK_EQ(named.settings, std::string{"stop=0,strategy=single,workload=100M-400M"});
+
+  CHECK(!refusal("status,tunetxt=1").empty());
+  CHECK(!refusal("status,fft=1K:8:1K:202").empty());
+  CHECK(!refusal("status,comboTop=2,strategy=single").empty());
+}
+
+TEST(status_reads_the_database_beside_a_run_that_holds_it) {
+  Dir const dir{"prpll-test-tuner-status"};
+
+  // Nothing measured, and nothing created by asking.
+  CHECK(runTuneCommand(parsed("status"), Args{}, dir.path));
+  CHECK(!dir.has(TuneDB::DEFAULT_NAME));
+  CHECK(!dir.has("tunedb.txt.lock"));
+
+  // Another process holding the database, part-way through appending a row.
+  dir.write(TuneDB::DEFAULT_NAME, std::string{DB} + "run   4 512:15:512:212 prp 1000");
+  {
+    TuneDB writer;
+    CHECK(writer.lockForWriting(dir.path / TuneDB::DEFAULT_NAME));
+    CHECK(runTuneCommand(parsed("status,env=1,workload=100M-400M"), Args{}, dir.path));
+    CHECK(!runTuneCommand(parsed("status,env=9"), Args{}, dir.path));
+  }
+
+  // A run's recorded settings are what it is valued with, and ones this build cannot read are refused, not guessed at.
+  dir.write(TuneDB::DEFAULT_NAME,
+            std::string{DB} +
+              "sess  10 env=1 start=1753481200 gen=0 anchor=- tune=workload=100000000-400000000,probe=136279841\n");
+  CHECK(runTuneCommand(parsed("status,env=1"), Args{}, dir.path));
+  CHECK(runTuneCommand(parsed("status,env=1,stop=0"), Args{}, dir.path));
+  dir.write(TuneDB::DEFAULT_NAME,
+            std::string{DB} + "sess  10 env=1 start=1753481200 gen=0 anchor=- tune=strategy=best\n");
+  CHECK(!runTuneCommand(parsed("status,env=1"), Args{}, dir.path));
 }

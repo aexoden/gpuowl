@@ -75,6 +75,7 @@
     <ClCompile Include=".\src\Summary.cpp" />
     <ClCompile Include=".\src\Accuracy.cpp" />
     <ClCompile Include=".\src\LLCheck.cpp" />
+    <ClCompile Include=".\src\Status.cpp" />
     <ClCompile Include=".\src\UseResolve.cpp" />
     <ClCompile Include=".\src\version.cpp" />
     <ClCompile Include=".\src\Worktodo.cpp" />
