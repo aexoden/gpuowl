@@ -103,6 +103,9 @@ struct RunSummary {
 // "<n> of <m> entries measured", and those not, those waiting on `heldBy` and those ruled out, where there are any.
 [[nodiscard]] std::string familyCounts(const RunSummary::Family& family, const std::string& heldBy);
 
+// "<n> <kind> (<m> min)" for each kind of item run, comma-separated.
+[[nodiscard]] std::string spentText(const std::map<ItemKind, QueueReport::Spent>& spent);
+
 // Where `scheduler` left `env` in `report`, with `sess` the session the run was.
 [[nodiscard]] RunSummary summarize(const Scheduler& scheduler, const TuneDB& db, u32 env, u32 sess,
                                    const QueueReport& report, double stop);

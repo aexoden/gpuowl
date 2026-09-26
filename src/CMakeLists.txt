@@ -45,6 +45,7 @@ add_executable(prpll
   Accuracy.cpp
   LLCheck.cpp
   Status.cpp
+  Progress.cpp
   fs.cpp
   )
 
