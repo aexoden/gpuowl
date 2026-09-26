@@ -3,6 +3,7 @@
 #include "Production.h"
 
 #include "Args.h"
+#include "FFTVariants.h"
 #include "Gate.h"
 #include "log.h"
 #include "TuneDB.h"
@@ -119,6 +120,13 @@ std::optional<Choice> chooseFrom(const SelectionFile& file, const Args& args, co
     auto const fft = parseFft(entry.fft);
     if (!fft) { continue; }
     if (pinned && pinned->spec() != fft->spec()) { continue; }
+
+    // A file can outlive the device it was published for -- a pool directory shared between cards, or a driver that no
+    // longer offers FP64 -- and an entry this device cannot build is one Gpu would refuse rather than one to walk to.
+    if (std::vector<u32> const runnable = runnableVariants(env, fft->shape);
+        std::ranges::find(runnable, fft->variant) == runnable.end()) {
+      continue;
+    }
 
     // Only reachable where -fftOverdrive has carried E past the interval the entry covers, which can leave it running
     // kernels the entry says nothing about.
