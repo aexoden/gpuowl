@@ -802,6 +802,15 @@ void logNoise(const char* what, const NoiseReport& r) {
 MeasureOutcome runMeasure(GpuCommon shared, const MeasureArgs& want) {
   static const Primes primes;
 
+  // A row is recorded in the regime its exponent runs in, and the gate reads accuracy the same way, so a forced carry
+  // would be filed as the kernels it replaced.  Its -use is the configuration under test, so it is refused rather than
+  // quietly dropped as the tuner drops it.
+  if (shared.args && shared.args->carry != CARRY_AUTO) {
+    log("measure: -carry cannot be measured: a row records the carry its exponent runs, and -carry would time\n"
+        "measure:   another; drop it from the command line or config.txt\n");
+    return MeasureOutcome::Failed;
+  }
+
   FFTConfig const fft{want.fft};
   u64 exponent = want.exponent ? want.exponent : shared.args->prpExp;
   if (!exponent) { exponent = primes.prevPrime(fft.maxExp()); }

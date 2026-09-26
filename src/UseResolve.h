@@ -95,11 +95,15 @@ void resolveInto(Args& args, const FFTConfig& fft, TestKind kind,
 struct Takeover {
   std::vector<std::string> configKeys;
   std::vector<std::string> commandLineKeys;
+
+  // Whether a -carry was set aside.
+  bool carry = false;
 };
 
 // Sets aside every -use and '!' setting from the config files, and every command-line -use key other than the ones the
 // tuner never varies (NO_ASM, DEBUG, ...), so that a measurement depends on the built-in defaults and the tuner's own
-// choices alone.
+// choices alone.  And -carry, since a measurement is recorded in the regime its exponent runs in: a forced long carry
+// would record the expanded carry kernels as the short ones.
 [[nodiscard]] Takeover takeOverConfig(Args& args);
 
 [[nodiscard]] std::string describe(const Takeover& takeover);

@@ -5,8 +5,10 @@
 
 #include "test.h"
 
+#include "Args.h"
 #include "BuildId.h"
 #include "Gpu.h"
+#include "GpuCommon.h"
 #include "Measure.h"
 
 #include <cmath>
@@ -275,6 +277,14 @@ TEST(an_ll_configuration_is_measured_by_kind) {
   // The drain control compares the PRP loop's block boundaries.
   CHECK(rejected("512:15:512:202,kind=ll,drain=1"));
   CHECK(parseMeasureArgs("512:15:512:202,kind=ll,drain=0").kind == TestKind::LL);
+}
+
+// Refused before anything is opened or built, so it needs no device and leaves no database behind.
+TEST(a_forced_carry_is_not_measured) {
+  Args args{true};
+  args.parse("-carry long");
+  CHECK(runMeasure(GpuCommon{.context = nullptr, .args = &args, .bufCache = nullptr, .background = nullptr},
+                   parseMeasureArgs("256:2:256:202")) == MeasureOutcome::Failed);
 }
 
 TEST(every_setting_is_read_off_the_spec) {

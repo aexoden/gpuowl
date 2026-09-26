@@ -312,7 +312,12 @@ Takeover takeOverConfig(Args& args) {
   args.perFftConfig.clear();
   args.cliKeys = kept;
 
-  return {{fromConfig.begin(), fromConfig.end()}, {fromCommandLine.begin(), fromCommandLine.end()}};
+  bool const carry = args.carry != CARRY_AUTO;
+  args.carry = CARRY_AUTO;
+
+  return {.configKeys = {fromConfig.begin(), fromConfig.end()},
+          .commandLineKeys = {fromCommandLine.begin(), fromCommandLine.end()},
+          .carry = carry};
 }
 
 std::string describe(const Takeover& takeover) {
@@ -322,13 +327,17 @@ std::string describe(const Takeover& takeover) {
     return s;
   };
 
+  std::string const carry = "-carry, since every measurement runs the carry its exponent calls for";
+
   if (takeover.configKeys.empty() && takeover.commandLineKeys.empty()) {
-    return "Tuning from built-in defaults; no -use settings to ignore";
+    return takeover.carry ? "Tuning from built-in defaults, ignoring " + carry
+                          : "Tuning from built-in defaults; no -use settings to ignore";
   }
 
   std::string s = "Tuning ignores these -use settings";
   if (!takeover.configKeys.empty()) { s += "; from the config files: " + join(takeover.configKeys); }
   if (!takeover.commandLineKeys.empty()) { s += "; from the command line: " + join(takeover.commandLineKeys); }
+  if (takeover.carry) { s += "; and " + carry; }
   return s;
 }
 
