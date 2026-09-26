@@ -56,8 +56,11 @@ template<typename Group> std::vector<Candidate> frontier(const std::vector<Candi
 // A configuration in a regime: what an entry is published for, and what a wrong answer is evidence about.
 using Configuration = std::tuple<std::string, TestKind, std::string, std::string>;
 
-Configuration configurationOf(const RunRow& row, const UseConfig& opts) {
-  return {row.fft, row.kind, row.regime.label(), configText(opts)};
+// By the keys the tuner searches, as production matches an exclusion: a set written another way, or beside another of
+// the measuring run's own settings, builds the kernels that answered wrongly all the same.
+Configuration configurationOf(const Env& env, const RunRow& row, const UseConfig& opts) {
+  auto const fft = parseFft(row.fft);
+  return {row.fft, row.kind, row.regime.label(), configText(fft ? canonicalConfig(env, *fft, opts) : opts)};
 }
 
 // The configurations that computed a wrong answer somewhere in a regime.  The kernels are what a wrong residue or a
@@ -65,14 +68,15 @@ Configuration configurationOf(const RunRow& row, const UseConfig& opts) {
 // reason an entry covers one -- so such a row withdraws the configuration from the whole of it rather than from the
 // exponent that happened to catch it.  A build that would not compile or a run the backend refused says nothing about
 // the answers the configuration computes, and a lost device is attributed to the fault and not to what was running.
-std::map<Configuration, Exclusion> condemned(const TuneDB& db, u32 env, const std::vector<RunRow>& runs) {
+std::map<Configuration, Exclusion> condemned(const TuneDB& db, const Env& built, u32 env,
+                                             const std::vector<RunRow>& runs) {
   std::map<Configuration, Exclusion> out;
 
   for (const RunRow& row : runs) {
     if (db.envOf(row.sess) != env || row.m.status != Status::Err) { continue; }
     const UseConfig* const opts = db.findCfg(row.cfg);
     if (opts) {
-      out.try_emplace(configurationOf(row, *opts),
+      out.try_emplace(configurationOf(built, row, *opts),
                       Exclusion{.fft = row.fft, .kind = row.kind, .regime = row.regime, .opts = *opts});
     }
   }
@@ -204,7 +208,7 @@ std::vector<Candidate> publishedFor(const TuneDB& db, u32 env, const Defaults& d
   Gates const gates{db, env, built};
 
   std::vector<RunRow> const runs = db.mergedRuns();
-  std::map<Configuration, Exclusion> const failed = condemned(db, env, runs);
+  std::map<Configuration, Exclusion> const failed = condemned(db, built, env, runs);
 
   // One candidate per option set of an identity.  A configuration measured at two exponents of one regime is two rows
   // of one thing -- the cost is per iteration, and the regime is what decides which kernels ran -- so the better
@@ -223,7 +227,7 @@ std::vector<Candidate> publishedFor(const TuneDB& db, u32 env, const Defaults& d
       continue;
     }
 
-    if (failed.contains(configurationOf(row, *opts))) { continue; }
+    if (failed.contains(configurationOf(built, row, *opts))) { continue; }
 
     Interval const span = interval(*fft, row.exponent);
     if (span.empty()) { continue; }
@@ -319,7 +323,8 @@ std::optional<SelectionFile> emit(const TuneDB& db, const Defaults& defaults, co
 
   // Leaving a configuration out of the entries only keeps the walk from it; production reaches configurations by other
   // paths, and needs to be told which ones it must not arrive at.
-  for (auto& [configuration, exclusion] : condemned(db, from.env, db.mergedRuns())) {
+  const DbEnv* const row = db.findEnv(from.env);
+  for (auto& [configuration, exclusion] : condemned(db, row ? row->toEnv() : Env{}, from.env, db.mergedRuns())) {
     if (isWriteableConfig(exclusion.opts)) { file.excluded.push_back(std::move(exclusion)); }
   }
 
