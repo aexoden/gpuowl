@@ -357,6 +357,29 @@ TEST(takeover_lists_ignored_keys) {
   CHECK_EQ(describe(takeOverConfig(clean)), std::string{"Tuning from built-in defaults; no -use settings to ignore"});
 }
 
+// A measurement is filed under the regime its exponent gives, so a forced long carry would record the expanded carry
+// kernels as the short ones, and hand production a short-carry entry nothing ever timed.
+TEST(takeover_sets_a_forced_carry_aside) {
+  Args args = configured({}, "-carry long");
+  CHECK(args.carry == CARRY_64);
+
+  Takeover const takeover = takeOverConfig(args);
+  CHECK(takeover.carry);
+  CHECK(args.carry == CARRY_AUTO);
+  CHECK_EQ(describe(takeover),
+           std::string{"Tuning from built-in defaults, ignoring -carry, since every measurement runs the carry its "
+                       "exponent calls for"});
+
+  Args both = configured({"-use PAD=256"}, "-carry short");
+  CHECK_EQ(describe(takeOverConfig(both)),
+           std::string{"Tuning ignores these -use settings; from the config files: PAD; and -carry, since every "
+                       "measurement runs the carry its exponent calls for"});
+  CHECK(both.carry == CARRY_AUTO);
+
+  Args clean{true};
+  CHECK(!takeOverConfig(clean).carry);
+}
+
 TEST(selection_lines_are_fitted_to_the_fft_they_reach) {
   Env const nv{.isNvidia = true, .computeCapability = 806};
   SelectionLayers const layers{
