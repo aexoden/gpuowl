@@ -59,16 +59,19 @@ A run goes through these stages, though it interleaves them and you do not need 
    exponent. The winners become the default options for every FFT of that type, written as the `use` lines at the top
    of `selection.txt`. A type that is so much slower than the fastest one at its defaults that no plausible option
    gain could close the gap is not raced, and runs under the options the raced types agree on.
-4. **Baselines.** Time every FFT that could serve part of the workload, at those defaults, starting with the ones
+4. **Coverage.** Make sure every exponent in the workload has an FFT published for it: where none has, time the
+   FFT most likely to be cheapest there (its default variant first) and read its rounding error. This runs before
+   anything else is weighed, so a short run still covers the whole workload.
+5. **Baselines.** Time every other FFT that could serve part of the workload, at those defaults, starting with the ones
    likely to matter.
-5. **Search.** For the FFTs that are competitive, try other option sets one step at a time (how big a step is depends on
+6. **Search.** For the FFTs that are competitive, try other option sets one step at a time (how big a step is depends on
    `strategy=`), combine the best answers of different option groups, and occasionally try a random option set to
    escape a local optimum.
-6. **Accuracy checks.** Read the rounding error of any published configuration whose options change it.
+7. **Accuracy checks.** Read the rounding error of any published configuration whose options change it.
 
 `selection.txt` is rewritten after every measurement. It holds nothing until the bootstrap has finished and the first
-FFTs have been timed and had their rounding error read; from then on it improves with each measurement, so what it
-holds is always usable. The run ends by itself when nothing left is expected to lower `T` by more than 0.1%, or when
+FFTs have been timed and had their rounding error read; soon after, it covers the whole workload, and from then on
+it improves with each measurement, so what it holds is always usable. The run ends by itself when nothing left is expected to lower `T` by more than 0.1%, or when
 you press Ctrl-C.
 
 
@@ -185,8 +188,8 @@ To see what a set of settings would tune for without opening a GPU, put `scope` 
 ### How long to run
 
 **`stop=<P>%|0`**: the run ends once nothing left is expected to lower `T` by `P` percent. Default `0.1%`. A larger
-value gives a shorter run (`stop=1%`); `stop=0` runs until you stop it with Ctrl-C. The bootstrap and the accuracy
-checks are always completed, whatever `stop=` says.
+value gives a shorter run (`stop=1%`); `stop=0` runs until you stop it with Ctrl-C. The bootstrap, the accuracy
+checks and the coverage of the workload are always completed, whatever `stop=` says.
 
 A value without `%` is refused, except `0`: `0.1` could mean either 0.1% or 10%.
 

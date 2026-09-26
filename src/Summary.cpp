@@ -99,10 +99,11 @@ RunSummary summarize(const Scheduler& scheduler, const TuneDB& db, u32 env, u32 
   // Least gain first; where no gain could justify either, the one worth more.
   std::map<enum FFT_TYPES, std::pair<double, double>> closest;
   std::set<EntryKey> offered;
-  std::map<ItemKind, RunSummary::Remaining> remaining;
+  std::map<std::pair<ItemKind, bool>, RunSummary::Remaining> remaining;
   for (const Item& item : report.left) {
-    RunSummary::Remaining& r = remaining[item.kind];
+    RunSummary::Remaining& r = remaining[{item.kind, byRule(item)}];
     r.kind = item.kind;
+    r.byRule = byRule(item);
     ++r.count;
     if (r.count == 1 || item.value > r.value) {
       r.value = item.value;
@@ -136,7 +137,8 @@ RunSummary summarize(const Scheduler& scheduler, const TuneDB& db, u32 env, u32 
   if (!waiting.empty()) {
     bool const bootstrapping =
       std::ranges::any_of(report.left, [](const Item& i) { return i.kind == ItemKind::Bootstrap; });
-    out.heldBy = bootstrapping ? "the bootstrap" : "the accuracy gate";
+    bool const covering = std::ranges::any_of(report.left, [](const Item& i) { return i.cover; });
+    out.heldBy = bootstrapping ? "the bootstrap" : covering ? "the workload being covered" : "the accuracy gate";
   }
 
   for (const auto& [key, type] : typeOf) {
@@ -213,7 +215,7 @@ void logSummary(const RunSummary& s) {
   }
 
   for (const RunSummary::Remaining& r : s.remaining) {
-    if (r.kind == ItemKind::Bootstrap || r.kind == ItemKind::Gate) {
+    if (r.byRule) {
       log("tune: summary: left: %u %s, which run by rule ahead of anything valued; next: %s\n", r.count,
           toString(r.kind), r.best.c_str());
       continue;

@@ -177,7 +177,7 @@ void logStatus(const TuneStatus& s, const DbEnv& env, const std::string& valuedA
     for (size_t i = 0; i < s.next.size(); ++i) {
       const Item& item = s.next[i].item;
       std::string worth = "by rule";
-      if (item.kind != ItemKind::Bootstrap && item.kind != ItemKind::Gate) {
+      if (!byRule(item)) {
         char buf[96];
         snprintf(buf, sizeof(buf), "worth %.4f us/it (%s of T)", item.value,
                  percent(s.valuedT > 0 ? item.value / s.valuedT : 0).c_str());

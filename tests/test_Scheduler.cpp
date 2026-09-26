@@ -479,8 +479,9 @@ TEST(an_interrupted_run_leaves_a_valid_selection_file_and_a_rerun_resumes) {
   FakeBench wholeBench{whole.db, whole.sess};
   std::vector<std::string> const all = runAll(whole, wholeBench, nullptr, true);
 
-  // Stopped in the middle of the fifth call: 512:15:512:000 is concluded and its accuracy read, the hybrid has one call
-  // of two, and the call that was cut short recorded nothing.
+  // Stopped in the middle of the fifth call: 512:15:512:212, the default variant, taken first since nothing covered the
+  // workload, is concluded and its accuracy read, the hybrid has one call of two, and the call that was cut short
+  // recorded nothing.
   Fixture f;
   FakeBench first{f.db, f.sess, true, 4};
   Scheduler one{scope(), baselines(nvidia(), scope(), shapes()), 1000, {}, {}, false, true};
@@ -493,8 +494,8 @@ TEST(an_interrupted_run_leaves_a_valid_selection_file_and_a_rerun_resumes) {
   std::optional<SelectionFile> const file = readSelection(out);
   CHECK(file.has_value());
   CHECK_EQ(file->entries.size(), size_t(1));
-  CHECK_EQ(file->entries.front().fft, std::string{"512:15:512:000"});
-  CHECK(file->provenance.find("T=1788.1") != std::string::npos);
+  CHECK_EQ(file->entries.front().fft, std::string{"512:15:512:212"});
+  CHECK(file->provenance.find("T=1716.6") != std::string::npos);
 
   // A later process on the same database finishes the hybrid first -- one call left is the cheapest thing on offer,
   // though this process has never built it -- at the exponent it was started at, and repeats nothing concluded.
@@ -505,7 +506,7 @@ TEST(an_interrupted_run_leaves_a_valid_selection_file_and_a_rerun_resumes) {
   CHECK(!resumed.stopped);
   CHECK(second.order.size() >= 2);
   CHECK_EQ(second.order[1], std::string{"1:512:8:512:202@118063003"});
-  CHECK(std::ranges::count(second.order, std::string{"512:15:512:000@118063003"}) == 0);
+  CHECK(std::ranges::count(second.order, std::string{"512:15:512:212@118063003"}) == 0);
   CHECK_EQ(callsOn(f.db, "1:512:8:512:202", 118'063'003), MIN_CALLS);
 
   // Between them the two runs measured what one whole run does, each entry the calls it needs and no more.
@@ -518,7 +519,7 @@ TEST(an_interrupted_run_leaves_a_valid_selection_file_and_a_rerun_resumes) {
   single.erase("anchor");
   CHECK(split == single);
 
-  // Every run republishes the whole frontier: the hybrid now covers every exponent 512:15:512:000 did, for less.
+  // Every run republishes the whole frontier: the hybrid now covers every exponent 512:15:512:212 did, for less.
   std::optional<SelectionFile> const last = readSelection(out);
   CHECK(last.has_value());
   // And 1K:8:1K:112, the cheapest of the variants the gain prior's tail was worth measuring at twice the hybrid's cost,
@@ -1814,6 +1815,97 @@ TEST(a_reading_the_gate_owes_is_taken_before_anything_valued) {
   conclude(g, "1K:8:1K:112", {}, 2900);
   CHECK(std::ranges::none_of(ungated.admissible(g.db, g.env, objective),
                              [](const Item& i) { return i.kind == ItemKind::Gate; }));
+}
+
+namespace {
+
+// A workload 512:15:512 serves only the bottom of, the probe and so half the weight included: past 143413741, the top
+// of its table, something larger has to be measured, and nothing about it is worth a call by value.
+RunScope straddling() { return makeScope(ScopeArgs{.lo = 140'000'000, .hi = 150'000'000, .probe = 141'000'000}, {}); }
+
+bool covered(const Objective& objective) {
+  return std::ranges::all_of(objective.points(),
+                             [](const ObjectivePoint& p) { return p.weight <= 0 || !p.cost || p.cost->measured(); });
+}
+
+}  // namespace
+
+TEST(every_exponent_the_workload_weighs_is_covered_before_anything_valued) {
+  Fixture f;
+  FakeBench bench{f.db, f.sess};
+  Scheduler scheduler{straddling(), baselines(nvidia(), straddling(), shapes()), 1000, {}, {}, false, true};
+
+  // A stop fraction no measurement could clear: the run is left with only what runs by rule.
+  QueueReport const report = runQueue(scheduler, f.db, f.env, bench, [](const Objective&, const Defaults&) {}, 0.5);
+  CHECK(report.end == QueueEnd::BelowStop);
+  CHECK(covered(Objective{f.db, f.env, scheduler.scope(), {}}));
+
+  // Each shape it measured, it measured first at the variant production's shape scan would run.
+  std::set<std::string> seen;
+  for (const std::string& call : bench.order) {
+    if (call == "anchor" || call.starts_with("gate ")) { continue; }
+    FFTConfig const fft{call.substr(0, call.find('@'))};
+    if (seen.insert(fft.shape.spec()).second) { CHECK_EQ(fft.variant, defaultVariant(fft.shape)); }
+  }
+  CHECK(seen.size() >= 2);
+
+  // Nothing it left is by rule, and nothing valued was worth the stop fraction.
+  CHECK(!report.left.empty());
+  for (const Item& item : report.left) {
+    CHECK(!byRule(item));
+    CHECK(item.value < report.floor);
+  }
+}
+
+TEST(a_gap_is_offered_only_to_the_baselines_that_can_fill_it) {
+  Fixture f;
+  Scheduler scheduler{straddling(), baselines(nvidia(), straddling(), shapes()), 1000, {}, {}, false, true};
+  FFTConfig const bottom{"512:15:512:212"};
+  u64 const top = 143'413'741;
+  CHECK(f.db.add(RunRow{.sess = f.sess,
+                        .fft = bottom.spec(),
+                        .kind = TestKind::PRP,
+                        .exponent = scheduler.scope().probe,
+                        .regime = regimeOf(bottom, scheduler.scope().probe),
+                        .cfg = f.db.internCfg({}),
+                        .m = {.mean = 1700,
+                              .stddev = 0.1,
+                              .blocks = 4 * MIN_CALLS,
+                              .calls = MIN_CALLS,
+                              .drift = 1,
+                              .status = Status::Ok,
+                              .ts = 0}}));
+  CHECK(f.db.add(RoeRow{.sess = f.sess,
+                        .fft = bottom.spec(),
+                        .exponent = top,
+                        .cfg = f.db.internCfg({}),
+                        .z = 24,
+                        .n = 2000,
+                        .maxRoe = 0.3,
+                        .checkOk = true,
+                        .ts = 1}));
+
+  Objective const objective{f.db, f.env, scheduler.scope(), {}, Gating::Assumed};
+  CHECK(!covered(objective));
+  std::vector<Item> const offered = scheduler.admissible(f.db, f.env, objective);
+  CHECK(!offered.empty());
+  for (const Item& item : offered) {
+    const Baseline& b = scheduler.baselines()[item.index];
+    CHECK(item.kind == ItemKind::Baseline && item.cover);
+    CHECK(b.band.hi > top);
+    CHECK(worthRunning(item, 1e9));
+    CHECK(item.what.starts_with("covering "));
+  }
+  const FFTConfig& first = scheduler.baselines()[offered.front().index].fft;
+  CHECK_EQ(first.variant, defaultVariant(first.shape));
+
+  // Stopped here, the summary says what the rest is waiting on, and that what is left runs by rule.
+  QueueReport report;
+  report.left = offered;
+  RunSummary const s = summarize(scheduler, f.db, f.env, f.sess, report, STOP);
+  CHECK_EQ(s.heldBy, std::string{"the workload being covered"});
+  CHECK(std::ranges::any_of(s.remaining,
+                            [](const RunSummary::Remaining& r) { return r.kind == ItemKind::Baseline && r.byRule; }));
 }
 
 TEST(a_set_that_spends_accuracy_has_its_defaults_read_as_well) {

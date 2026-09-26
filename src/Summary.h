@@ -60,6 +60,7 @@ struct RunSummary {
   // What the queue still offers of one kind, and the one of them it values most.
   struct Remaining {
     ItemKind kind = ItemKind::Baseline;
+    bool byRule = false;
     u32 count = 0;
     std::string best;
     double value = 0;

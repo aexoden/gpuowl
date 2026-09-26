@@ -157,6 +157,9 @@ struct Item {
   // 2 or 3 for a point of a combination, a combo's or a bootstrap race's, and 1 for anything else.
   u32 tier = 1;
 
+  // A baseline's: run by rule, because it may serve an exponent the workload weighs that nothing measured serves.
+  bool cover = false;
+
   [[nodiscard]] double rate() const { return seconds > 0 ? value / seconds : 0; }
 };
 
@@ -187,9 +190,12 @@ struct RestartScan {
 [[nodiscard]] std::optional<u32> nextRunnable(RestartScan& scan, const std::function<std::string(u32)>& text,
                                               const std::function<bool(u32)>& runnable);
 
-// Whether `item` is worth a call where anything expected to lower T by less than `floor` is not: a bootstrap call or a
-// gate reading always is, since those run by rule rather than by value; anything else once it is worth something and at
-// least `floor`.
+// Whether `item` runs by rule rather than by value: a bootstrap call, a gate reading, or a baseline covering the
+// workload.
+[[nodiscard]] bool byRule(const Item& item);
+
+// Whether `item` is worth a call where anything expected to lower T by less than `floor` is not: one that runs by rule
+// always is; anything else once it is worth something and at least `floor`.
 [[nodiscard]] bool worthRunning(const Item& item, double floor);
 
 class Scheduler {
@@ -215,18 +221,21 @@ public:
   // bootstrap decides, so measuring one earlier would measure something production is not going to run.  Then, while
   // the table would publish a set the accuracy gate owes a reading -- of the set, or of its accuracy reference -- those
   // readings are all there is, quickest first: they are what stands between what has been found and what production
-  // runs, and the objective cannot price them, since its prior is below what the entries they publish cost.  After
-  // that, together and best rate first: the baselines; the probes and combos of every entry with a row emission could
-  // publish, from its best set or, under a strategy that searches by group, from the best set of each of its cheapest
-  // MAX_BRANCHES structural branches, each valued at that branch's cost -- a probe under the entry's move gains and a
-  // combo under its combination gains -- and a combo only once its branch has nothing of a lower tier left to offer,
-  // since it combines what those found; one more call on each side of every contest production decides that the race
-  // rule leaves undecided (refineValues()); for an entry with no probe or combo left, the next draw of its restart
-  // sequence; and with the gate, the next reading of each passed set whose reach may be raised above the table, worth
-  // what that set would save over the exponents between its reach and that reading, at what it costs.  A baseline is
-  // left out once a row has concluded it or recorded a failure of it, and a probe, a combo or a restart once a row
-  // answers it or recorded a failure of it; any of them while an earlier generation's death or an unbuildable key holds
-  // it, and once this process has tried it more often than any entry needs.
+  // runs, and the objective cannot price them, since its prior is below what the entries they publish cost.  Then,
+  // with the gate, while an exponent the workload weighs has no entry, the baselines whose bands hold one: nothing
+  // would be published there otherwise, and the value of a first measurement is only the gain it might show over the
+  // prior, which is its own shape's.  After that, together and best rate first: the baselines; the probes and combos of
+  // every entry with a row emission could publish, from its best set or, under a strategy that searches by group, from
+  // the best set of each of its cheapest MAX_BRANCHES structural branches, each valued at that branch's cost -- a probe
+  // under the entry's move gains and a combo under its combination gains -- and a combo only once its branch has
+  // nothing of a lower tier left to offer, since it combines what those found; one more call on each side of every
+  // contest production decides that the race rule leaves undecided (refineValues()); for an entry with no probe or
+  // combo left, the next draw of its restart sequence; and with the gate, the next reading of each passed set whose
+  // reach may be raised above the table, worth what that set would save over the exponents between its reach and that
+  // reading, at what it costs.  A baseline is left out once a row has concluded it or recorded a failure of it, and a
+  // probe, a combo or a restart once a row answers it or recorded a failure of it; any of them while an earlier
+  // generation's death or an unbuildable key holds it, and once this process has tried it more often than any entry
+  // needs.
   [[nodiscard]] std::vector<Item> admissible(const TuneDB& db, u32 env, const Objective& objective) const;
 
 
@@ -256,6 +265,8 @@ private:
                                                 const Objective& objective) const;
 
   [[nodiscard]] std::vector<Item> gateItems(const TuneDB& db, u32 env, const Defaults& defaults) const;
+
+  [[nodiscard]] std::vector<Item> coverItems(std::span<const Item> baselines, const Objective& objective) const;
 
   [[nodiscard]] std::vector<Item> reachItems(const TuneDB& db, u32 env, std::span<const OptionSet> sets,
                                              const Objective& objective) const;
