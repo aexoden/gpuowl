@@ -7,6 +7,7 @@
 #include "CycleFile.h"
 #include "Gate.h"
 #include "log.h"
+#include "Production.h"
 #include "version.h"
 
 #include <algorithm>
@@ -84,34 +85,6 @@ std::map<Configuration, Exclusion> condemned(const TuneDB& db, const Env& built,
   return out;
 }
 
-// The keys this file's own default lines would add to an option set that does not name them.  An entry outranks those
-// lines, so a set that is complete -- as a recorded one is -- leaves nothing for them to add, and where something is
-// left the entry's cost is a reading of settings other than the ones production would resolve.
-std::vector<std::string> shadowedKeys(const Defaults& defaults, const Env& env, const FFTConfig& fft,
-                                      const SelectionEntry& entry) {
-  SelectionLayers const layers = fittedTo({.global = {defaults.global.begin(), defaults.global.end()},
-                                           .family = defaults.family,
-                                           .entry = {entry.opts.begin(), entry.opts.end()}},
-                                          env, fft, entry.kind);
-
-  std::vector<std::string> out;
-  for (const auto& [key, value] : resolveConfig(Args{true}, fft, entry.kind, layers)) {
-    if (entry.opts.contains(key)) { continue; }
-
-    // A key the table does not know is one nothing here can call inert, so it counts.  One the lines only set to the
-    // value the entry ran at anyway, its default, changes nothing the kernels see.
-    const Option* const option = findOption(key);
-    if (!option) {
-      out.push_back(key);
-      continue;
-    }
-    if (!option->appliesTo(env, fft, entry.opts) || option->isInert(env, fft, entry.opts)) { continue; }
-    if (parseInt<int>(value) != option->defaultFor(env, fft, entry.opts)) { out.push_back(key); }
-  }
-
-  return out;
-}
-
 using Identity = std::tuple<std::string, TestKind, std::string>;
 
 Identity identityOf(const SelectionEntry& e) { return {e.fft, e.kind, e.regime.label()}; }
@@ -133,17 +106,38 @@ std::string provenanceOf(const Provenance& from) {
   return out;
 }
 
-bool shadowedBy(const Defaults& defaults, const Env& env, const FFTConfig& fft, TestKind kind, const UseConfig& opts) {
-  SelectionEntry entry;
-  entry.kind = kind;
-  entry.opts = opts;
-  return !shadowedKeys(defaults, env, fft, entry).empty();
+UseConfig besideLines(const Env& env, const FFTConfig& fft, TestKind kind, const Defaults& lines, UseConfig config) {
+  if (lines.global.empty() && lines.family.empty()) { return config; }
+  UseConfig const own = config;
+
+  // Fitted against the set as it stands, as production fits them: whether a line's value is one the table offers can
+  // turn on the set's own keys -- MULTI_Q=0 makes an L2_STRIPING line legal where MULTI_Q=1 fitted it away -- and each
+  // key named here can do the same to another.  A line at the value the set runs anyway is named too, since production
+  // takes any key an entry does not name from the lines as a key its measurement did not see.
+  for (bool changed = true; changed;) {
+    changed = false;
+    UseConfig const resolved = resolveConfig(Args{true}, fft, kind,
+                                             fittedTo({.global = {lines.global.begin(), lines.global.end()},
+                                                       .family = lines.family,
+                                                       .entry = {config.begin(), config.end()}},
+                                                      env, fft, kind));
+
+    for (const auto& [key, value] : resolved) {
+      const Option* const option = findOption(key);
+      if (config.contains(key) || !option || option->kind != Kind::Tunable || !option->appliesTo(env, fft, resolved)) {
+        continue;
+      }
+      config[key] = std::to_string(option->defaultFor(env, fft, own));
+      changed = true;
+    }
+  }
+  return config;
 }
 
 namespace {
 
-std::vector<Candidate> gatedSets(const TuneDB& db, u32 env, const Defaults& defaults, Gating gating) {
-  std::vector<Candidate> sets = optionSetsFor(db, env, defaults);
+std::vector<Candidate> gatedSets(const TuneDB& db, u32 env, Gating gating) {
+  std::vector<Candidate> sets = optionSetsFor(db, env);
   if (gating == Gating::Required) {
     std::erase_if(sets, [](const Candidate& c) { return c.gate.state != GateState::Passed; });
   }
@@ -170,8 +164,8 @@ std::vector<Candidate> tableOf(const std::vector<Candidate>& sets) {
   return out;
 }
 
-std::vector<Candidate> tableFor(const TuneDB& db, u32 env, const Defaults& defaults, Gating gating) {
-  return tableOf(gatedSets(db, env, defaults, gating));
+std::vector<Candidate> tableFor(const TuneDB& db, u32 env, Gating gating) {
+  return tableOf(gatedSets(db, env, gating));
 }
 
 // Whether the reach derived for a passed set stops short of the one the fitted table gives its FFT.  Production has to
@@ -184,8 +178,8 @@ bool reduced(const Candidate& c) {
 }
 
 // The table, and every set whose reach was reduced that the table's frontier dropped as covered more cheaply.
-std::vector<Candidate> publishedFor(const TuneDB& db, u32 env, const Defaults& defaults) {
-  std::vector<Candidate> const sets = gatedSets(db, env, defaults, Gating::Required);
+std::vector<Candidate> publishedFor(const TuneDB& db, u32 env) {
+  std::vector<Candidate> const sets = gatedSets(db, env, Gating::Required);
   std::vector<Candidate> out = tableOf(sets);
 
   std::set<std::string> ids;
@@ -200,7 +194,7 @@ std::vector<Candidate> publishedFor(const TuneDB& db, u32 env, const Defaults& d
 }
 
 // Every option set of every identity, each with the gate's verdict on it, the rejected ones included.
-[[nodiscard]] std::vector<Candidate> judgedSets(const TuneDB& db, u32 env, const Defaults& defaults) {
+[[nodiscard]] std::vector<Candidate> judgedSets(const TuneDB& db, u32 env) {
   const DbEnv* const row = db.findEnv(env);
   if (!row) { return {}; }
 
@@ -210,9 +204,9 @@ std::vector<Candidate> publishedFor(const TuneDB& db, u32 env, const Defaults& d
   std::vector<RunRow> const runs = db.mergedRuns();
   std::map<Configuration, Exclusion> const failed = condemned(db, built, env, runs);
 
-  // One candidate per option set of an identity.  A configuration measured at two exponents of one regime is two rows
-  // of one thing -- the cost is per iteration, and the regime is what decides which kernels ran -- so the better
-  // supported of the two is what gets published, rather than both under one id.
+  // One candidate per build of an identity.  A configuration measured at two exponents of one regime is two rows of one
+  // thing -- the cost is per iteration, and the regime is what decides which kernels ran -- and so is one written two
+  // ways, so the better supported of the two is what gets published, rather than both.
   std::map<std::string, Candidate> byId;
 
   for (const RunRow& row : runs) {
@@ -255,11 +249,9 @@ std::vector<Candidate> publishedFor(const TuneDB& db, u32 env, const Defaults& d
 
     candidate.entry.id = entryId(candidate.entry.fft, candidate.entry.kind, candidate.entry.regime, *opts);
 
-    // Not reported: every row a bootstrap race took before its later races moved the background is one of these, so it
-    // is how the database ordinarily looks rather than something wrong with it.
-    if (!shadowedKeys(defaults, built, *fft, candidate.entry).empty()) { continue; }
-
-    auto const [at, fresh] = byId.emplace(candidate.entry.id, candidate);
+    auto const [at, fresh] = byId.emplace(
+      entryId(candidate.entry.fft, candidate.entry.kind, candidate.entry.regime, builtAs(built, *fft, *opts)),
+      candidate);
     if (!fresh && better(candidate, at->second)) { at->second = candidate; }
   }
 
@@ -281,50 +273,66 @@ std::vector<Candidate> publishedFor(const TuneDB& db, u32 env, const Defaults& d
 
 }  // namespace
 
-std::vector<OptionSet> optionSetsFor(const TuneDB& db, u32 env, const Defaults& defaults) {
-  std::vector<OptionSet> out = judgedSets(db, env, defaults);
+std::vector<OptionSet> optionSetsFor(const TuneDB& db, u32 env) {
+  std::vector<OptionSet> out = judgedSets(db, env);
   std::erase_if(out, [](const OptionSet& s) { return s.gate.state == GateState::Rejected; });
   return out;
 }
 
-std::vector<OptionSet> rejectedSets(const TuneDB& db, u32 env, const Defaults& defaults) {
-  std::vector<OptionSet> out = judgedSets(db, env, defaults);
+std::vector<OptionSet> rejectedSets(const TuneDB& db, u32 env) {
+  std::vector<OptionSet> out = judgedSets(db, env);
   std::erase_if(out, [](const OptionSet& s) { return s.gate.state != GateState::Rejected; });
   return out;
 }
 
-std::vector<SelectionEntry> candidatesFor(const TuneDB& db, u32 env, const Defaults& defaults, Gating gating) {
+std::vector<SelectionEntry> candidatesFor(const TuneDB& db, u32 env, Gating gating) {
   std::vector<SelectionEntry> out;
-  for (Candidate& c : identityFrontier(gatedSets(db, env, defaults, gating))) { out.push_back(std::move(c.entry)); }
+  for (Candidate& c : identityFrontier(gatedSets(db, env, gating))) { out.push_back(std::move(c.entry)); }
   return out;
 }
 
-std::vector<SelectionEntry> entriesFor(const TuneDB& db, u32 env, const Defaults& defaults, Gating gating) {
+std::vector<SelectionEntry> entriesFor(const TuneDB& db, u32 env, Gating gating) {
   std::vector<SelectionEntry> out;
-  for (Candidate& c : tableFor(db, env, defaults, gating)) { out.push_back(std::move(c.entry)); }
+  for (Candidate& c : tableFor(db, env, gating)) { out.push_back(std::move(c.entry)); }
   return out;
 }
 
-std::vector<OptionSet> gatesOwed(const TuneDB& db, u32 env, const Defaults& defaults) {
-  std::vector<OptionSet> out = tableFor(db, env, defaults, Gating::Assumed);
+std::vector<OptionSet> gatesOwed(const TuneDB& db, u32 env) {
+  std::vector<OptionSet> out = tableFor(db, env, Gating::Assumed);
   std::erase_if(out, [](const OptionSet& s) { return s.gate.state != GateState::Owed; });
   return out;
 }
 
-std::optional<SelectionFile> emit(const TuneDB& db, const Defaults& defaults, const Provenance& from) {
+std::optional<SelectionFile> emit(const TuneDB& db, const Defaults& lines, const Provenance& from) {
   SelectionFile file{.provenance = provenanceOf(from),
-                     .global = {defaults.global.begin(), defaults.global.end()},
-                     .family = defaults.family,
+                     .global = {lines.global.begin(), lines.global.end()},
+                     .family = lines.family,
                      .entries = {},
                      .excluded = {},
                      .unknown = {}};
 
-  for (Candidate& c : publishedFor(db, from.env, defaults)) { file.entries.push_back(std::move(c.entry)); }
+  const DbEnv* const row = db.findEnv(from.env);
+  Env const built = row ? row->toEnv() : Env{};
+
+  // The lines move as entries are tuned, and a row is not measured against them: each entry names every key they would
+  // set otherwise, so that it runs as it was measured whatever they come to say.
+  for (Candidate& c : publishedFor(db, from.env)) {
+    SelectionEntry& e = c.entry;
+    auto const fft = parseFft(e.fft);
+    if (!fft) { continue; }
+
+    e.opts = besideLines(built, *fft, e.kind, lines, e.opts);
+    if (std::vector<std::string> const keys = shadowedKeys(Args{true}, built, file, e, *fft); !keys.empty()) {
+      log("emit: skipping %s, whose options the default lines would change (%s)\n", e.fft.c_str(),
+          keys.front().c_str());
+      continue;
+    }
+    file.entries.push_back(std::move(e));
+  }
 
   // Leaving a configuration out of the entries only keeps the walk from it; production reaches configurations by other
   // paths, and needs to be told which ones it must not arrive at.
-  const DbEnv* const row = db.findEnv(from.env);
-  for (auto& [configuration, exclusion] : condemned(db, row ? row->toEnv() : Env{}, from.env, db.mergedRuns())) {
+  for (auto& [configuration, exclusion] : condemned(db, built, from.env, db.mergedRuns())) {
     if (isWriteableConfig(exclusion.opts)) { file.excluded.push_back(std::move(exclusion)); }
   }
 
@@ -394,9 +402,9 @@ size_t writeCompatibility(const fs::path& path, const SelectionFile& file, const
   return view.size();
 }
 
-bool publish(const fs::path& path, const TuneDB& db, const Defaults& defaults, const Provenance& from,
+bool publish(const fs::path& path, const TuneDB& db, const Defaults& lines, const Provenance& from,
              const std::optional<fs::path>& compat) {
-  auto const file = emit(db, defaults, from);
+  auto const file = emit(db, lines, from);
   if (!file) { return false; }
 
   writeSelection(path, *file);

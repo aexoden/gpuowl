@@ -200,7 +200,7 @@ TEST(an_entry_the_gate_still_owes_a_reading_counts_only_for_valuing) {
 
   // Published, 100M is the NTT's; to the search, which takes the reading next, it is already the FP64 set's.
   Objective const published{db, 1, scope};
-  Objective const valuing{db, 1, scope, {}, Gating::Assumed};
+  Objective const valuing{db, 1, scope, Gating::Assumed};
   CHECK_EQ(published.cStar(TestKind::PRP, 100'000'000)->fft, std::string{"3:1K:8:512:202"});
   CHECK_EQ(valuing.cStar(TestKind::PRP, 100'000'000)->fft, std::string{"512:15:512:212"});
   CHECK(valuing.T() < published.T());

@@ -138,6 +138,15 @@ UseConfig canonicalConfig(const Env& env, const FFTConfig& fft, const UseConfig&
   return out;
 }
 
+UseConfig builtAs(const Env& env, const FFTConfig& fft, const UseConfig& config) {
+  UseConfig out = canonicalConfig(env, fft, config);
+  for (const auto& [key, value] : config) {
+    const Option* const option = findOption(key);
+    if (!option || option->kind != Kind::Tunable) { out.emplace(key, value); }
+  }
+  return out;
+}
+
 std::vector<Move> movesWithin(const Env& env, const FFTConfig& fft, const UseConfig& background, Group group) {
   UseConfig const from = canonicalConfig(env, fft, background);
 
@@ -476,6 +485,44 @@ UseConfig underDefaults(const Env& env, const FFTConfig& fft, TestKind kind, con
   SelectionLayers const layers{
     .global = {defaults.global.begin(), defaults.global.end()}, .family = defaults.family, .entry = {}};
   return canonicalConfig(env, fft, resolveConfig(Args{true}, fft, kind, fittedTo(layers, env, fft, kind)));
+}
+
+Defaults publishedLines(const Env& env, u64 probe, TestKind kind, const std::vector<SelectionEntry>& published,
+                        const BootstrapState& bootstrap) {
+  struct Evidence {
+    std::tuple<u64, double, std::string> rank;
+    Family family;
+    UseConfig config;
+  };
+  std::map<enum FFT_TYPES, Evidence> best;
+
+  for (const SelectionEntry& e : published) {
+    if (e.kind != kind) { continue; }
+    auto const fft = parseFft(e.fft);
+    if (!fft) { continue; }
+
+    u64 const distance = probe < e.emin ? e.emin - probe : probe > e.reach ? probe - e.reach : 0;
+    Evidence candidate{.rank = {distance, e.cost, e.id}, .family = {fft->shape.fft_type, *fft}, .config = e.opts};
+    auto const [at, fresh] = best.try_emplace(candidate.family.type, candidate);
+    if (!fresh && candidate.rank < at->second.rank) { at->second = std::move(candidate); }
+  }
+
+  if (best.empty()) { return bootstrap.defaults; }
+
+  for (const FamilyState& f : bootstrap.families) {
+    if (f.phase == FamilyPhase::Done) {
+      best.try_emplace(f.family.type, Evidence{.rank = {}, .family = f.family, .config = f.decided});
+    }
+  }
+
+  std::vector<std::pair<Family, UseConfig>> sets;
+  for (const auto& [type, evidence] : best) {
+    const FFTConfig& fft = evidence.family.fft;
+    UseConfig config = canonicalConfig(env, fft, evidence.config);
+    for (const auto& [key, value] : roundingOf(env, fft, config)) { config.erase(key); }
+    sets.emplace_back(evidence.family, canonicalConfig(env, fft, config));
+  }
+  return defaultLines(env, sets);
 }
 
 }  // namespace tune

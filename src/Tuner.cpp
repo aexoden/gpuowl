@@ -315,7 +315,10 @@ private:
   const DbEnv* const row = db.findEnv(env);
   if (!row) { return {}; }
   Env const device = row->toEnv();
-  return bootstrapFor(device, scope, baselines(device, scope), true).state(db, env).defaults;
+  std::vector<Baseline> entries = baselines(device, scope);
+  Bootstrap bootstrap = bootstrapFor(device, scope, entries, true);
+  Scheduler const scheduler{scope, std::move(entries), 1000, std::move(bootstrap)};
+  return scheduler.lines(db, env, scheduler.bootstrapState(db, env));
 }
 
 // The queue a run with `command`'s settings works through on `device`.
@@ -986,8 +989,7 @@ bool runTuneCommand(const TuneCommand& command, const Args& args, const fs::path
   }
 
   if (command.verb == TuneVerb::Scope) {
-    reportScope(*scope, files, Objective{db, env, *scope, defaultsOf(db, env, *scope)},
-                "against env " + std::to_string(env));
+    reportScope(*scope, files, Objective{db, env, *scope}, "against env " + std::to_string(env));
     return true;
   }
 

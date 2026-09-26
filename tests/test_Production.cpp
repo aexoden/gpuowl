@@ -10,10 +10,15 @@
 #include "Args.h"
 #include "Emit.h"
 #include "File.h"
+#include "log.h"
 #include "Reach.h"
+
 #include "test.h"
 
+#include <algorithm>
 #include <string>
+#include <string_view>
+#include <vector>
 
 using namespace tune;
 
@@ -288,6 +293,45 @@ TEST(a_selection_file_is_optional_and_its_own_lines_survive_a_fallback) {
   Choice const uncovered = choose(args, Env{}, 40'000'000, TestKind::PRP);
   CHECK(!uncovered.entry.has_value());
   CHECK_EQ(joined(uncovered.options), std::string{"INPLACE=1"});
+
+  fs::remove_all(dir);
+}
+
+TEST(a_file_that_covers_nothing_here_says_so_and_no_file_says_nothing) {
+  fs::path const dir = fs::temp_directory_path() / "prpll-test-production-uncovered";
+  fs::remove_all(dir);
+  fs::create_directories(dir);
+  WorkingDirectory const here{dir};
+
+  // Each is said once a process, so at an exponent no other test chooses for.
+  u64 const E = 41'000'011;
+  Args const args = configured({});
+  std::vector<std::string> said;
+  setStdoutSink([&](std::string_view s) { said.emplace_back(s); });
+
+  (void)choose(args, Env{}, E, TestKind::PRP);
+  bool const quiet =
+    std::ranges::none_of(said, [](const std::string& s) { return s.find("selection.txt") != std::string::npos; });
+
+  writeSelection("selection.txt", twoEntries());
+  (void)choose(args, Env{}, E, TestKind::PRP);
+  setStdoutSink(nullptr);
+
+  CHECK(quiet);
+  std::string const reach = to_string(std::max(table() + 30'000, u64{160'000'000}));
+  CHECK(std::ranges::any_of(said, [&](const std::string& s) {
+    return s.find("Note: no entry in selection.txt covers 41000011 (its prp entries cover 100000000-" + reach +
+                  "), so PRPLL's own choice of FFT runs it under the file's default lines") != std::string::npos &&
+      s.find("-tune workload=41000011-" + reach) != std::string::npos;
+  }));
+
+  // With nothing of the kind published, and with an -fft nothing of was.
+  CHECK_EQ(uncoveredNote(twoEntries(), args, E, TestKind::LL),
+           std::string{"Note: selection.txt publishes no ll entry yet, so PRPLL's own choice of FFT runs it under the "
+                       "file's default lines, which were not measured on it\n"});
+  CHECK_EQ(uncoveredNote(twoEntries(), configured({}, {"-fft 256:13:512:101"}), E, TestKind::PRP),
+           std::string{"Note: no prp entry of 256:13:512:101 in selection.txt covers 41000011; running it under the "
+                       "file's default lines, which were not measured on it\n"});
 
   fs::remove_all(dir);
 }

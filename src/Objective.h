@@ -94,10 +94,9 @@ struct ObjectivePoint {
 
 class Objective {
 public:
-  // Against what `env` has measured, with `defaults` the lines its entries would be published beside: the entries
-  // published, or with Gating::Assumed those the table will hold once the accuracy gate has read what it owes.
-  Objective(const TuneDB& db, u32 env, const RunScope& scope, const Defaults& defaults = {},
-            Gating gating = Gating::Required);
+  // Against what `env` has measured: the entries published, or with Gating::Assumed those the table will hold once the
+  // accuracy gate has read what it owes.
+  Objective(const TuneDB& db, u32 env, const RunScope& scope, Gating gating = Gating::Required);
 
   // With nothing measured, on a device described by `env`.
   Objective(const Env& env, const RunScope& scope);

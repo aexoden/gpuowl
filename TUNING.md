@@ -56,9 +56,10 @@ A run goes through these stages, though it interleaves them and you do not need 
 2. **Drift anchor.** Pick one reference configuration and re-time it every few minutes, so that a GPU that slows down
    as it warms up (or speeds up as something else stops) does not distort the comparison.
 3. **Bootstrap.** For each FFT type (FP64, the NTTs, the hybrids), race the `-use` options on one FFT at the probe
-   exponent. The winners become the default options for every FFT of that type, written as the `use` lines at the top
-   of `selection.txt`. A type that is so much slower than the fastest one at its defaults that no plausible option
-   gain could close the gap is not raced, and runs under the options the raced types agree on.
+   exponent. The winners are the first default options, written as the `use` lines at the top of `selection.txt`:
+   what an FFT with nothing published of its own runs at, and what each FFT is first timed at. A type that is so
+   much slower than the fastest one at its defaults that no plausible option gain could close the gap is not raced,
+   and starts from the options the raced types agree on.
 4. **Coverage.** Make sure every exponent in the workload has an FFT published for it: where none has, time the
    FFT most likely to be cheapest there (its default variant first) and read its rounding error. This runs before
    anything else is weighed, so a short run still covers the whole workload.
@@ -68,6 +69,14 @@ A run goes through these stages, though it interleaves them and you do not need 
    `strategy=`), combine the best answers of different option groups, and occasionally try a random option set to
    escape a local optimum.
 7. **Accuracy checks.** Read the rounding error of any published configuration whose options change it.
+
+**The default options follow the search.** Once FFTs are published, each FFT type's default options are those of its
+best published FFT: the one a normal run would use at the probe exponent, or where none of that type reaches it, the
+one nearest it. A type with nothing published keeps what its bootstrap decided. Options that change the rounding
+error stay at their defaults on these lines, since nothing reads the rounding error of an FFT that merely runs under
+them. An FFT is timed at the lines as they stand when its turn comes; one already timed is not timed again when they
+move, and every published FFT names the options it was measured with, so it runs as measured whatever they come to
+say.
 
 `selection.txt` is rewritten after every measurement. It holds nothing until the bootstrap has finished and the first
 FFTs have been timed and had their rounding error read; soon after, it covers the whole workload, and from then on
@@ -198,8 +207,8 @@ A value without `%` is refused, except `0`: `0.1` could mean either 0.1% or 10%.
 These change how the options of each FFT are searched. The defaults are the recommended ones.
 
 **`bootstrap=0|1`**: whether to race each FFT type's options first (default `1`). With `bootstrap=0` every FFT type
-starts from PRPLL's built-in defaults and `selection.txt` has no default `use` lines. This is mainly useful to compare
-against.
+starts from PRPLL's built-in defaults, and `selection.txt` has no default `use` lines until the first FFTs are
+published and the lines follow them. This is mainly useful to compare against.
 
 **`strategy=<S>`**: what one step of the per-FFT search is.
 
@@ -265,6 +274,12 @@ Besides those lines:
   tune: progress: 5:05 in, 21 items and 1 anchor reading: 21 bootstrap (2.9 min); T 906.059 -> 889.053 us/it, 0.0% of the weight on measured entries; 12 items are worth running now, ~97 s by the queue's estimates
   ```
 
+- When the default options move to follow a newly published FFT, the run says what they are now:
+
+  ```text
+  tune: the default lines are now MULTI_Q=1,SHUFL_BYTES_H=16; ! 0 LOADS=30050; ! 51 LDSPAD_H=0,ZEROHACK_H=0,ZEROHACK_W=0, from the best sets published
+  ```
+
 - A measurement still going after a minute prints `tune: still measuring ...` each minute, so that a slow compile is not
   mistaken for a hang.
 - On a terminal, the bottom line is redrawn in place with the measurement in progress. It is never written to the log
@@ -304,7 +319,16 @@ for it. The file is read again for every new task, so a run picks up newly publi
 
 Where no published entry covers an exponent (or there is no `selection.txt`), PRPLL falls back to its usual choice of
 FFT (the fastest in `tune.txt`, or the smallest FFT that fits), but still under `selection.txt`'s default `use` lines,
-and still honouring any exponent limits and exclusions the tuner published.
+and still honouring any exponent limits and exclusions the tuner published. Where there is a `selection.txt` but
+nothing in it covers the exponent, PRPLL says so, once per exponent, with the range the file does cover and a workload
+that would cover this exponent too:
+
+```text
+Note: no entry in selection.txt covers 79999987 (its prp entries cover 36700158-77888224), so PRPLL's own choice of FFT runs it under the file's default lines, which were not measured on it; a tuning run over it, such as -tune workload=36700158-79999987, would publish one
+```
+
+The tuner is the way to cover it: widen the workload (or add the assignment to the worktodo) and run `-tune` at least
+until the coverage stage has published an FFT for it.
 
 **Your own settings still win.** `config.txt` is never written by the tuner, and options are taken, highest priority
 first, from:
@@ -411,8 +435,8 @@ prpll -tune emit
 prpll -tune emit,tunetxt=1
 ```
 
-The default `use` lines are the winners of the bootstrap races at the probe exponent, so `emit` has to use the same
-probe as the run did. It derives it from the worktodo, as the run did; if your worktodo has changed since, give the
+The default `use` lines are chosen at the probe exponent (the bootstrap's races, then the best FFT published there), so
+`emit` has to use the same probe as the run did. It derives it from the worktodo, as the run did; if your worktodo has changed since, give the
 run's `probe=` (and `workload=`), which `-tune status` shows. Takes `workload=`, `probe=`, `probeWeight=`, `kinds=`,
 `tunetxt=` and `env=`.
 
@@ -502,7 +526,8 @@ opts  da60d95dd13fe95c INPLACE=0,LOADS=23004,SHUFL_BYTES_H=16
 The `use` lines are the default options: a plain `use` line for every FFT, and `use ! <type>` lines for one FFT type
 where the types disagree (`-` means none). Each `entry` gives a cost in microseconds per iteration, the FFT, the test
 kind, the exponent range it serves, and the state of its accuracy evidence, and its `opts` line the options it was
-measured with (`-` for the built-in defaults): `n/a` (an NTT, which has no rounding error), `confirmed` (the rounding error was read
+measured with (`-` for the built-in defaults), naming every option the `use` lines set at the value it was measured
+with, so that it runs as measured whatever they say: `n/a` (an NTT, which has no rounding error), `confirmed` (the rounding error was read
 at the top of the range and found comfortably safe, or the range was cut to where it is), `unvalidated` (read at the
 top of PRPLL's standard range and found safe, with less margin), or `unavailable` (too few rounding errors occurred to
 judge; only configurations that round exactly as the defaults do are published this way).

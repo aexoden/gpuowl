@@ -115,7 +115,7 @@ std::string withRecord(const std::string& original, const std::string& replaceme
 }
 
 bool publishes(const TuneDB& db, const std::string& fft, TestKind kind) {
-  for (const SelectionEntry& e : entriesFor(db, 1, defaults())) {
+  for (const SelectionEntry& e : entriesFor(db, 1)) {
     if (e.fft == fft && e.kind == kind) { return true; }
   }
 
@@ -123,7 +123,7 @@ bool publishes(const TuneDB& db, const std::string& fft, TestKind kind) {
 }
 
 bool publishes(const TuneDB& db, const std::string& id) {
-  for (const SelectionEntry& e : entriesFor(db, 1, defaults())) {
+  for (const SelectionEntry& e : entriesFor(db, 1)) {
     if (e.id == id) { return true; }
   }
 
@@ -157,12 +157,12 @@ TEST(emit_keeps_each_env_to_its_own_rows) {
 
   // The other card measured one configuration, and cheaply.  It is the only entry its own env publishes, and it is in
   // no other env's file.
-  auto const other = entriesFor(db, 2, defaults());
+  auto const other = entriesFor(db, 2);
   CHECK_EQ(other.size(), size_t{1});
   CHECK_EQ(other.at(0).opts.at("PAD"), std::string{"256"});
   CHECK(other.at(0).cost < 1000);
 
-  for (const SelectionEntry& e : entriesFor(db, 1, defaults())) { CHECK(e.cost > 1000); }
+  for (const SelectionEntry& e : entriesFor(db, 1)) { CHECK(e.cost > 1000); }
 }
 
 // A row that names a regime its own exponent does not run in disagrees with this build about what the kernels do, and
@@ -244,27 +244,45 @@ TEST(emit_keeps_a_configuration_a_refusal_never_ran) {
   CHECK(publishes(loaded(withRecord("16 4 1.0000 ok 1753471294", "16 4 1.0000 nocompile 1753471294")), TWICE_MEASURED));
 }
 
-// An entry outranks the file's own default lines, so one that does not name a key they set would run under a value its
-// measurement never saw.  A recorded option set is complete and cannot do this; a hand-written one can.
-TEST(emit_drops_an_entry_its_own_default_lines_would_change) {
+// The lines move as entries are tuned, and an entry outranks them, so each entry names every key they would set to
+// something its row did not run: production resolves exactly what was measured, whatever the lines have come to say.
+TEST(emit_names_every_key_its_own_default_lines_would_change) {
   TuneDB const db =
     loaded(withRecord("run   4 1K:8:1K:202 prp 200000000 short32 21 ", "run   4 1K:8:1K:202 prp 200000000 short32 1 "));
+  FFTConfig const fft{"1K:8:1K:202"};
+  Env const nvidia = db.findEnv(1)->toEnv();
 
-  auto publishedUnder = [&](const Defaults& lines) {
-    return std::ranges::any_of(entriesFor(db, 1, lines),
-                               [](const SelectionEntry& e) { return e.fft == "1K:8:1K:202"; });
-  };
+  for (const Defaults& lines : {Defaults{.global = {{"TAIL_KERNELS", "3"}}, .family = {}},
+                                Defaults{.global = {}, .family = {parseUseLine("! 0 WMUL=1")}}, defaults()}) {
+    auto const file = emit(db, lines, provenance());
+    CHECK(file.has_value());
+    if (!file) { continue; }
 
-  // A line that moves a key the row left at its default changes what production would build.
-  CHECK(!publishedUnder({.global = {{"TAIL_KERNELS", "3"}}, .family = {}}));
-  CHECK(!publishedUnder({.global = {}, .family = {parseUseLine("! 0 WMUL=1")}}));
+    auto const e =
+      std::ranges::find_if(file->entries, [](const SelectionEntry& entry) { return entry.fft == "1K:8:1K:202"; });
+    CHECK(e != file->entries.end());
+    if (e == file->entries.end()) { continue; }
 
-  // Lines that only name what the row ran anyway -- INPLACE=1 is NVIDIA's default, and PAD does nothing in place --
-  // change nothing, so the row is published under them as it is under none.
-  CHECK(publishes(db, "1K:8:1K:202", TestKind::PRP));
+    // The row ran the built-in defaults, and that is what production builds for the entry.
+    UseConfig const resolved =
+      resolveConfig(Args{true}, fft, TestKind::PRP, fittedTo(file->layersFor(*e), nvidia, fft, TestKind::PRP));
+    CHECK(canonicalConfig(nvidia, fft, resolved).empty());
+    CHECK(shadowedKeys(Args{true}, nvidia, *file, *e, fft).empty());
+  }
+}
 
-  // With nothing to shadow it, the same row is published.
-  CHECK_EQ(entriesFor(db, 1).size(), entriesFor(loaded(DB), 1, defaults()).size());
+// One build written two ways is one configuration: its better supported row is published, and once, since the two
+// spellings name the same keys once the lines' are named beside them.  PAD does nothing on NVIDIA.
+TEST(emit_publishes_a_build_written_two_ways_once) {
+  TuneDB const db = loaded(withRecord("19 1800.000 2.000 16 4 1.0000 ok", "19 1750.000 3.000 16 4 1.0000 ok"));
+
+  auto const file = emit(db, defaults(), provenance());
+  CHECK(file.has_value());
+  if (!file) { return; }
+  CHECK_EQ(
+    std::ranges::count_if(file->entries,
+                          [](const SelectionEntry& e) { return e.fft == "512:15:512:212" && e.kind == TestKind::PRP; }),
+    ptrdiff_t{1});
 }
 
 namespace {
@@ -283,7 +301,7 @@ std::string withSecondSet(const std::string& roe1K) {
 
 std::vector<std::string> published1K(const TuneDB& db, Gating gating = Gating::Required) {
   std::vector<std::string> out;
-  for (const SelectionEntry& e : entriesFor(db, 1, defaults(), gating)) {
+  for (const SelectionEntry& e : entriesFor(db, 1, gating)) {
     if (e.fft == "1K:8:1K:202") { out.push_back(configText(e.opts)); }
   }
   return out;
@@ -304,8 +322,7 @@ namespace {
 // is owed; the number taken.
 u32 answerOwed(TuneDB& db, const std::function<RoeRow(const OptionSet&, u64)>& zAt) {
   u32 taken = 0;
-  for (std::vector<OptionSet> owed = gatesOwed(db, 1, defaults()); !owed.empty() && taken < 100;
-       owed = gatesOwed(db, 1, defaults())) {
+  for (std::vector<OptionSet> owed = gatesOwed(db, 1); !owed.empty() && taken < 100; owed = gatesOwed(db, 1)) {
     const OptionSet& s = owed.front();
     FFTConfig const fft{s.entry.fft};
     RoeRow row = zAt(s, s.gate.owedAt);
@@ -343,13 +360,13 @@ TEST(a_configuration_the_gate_rejects_never_reaches_the_selection_file) {
     TuneDB db = loaded(withSecondSet(checkOk ? "roe   4 1K:8:1K:202 296960407 21 17.20 2150 0.4011 ok - 1753471430\n"
                                              : "roe   4 1K:8:1K:202 296960407 21 25.10 2150 0.3021 fail - 1753471430\n"));
     CHECK(published1K(db) == dearer);
-    CHECK_EQ(gatesOwed(db, 1, defaults()).size(), size_t{1});
+    CHECK_EQ(gatesOwed(db, 1).size(), size_t{1});
 
     CHECK(answerOwed(db, [&](const OptionSet&, u64) { return roe(checkOk ? 17.2 : 25.1, checkOk); }) > 1);
     CHECK(published1K(db) == dearer);
     CHECK(published1K(db, Gating::Assumed) == dearer);
     CHECK(emitted(db, provenance()).find("3104.472") == std::string::npos);
-    for (const OptionSet& s : optionSetsFor(db, 1, defaults())) {
+    for (const OptionSet& s : optionSetsFor(db, 1)) {
       CHECK(s.entry.fft != "1K:8:1K:202" || s.entry.opts.contains("TAIL_KERNELS"));
     }
   }
@@ -366,7 +383,7 @@ TEST(a_set_short_of_the_floor_is_published_up_to_the_reach_derived_for_it) {
   CHECK(taken >= 2 && taken <= 4);
 
   std::vector<SelectionEntry> table;
-  for (const SelectionEntry& e : entriesFor(db, 1, defaults())) {
+  for (const SelectionEntry& e : entriesFor(db, 1)) {
     if (e.fft == fft.spec()) { table.push_back(e); }
   }
   CHECK_EQ(table.size(), size_t{2});
@@ -394,7 +411,7 @@ TEST(a_set_the_gate_has_not_read_waits_for_its_reading) {
   CHECK(published1K(db) == std::vector<std::string>{"INPLACE=1,PAD=256,TAIL_KERNELS=3"});
   CHECK(published1K(db, Gating::Assumed) == std::vector<std::string>{"INPLACE=1,PAD=256"});
 
-  std::vector<OptionSet> const owed = gatesOwed(db, 1, defaults());
+  std::vector<OptionSet> const owed = gatesOwed(db, 1);
   CHECK_EQ(owed.size(), size_t{1});
   CHECK_EQ(configText(owed.at(0).entry.opts), std::string{"INPLACE=1,PAD=256"});
   CHECK_EQ(owed.at(0).gate.owedAt, u64(296'960'407));
@@ -402,13 +419,13 @@ TEST(a_set_the_gate_has_not_read_waits_for_its_reading) {
 
   // Read where it would not count -- below the top of the interval -- it is still owed.
   TuneDB const low = loaded(withSecondSet("roe   4 1K:8:1K:202 250000013 21 25.10 2150 0.3021 ok - 1753471430\n"));
-  CHECK_EQ(gatesOwed(low, 1, defaults()).size(), size_t{1});
+  CHECK_EQ(gatesOwed(low, 1).size(), size_t{1});
 }
 
 TEST(a_reading_at_the_fitted_standard_publishes_its_reach_as_confirmed) {
   TuneDB const db = loaded(withRecord(ROE_1K, "roe   4 1K:8:1K:202 296960407 21 28.30 2150 0.2711 ok - 1753471430\n"));
   bool seen = false;
-  for (const SelectionEntry& e : entriesFor(db, 1, defaults())) {
+  for (const SelectionEntry& e : entriesFor(db, 1)) {
     if (e.fft != "1K:8:1K:202") { continue; }
     CHECK(e.evidence == Evidence::Confirmed);
     seen = true;
@@ -564,7 +581,7 @@ TEST(a_reduced_reach_is_published_though_a_cheaper_set_covers_it) {
                       .maxRoe = 0.27,
                       .checkOk = true,
                       .ts = 1'753'473'010}));
-  CHECK(gatesOwed(db, 1, defaults()).empty());
+  CHECK(gatesOwed(db, 1).empty());
 
   // The table the objective prices has only the cheaper set; the file keeps the derived one beside it.
   CHECK(published1K(db) == std::vector<std::string>{configText(cheaper)});

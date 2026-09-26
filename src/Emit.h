@@ -52,12 +52,9 @@ struct Provenance {
 enum class Gating : u8 { Required, Assumed };
 
 // Every entry `env`'s own measurements support, cheapest first.  Rows of another env -- another card, or the same card
-// under other kernels -- are invisible here, as they are to every other comparison.
-//
-// `defaults` is what the entries will be published beside: an entry outranks those lines, so one whose recorded option
-// set does not name a key they set would run differently from the way it was measured, and is not published.
-[[nodiscard]] std::vector<SelectionEntry> entriesFor(const TuneDB& db, u32 env, const Defaults& defaults = {},
-                                                     Gating gating = Gating::Required);
+// under other kernels -- are invisible here, as they are to every other comparison.  Each carries the option set its
+// row was recorded under, which names only what the row moved from the built-in defaults; emit() names the rest.
+[[nodiscard]] std::vector<SelectionEntry> entriesFor(const TuneDB& db, u32 env, Gating gating = Gating::Required);
 
 // A publishable option set, and the row it would be a transcript of.
 struct OptionSet {
@@ -72,33 +69,33 @@ struct OptionSet {
   GateVerdict gate{};
 };
 
-// Every option set of every identity that could be published beside `defaults`, one per option set, before any is
-// dropped for being dominated: the one a slightly cheaper set of the same identity keeps out is still what production
-// would run if that reading were the unlucky one.  A set the accuracy gate rejected is not one of them, whatever it
-// costs; one it still owes a reading is.
-[[nodiscard]] std::vector<OptionSet> optionSetsFor(const TuneDB& db, u32 env, const Defaults& defaults = {});
+// Every option set of every identity that could be published, one per build, before any is dropped for being dominated:
+// the one a slightly cheaper set of the same identity keeps out is still what production would run if that reading were
+// the unlucky one.  A set the accuracy gate rejected is not one of them, whatever it costs; one it still owes a reading
+// is.
+[[nodiscard]] std::vector<OptionSet> optionSetsFor(const TuneDB& db, u32 env);
 
 // The option sets optionSetsFor() leaves out because the accuracy gate rejected them.
-[[nodiscard]] std::vector<OptionSet> rejectedSets(const TuneDB& db, u32 env, const Defaults& defaults = {});
+[[nodiscard]] std::vector<OptionSet> rejectedSets(const TuneDB& db, u32 env);
 
 // What entriesFor() chooses the table from: every option set of every identity that no other of the same identity
 // dominates, including those that another identity's entry would keep out of the table.
-[[nodiscard]] std::vector<SelectionEntry> candidatesFor(const TuneDB& db, u32 env, const Defaults& defaults = {},
-                                                        Gating gating = Gating::Required);
+[[nodiscard]] std::vector<SelectionEntry> candidatesFor(const TuneDB& db, u32 env, Gating gating = Gating::Required);
 
 // The option sets the table would publish if every reading the gate owes passed, that are waiting on one: the readings
 // that stand between what the search has found and what production runs.
-[[nodiscard]] std::vector<OptionSet> gatesOwed(const TuneDB& db, u32 env, const Defaults& defaults = {});
+[[nodiscard]] std::vector<OptionSet> gatesOwed(const TuneDB& db, u32 env);
 
-// Whether `defaults` would change what a row measured under `opts` builds on `fft`, so that emission would not publish
-// it beside them.
-[[nodiscard]] bool shadowedBy(const Defaults& defaults, const Env& env, const FFTConfig& fft, TestKind kind,
-                              const UseConfig& opts);
+// `config` with every key `lines` would set that it does not name, named at the value `config` runs it at, so that an
+// entry published beside them with it runs as it was measured whatever they say: an entry outranks the lines, and a
+// key it leaves out is one they would set.
+[[nodiscard]] UseConfig besideLines(const Env& env, const FFTConfig& fft, TestKind kind, const Defaults& lines,
+                                    UseConfig config);
 
-// The file as it would be published, with an exclusion for every configuration the env measured computing a wrong
-// answer.  Empty of entries where the database holds none for the env, which is a fact about the database and is
-// published as such.
-[[nodiscard]] std::optional<SelectionFile> emit(const TuneDB& db, const Defaults& defaults, const Provenance& from);
+// The file as it would be published beside `lines`, with an exclusion for every configuration the env measured
+// computing a wrong answer.  Empty of entries where the database holds none for the env, which is a fact about the
+// database and is published as such.
+[[nodiscard]] std::optional<SelectionFile> emit(const TuneDB& db, const Defaults& lines, const Provenance& from);
 
 // Upstream's tune.txt for a binary that reads no selection file: one line per FFT the file publishes at the fitted
 // table's own reach, at default rounding, or with exact arithmetic, and no other -- nor any FFT whose default rounding
@@ -116,7 +113,7 @@ size_t writeCompatibility(const fs::path& path, const SelectionFile& file, const
 
 // Writes it through a sibling temporary and a rename, so a reader sees either the whole file or the old one; and the
 // compatibility view beside it to `compat`, the same way, where one is asked for.
-[[nodiscard]] bool publish(const fs::path& path, const TuneDB& db, const Defaults& defaults, const Provenance& from,
+[[nodiscard]] bool publish(const fs::path& path, const TuneDB& db, const Defaults& lines, const Provenance& from,
                            const std::optional<fs::path>& compat = {});
 
 }  // namespace tune
