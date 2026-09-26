@@ -3,6 +3,7 @@
 #include "Production.h"
 
 #include "Args.h"
+#include "Bootstrap.h"
 #include "FFTVariants.h"
 #include "Gate.h"
 #include "log.h"
@@ -105,6 +106,20 @@ std::vector<std::string> shadowedKeys(const Args& args, const Env& env, const Se
   return out;
 }
 
+const Exclusion* exclusionFor(const SelectionFile& file, const Env& env, const FFTConfig& fft, TestKind kind,
+                              Regime regime, const UseConfig& options) {
+  std::string const spec = fft.spec();
+  std::optional<UseConfig> canonical;
+
+  for (const Exclusion& x : file.excluded) {
+    if (x.kind != kind || x.fft != spec || x.regime != regime) { continue; }
+    if (!canonical) { canonical = canonicalConfig(env, fft, options); }
+    if (canonicalConfig(env, fft, x.opts) == *canonical) { return &x; }
+  }
+
+  return nullptr;
+}
+
 std::optional<Choice> chooseFrom(const SelectionFile& file, const Args& args, const Env& env, u64 E, TestKind kind) {
   std::optional<FFTConfig> const pinned = pinnedFft(args);
 
@@ -140,6 +155,14 @@ std::optional<Choice> chooseFrom(const SelectionFile& file, const Args& args, co
     if (runRegime(args, *fft, E) != entry.regime) { shadowed.insert(shadowed.begin(), "-carry"); }
 
     UseConfig options = resolveConfig(args, *fft, kind, fittedTo(file.layersFor(entry), env, *fft, kind));
+
+    // Emission publishes no entry it excludes, but the user's own settings can resolve one into it.
+    if (exclusionFor(file, env, *fft, kind, runRegime(args, *fft, E), options)) {
+      std::string const why = shadowed.empty() ? "" : "with " + joined(shadowed) + " set otherwise, ";
+      logOnce("Selection entry " + entry.id + " (" + fft->spec() + ") is passed over: " + why +
+              "it runs a configuration this machine measured computing wrong answers\n");
+      continue;
+    }
 
     // Every entry of the arithmetic that will actually run holds it to the lowest reach any of them measured, whether
     // or not this one was overridden. An override also costs whatever the options it was measured under bought above
@@ -199,6 +222,7 @@ Choice choose(const Args& args, const Env& env, u64 E, TestKind kind) {
   // one's -- necessarily a different and larger FFT -- rather than run past a limit this machine measured.
   u64 ask = E;
   std::optional<Choice> restricted;
+  bool excluded = false;
 
   for (int attempt = 0; attempt < 8; ++attempt) {
     std::optional<Choice> candidate;
@@ -208,11 +232,32 @@ Choice choose(const Args& args, const Env& env, u64 E, TestKind kind) {
     } catch (...) {
       // The first ask failing is the shape scan refusing the exponent, which is its own answer to give. A later one
       // failing means there is nothing larger to move to, and the restricted answer is the only one there is.
-      if (!restricted) { throw; }
+      if (!restricted && !excluded) { throw; }
       break;
     }
 
     u64 const table = maxExp(candidate->fft);
+
+    // Whatever led the scan here -- tune.txt, or the smallest shape that fits -- a configuration measured computing
+    // wrong answers is not one to run again; a larger FFT is, however much slower.
+    if (file) {
+      Regime const regime = runRegime(args, candidate->fft, E);
+      if (exclusionFor(*file, env, candidate->fft, kind, regime, candidate->options)) {
+        std::string const said = candidate->fft.spec() + " under the options this run resolves for it was measured " +
+          "computing wrong answers in the " + regime.label() + " regime";
+
+        if (!args.fftSpec.empty()) {
+          logOnce("Warning: " + said + "; running it only because -fft names it\n");
+          return *candidate;
+        }
+
+        logOnce("Note: " + said + "; looking past it for " + to_string(E) + "\n");
+        excluded = true;
+        if (table + 1 <= ask) { break; }
+        ask = table + 1;
+        continue;
+      }
+    }
 
     if (candidate->reach >= table || double(E) <= double(candidate->reach) * args.fftOverdrive) { return *candidate; }
 
@@ -231,6 +276,12 @@ Choice choose(const Args& args, const Env& env, u64 E, TestKind kind) {
 
     if (table + 1 <= ask) { break; }
     ask = table + 1;
+  }
+
+  if (!restricted) {
+    log("No FFT the scan offers for %s is one this machine did not measure computing wrong answers\n",
+        to_string(E).c_str());
+    throw "No FFT";
   }
 
   log("Warning: every FFT the scan offers for %s is published as reaching less far; running %s\n", to_string(E).c_str(),

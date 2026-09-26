@@ -915,8 +915,11 @@ bool runTuneCommand(const TuneCommand& command, const Args& args, const fs::path
 
     fs::path const out = dir / SELECTION_NAME;
     writeSelection(out, *file);
-    log("tune: published %zu %s of env %u to %s\n", file->entries.size(),
-        file->entries.size() == 1 ? "entry" : "entries", env, out.string().c_str());
+    size_t const excluded = file->excluded.size();
+    std::string const exclusions =
+      excluded ? " and " + std::to_string(excluded) + (excluded == 1 ? " exclusion" : " exclusions") : "";
+    log("tune: published %zu %s%s of env %u to %s\n", file->entries.size(),
+        file->entries.size() == 1 ? "entry" : "entries", exclusions.c_str(), env, out.string().c_str());
 
     if (command.tuneTxt) {
       const DbEnv* const row = db.findEnv(env);

@@ -61,8 +61,8 @@ const char* const PAD128_ROE = "roe   4 512:15:512:212 143413741 18 24.40 2150 0
 
 // What env 1 supports.  Costs are the mean plus two standard errors, so the six calls behind PAD=256 buy it a smaller
 // penalty (+1.84) than the four behind PAD=128 (+3.35); PAD=256 at 1776.069 and PAD=512 at 1802.236 are dropped as
-// nothing cheaper than PAD=128 anywhere they run; the ll rows under PAD=256 are dropped because one of the two failed;
-// and the 1700.000 of one call is dropped as a reading nothing concluded.
+// nothing cheaper than PAD=128 anywhere they run; the ll rows under PAD=256 are dropped because one of the two failed,
+// and that configuration is excluded; and the 1700.000 of one call is dropped as a reading nothing concluded.
 const char* const SELECTION = "# prpll selection v1\n"
                               "# %PROVENANCE%\n"
                               "use   INPLACE=1,PAD=256\n"
@@ -74,7 +74,8 @@ const char* const SELECTION = "# prpll selection v1\n"
                               "entry 688735b9ab069fec 2005.590 3:1K:8:512:202 prp 83886076 152674512 n/a\n"
                               "opts  688735b9ab069fec INPLACE=1,PAD=256\n"
                               "entry d5c85edcdda38629 3104.472 1K:8:1K:202 prp 167772152 296960416 unvalidated\n"
-                              "opts  d5c85edcdda38629 INPLACE=1,PAD=256\n";
+                              "opts  d5c85edcdda38629 INPLACE=1,PAD=256\n"
+                              "exclude 512:15:512:212 ll short32 INPLACE=1,PAD=256,TAIL_KERNELS=3\n";
 
 TuneDB loaded(const std::string& text) {
   TuneDB db;
@@ -613,11 +614,12 @@ SelectionEntry entryOf(const std::string& spec, double cost, const UseConfig& op
           .opts = opts};
 }
 
-SelectionFile fileOf(std::vector<SelectionEntry> entries) {
+SelectionFile fileOf(std::vector<SelectionEntry> entries, std::vector<Exclusion> excluded = {}) {
   SelectionFile file{.provenance = "written 1753471500 by test from tunedb.txt env 1",
                      .global = {},
                      .family = {},
                      .entries = std::move(entries),
+                     .excluded = std::move(excluded),
                      .unknown = {}};
   CHECK(finalize(file));
   return file;
@@ -690,4 +692,30 @@ TEST(tune_txt_offers_only_what_the_table_reach_holds_for_at_default_rounding) {
   CHECK(linesOf(read) == linesOf(view));
   CHECK(compatibilityText(view).find(" # " + std::to_string(maxExp(FFTConfig{fp64})) + "\n") != std::string::npos);
   fs::remove_all(dir);
+}
+
+// An older binary runs a listed FFT at its defaults and reads no exclusion, so an FFT whose defaults computed a wrong
+// answer is not listed, in whichever regime they did; one whose only exclusion is of another option set still is.
+TEST(tune_txt_leaves_out_an_fft_whose_defaults_answered_wrongly) {
+  std::string const fp64 = "512:15:512:212";
+  std::string const ntt = "3:1K:8:512:202";
+  FFTConfig const nttFft{ntt};
+
+  auto exclusionOf = [](const std::string& spec, Regime regime, const UseConfig& opts) {
+    return Exclusion{.fft = spec, .kind = TestKind::LL, .regime = regime, .opts = opts};
+  };
+  std::vector<SelectionEntry> const entries{entryOf(fp64, 1750, {}),
+                                            entryOf(ntt, 2000, {}, {}, Evidence::NotApplicable)};
+
+  CHECK(linesOf(compatibilityView(fileOf(entries), nvidia())).size() == 2);
+
+  // Another option set, or the defaults spelled out (TAIL_KERNELS=2 is its default), make no difference to that.
+  SelectionFile const other =
+    fileOf(entries, {exclusionOf(fp64, topOf(FFTConfig{fp64}).regime, {{"TAIL_KERNELS", "3"}})});
+  CHECK(linesOf(compatibilityView(other, nvidia())).size() == 2);
+
+  SelectionFile const lower = fileOf(
+    entries,
+    {exclusionOf(ntt, intervals(nttFft, minExp(nttFft), maxExp(nttFft)).front().regime, {{"TAIL_KERNELS", "2"}})});
+  CHECK(linesOf(compatibilityView(lower, nvidia())) == (std::vector<std::pair<std::string, double>>{{fp64, 1750}}));
 }

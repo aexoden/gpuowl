@@ -25,6 +25,8 @@ const char* const FIXTURE =
   "opts  adc5960c72b18307 INPLACE=1,PAD=256,TAIL_KERNELS=3\n"
   "entry 25616810ba5a560c 1801.000 1K:8:1K:202 prp 100000000 160000000 n/a\n"
   "opts  25616810ba5a560c -\n"
+  "exclude 1K:8:1K:202 prp long32 -\n"
+  "exclude 512:15:512:212 ll short32 INPLACE=1,PAD=128,TAIL_KERNELS=3\n"
   "budget 400\n"
   "# a note the user added by hand\n";
 
@@ -82,6 +84,50 @@ TEST(selection_records_are_read) {
   CHECK_EQ(layers.global.size(), size_t{2});
   CHECK_EQ(layers.family.size(), size_t{2});
   CHECK_EQ(layers.entry.size(), size_t{3});
+}
+
+TEST(an_exclusion_names_a_configuration_in_a_regime) {
+  SelectionFile const file = loaded(FIXTURE);
+
+  CHECK_EQ(file.excluded.size(), size_t{2});
+  Exclusion const& x = file.excluded.at(1);
+  CHECK_EQ(x.fft, std::string{"512:15:512:212"});
+  CHECK(x.kind == TestKind::LL);
+  CHECK_EQ(x.regime.label(), std::string{"short32"});
+  CHECK_EQ(configText(x.opts), std::string{"INPLACE=1,PAD=128,TAIL_KERNELS=3"});
+  CHECK_EQ(file.excluded.at(0).regime.label(), std::string{"long32"});
+  CHECK(file.excluded.at(0).opts.empty());
+
+  std::string const line = "exclude 512:15:512:212 ll short32 INPLACE=1,PAD=128,TAIL_KERNELS=3";
+  rejects(line, "exclude 512:15:512:212 ll short32");
+  rejects(line, "exclude 512:15:512:212 ll short32 INPLACE=1 extra");
+  rejects(line, "exclude not-an-fft ll short32 INPLACE=1");
+  rejects(line, "exclude 512:15:512:212 cert short32 INPLACE=1");
+  rejects(line, "exclude 512:15:512:212 ll medium32 INPLACE=1");
+  rejects(line, "exclude 512:15:512:212 ll short32 INPLACE=1,");
+}
+
+// So that two emissions of one database write one file, and a configuration two rows condemned is named once.
+TEST(finalize_orders_exclusions_and_names_each_once) {
+  Exclusion const ll{.fft = "512:15:512:212", .kind = TestKind::LL, .regime = {}, .opts = {{"PAD", "128"}}};
+  Exclusion const spelled{.fft = "256:2:256:111", .kind = TestKind::PRP, .regime = {}, .opts = {}};
+
+  SelectionFile file;
+  file.excluded = {ll, spelled, ll};
+  CHECK(finalize(file));
+
+  CHECK_EQ(file.excluded.size(), size_t{2});
+  CHECK_EQ(file.excluded.at(0).fft, std::string{"256:2:256:101"});
+  CHECK(file.excluded.at(1) == ll);
+  CHECK_EQ(text(file),
+           std::string{"# prpll selection v1\n"
+                       "use   -\n"
+                       "exclude 256:2:256:101 prp short32 -\n"
+                       "exclude 512:15:512:212 ll short32 PAD=128\n"});
+
+  SelectionFile bad;
+  bad.excluded = {Exclusion{.fft = "256:2", .kind = TestKind::PRP, .regime = {}, .opts = {}}};
+  CHECK(!finalize(bad));
 }
 
 TEST(unknown_selection_records_pass_through) {

@@ -40,12 +40,26 @@ struct SelectionEntry {
   UseConfig opts;
 };
 
+// A configuration measured computing a wrong answer somewhere in a regime.  It has no entry, and production must not
+// arrive at it by another path either: the shape scan, tune.txt, or an entry the user's own settings resolve into it.
+struct Exclusion {
+  std::string fft;
+  TestKind kind = TestKind::PRP;
+  Regime regime{};
+
+  // The complete option set the kernels were built with, as the measurement recorded it.
+  UseConfig opts;
+
+  [[nodiscard]] bool operator==(const Exclusion&) const = default;
+};
+
 struct SelectionFile {
   std::string provenance;
 
   std::vector<std::pair<std::string, std::string>> global;
   std::vector<UseLine> family;
   std::vector<SelectionEntry> entries;
+  std::vector<Exclusion> excluded;
   std::vector<std::string> unknown;
 
   // The layers this file contributes to production's option precedence, weakest first.
@@ -54,7 +68,8 @@ struct SelectionFile {
 
 [[nodiscard]] std::string entryId(const std::string& fft, TestKind kind, Regime regime, const UseConfig& opts);
 
-// Fills in `id` and `regime`, canonicalizes each spec, and sorts by ascending cost. Logs and returns false on failure.
+// Fills in `id` and `regime`, canonicalizes each spec, and sorts entries by ascending cost and exclusions by what they
+// name, dropping repeats. Logs and returns false on failure.
 [[nodiscard]] bool finalize(SelectionFile& file);
 
 [[nodiscard]] std::optional<SelectionFile> parseSelection(std::string_view text, std::string_view name);
