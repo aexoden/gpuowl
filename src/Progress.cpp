@@ -7,6 +7,7 @@
 #include "Summary.h"
 
 #include <algorithm>
+#include <cinttypes>
 #include <cmath>
 #include <cstdarg>
 #include <cstdio>
@@ -80,6 +81,7 @@ RunProgress progressOf(const QueueReport& sofar, double T, double measured, cons
     if (worthRunning(item, floor)) {
       ++out.worthRunning;
       out.worthSeconds += item.seconds;
+      out.unlisted += item.unlisted;
     }
   }
   return out;
@@ -107,9 +109,9 @@ std::string progressLine(const RunProgress& p, double elapsed) {
                p.mostWorth / p.floor, p.floor, 100 * p.stop)
       : format("the most an item is worth is %.4f us/it, and stop=0 runs until stopped; ", p.mostWorth);
   }
-  return out +
-    format("%u %s worth running now, ~%s by the queue's estimates", p.worthRunning,
-           p.worthRunning == 1 ? "item is" : "items are", ago(u64(std::lround(p.worthSeconds))).c_str());
+  out += format("%u %s worth running now, ~%s by the queue's estimates", p.worthRunning,
+                p.worthRunning == 1 ? "item is" : "items are", ago(u64(std::lround(p.worthSeconds))).c_str());
+  return p.unlisted ? out + format(", and up to %" PRIu64 " more not listed yet", p.unlisted) : out;
 }
 
 std::string heartbeatLine(const std::string& what, double onIt) {

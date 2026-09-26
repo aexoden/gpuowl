@@ -233,8 +233,12 @@ the smaller moves: with the defaults, the larger groups are cut before any step 
 once. `all` tries every combination. Default `64`.
 
 Raising either is how to spend more time on each FFT; every combination is a measurement, and `all` together with
-`maxPermute=all` can mean thousands of them for the larger groups. Neither changes the bootstrap, which always races
-single options and then combines their best answers.
+`maxPermute=all` can mean thousands of them for the larger groups -- and far more on a CUDA build, whose `Cuda` group
+holds several register-count options of 14 values each: hundreds of millions of combinations for one FFT6431 entry. The
+run lists a large piece 64 combinations at a time, in the same order, and lists more as those are measured, so it keeps
+moving however large the pieces are; the progress line, `-tune status` and the summary add `and up to <N> more not
+listed yet` for what lies beyond. Neither changes the bootstrap, which always races single options and then combines
+their best answers.
 
 **`comboTop=<N>`** (`hybrid` only): how many of each group's best answers are carried into the combinations. Default
 `3`.

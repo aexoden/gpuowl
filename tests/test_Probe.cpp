@@ -179,6 +179,60 @@ TEST(how_many_axes_a_bin_permutes_and_where_it_is_cut_are_the_strategys) {
   CHECK(stages.at("Memory") > uncut.size());
 }
 
+TEST(a_stage_is_listed_a_window_at_a_time_in_the_order_it_is_listed_whole) {
+  FFTConfig const fft{"2:1K:8:256:212"};
+  Strategy const lifted{.maxPermute = NO_LIMIT, .maxPoints = NO_LIMIT};
+  ProbeList const whole = probesOf(nvidia(), fft, {}, lifted);
+  ProbeList const window = probesOf(nvidia(), fft, {}, lifted, {}, true, 16);
+  CHECK(whole.unlisted.empty());
+
+  // Each stage is the head of itself listed whole, and one with more than the window says at most how much more.
+  std::map<std::string, size_t> const stages = stagesOf(whole);
+  std::map<std::string, u64> cut;
+  for (const ProbeList::Unlisted& u : window.unlisted) {
+    CHECK_EQ(u.tier, 1u);
+    cut[u.stage] = u.most;
+  }
+  for (const auto& [stage, n] : stages) {
+    std::vector<std::string> const listed = textsOf(window, stage);
+    std::vector<std::string> const every = textsOf(whole, stage);
+    size_t const head = std::min<size_t>(n, 16);
+    CHECK_EQ(listed.size(), head);
+    CHECK(std::equal(listed.begin(), listed.end(), every.begin()));
+    CHECK_EQ(cut.contains(stage), n > 16);
+    if (cut.contains(stage)) { CHECK(cut.at(stage) >= n - 16); }
+  }
+  CHECK(cut.contains("Memory"));
+
+  // Under the default limits nothing is left unlisted by the window the queue uses, so the default search is listed
+  // exactly as before there was a window.
+  ProbeList const byDefault = probesOf(nvidia(), fft, {}, {});
+  ProbeList const windowed = probesOf(nvidia(), fft, {}, {}, {}, true, PROBE_WINDOW);
+  CHECK(windowed.unlisted.empty());
+  CHECK_EQ(windowed.probes.size(), byDefault.probes.size());
+  for (size_t i = 0; i < std::min(windowed.probes.size(), byDefault.probes.size()); ++i) {
+    CHECK_EQ(windowed.probes[i].text, byDefault.probes[i].text);
+  }
+}
+
+TEST(a_group_of_hundreds_of_millions_of_points_is_listed_a_window_at_a_time) {
+  // What a run with both limits lifted chose its next item from on a P100 under CUDA: FFT6431's Cuda group is nine
+  // axes, GRAPHS, L1CUDA and seven 14-valued register counts, 2 x 4 x 14^7 points.  Listed whole, the choice never
+  // came.
+  Env const p100{.isNvidia = true, .cudaBackend = true, .computeCapability = 600, .pdlLaunch = true};
+  ProbeList const list = probesOf(p100, FFTConfig{"51:1K:4:256:212"}, {},
+                                  {.maxPermute = NO_LIMIT, .maxPoints = NO_LIMIT}, {}, true, PROBE_WINDOW);
+  auto const cuda = std::ranges::find(list.unlisted, std::string{"Cuda"}, &ProbeList::Unlisted::stage);
+  CHECK(cuda != list.unlisted.end());
+  if (cuda == list.unlisted.end()) { return; }
+  CHECK(cuda->most > 800'000'000);
+
+  // The group's structural steps are a part of their own under the same name, listed whole.
+  auto const listed = std::ranges::count_if(list.probes, [&](const Probe& p) { return p.part == cuda->part; });
+  CHECK_EQ(size_t(listed), size_t(PROBE_WINDOW));
+  CHECK(std::ranges::any_of(list.probes, [&](const Probe& p) { return p.stage == "Cuda" && p.part != cuda->part; }));
+}
+
 TEST(a_structural_step_stands_alone_and_opens_its_dependents) {
   FFTConfig const fft{"1K:13:256:212"};
 

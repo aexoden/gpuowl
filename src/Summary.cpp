@@ -104,6 +104,7 @@ RunSummary summarize(const Scheduler& scheduler, const TuneDB& db, u32 env, u32 
     r.kind = item.kind;
     r.byRule = byRule(item);
     ++r.count;
+    r.unlisted += item.unlisted;
     if (r.count == 1 || item.value > r.value) {
       r.value = item.value;
       r.best = itemLabel(scheduler, item);
@@ -219,8 +220,9 @@ void logSummary(const RunSummary& s) {
           toString(r.kind), r.best.c_str());
       continue;
     }
-    log("tune: summary: left: %u %s, the best worth %.4f us/it (%s of T): %s\n", r.count, toString(r.kind), r.value,
-        percent(s.T > 0 ? r.value / s.T : 0).c_str(), r.best.c_str());
+    std::string const more = r.unlisted ? " and up to " + std::to_string(r.unlisted) + " more not listed yet" : "";
+    log("tune: summary: left: %u %s%s, the best worth %.4f us/it (%s of T): %s\n", r.count, toString(r.kind),
+        more.c_str(), r.value, percent(s.T > 0 ? r.value / s.T : 0).c_str(), r.best.c_str());
   }
 
   for (const RunSummary::Uncovered& u : s.uncovered) {

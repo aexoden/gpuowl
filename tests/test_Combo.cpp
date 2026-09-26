@@ -233,6 +233,16 @@ TEST(a_stage_is_cut_at_its_limit_in_falling_order_of_gain) {
   std::vector<std::string> const every = textsOf(probesOf(nvidia(), fft, {}, {.maxPoints = NO_LIMIT}, readings), "all");
   CHECK(every.size() > all.size());
   CHECK(std::equal(all.begin(), all.end(), every.begin()));
+
+  // Listed a few at a time, the same order, and what is left of the stage said.
+  ProbeList const few = probesOf(nvidia(), fft, {}, {.maxPoints = NO_LIMIT}, readings, true, 10);
+  CHECK(textsOf(few, "all") == std::vector<std::string>(every.begin(), every.begin() + 10));
+  auto const rest = std::ranges::find(few.unlisted, std::string{"all"}, &ProbeList::Unlisted::stage);
+  CHECK(rest != few.unlisted.end());
+  if (rest != few.unlisted.end()) {
+    CHECK_EQ(rest->tier, 3u);
+    CHECK(rest->most >= every.size() - 10);
+  }
 }
 
 TEST(branches_are_the_structural_values_the_readings_hold_cheapest_first) {

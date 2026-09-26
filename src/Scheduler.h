@@ -153,6 +153,10 @@ struct Item {
   // A baseline's: run by rule, because it may serve an exponent the workload weighs that nothing measured serves.
   bool cover = false;
 
+  // The first probe or combo offered from a stage listed only in part: at most how many more points the stage has,
+  // which later windows list.
+  u64 unlisted = 0;
+
   [[nodiscard]] double rate() const { return seconds > 0 ? value / seconds : 0; }
 };
 
@@ -275,21 +279,24 @@ private:
   // "<spec> <canonical options>", which is what makes a later build of the same configuration find it compiled.
   [[nodiscard]] std::string builtKey(const FFTConfig& fft, const UseConfig& options) const;
 
-  // probesOf(), which is pure, for one (entry, best set, whether it steps into other branches), and which of its probes
-  // the entry's rows checked against it so far answer.  A row that answers a probe always will, so each is checked
-  // once.  Per entry, not per FFT: another regime or kind of the same FFT has rows of its own.
+  // probesOf(), which is pure, for one (entry, best set, whether it steps into other branches), listing at most
+  // `listed` points of each stage, and which of its probes the entry's rows checked against it so far answer.  A row
+  // that answers a probe always will, so each is checked once.  Per entry, not per FFT: another regime or kind of the
+  // same FFT has rows of its own.
   struct ListMemo {
     std::string from;
+    u32 listed = PROBE_WINDOW;
     ProbeList list;
     std::vector<bool> answered;
     std::set<std::string> checked;
   };
 
   // The memo for `best`, rebuilt when `from` -- what the readings of its branch say, which only the combo tiers read
-  // -- changes: a best set changes rarely, and each re-score asks again for every entry.  A probe the rebuilt list
-  // shares with the old one keeps what the rows answered it.
+  // -- changes: a best set changes rarely, and each re-score asks again for every entry.  With `widen`, rebuilt
+  // listing twice as many points of each stage.  A probe the rebuilt list shares with the old one keeps what the rows
+  // answered it.
   [[nodiscard]] ListMemo& probeList(const Baseline& entry, const UseConfig& best, std::span<const Reading> readings,
-                                    bool structuralSteps, std::string from) const;
+                                    bool structuralSteps, std::string from, bool widen = false) const;
 
   // restartOf() for the entry of `baselines_[index]`, canonical, likewise: a draw takes one enumeration of the axes per
   // axis.

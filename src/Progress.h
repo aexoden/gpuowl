@@ -51,6 +51,9 @@ struct RunProgress {
   u32 worthRunning = 0;
   double worthSeconds = 0;
 
+  // At most how many more points worth running the stages listed in part have past what is listed of them.
+  u64 unlisted = 0;
+
   bool bootstrapComplete = false;
 };
 
