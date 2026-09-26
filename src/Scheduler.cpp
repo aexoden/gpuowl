@@ -474,6 +474,47 @@ std::vector<Item> Scheduler::gateItems(const TuneDB& db, u32 env, const Defaults
   return out;
 }
 
+std::vector<Item> Scheduler::coverItems(std::span<const Item> baselines, const Objective& objective) const {
+  if (!gate_) { return {}; }
+
+  std::vector<Item> out;
+  for (const Item& item : baselines) {
+    const Baseline& b = baselines_[item.index];
+    std::optional<u64> lo;
+    u64 hi = 0;
+    for (const ObjectivePoint& p : objective.points()) {
+      if (p.kind != b.kind || p.weight <= 0 || !p.cost || p.cost->measured() || !b.band.contains(p.exponent)) {
+        continue;
+      }
+      lo = std::min(lo.value_or(p.exponent), p.exponent);
+      hi = std::max(hi, p.exponent);
+    }
+    if (!lo) { continue; }
+
+    Item& cover = out.emplace_back(item);
+    cover.cover = true;
+    cover.what = "covering " + std::to_string(*lo) + (*lo == hi ? "" : "-" + std::to_string(hi));
+  }
+
+  // Ranked as the baselines are, except that the variants of one shape share a prior, so nothing yet tells them apart
+  // but the edges of their bands: the variant production's own shape scan runs where nothing is published goes first.
+  auto const shapeOf = [&](const Item& i) {
+    const Baseline& b = baselines_[i.index];
+    return std::tuple{b.fft.shape.spec(), b.kind, b.band.regime.label()};
+  };
+  std::map<std::tuple<std::string, TestKind, std::string>, double> best;
+  for (const Item& i : out) {
+    double& rate = best[shapeOf(i)];
+    rate = std::max(rate, i.rate());
+  }
+  auto const rank = [&](const Item& i) {
+    const FFTConfig& fft = baselines_[i.index].fft;
+    return std::tuple{-best.at(shapeOf(i)), shapeOf(i), fft.variant != defaultVariant(fft.shape), -i.rate()};
+  };
+  std::ranges::stable_sort(out, [&](const Item& a, const Item& b) { return rank(a) < rank(b); });
+  return out;
+}
+
 std::vector<Item> Scheduler::reachItems(const TuneDB& db, u32 env, std::span<const OptionSet> sets,
                                         const Objective& objective) const {
   if (!gate_) { return {}; }
@@ -594,6 +635,7 @@ std::vector<Item> Scheduler::admissible(const TuneDB& db, u32 env, const Objecti
   GainModel const gains = gainsOf(db, env);
 
   std::vector<Item> out = baselineItems(db, env, state, progress, gains, objective);
+  if (std::vector<Item> cover = coverItems(out, objective); !cover.empty()) { return cover; }
 
   // The option sets of each entry, which also say how much each option set costs where it was measured.
   std::vector<OptionSet> const sets =
@@ -765,8 +807,10 @@ std::vector<Item> Scheduler::admissible(const TuneDB& db, u32 env, const Objecti
   return out;
 }
 
+bool byRule(const Item& item) { return item.kind == ItemKind::Bootstrap || item.kind == ItemKind::Gate || item.cover; }
+
 bool worthRunning(const Item& item, double floor) {
-  if (item.kind == ItemKind::Bootstrap || item.kind == ItemKind::Gate) { return true; }
+  if (byRule(item)) { return true; }
   return item.value > 0 && item.value >= floor;
 }
 
@@ -985,8 +1029,8 @@ QueueReport runQueue(Scheduler& scheduler, TuneDB& db, u32 env, Bench& bench, co
     bool const reads = item->kind == ItemKind::Gate || item->kind == ItemKind::Reach;
     bool const probing = baseline && item->kind != ItemKind::Baseline && !reads;
     std::string const label = !baseline ? item->what
-      : probing || reads                ? baseline->label() + " " + item->what
-                                        : baseline->label();
+      : item->what.empty()              ? baseline->label()
+                                        : baseline->label() + " " + item->what;
     std::optional<std::string> const bestBefore =
       probing ? bestOf(db, env, scheduler.bootstrap().env(), state.defaults, *baseline) : std::nullopt;
 

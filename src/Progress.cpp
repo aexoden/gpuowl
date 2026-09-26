@@ -76,9 +76,7 @@ RunProgress progressOf(const QueueReport& sofar, double T, double measured, cons
                   .floor = floor,
                   .bootstrapComplete = bootstrapComplete};
   for (const Item& item : ranked) {
-    if (item.kind != ItemKind::Bootstrap && item.kind != ItemKind::Gate) {
-      out.mostWorth = std::max(out.mostWorth, item.value);
-    }
+    if (!byRule(item)) { out.mostWorth = std::max(out.mostWorth, item.value); }
     if (worthRunning(item, floor)) {
       ++out.worthRunning;
       out.worthSeconds += item.seconds;
