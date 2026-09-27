@@ -245,6 +245,49 @@ TEST(a_stage_is_cut_at_its_limit_in_falling_order_of_gain) {
   }
 }
 
+TEST(the_bins_of_one_group_are_combined_at_the_second_tier) {
+  // One answer read in each of Memory's two bins: no step of either bin moves both, and until bins were dimensions no
+  // combination did either.
+  FFTConfig const fft{"512:15:512:212"};
+  ProbeList const steps = probesOf(nvidia(), fft, {}, {});
+  auto const first = [&](const std::string& stage) {
+    auto const at = std::ranges::find(steps.probes, stage, &Probe::stage);
+    CHECK(at != steps.probes.end());
+    return at == steps.probes.end() ? UseConfig{} : at->config;
+  };
+  UseConfig const one = first("Memory 1");
+  UseConfig const two = first("Memory 2");
+  std::vector<Reading> const readings{{{}, 100}, {one, 100.1}, {two, 100.2}};
+
+  // Every axis where one of the two answers has it: both LOADS classes may be digits of the one key.
+  auto isBoth = [&](const ProbeList& list, const UseConfig& config) {
+    return std::ranges::all_of(list.axes, [&](const Axis& axis) {
+      auto const background = positionOf(nvidia(), fft, {}, axis);
+      auto const inOne = positionOf(nvidia(), fft, one, axis);
+      auto const want = inOne != background ? inOne : positionOf(nvidia(), fft, two, axis);
+      return positionOf(nvidia(), fft, config, axis) == want;
+    });
+  };
+  auto combines = [&](const Strategy& strategy) {
+    ProbeList const list = probesOf(nvidia(), fft, {}, strategy, readings);
+    return std::ranges::any_of(list.probes, [&](const Probe& p) {
+      return p.stage == "Memory combined" && p.tier == 2 && isBoth(list, p.config);
+    });
+  };
+  CHECK(combines({}));
+  CHECK(!combines({.kind = Strategy::Kind::Hybrid, .bootstrapTree = true}));
+
+  // Likewise two register caps under CUDA, each a bin of its own.
+  Env const cuda{.isNvidia = true, .cudaBackend = true, .computeCapability = 600, .pdlLaunch = true};
+  FFTConfig const fp64{"1K:7:256:212"};
+  UseConfig const caps{{"REGMI64", "72"}, {"REGMO64", "72"}};
+  std::vector<Reading> const capReadings{{{}, 100}, {{{"REGMI64", "72"}}, 100.1}, {{{"REGMO64", "72"}}, 100.2}};
+  ProbeList const capList = probesOf(cuda, fp64, {}, {}, capReadings);
+  CHECK(std::ranges::any_of(capList.probes, [&](const Probe& p) {
+    return p.stage == "Cuda combined" && p.config == canonicalConfig(cuda, fp64, caps);
+  }));
+}
+
 TEST(branches_are_the_structural_values_the_readings_hold_cheapest_first) {
   FFTConfig const fft{"512:15:512:212"};
   std::vector<Reading> const readings{{{{"WMUL", "1"}}, 99},

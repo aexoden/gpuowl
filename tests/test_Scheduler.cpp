@@ -1719,7 +1719,8 @@ TEST(a_stage_listed_in_part_offers_its_next_points_once_its_first_are_answered) 
 
 TEST(choosing_the_next_item_with_both_limits_lifted_costs_what_is_listed) {
   // The run that stalled: an FFT6431 entry measured on a P100 under CUDA, searched with both limits lifted.  Its Cuda
-  // group alone is 2 x 4 x 14^7 points.
+  // group was 2 x 4 x 14^7 points before its register caps were searched a key at a time; Memory's 4499 are the most
+  // any stage has now.
   Env const p100{.isNvidia = true, .cudaBackend = true, .computeCapability = 600, .pdlLaunch = true};
   TuneDB db;
   u32 const env = db.internEnv(dbEnvOf(p100));
@@ -1754,7 +1755,8 @@ TEST(choosing_the_next_item_with_both_limits_lifted_costs_what_is_listed) {
   // A window of each part, and the rest of the space said rather than listed.
   u64 unlisted = 0;
   for (const Item& item : items) { unlisted += item.unlisted; }
-  CHECK(unlisted > 800'000'000);
+  CHECK(unlisted >= 4499 - PROBE_WINDOW);
+  CHECK(unlisted < 10'000);
   CHECK(!items.empty());
   CHECK(items.size() < 2000);
 }

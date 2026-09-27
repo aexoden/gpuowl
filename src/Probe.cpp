@@ -6,6 +6,7 @@
 #include "TuneDB.h"
 
 #include <algorithm>
+#include <iterator>
 #include <limits>
 #include <numeric>
 #include <set>
@@ -334,6 +335,35 @@ Strategy parseStrategy(std::string_view text) {
   return out;
 }
 
+std::vector<Bin> binsOf(const std::vector<Axis>& axes, Group group, const Strategy& strategy, bool structuralSteps) {
+  std::string const name = toString(group);
+  std::vector<Bin> out;
+  std::vector<size_t> rest;
+  std::vector<size_t> alone;
+  for (size_t i = 0; i < axes.size(); ++i) {
+    const Option& option = *axes[i].option;
+    if (option.group != group) { continue; }
+    if (option.structural) {
+      if (structuralSteps) { out.push_back({.group = group, .stage = name, .axes = {i}, .structural = true}); }
+    } else {
+      (option.alone && !strategy.bootstrapTree ? alone : rest).push_back(i);
+    }
+  }
+
+  if (!rest.empty()) {
+    size_t const width = std::min<size_t>(strategy.maxPermute, rest.size());
+    size_t const bins = (rest.size() + width - 1) / width;
+    for (size_t b = 0; b < bins; ++b) {
+      auto const first = rest.begin() + ptrdiff_t(b * width);
+      out.push_back({.group = group,
+                     .stage = bins > 1 ? name + " " + std::to_string(b + 1) : name,
+                     .axes = {first, first + ptrdiff_t(std::min<size_t>(width, size_t(rest.end() - first)))}});
+    }
+  }
+  for (size_t const i : alone) { out.push_back({.group = group, .stage = name, .axes = {i}}); }
+  return out;
+}
+
 std::vector<std::string> Axis::keys() const {
   if (coupled) { return {"LOADS", "STORES"}; }
   return {option->key};
@@ -446,41 +476,64 @@ void combos(const Env& env, const FFTConfig& fft, const UseConfig& best, const S
   }
   if (inBranch.empty()) { return; }
 
+  auto seedsOn = [&](const std::vector<size_t>& unit) {
+    return seedsOf(env, fft, out.axes, unit, inBranch, strategy.comboTop);
+  };
   auto seedsIn = [&](const std::vector<Group>& groups) {
     std::vector<size_t> unit;
     for (size_t i = 0; i < out.axes.size(); ++i) {
       const Option& option = *out.axes[i].option;
       if (!option.structural && std::ranges::find(groups, option.group) != groups.end()) { unit.push_back(i); }
     }
-    return seedsOf(env, fft, out.axes, unit, inBranch, strategy.comboTop);
+    return seedsOn(unit);
   };
 
-  // A dimension with no answer but the background's own adds nothing to a cross product.
-  auto combine = [&](const std::vector<std::vector<Seed>>& dims, const std::string& stage, u32 tier) {
+  // A group's dimensions at tier 2: one per bin, so that what two bins of one group found is tried together.
+  auto dimsOf = [&](Group group) {
+    std::vector<std::vector<Seed>> dims;
+    if (strategy.bootstrapTree) {
+      dims.push_back(seedsIn({group}));
+      return dims;
+    }
+    for (const Bin& bin : binsOf(out.axes, group, strategy, false)) { dims.push_back(seedsOn(bin.axes)); }
+    return dims;
+  };
+
+  // A dimension with no answer but the background's own adds nothing to a cross product, and a group's own bins are
+  // worth combining only where two of them have answers.
+  auto combine = [&](const std::vector<std::vector<Seed>>& dims, const std::string& stage, u32 tier, size_t atLeast) {
     std::vector<std::vector<Seed>> useful;
     for (const std::vector<Seed>& seeds : dims) {
       if (seeds.size() > 1) { useful.push_back(seeds); }
     }
-    if (!useful.empty()) { enumerator.combine(useful, stage, tier, strategy.maxPoints); }
+    if (!useful.empty() && useful.size() >= atLeast) { enumerator.combine(useful, stage, tier, strategy.maxPoints); }
   };
 
   ClusterGraph const graph = clusterGraph(env, fft, canonicalConfig(env, fft, best));
   for (const std::vector<Group>& cluster : graph.clusters) {
-    if (cluster.size() < 2) { continue; }
     std::vector<std::vector<Seed>> dims;
     std::string stage;
     for (Group const group : cluster) {
-      dims.push_back(seedsIn({group}));
+      std::ranges::move(dimsOf(group), std::back_inserter(dims));
       stage += (stage.empty() ? "" : "+") + std::string{toString(group)};
     }
-    combine(dims, stage, 2);
+    if (cluster.size() >= 2) {
+      combine(dims, stage, 2, 1);
+    } else if (!strategy.bootstrapTree) {
+      combine(dims, stage + " combined", 2, 2);
+    }
+  }
+  if (!strategy.bootstrapTree) {
+    for (Group const group : graph.topTier) {
+      combine(dimsOf(group), std::string{toString(group)} + " combined", 2, 2);
+    }
   }
 
   if (strategy.comboTiers < 3) { return; }
   std::vector<std::vector<Seed>> dims;
   for (Group const group : graph.topTier) { dims.push_back(seedsIn({group})); }
   for (const std::vector<Group>& cluster : graph.clusters) { dims.push_back(seedsIn(cluster)); }
-  combine(dims, "all", 3);
+  combine(dims, "all", 3, 1);
 }
 
 }  // namespace
@@ -516,23 +569,9 @@ ProbeList probesOf(const Env& env, const FFTConfig& fft, const UseConfig& best, 
   case Strategy::Kind::Hybrid:
   case Strategy::Kind::Groups:
     for (Group const group : allGroups()) {
-      std::string const name = toString(group);
-      if (structuralSteps) {
-        for (size_t const i :
-             axesWhere([&](const Axis& a) { return a.option->group == group && a.option->structural; })) {
-          enumerator.enumerate({i}, name, ~0u);
-        }
-      }
-
-      std::vector<size_t> const rest =
-        axesWhere([&](const Axis& a) { return a.option->group == group && !a.option->structural; });
-      if (rest.empty()) { continue; }
-      size_t const width = std::min<size_t>(strategy.maxPermute, rest.size());
-      size_t const bins = (rest.size() + width - 1) / width;
-      for (size_t b = 0; b < bins; ++b) {
-        auto const first = rest.begin() + ptrdiff_t(b * width);
-        std::vector<size_t> const bin{first, first + ptrdiff_t(std::min<size_t>(width, rest.end() - first))};
-        enumerator.enumerate(bin, bins > 1 ? name + " " + std::to_string(b + 1) : name, strategy.maxPoints);
+      for (const Bin& bin : binsOf(out.axes, group, strategy, structuralSteps)) {
+        bool const whole = bin.structural || (out.axes[bin.axes.front()].option->alone && !strategy.bootstrapTree);
+        enumerator.enumerate(bin.axes, bin.stage, whole ? ~0u : strategy.maxPoints);
       }
     }
     for (size_t const i : axesWhere([](const Axis& a) { return a.option->group == Group::None; })) {

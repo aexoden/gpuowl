@@ -215,22 +215,31 @@ TEST(a_stage_is_listed_a_window_at_a_time_in_the_order_it_is_listed_whole) {
   }
 }
 
-TEST(a_group_of_hundreds_of_millions_of_points_is_listed_a_window_at_a_time) {
-  // What a run with both limits lifted chose its next item from on a P100 under CUDA: FFT6431's Cuda group is nine
-  // axes, GRAPHS, L1CUDA and seven 14-valued register counts, 2 x 4 x 14^7 points.  Listed whole, the choice never
-  // came.
+TEST(a_register_cap_is_searched_a_key_at_a_time) {
+  // FFT6431 on a P100 under CUDA: GRAPHS and L1CUDA, and seven 14-valued register caps, each of one kernel.  Permuted
+  // together they were 2 x 4 x 14^7 points; searched a key at a time they are GRAPHS x L1CUDA and 13 moves each.
   Env const p100{.isNvidia = true, .cudaBackend = true, .computeCapability = 600, .pdlLaunch = true};
-  ProbeList const list = probesOf(p100, FFTConfig{"51:1K:4:256:212"}, {},
-                                  {.maxPermute = NO_LIMIT, .maxPoints = NO_LIMIT}, {}, true, PROBE_WINDOW);
-  auto const cuda = std::ranges::find(list.unlisted, std::string{"Cuda"}, &ProbeList::Unlisted::stage);
-  CHECK(cuda != list.unlisted.end());
-  if (cuda == list.unlisted.end()) { return; }
-  CHECK(cuda->most > 800'000'000);
+  FFTConfig const fft{"51:1K:4:256:212"};
+  Strategy const lifted{.maxPermute = NO_LIMIT, .maxPoints = NO_LIMIT};
+  ProbeList const list = probesOf(p100, fft, {}, lifted, {}, true, PROBE_WINDOW);
+  std::map<std::string, size_t> const stages = stagesOf(list);
+  CHECK_EQ(stages.at("Cuda"), size_t(2 * 4 - 1 + 7 * 13 + 1));
+  for (const Probe& p : list.probes) {
+    size_t regs = 0;
+    for (const auto& [axis, position] : p.moves) { regs += list.axes[axis].option->alone; }
+    CHECK(regs <= 1);
+    CHECK(regs == 0 || p.moves.size() == 1);
+  }
 
-  // The group's structural steps are a part of their own under the same name, listed whole.
-  auto const listed = std::ranges::count_if(list.probes, [&](const Probe& p) { return p.part == cuda->part; });
-  CHECK_EQ(size_t(listed), size_t(PROBE_WINDOW));
-  CHECK(std::ranges::any_of(list.probes, [&](const Probe& p) { return p.stage == "Cuda" && p.part != cuda->part; }));
+  // The largest stage left is Memory's, listed a window at a time.
+  auto const memory = std::ranges::find(list.unlisted, std::string{"Memory"}, &ProbeList::Unlisted::stage);
+  CHECK(memory != list.unlisted.end());
+  if (memory != list.unlisted.end()) { CHECK(memory->most >= 4499 - PROBE_WINDOW); }
+
+  // The bootstrap's tree keeps the caps in their group's bins, as it always has.
+  Strategy const tree{.kind = Strategy::Kind::Hybrid, .bootstrapTree = true};
+  std::map<std::string, size_t> const bins = stagesOf(probesOf(p100, fft, {}, tree));
+  CHECK(bins.contains("Cuda 1") && bins.contains("Cuda 3"));
 }
 
 TEST(a_structural_step_stands_alone_and_opens_its_dependents) {

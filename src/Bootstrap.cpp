@@ -387,7 +387,8 @@ BootstrapState Bootstrap::state(const TuneDB& db, u32 env, const std::set<std::s
         for (const Reading& r : readings) { asked += configText(r.config) + "@" + std::to_string(r.cost) + " "; }
         auto& [was, list] = stageLists_[{f, tier}];
         if (was != asked) {
-          Strategy const tree{.kind = Strategy::Kind::Hybrid, .comboTop = COMBO_TOP, .comboTiers = tier};
+          Strategy const tree{
+            .kind = Strategy::Kind::Hybrid, .comboTop = COMBO_TOP, .comboTiers = tier, .bootstrapTree = true};
           list = probesOf(env_, families_[f].fft, s.decided, tree, readings);
           was = std::move(asked);
         }
