@@ -135,6 +135,10 @@ TuneStatus statusOf(const Scheduler& scheduler, TuneDB& db, u32 env, double stop
   }
   a.owed = u32(gatesOwed(db, env).size());
   a.rejected = u32(rejectedSets(db, env).size());
+
+  for (Fault& f : faultsOf(db, env)) {
+    if (f.what == Fault::What::Wrong) { out.wrong.push_back(std::move(f)); }
+  }
   return out;
 }
 
@@ -205,6 +209,7 @@ void logStatus(const TuneStatus& s, const DbEnv& env, const std::string& valuedA
         s.faults.size(), s.faults.size() == 1 ? "configuration is" : "configurations are");
     for (const Attempt& fault : s.faults) { log("tune: status:   %s\n", reproduce(fault).c_str()); }
   }
+  if (!s.wrong.empty()) { logFaults(s.wrong, "tune: status: "); }
 }
 
 }  // namespace tune

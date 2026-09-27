@@ -120,6 +120,10 @@ struct TuneCommand {
   // `run` and `emit`: whether to write the tune.txt an older binary reads, beside every selection file published.
   bool tuneTxt = false;
 
+  // `run` only: a full-screen view of the run in place of the lines it writes to a terminal.  Display only: not part
+  // of the settings a run records, and the log file is the same either way.
+  bool dashboard = false;
+
   // `status`: the settings named, as a run takes them, which replace those of the latest run.
   std::string settings;
 };

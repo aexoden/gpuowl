@@ -82,6 +82,15 @@ string reexec() {
 #ifdef _WIN32
   return "this platform has no exec";
 #else
+  // First whatever happens next: a process that cannot restart is about to end, which leaves the terminal to the
+  // shell, and what it says about why belongs where the shell's user can read it.
+  std::function<void()> first;
+  {
+    std::unique_lock const lock{hookMutex};
+    first = hook;
+  }
+  if (first) { first(); }
+
   u32 const next = generation() + 1;
   if (next > maxRestarts()) {
     return "already restarted " + to_string(generation()) +
@@ -89,13 +98,6 @@ string reexec() {
   }
   if (savedArgv.empty()) { return "the command line was not recorded"; }
   if (setenv(CARRY, to_string(next).c_str(), 1)) { return "could not pass the generation count on"; }
-
-  std::function<void()> first;
-  {
-    std::unique_lock const lock{hookMutex};
-    first = hook;
-  }
-  if (first) { first(); }
   fflush(nullptr);
 
   if (!startDir.empty()) {

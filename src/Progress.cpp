@@ -178,6 +178,22 @@ bool liveTerminal() {
 #endif
 }
 
+void Watches::measuring(const std::string& what) {
+  for (Watch* w : watches_) { w->measuring(what); }
+}
+
+void Watches::progress(const RunProgress& p) {
+  for (Watch* w : watches_) { w->progress(p); }
+}
+
+void Watches::state(const QueueState& q) {
+  for (Watch* w : watches_) { w->state(q); }
+}
+
+void Watches::finished(const Finished& f) {
+  for (Watch* w : watches_) { w->finished(f); }
+}
+
 RunView::RunView(bool live) : live_{live}, start_{Clock::now()}, link_{logLink()} {
   if (live_) {
     setStdoutSink([this](std::string_view text) { paint(text); });

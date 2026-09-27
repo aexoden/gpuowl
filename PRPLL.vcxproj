@@ -77,6 +77,9 @@
     <ClCompile Include=".\src\LLCheck.cpp" />
     <ClCompile Include=".\src\Status.cpp" />
     <ClCompile Include=".\src\Progress.cpp" />
+    <ClCompile Include=".\src\Faults.cpp" />
+    <ClCompile Include=".\src\History.cpp" />
+    <ClCompile Include=".\src\Dashboard.cpp" />
     <ClCompile Include=".\src\UseResolve.cpp" />
     <ClCompile Include=".\src\version.cpp" />
     <ClCompile Include=".\src\Worktodo.cpp" />
