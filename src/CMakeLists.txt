@@ -46,6 +46,9 @@ add_executable(prpll
   LLCheck.cpp
   Status.cpp
   Progress.cpp
+  Faults.cpp
+  History.cpp
+  Dashboard.cpp
   fs.cpp
   )
 

@@ -1013,6 +1013,12 @@ QueueReport runQueue(Scheduler& scheduler, TuneDB& db, u32 env, Bench& bench, co
     if (watch) {
       watch->progress(
         progressOf(out, objective.T(), objective.measured(), ranked, stop, stop * valuing.T(), state.complete));
+      watch->state({.scheduler = scheduler,
+                    .db = db,
+                    .env = env,
+                    .objective = objective,
+                    .ranked = ranked,
+                    .floor = stop * valuing.T()});
     }
     std::optional<Item> const item = scheduler.pick(ranked, stop * valuing.T());
     if (!item) {
@@ -1100,10 +1106,11 @@ QueueReport runQueue(Scheduler& scheduler, TuneDB& db, u32 env, Bench& bench, co
     rescore();
     publish(objective, lines);
 
+    std::string outcome;
     if (reads && result.completed) {
       const Env& device = scheduler.bootstrap().env();
-      std::string const outcome = item->kind == ItemKind::Gate ? gateOutcome(db, env, device, fft, *item)
-                                                               : reachOutcome(db, env, device, fft, *item);
+      outcome = item->kind == ItemKind::Gate ? gateOutcome(db, env, device, fft, *item)
+                                             : reachOutcome(db, env, device, fft, *item);
       log("tune: %u. %s %s at %" PRIu64 ": z %.2f over %u rounding errors, check %s, %.1f s -- %s; T %.3f -> %.3f "
           "us/it\n",
           out.items, toString(item->kind), label.c_str(), item->exponent, reading.z, reading.n,
@@ -1117,11 +1124,30 @@ QueueReport runQueue(Scheduler& scheduler, TuneDB& db, u32 env, Bench& bench, co
           item->exponent, call.c_str());
     }
 
+    std::string best;
     if (probing) {
       std::optional<std::string> const bestAfter = bestOf(db, env, scheduler.bootstrap().env(), *baseline);
       if (bestAfter && bestAfter != bestBefore) {
         log("tune: %s is now best at %s\n", baseline->label().c_str(), bestAfter->c_str());
+        best = *bestAfter;
       }
+    }
+    if (watch) {
+      watch->finished({.n = out.items,
+                       .kind = item->kind,
+                       .label = label,
+                       .exponent = item->exponent,
+                       .call = reads ? "" : call,
+                       .completed = result.completed,
+                       .seconds = result.seconds,
+                       .usPerIt = result.usPerIt,
+                       .reads = reads,
+                       .z = reading.z,
+                       .checkOk = reading.checkOk,
+                       .outcome = outcome,
+                       .before = before,
+                       .after = objective.T(),
+                       .best = std::move(best)});
     }
   }
 

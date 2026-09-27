@@ -272,6 +272,10 @@ each piece's best answers with the others'; `3`: everything is combined. Default
 **`tunetxt=0|1`**: also write `tune.txt`, the file older PRPLL binaries and `-oldtune` use, after every publish.
 Default `0`, so an existing `tune.txt` is never overwritten. See [Files](#files) for what it holds.
 
+**`dashboard=0|1`**: show the run as a full-screen view instead of scrolling lines; see
+[The dashboard](#the-dashboard). Default `0`. It changes only what the terminal shows: the log file is the same either
+way, and the setting is not part of what the run records, so `-tune status` and a resumed run are unaffected.
+
 
 ## Watching and stopping a run
 
@@ -310,6 +314,15 @@ Besides those lines:
 - On a terminal, the bottom line is redrawn in place with the measurement in progress. It is never written to the log
   file.
 
+Any configuration that has taken the device down, or computed a wrong answer, is listed as soon as a run starts (so
+after a restart the new process says it again) and again in the summary, each with the command line that reproduces
+it. Neither should ever happen: either is a kernel or driver bug, worth reporting with that line.
+
+```text
+tune: 1 configuration took the device down and will not be built again on this device; a kernel or driver bug, worth reporting with the line that reproduces it:
+tune:   -fft 1K:10:256:010 -use FAST_BARRIER=1,INPLACE=1,LOADS=10000,WMUL=1   (prp at 95537053)
+```
+
 When the run ends, whether by itself or by Ctrl-C, it prints a summary: what was measured, why it stopped, per FFT type
 what was measured and what was not (and how large a gain would have been needed to justify measuring it), what it has
 learnt about how much a change of options tends to gain, and the drift of the GPU over the session. Stopped ten
@@ -326,7 +339,16 @@ tune: summary: 100% of the prp weight, over 118063003-136279841, has no entry an
 ...
 tune: summary: drift: 2 readings of 1K:13:256:212@118063003, ratio 1.0000 -> 1.0000 (1.0000 to 1.0000), within the warning
 tune: T 906.059 -> 888.306 us/it, stopped before the queue was done
+tune: benefit: at 118063003 nothing measured is published yet; env 1 has been measured for 10:02 over 1 session
 tune: published /home/me/prpll/gpu1/selection.txt
+```
+
+The `benefit` line is what all the tuning so far has bought at the probe exponent: what a normal run now spends per
+iteration there, against the fastest configuration measured there at the built-in options (the drift anchor race and
+the bootstrap always measure some), for example:
+
+```text
+tune: benefit: at 89843291 production runs 1K:10:256:010 at 516.247 us/it, 17.1% less per iteration than the best measured there at the built-in defaults (1K:10:256:212, 622.880 us/it); env 1 has been measured for 2:57:26 over 3 sessions
 ```
 
 **Ctrl-C** stops cleanly at any point: the measurement in progress is abandoned, and `selection.txt` already holds
@@ -334,6 +356,41 @@ everything measured before it. Pressing Ctrl-C is not treated as a failure of th
 
 **While it runs**, `prpll -dir <same directory> -tune status` in another terminal shows where it stands, without
 disturbing it ([`-tune status`](#-tune-status)).
+
+### The dashboard
+
+With `dashboard=1` and a terminal on stdout, the run takes over the terminal's alternate screen, as `top` or `less` do,
+and redraws it twice a second. Quitting gives back the screen you had before, and the summary prints there as usual.
+Every line still goes to the log file exactly as it does without the dashboard. Without a terminal (output redirected
+to a file, say), the setting is ignored with a note. From top to bottom:
+
+- **The header**: the device, the workload and probe, how long this run and every session of this env so far have
+  measured, and the restart generation when a restart has happened. Below it, what the run is doing (the bootstrap,
+  accuracy readings, covering the workload, or searching), `T`, what the best item left is worth, and how much is left
+  worth running.
+- **FAULTS**, in red, only when there are any: every configuration that took the device down or computed a wrong
+  answer on this env, newest first, each as the `-fft`/`-use` line that reproduces it.
+- **NOW**: the measurement in progress and how long it has taken so far.
+- **BENEFIT**: the `benefit` line described above, and under it two charts over all the measuring this env has had,
+  across every session and restart: `T` over the workload, and what a normal run would spend per iteration at the
+  probe. They are rebuilt from the timestamps in `tunedb.txt` when the run starts (for up to 10 seconds; a long
+  history is then drawn more coarsely), so they need nothing that an older build did not write. The part of the `T`
+  chart drawn dim is where some of the workload had no measured FFT yet, so `T` still included estimates. `^ this run`
+  marks where the current run began.
+- **PRODUCTION**: what `selection.txt` runs over the workload, one row per stretch of exponents served by the same FFT
+  and options: its share of the workload, its cost, and how that changed since this run began. A stretch nothing
+  measured serves yet is marked `prior`. On a small screen the stretches carrying the least weight are counted rather
+  than listed.
+- **RECENT**: the measurements this run has made, newest first, with their results; a new best set for an FFT is shown
+  in green with the set.
+- **NEXT**: what the queue would measure next and what each is worth.
+- **EVENTS**: every other line the log gets (the bootstrap's decisions, the default options moving, notes and
+  warnings), newest first.
+
+From 160 columns the lower panels sit side by side; from 50 rows the charts are drawn taller. It works in any size, but
+at least 120x40 shows everything usefully. Set `NO_COLOR` for no colours; a locale that is not UTF-8 gets plain ASCII.
+If the process is killed by something that cannot be caught (`kill -9`), the terminal may be left in the alternate
+screen: `reset` restores it.
 
 
 ## How a normal run uses the result
@@ -423,7 +480,7 @@ tune: T = 1595.272 us/it with nothing measured, 0.0% of the weight on measured e
 Where the measurements stand: which GPU and build they are for, whether a run is in progress and what it is measuring,
 the latest run and its settings, `T` and how much of the workload is measured, per FFT type how many FFTs are measured
 and how many are not, what the accuracy checks made of the published entries, the next few measurements a run would
-take, and any configurations that crashed the GPU.
+take, and any configurations that crashed the GPU or computed a wrong answer.
 
 ```sh
 prpll -tune status
@@ -451,7 +508,7 @@ evaluates the queue with the latest run's settings and the pending work that run
 replaces that run's (`workload=` or `probe=` replaces both), so you can see what a different run would do next. The
 "next" list is what a run started now would do; a run in progress may differ slightly, having learnt things it has not
 yet written down.
-It takes `env=`, and every setting a run takes except `tunetxt=`.
+It takes `env=`, and every setting a run takes except `tunetxt=` and `dashboard=`.
 
 ### `-tune emit`
 

@@ -2755,11 +2755,23 @@ TEST(a_watch_is_told_each_call_as_the_log_names_it_and_where_the_run_stands_afte
   struct Recorder final : Watch {
     std::vector<std::string> events;
     std::vector<RunProgress> stands;
+    std::vector<double> stateT;
+    std::vector<size_t> ranked;
+    std::vector<Finished> done;
 
     void measuring(const std::string& what) override { events.push_back("? " + what); }
     void progress(const RunProgress& p) override {
       events.push_back("=");
       stands.push_back(p);
+    }
+    void state(const QueueState& q) override {
+      events.push_back("s");
+      stateT.push_back(q.objective.T());
+      ranked.push_back(q.ranked.size());
+    }
+    void finished(const Finished& f) override {
+      events.push_back("!");
+      done.push_back(f);
     }
   };
 
@@ -2770,12 +2782,19 @@ TEST(a_watch_is_told_each_call_as_the_log_names_it_and_where_the_run_stands_afte
   QueueReport const report =
     runQueue(scheduler, f.db, f.env, bench, [](const Objective&, const Defaults&) {}, STOP, &watch);
 
-  // Where the run stands comes first, and again after every call, so a call is never left as the last word.
+  // Where the run stands comes first, and again after every call, so a call is never left as the last word; the state
+  // it was ranked from straight after it; and each call's end before the next is named.
   CHECK(!watch.events.empty() && watch.events.front() == "=");
-  CHECK(!watch.events.empty() && watch.events.back() == "=");
+  CHECK(watch.events.size() > 1 && watch.events.back() == "s" && watch.events[watch.events.size() - 2] == "=");
   for (size_t i = 1; i < watch.events.size(); ++i) {
     CHECK(!(watch.events[i].starts_with("?") && watch.events[i - 1].starts_with("?")));
+    CHECK((watch.events[i] == "s") == (watch.events[i - 1] == "="));
   }
+  CHECK_EQ(watch.stateT.size(), watch.stands.size());
+  for (size_t i = 0; i < std::min(watch.stateT.size(), watch.stands.size()); ++i) {
+    CHECK(near(watch.stateT[i], watch.stands[i].T));
+  }
+  CHECK(!watch.ranked.empty() && watch.ranked.front() > 0);
 
   // Each call is named as the bench was asked for it, numbered as the log numbers it, and the anchor by name.
   std::vector<std::string> calls;
@@ -2794,6 +2813,21 @@ TEST(a_watch_is_told_each_call_as_the_log_names_it_and_where_the_run_stands_afte
     if (o != "anchor") { asked.push_back(o); }
   }
   CHECK_EQ(asked.size(), calls.size());
+
+  // Each call's end names it as its start did, numbered as the log numbers it, with T as the run's own figures moved.
+  CHECK_EQ(watch.done.size(), calls.size());
+  for (size_t i = 0; i < std::min(watch.done.size(), calls.size()); ++i) {
+    const Finished& f = watch.done[i];
+    CHECK_EQ(f.n, u32(i + 1));
+    CHECK_EQ(std::to_string(f.n) + ". " + toString(f.kind) + " " + f.label + " at " + std::to_string(f.exponent) +
+               f.call,
+             calls[i]);
+    CHECK(f.completed);
+    CHECK(f.reads ? f.usPerIt == 0 && f.z > 0 : f.usPerIt > 0);
+    if (i > 0) { CHECK(near(f.before, watch.done[i - 1].after)); }
+  }
+  if (!watch.done.empty()) { CHECK(near(watch.done.back().after, report.endT)); }
+
   for (size_t i = 0; i < std::min(asked.size(), calls.size()); ++i) {
     CHECK(calls[i].starts_with(std::to_string(i + 1) + ". "));
     std::string const at = asked[i].starts_with("gate ") ? asked[i].substr(5) : asked[i];

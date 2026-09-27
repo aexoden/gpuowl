@@ -5,9 +5,12 @@
 #include "Accuracy.h"
 #include "Args.h"
 #include "BuildId.h"
+#include "Dashboard.h"
 #include "Emit.h"
+#include "Faults.h"
 #include "File.h"
 #include "GpuCommon.h"
+#include "History.h"
 #include "log.h"
 #include "Measure.h"
 #include "Objective.h"
@@ -699,6 +702,9 @@ TuneCommand parseTuneCommand(std::string_view text) {
     } else if (key == "tunetxt" && (isRun || out.verb == TuneVerb::Emit)) {
       if (val != "0" && val != "1") { throw who + ": tunetxt= takes 0 or 1"; }
       out.tuneTxt = val == "1";
+    } else if (key == "dashboard" && isRun) {
+      if (val != "0" && val != "1") { throw who + ": dashboard= takes 0 or 1"; }
+      out.dashboard = val == "1";
     } else if (key == "maxPermute" && searches) {
       maxPermute = parseLimit(key, val);
     } else if (key == "maxPoints" && searches) {
@@ -728,7 +734,7 @@ TuneCommand parseTuneCommand(std::string_view text) {
       case TuneVerb::Run:
         accepted = "workload=<lo>-<hi>, probe=<E>, probeWeight=<0..1>, kinds=prp|ll|prp+ll, bootstrap=0|1,"
                    " strategy=hybrid|single|groups|permute:<KEY>+<KEY>..., maxPermute=<N>|all, maxPoints=<N>|all,"
-                   " comboTop=<N>, comboTiers=1|2|3, stop=<P>%|0, tunetxt=0|1,"
+                   " comboTop=<N>, comboTiers=1|2|3, stop=<P>%|0, tunetxt=0|1, dashboard=0|1,"
                    " or a subcommand: emit, reset, adopt, compact, scope, status, accuracy";
         break;
       case TuneVerb::Status:
@@ -1103,6 +1109,18 @@ bool runTuneCommand(const TuneCommand& command, const Args& args, const fs::path
   return true;
 }
 
+namespace {
+
+// "prp+ll 67000000-80000000, probe 67513549"
+[[nodiscard]] std::string scopeText(const RunScope& scope) {
+  std::string kinds;
+  for (const Grid& grid : scope.grids) { kinds += (kinds.empty() ? "" : "+") + std::string{toString(grid.kind)}; }
+  return kinds + " " + std::to_string(scope.lo) + "-" + std::to_string(scope.hi) + ", probe " +
+    std::to_string(scope.probe);
+}
+
+}  // namespace
+
 MeasureOutcome runTune(const GpuCommon& shared, const TuneCommand& command) {
   if (command.verb == TuneVerb::Accuracy) { return runAccuracy(shared, command); }
 
@@ -1140,6 +1158,8 @@ MeasureOutcome runTune(const GpuCommon& shared, const TuneCommand& command) {
 
   u32 const envId = session.envId();
   reportScope(scope, files, Objective{db, envId, scope}, "against env " + std::to_string(envId));
+  // Every generation says it again, so that a restart after a fault is never the only record of the fault.
+  logFaults(faultsOf(db, envId), "tune: ");
 
   Scheduler scheduler = schedulerFor(env, scope, command, args.blockSize);
   std::string shaping;
@@ -1178,9 +1198,28 @@ MeasureOutcome runTune(const GpuCommon& shared, const TuneCommand& command) {
     if (!publish(out, db, defaults, from, compat)) { log("tune: %s could not be published\n", out.string().c_str()); }
   };
 
+  bool const dashboard = command.dashboard && liveTerminal();
+  if (command.dashboard && !dashboard) {
+    log("tune: dashboard=1 needs a terminal on stdout, which this is not, so the run writes its usual lines\n");
+  }
+
   SessionBench bench{session, args.blockSize};
   QueueReport const report = [&] {
     // Gone before the summary, which is the run's last word and belongs on a terminal with nothing drawn over it.
+    if (dashboard) {
+      RunView lines{false};
+      DashboardView board{{.device = env.deviceName + ", " + (env.cudaBackend ? "CUDA" : "OpenCL") + ", device " +
+                             std::to_string(args.device) + ", env " + std::to_string(envId),
+                           .scope = scopeText(scope),
+                           .generation = restart::generation(),
+                           .db = dbPath,
+                           .env = envId,
+                           .session = session.id(),
+                           .card = env,
+                           .runScope = scope}};
+      Watches both{{&lines, &board}};
+      return runQueue(scheduler, db, envId, bench, publishNow, command.stop, &both);
+    }
     RunView view{liveTerminal()};
     return runQueue(scheduler, db, envId, bench, publishNow, command.stop, &view);
   }();
@@ -1188,6 +1227,15 @@ MeasureOutcome runTune(const GpuCommon& shared, const TuneCommand& command) {
   logSummary(summarize(scheduler, db, envId, session.id(), report, command.stop));
   log("tune: T %.3f -> %.3f us/it%s\n", report.startT, report.endT,
       report.stopped ? ", stopped before the queue was done" : "");
+  {
+    Benefit const benefit = benefitOf(db, envId, env, Objective{db, envId, scope}, probeKind(scope), scope.probe);
+    std::string text;
+    if (File file = File::openRead(dbPath)) { text = file.readAll(); }
+    std::vector<SessionSpan> const spans = spansOf(text, envId);
+    log("tune: benefit: %s; env %u has been measured for %s over %zu %s\n", benefitText(benefit).c_str(), envId,
+        clockText(measuringTime(spans)).c_str(), spans.size(), spans.size() == 1 ? "session" : "sessions");
+  }
+  logFaults(faultsOf(db, envId), "tune: ");
   log("tune: published %s%s\n", out.string().c_str(), compat ? (" and " + compat->string()).c_str() : "");
   if (!takeover.configKeys.empty()) {
     std::string keys;

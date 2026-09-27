@@ -97,6 +97,47 @@ struct Paint {
 // Whether stdout is a terminal the bottom line can be drawn on.
 [[nodiscard]] bool liveTerminal();
 
+// One item the queue has finished, as the line it logs says it.
+struct Finished {
+  u32 n = 0;
+  ItemKind kind = ItemKind::Baseline;
+  std::string label;
+  u64 exponent = 0;
+
+  // " (call <n>)" or " (resumed at call <n>)", as the log writes it after the exponent; empty for a reading.
+  std::string call;
+
+  bool completed = false;
+  double seconds = 0;
+
+  // A timing's.
+  double usPerIt = 0;
+
+  // A gate's or a reach's: the reading, and what the gate made of it.
+  bool reads = false;
+  double z = 0;
+  bool checkOk = true;
+  std::string outcome;
+
+  // T before the item and after it.
+  double before = 0;
+  double after = 0;
+
+  // Where the item moved its entry's best set: the new one, as the log says it.
+  std::string best;
+};
+
+// What the queue ranks from, for a watch that wants more of it than RunProgress holds.  Valid only for the call it is
+// passed to, on the thread running the queue.
+struct QueueState {
+  const Scheduler& scheduler;
+  const TuneDB& db;
+  u32 env = 0;
+  const Objective& objective;
+  const std::vector<Item>& ranked;
+  double floor = 0;
+};
+
 // What runQueue() tells whoever is watching it.
 class Watch {
 public:
@@ -107,6 +148,26 @@ public:
 
   // Once before the first item, and again after each item and each anchor reading.
   virtual void progress(const RunProgress& p) = 0;
+
+  // Straight after each progress().
+  virtual void state(const QueueState& /*q*/) {}
+
+  // After each item, as its line is logged.
+  virtual void finished(const Finished& /*f*/) {}
+};
+
+// Several watches, each told everything in the order given.
+class Watches final : public Watch {
+public:
+  explicit Watches(std::vector<Watch*> watches) : watches_{std::move(watches)} {}
+
+  void measuring(const std::string& what) override;
+  void progress(const RunProgress& p) override;
+  void state(const QueueState& q) override;
+  void finished(const Finished& f) override;
+
+private:
+  std::vector<Watch*> watches_;
 };
 
 // The periodic line and the heartbeat through log(), and with `live` the bottom line on the terminal, for as long as

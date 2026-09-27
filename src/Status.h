@@ -12,6 +12,7 @@
 #pragma once
 
 #include "common.h"
+#include "Faults.h"
 #include "Scheduler.h"
 #include "Summary.h"
 #include "TuneDB.h"
@@ -93,6 +94,9 @@ struct TuneStatus {
 
   // Attempts a process on the env died holding, which no run makes again.
   std::vector<Attempt> faults;
+
+  // Configurations measured computing a wrong answer on the env, which are held out of what is published.
+  std::vector<Fault> wrong;
 };
 
 // A database file's text up to the end of its last complete line: a run appends one line at a time, and a reader can
