@@ -388,7 +388,9 @@ string clDefines(Args& args, cl_device_id id, FFTConfig fft, const vector<KeyVal
       config["WMUL"] = to_string(wmul);
       log("WMUL=%u is not usable for this FFT on this device.  Changing to WMUL=%u\n", requested, wmul);
     }
-    if (fft.shape.width * shufl_bytes_w * wmul >= lds_limit) {
+    auto const ldsPad = config.find("LDSPAD_W");
+    bool const padded = ldsPad == config.end() || atoi(ldsPad->second.c_str()) != 0;
+    if (padded && fft.shape.width * shufl_bytes_w * wmul >= lds_limit) {
       log("Local shared memory limit of %uKB exceeded.  Changing to LDSPAD_W=0\n", lds_limit / 1024);
       config["LDSPAD_W"] = to_string(0);
     }
