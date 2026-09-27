@@ -211,6 +211,24 @@ TEST(what_decides_the_rounding_is_the_keys_held_at_a_value_that_changes_it) {
   CHECK(roundingOf(env, fp64(), {{"TAIL_TRIGS32", "0"}}).empty());
 }
 
+// A selection file's limit records the rounding alone, and production compares it with the rounding of a full set: the
+// two agree only if whether a rounding key applies, and what its default is, never turns on a key that does not round.
+TEST(the_rounding_of_a_rounding_is_itself) {
+  for (const Option& option : allOptions()) {
+    if (option.accuracyImpact == AccuracyImpact::None) { continue; }
+    for (const std::string& key : option.dependsOn) {
+      const Option* const other = findOption(key);
+      CHECK(other && other->accuracyImpact != AccuracyImpact::None);
+    }
+  }
+
+  Env const env = nvidia();
+  UseConfig const set{{"MM_CHAIN", "1"}, {"MM2_CHAIN", "0"}, {"TAIL_KERNELS", "1"}, {"UNROLL_W", "1"}};
+  UseConfig const rounding = roundingOf(env, fp64(), set);
+  CHECK(!rounding.empty());
+  CHECK(roundingOf(env, fp64(), rounding) == rounding);
+}
+
 TEST(a_reference_is_the_set_with_its_accuracy_keys_at_their_defaults) {
   Env const env = nvidia();
   UseConfig const moved{{"TAIL_TRIGS32", "0"}, {"UNROLL_W", "1"}};

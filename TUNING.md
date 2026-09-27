@@ -438,7 +438,7 @@ tune: status: valued as session 1's run, over the 2 assignments pending when it 
 tune: status: T 888.322 us/it, 0.0% of the weight on measured entries
 tune: status: FFT64: 1 of 600 entries measured, 599 waiting on the bootstrap
 ...
-tune: status: accuracy: 0 entries published (0 exact arithmetic, 0 confirmed, 0 unvalidated); 0 held below the table's reach, 0 raised above it; 1 set owed a reading, 0 rejected
+tune: status: accuracy: 0 entries published (0 exact arithmetic, 0 confirmed, 0 unvalidated); 0 held below the table's reach, 0 raised above it; 0 limits for options no entry runs; 1 set owed a reading, 0 rejected
 tune: status: next, as a run started now would rank them:
 tune: status:   1. bootstrap FFT64 1K:13:256:212 Memory STORES=3: by rule, ~26 s
 tune: status:   2. bootstrap FFT64 1K:13:256:212 Memory ENABLE_RESTRICT=1: by rule, ~26 s
@@ -532,7 +532,7 @@ All in the run directory (`-dir`):
 | --- | --- | --- |
 | `tunedb.txt` | tuning runs, `reset`, `adopt`, `compact` | every measurement, with the exact options it was taken under. Appended to as a run goes. |
 | `tunedb.txt.lock` | tuning runs and the subcommands that write | an empty file that is locked while the database is being written, so that two processes cannot write it at once |
-| `selection.txt` | tuning runs (after every measurement), `emit` | what normal runs use: the default `use` lines, then one `entry` and `opts` line per published configuration, and `exclude` lines for configurations that computed wrong answers. Replaced atomically. |
+| `selection.txt` | tuning runs (after every measurement), `emit` | what normal runs use: the default `use` lines, then one `entry` and `opts` line per published configuration, `limit` lines for options no entry runs that were measured to hold only to a lower exponent, and `exclude` lines for configurations that computed wrong answers. Replaced atomically. |
 | `tune.txt` | tuning runs and `emit` with `tunetxt=1`; also `-oldtune` | the FFT list older binaries read, holding only FFTs measured as safe to their full standard range under default rounding |
 
 `tunedb.txt` is worth keeping: it is the only record of the measurements, and deleting it means tuning from scratch.

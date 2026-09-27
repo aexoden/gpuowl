@@ -337,6 +337,22 @@ u32 answerOwed(TuneDB& db, const std::function<RoeRow(const OptionSet&, u64)>& z
   return taken;
 }
 
+std::vector<SelectionEntry> publishedOf(const SelectionFile& file, const std::string& spec) {
+  std::vector<SelectionEntry> out;
+  for (const SelectionEntry& e : file.entries) {
+    if (e.fft == spec) { out.push_back(e); }
+  }
+  return out;
+}
+
+std::vector<Limit> limitsOf(const SelectionFile& file, const std::string& spec) {
+  std::vector<Limit> out;
+  for (const Limit& l : file.limits) {
+    if (l.fft == spec) { out.push_back(l); }
+  }
+  return out;
+}
+
 RoeRow roe(double z, bool checkOk = true) {
   return {.sess = 0, .fft = {}, .exponent = 0, .cfg = 0, .z = z, .n = 2150, .maxRoe = 0.3, .checkOk = checkOk, .ts = 0};
 }
@@ -552,7 +568,7 @@ TEST(a_rejected_set_falls_back_to_its_default_accuracy) {
 // A set whose reach was derived short of the table stays in the file once a cheaper set covers everything it does:
 // nothing would choose it, but it is where production learns that its arithmetic stops there, and a user's setting can
 // turn the cheaper set into exactly that arithmetic.
-TEST(a_reduced_reach_is_published_though_a_cheaper_set_covers_it) {
+TEST(a_reduced_reach_is_published_as_a_limit_though_a_cheaper_set_covers_it) {
   TuneDB db = loaded(withSecondSet("roe   4 1K:8:1K:202 296960407 21 17.20 2150 0.4011 ok - 1753471430\n"));
   FFTConfig const fft{"1K:8:1K:202"};
   u64 const top = 296'960'407;
@@ -583,23 +599,25 @@ TEST(a_reduced_reach_is_published_though_a_cheaper_set_covers_it) {
                       .ts = 1'753'473'010}));
   CHECK(gatesOwed(db, 1).empty());
 
-  // The table the objective prices has only the cheaper set; the file keeps the derived one beside it.
+  // The table the objective prices has only the cheaper set; the file keeps the derived reach beside it, as a limit on
+  // the defaults' arithmetic rather than as an entry.
   CHECK(published1K(db) == std::vector<std::string>{configText(cheaper)});
 
   auto const file = emit(db, defaults(), provenance());
   CHECK(file.has_value());
   if (!file) { return; }
 
-  std::vector<SelectionEntry> both;
-  for (const SelectionEntry& e : file->entries) {
-    if (e.fft == fft.spec()) { both.push_back(e); }
-  }
-  CHECK_EQ(both.size(), size_t{2});
-  if (both.size() != 2) { return; }
-  CHECK_EQ(configText(both[0].opts), configText(cheaper));
-  CHECK_EQ(both[0].reach, bandEnd);
-  CHECK_EQ(configText(both[1].opts), std::string{"INPLACE=1,PAD=256"});
-  u64 const reach = both[1].reach;
+  std::vector<SelectionEntry> const entries = publishedOf(*file, fft.spec());
+  CHECK_EQ(entries.size(), size_t{1});
+  if (entries.size() != 1) { return; }
+  CHECK_EQ(configText(entries[0].opts), configText(cheaper));
+  CHECK_EQ(entries[0].reach, bandEnd);
+
+  std::vector<Limit> const limits = limitsOf(*file, fft.spec());
+  CHECK_EQ(limits.size(), size_t{1});
+  if (limits.size() != 1) { return; }
+  CHECK(limits[0].rounding.empty());
+  u64 const reach = limits[0].reach;
   CHECK(reach < bandEnd);
 
   // A config.txt that puts TAIL_KERNELS back to its default runs the cheaper entry at the defaults' arithmetic, which
@@ -635,14 +653,6 @@ TuneDB withAlikeSets(const std::vector<std::string>& dearer) {
   return loaded(text);
 }
 
-std::vector<SelectionEntry> publishedOf(const SelectionFile& file, const std::string& spec) {
-  std::vector<SelectionEntry> out;
-  for (const SelectionEntry& e : file.entries) {
-    if (e.fft == spec) { out.push_back(e); }
-  }
-  return out;
-}
-
 }  // namespace
 
 TEST(sets_that_round_alike_publish_the_limit_they_share_once) {
@@ -672,6 +682,7 @@ TEST(sets_that_round_alike_publish_the_limit_they_share_once) {
   if (!file) { return; }
 
   // The cheapest already holds every set of that arithmetic to the reach, so the dearer ones add nothing to the file.
+  CHECK(limitsOf(*file, fft.spec()).empty());
   std::vector<SelectionEntry> const published = publishedOf(*file, fft.spec());
   CHECK_EQ(published.size(), size_t{1});
   if (published.empty()) { return; }
@@ -712,15 +723,16 @@ TEST(a_limit_below_the_one_the_table_carries_is_still_published) {
   CHECK(file.has_value());
   if (!file) { return; }
 
-  // The table's entry reaches further than LOADS=1 was measured to, so LOADS=1 is kept beside it as the limit of their
-  // arithmetic; STORES=1 lies between the two and adds nothing.
+  // The table's entry reaches further than LOADS=1 was measured to, so LOADS=1's reach is published beside it as the
+  // limit of their arithmetic; STORES=1 lies between the two and adds nothing.
   std::vector<SelectionEntry> const published = publishedOf(*file, fft.spec());
-  CHECK_EQ(published.size(), size_t{2});
-  if (published.size() != 2) { return; }
+  CHECK_EQ(published.size(), size_t{1});
+  if (published.empty()) { return; }
   CHECK_EQ(configText(published[0].opts), std::string{"INPLACE=1,PAD=256"});
   CHECK_EQ(published[0].reach, defaultsReach);
-  CHECK_EQ(configText(published[1].opts), std::string{"INPLACE=1,LOADS=1,PAD=256"});
-  CHECK_EQ(published[1].reach, loadsReach);
+  std::vector<Limit> const expected{Limit{
+    .fft = fft.spec(), .kind = TestKind::PRP, .regime = published[0].regime, .reach = loadsReach, .rounding = {}}};
+  CHECK(limitsOf(*file, fft.spec()) == expected);
 
   CHECK_EQ(publishedReach(*file, nvidia(), fft, TestKind::PRP, {{"INPLACE", "1"}}, published[0].emin), loadsReach);
   std::optional<Choice> const choice = chooseFrom(*file, Args{true}, nvidia(), storesReach, TestKind::PRP);
@@ -747,11 +759,13 @@ SelectionEntry entryOf(const std::string& spec, double cost, const UseConfig& op
           .opts = opts};
 }
 
-SelectionFile fileOf(std::vector<SelectionEntry> entries, std::vector<Exclusion> excluded = {}) {
+SelectionFile fileOf(std::vector<SelectionEntry> entries, std::vector<Exclusion> excluded = {},
+                     std::vector<Limit> limits = {}) {
   SelectionFile file{.provenance = "written 1753471500 by test from tunedb.txt env 1",
                      .global = {},
                      .family = {},
                      .entries = std::move(entries),
+                     .limits = std::move(limits),
                      .excluded = std::move(excluded),
                      .unknown = {}};
   CHECK(finalize(file));
@@ -829,6 +843,23 @@ TEST(tune_txt_offers_only_what_the_table_reach_holds_for_at_default_rounding) {
 
 // An older binary runs a listed FFT at its defaults and reads no exclusion, so an FFT whose defaults computed a wrong
 // answer is not listed, in whichever regime they did; one whose only exclusion is of another option set still is.
+TEST(tune_txt_leaves_out_an_fft_whose_defaults_are_held_short_by_a_limit) {
+  std::string const fp64 = "512:15:512:212";
+  FFTConfig const fft{fp64};
+  Interval const top = topOf(fft);
+  std::vector<SelectionEntry> const entries{entryOf(fp64, 1740, {})};
+
+  auto limitOf = [&](const UseConfig& rounding) {
+    return Limit{
+      .fft = fp64, .kind = TestKind::PRP, .regime = top.regime, .reach = top.hi - 1000, .rounding = rounding};
+  };
+
+  // An older binary runs the FFT under its own defaults, which a limit on another arithmetic says nothing about.
+  CHECK(linesOf(compatibilityView(fileOf(entries, {}, {limitOf({{"TAIL_KERNELS", "1"}})}), nvidia())) ==
+        (std::vector<std::pair<std::string, double>>{{fp64, 1740}}));
+  CHECK(linesOf(compatibilityView(fileOf(entries, {}, {limitOf({})}), nvidia())).empty());
+}
+
 TEST(tune_txt_leaves_out_an_fft_whose_defaults_answered_wrongly) {
   std::string const fp64 = "512:15:512:212";
   std::string const ntt = "3:1K:8:512:202";

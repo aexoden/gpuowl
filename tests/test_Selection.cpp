@@ -25,6 +25,7 @@ const char* const FIXTURE =
   "opts  adc5960c72b18307 INPLACE=1,PAD=256,TAIL_KERNELS=3\n"
   "entry 25616810ba5a560c 1801.000 1K:8:1K:202 prp 100000000 160000000 n/a\n"
   "opts  25616810ba5a560c -\n"
+  "limit 512:15:512:212 prp short32 120000000 TAIL_KERNELS=1\n"
   "exclude 1K:8:1K:202 prp long32 -\n"
   "exclude 512:15:512:212 ll short32 INPLACE=1,PAD=128,TAIL_KERNELS=3\n"
   "budget 400\n"
@@ -107,6 +108,30 @@ TEST(an_exclusion_names_a_configuration_in_a_regime) {
   rejects(line, "exclude 512:15:512:212 ll short32 INPLACE=1,");
 }
 
+TEST(a_limit_names_an_arithmetic_in_a_regime) {
+  SelectionFile const file = loaded(FIXTURE);
+
+  std::vector<Limit> const expected{Limit{.fft = "512:15:512:212",
+                                          .kind = TestKind::PRP,
+                                          .regime = *parseRegime("short32"),
+                                          .reach = 120'000'000,
+                                          .rounding = {{"TAIL_KERNELS", "1"}}}};
+  CHECK(file.limits == expected);
+
+  std::string const line = "limit 512:15:512:212 prp short32 120000000 TAIL_KERNELS=1";
+  rejects(line, "limit 512:15:512:212 prp short32 120000000");
+  rejects(line, "limit 512:15:512:212 prp short32 120000000 TAIL_KERNELS=1 extra");
+  rejects(line, "limit not-an-fft prp short32 120000000 TAIL_KERNELS=1");
+  rejects(line, "limit 512:15:512:212 cert short32 120000000 TAIL_KERNELS=1");
+  rejects(line, "limit 512:15:512:212 prp medium32 120000000 TAIL_KERNELS=1");
+  rejects(line, "limit 512:15:512:212 prp short32 far TAIL_KERNELS=1");
+  rejects(line, "limit 512:15:512:212 prp short32 120000000 TAIL_KERNELS=1,");
+
+  // A reach outside the regime it names is no limit on that regime, and one below anything the FFT runs is none at all.
+  rejects(line, "limit 512:15:512:212 prp long32 120000000 TAIL_KERNELS=1");
+  rejects(line, "limit 512:15:512:212 prp short32 1000 TAIL_KERNELS=1");
+}
+
 // So that two emissions of one database write one file, and a configuration two rows condemned is named once.
 TEST(finalize_orders_exclusions_and_names_each_once) {
   Exclusion const ll{.fft = "512:15:512:212", .kind = TestKind::LL, .regime = {}, .opts = {{"PAD", "128"}}};
@@ -127,6 +152,31 @@ TEST(finalize_orders_exclusions_and_names_each_once) {
 
   SelectionFile bad;
   bad.excluded = {Exclusion{.fft = "256:2", .kind = TestKind::PRP, .regime = {}, .opts = {}}};
+  CHECK(!finalize(bad));
+}
+
+TEST(finalize_orders_limits_and_names_each_once) {
+  Limit const tail{.fft = "512:15:512:212",
+                   .kind = TestKind::PRP,
+                   .regime = {},
+                   .reach = 120'000'000,
+                   .rounding = {{"TAIL_KERNELS", "1"}}};
+  Limit lower = tail;
+  lower.reach = 110'000'000;
+
+  SelectionFile file;
+  file.limits = {tail, lower, tail};
+  CHECK(finalize(file));
+  std::vector<Limit> const expected{lower, tail};
+  CHECK(file.limits == expected);
+  CHECK_EQ(text(file),
+           std::string{"# prpll selection v1\n"
+                       "use   -\n"
+                       "limit 512:15:512:212 prp short32 110000000 TAIL_KERNELS=1\n"
+                       "limit 512:15:512:212 prp short32 120000000 TAIL_KERNELS=1\n"});
+
+  SelectionFile bad;
+  bad.limits = {Limit{.fft = "256:2", .kind = TestKind::PRP, .regime = {}, .reach = 5'000'000, .rounding = {}}};
   CHECK(!finalize(bad));
 }
 

@@ -85,6 +85,12 @@ u64 publishedReach(const SelectionFile& file, const Env& env, const FFTConfig& f
     lowest = std::min(lowest.value_or(entry.reach), entry.reach);
   }
 
+  for (const Limit& limit : file.limits) {
+    if (limit.kind != kind || limit.fft != fft.spec() || limit.regime != regime) { continue; }
+    if (roundingOf(env, fft, limit.rounding) != rounding) { continue; }
+    lowest = std::min(lowest.value_or(limit.reach), limit.reach);
+  }
+
   return lowest.value_or(maxExp(fft));
 }
 

@@ -56,6 +56,22 @@ bool entryIsSound(const SelectionEntry& e, const FFTConfig& fft, std::string_vie
   return true;
 }
 
+// A limit is a reach its regime holds, of an arithmetic this format can write down.
+bool limitIsSound(const Limit& l, const FFTConfig& fft, std::string_view where) {
+  auto const refuse = [&](const std::string& why) {
+    log("%s: limit of %s %s\n", std::string{where}.c_str(), l.fft.c_str(), why.c_str());
+    return false;
+  };
+
+  if (!isWriteableConfig(l.rounding)) { return refuse("holds an option this format cannot write back"); }
+  if (l.reach < minExp(fft) || regimeOf(fft, l.reach) != l.regime) {
+    return refuse("at " + to_string(l.reach) + " is not in the " + l.regime.label() + " regime it names");
+  }
+  return true;
+}
+
+auto limitKey(const Limit& l) { return std::tuple{l.fft, l.kind, l.regime.label(), configText(l.rounding), l.reach}; }
+
 auto exclusionKey(const Exclusion& x) { return std::tuple{x.fft, x.kind, x.regime.label(), configText(x.opts)}; }
 
 }  // namespace
@@ -108,6 +124,20 @@ bool finalize(SelectionFile& file) {
   }
 
   std::ranges::stable_sort(file.entries, {}, &SelectionEntry::cost);
+
+  for (Limit& l : file.limits) {
+    auto const fft = parseFft(l.fft);
+    if (!fft) {
+      log("Selection limit '%s' is not an FFT spec\n", l.fft.c_str());
+      return false;
+    }
+    l.fft = fft->spec();
+    if (!limitIsSound(l, *fft, "The selection file")) { return false; }
+  }
+
+  std::ranges::sort(file.limits, {}, limitKey);
+  auto const repeatedLimits = std::ranges::unique(file.limits);
+  file.limits.erase(repeatedLimits.begin(), repeatedLimits.end());
 
   for (Exclusion& x : file.excluded) {
     auto const fft = parseFft(x.fft);
@@ -270,6 +300,30 @@ std::optional<SelectionFile> parseSelection(std::string_view text, std::string_v
       if (!fft || !kind || !regime || !config) { continue; }
 
       file.excluded.push_back(Exclusion{.fft = fft->spec(), .kind = *kind, .regime = *regime, .opts = *config});
+    } else if (tag == "limit") {
+      if (f.size() != 6) {
+        refuse("limit has " + to_string(f.size()) + " fields, expected 6");
+        continue;
+      }
+
+      auto const fft = parseFft(f[1]);
+      auto const kind = parseTestKind(f[2]);
+      auto const regime = parseRegime(f[3]);
+      auto const reach = parseInt<u64>(f[4]);
+      auto const rounding = parseConfigText(f[5]);
+      if (!fft) { refuse("'" + f[1] + "' is not an FFT spec"); }
+      if (!kind) { refuse("'" + f[2] + "' is not a test kind"); }
+      if (!regime) { refuse("'" + f[3] + "' is not a regime"); }
+      if (!reach) { refuse("'" + f[4] + "' is not an exponent"); }
+      if (!rounding) { refuse("'" + f[5] + "' is not an option set"); }
+      if (!fft || !kind || !regime || !reach || !rounding) { continue; }
+
+      Limit limit{.fft = fft->spec(), .kind = *kind, .regime = *regime, .reach = *reach, .rounding = *rounding};
+      if (!limitIsSound(limit, *fft, name)) {
+        ok = false;
+        continue;
+      }
+      file.limits.push_back(std::move(limit));
     } else {
       file.unknown.push_back(line);
     }
@@ -336,6 +390,11 @@ std::string text(const SelectionFile& file) {
     out += "entry " + e.id + ' ' + costText(e.cost) + ' ' + e.fft + ' ' + toString(e.kind) + ' ' + to_string(e.emin) +
       ' ' + to_string(e.reach) + ' ' + toString(e.evidence) + '\n';
     out += "opts  " + e.id + ' ' + configText(e.opts) + '\n';
+  }
+
+  for (const Limit& l : file.limits) {
+    out += "limit " + l.fft + ' ' + toString(l.kind) + ' ' + l.regime.label() + ' ' + to_string(l.reach) + ' ' +
+      configText(l.rounding) + '\n';
   }
 
   for (const Exclusion& x : file.excluded) {

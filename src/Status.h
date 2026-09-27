@@ -85,6 +85,7 @@ struct TuneStatus {
     u32 unvalidated = 0;
     u32 belowTable = 0;
     u32 aboveTable = 0;
+    u32 limits = 0;
     u32 owed = 0;
     u32 rejected = 0;
   };
