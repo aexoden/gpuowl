@@ -557,6 +557,20 @@ std::vector<Turn> raceToTheEnd(Fixture& f, const Bootstrap& b, const std::functi
   return out;
 }
 
+TEST(a_turn_names_the_padding_the_lds_budget_turns_off) {
+  // At width 1K, SHUFL_BYTES_W=16 beside the default WMUL=2 fills the budget, so it is built without padding too.
+  Fixture f;
+  Family const family = familyOf("1K:13:256:212");
+  Bootstrap const b{nvidia(), PROBE, {family}, true, 1};
+  std::vector<Turn> const turns = raceToTheEnd(f, b, [](const UseConfig& c) { return c.empty() ? 1000.0 : 1010.0; });
+
+  auto count = [&](const std::string& text) { return std::ranges::count(turns, text, &Turn::text); };
+  CHECK(count("Width SHUFL_BYTES_W=16 (LDSPAD_W=0: LDS budget)") > 0);
+  CHECK_EQ(count("Width SHUFL_BYTES_W=16"), 0);
+  CHECK(count("Width SHUFL_BYTES_W=4") > 0);
+  CHECK(count("Width LDSPAD_W=0") > 0);
+}
+
 // TAIL_KERNELS=3 and ZEROHACK_H=0, in two groups that share the tail kernels, each cost a little alone -- less than
 // any other move, each of which costs 1% -- and save 3% together.
 double crossGroupPair(const UseConfig& c) {

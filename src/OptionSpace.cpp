@@ -803,6 +803,18 @@ const Option* findOption(const string& key) {
 
 bool isKnownKey(const string& key) { return findOption(key) != nullptr; }
 
+UseConfig withLdsFit(const FFTConfig& fft, UseConfig config) {
+  u32 const wmul = effectiveWmul(fft, config);
+  if (!config.contains("WMUL") && wmul != 0 && wmul != 2) { config["WMUL"] = std::to_string(wmul); }
+  if (!ldsPadWFits(fft, config) && useValue(config, "LDSPAD_W", 1) != 0) { config["LDSPAD_W"] = "0"; }
+  return config;
+}
+
+string ldsAsideNote(const FFTConfig& fft, const UseConfig& from, const UseConfig& to, const std::set<string>& named) {
+  if (named.contains("LDSPAD_W") || effectiveLdsPadW(fft, to) != 0 || effectiveLdsPadW(fft, from) == 0) { return {}; }
+  return " (LDSPAD_W=0: LDS budget)";
+}
+
 const vector<Group>& allGroups() {
   static const vector<Group> groups{
     Group::Placement, Group::Middle, Group::Memory, Group::Queues, Group::Tail,

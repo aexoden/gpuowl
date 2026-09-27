@@ -81,6 +81,16 @@ TEST(a_probe_list_is_a_pure_function_of_the_table_and_the_best_set) {
   CHECK(std::ranges::count(fromWmul1, std::string{"WMUL=1"}) == 0);
 }
 
+TEST(a_probe_label_names_the_padding_the_lds_budget_turns_off) {
+  // At width 1K, SHUFL_BYTES_W=16 beside the default WMUL=2 fills the budget: the kernels lose their padding as well.
+  FFTConfig const fft{"1K:8:1K:212"};
+  std::vector<std::string> const width =
+    textsOf(probesOf(nvidia(), fft, {}, {.kind = Strategy::Kind::Groups}), "Width");
+  CHECK(std::ranges::count(width, std::string{"SHUFL_BYTES_W=16 (LDSPAD_W=0: LDS budget)"}) == 1);
+  CHECK(std::ranges::count(width, std::string{"LDSPAD_W=0"}) == 1);
+  CHECK(std::ranges::none_of(width, [](const std::string& t) { return t.starts_with("SHUFL_BYTES_W=4 ("); }));
+}
+
 TEST(single_is_the_bootstraps_moves_over_every_group) {
   FFTConfig const fft{"2:1K:8:256:212"};
   ProbeList const list = probesOf(nvidia(), fft, {{"TAIL_KERNELS", "3"}}, {.kind = Strategy::Kind::Single});

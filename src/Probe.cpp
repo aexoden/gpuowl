@@ -268,7 +268,12 @@ private:
 
     std::vector<std::pair<std::string, int>> const changed = changes(env_, fft_, from_, config);
     std::string text;
-    for (const auto& [key, value] : changed) { text += (text.empty() ? "" : ",") + key + "=" + std::to_string(value); }
+    std::set<std::string> named;
+    for (const auto& [key, value] : changed) {
+      text += (text.empty() ? "" : ",") + key + "=" + std::to_string(value);
+      named.insert(key);
+    }
+    text += ldsAsideNote(fft_, from_, config, named);
 
     std::set<std::string> keys;
     for (auto const& [axis, index] : moves) {
