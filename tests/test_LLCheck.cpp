@@ -135,12 +135,9 @@ TEST(the_values_the_host_clamps_to_are_still_the_built_in_defaults) {
   CHECK(atBuiltInDefaults(env, wide, {{"WMUL", "1"}, {"LDSPAD_W", "0"}}));
   CHECK(!atBuiltInDefaults(env, wide, {{"WMUL", "1"}, {"LDSPAD_W", "0"}, {"TAIL_KERNELS", "3"}}));
 
-  // A 4K width caps WMUL at 1 and fills the LDS budget; a 2K width fills it at its WMUL of 2.
   bool clamped = false;
   for (const FFTConfig& witness : witnessOrder(env, wide, 2'000'000'011)) {
-    UseConfig host;
-    if (witness.shape.width == 4096) { host = {{"WMUL", "1"}, {"LDSPAD_W", "0"}}; }
-    if (witness.shape.width == 2048) { host = {{"LDSPAD_W", "0"}}; }
+    UseConfig const host = withLdsFit(witness, {});
     clamped = clamped || !host.empty();
     CHECK(atBuiltInDefaults(env, witness, host));
   }

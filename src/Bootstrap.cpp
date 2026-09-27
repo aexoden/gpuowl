@@ -359,7 +359,8 @@ BootstrapState Bootstrap::state(const TuneDB& db, u32 env, const std::set<std::s
         std::vector<RaceEntry> entries{entryOf(f, s.decided, "the incumbent")};
         std::vector<std::string> keys{""};
         for (const Move& move : moves) {
-          entries.push_back(entryOf(f, move.config, move.text));
+          std::string const aside = ldsAsideNote(families_[f].fft, s.decided, move.config, {move.key});
+          entries.push_back(entryOf(f, move.config, move.text + aside));
           keys.push_back(move.key);
         }
         if (race(std::move(entries), keys, toString(group), 1, round).value_or(0) == 0) { break; }

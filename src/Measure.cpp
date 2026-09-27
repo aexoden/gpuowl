@@ -25,7 +25,10 @@ namespace tune {
 
 namespace {
 
-std::vector<KeyVal> asExtraConf(const UseConfig& options) { return {options.begin(), options.end()}; }
+std::vector<KeyVal> asExtraConf(const FFTConfig& fft, const UseConfig& options) {
+  UseConfig const fitted = withLdsFit(fft, options);
+  return {fitted.begin(), fitted.end()};
+}
 
 u64 now() { return u64(std::time(nullptr)); }
 
@@ -99,7 +102,7 @@ Call summarize(const IterSamples& samples) {
 Call timeCall(GpuCommon shared, const FFTConfig& fft, TestKind kind, u64 exponent, const UseConfig& options,
               u32 nBlocks, u32 blockSize) {
   Timer t;
-  auto gpu = Gpu::make(exponent, shared, fft, asExtraConf(options), false, kind);
+  auto gpu = Gpu::make(exponent, shared, fft, asExtraConf(fft, options), false, kind);
   double const buildSec = t.reset();
 
   Call out = summarize(kind == TestKind::LL ? gpu->timeItersLL(nBlocks, blockSize, CALL_WARMUP_BLOCKS)
@@ -124,7 +127,7 @@ RoeCheck roeCheck(GpuCommon shared, const FFTConfig& fft, const UseConfig& optio
   if (exactArithmetic(fft)) { return out; }
   out.applicable = true;
 
-  auto gpu = Gpu::make(exponent, shared, fft, asExtraConf(options), false, TestKind::PRP);
+  auto gpu = Gpu::make(exponent, shared, fft, asExtraConf(fft, options), false, TestKind::PRP);
   auto [checkOk, res, roeSq, roeMul] = gpu->measureROE(false);
 
   out.checkOk = checkOk;
@@ -975,7 +978,7 @@ MeasureOutcome runMeasure(GpuCommon shared, const MeasureArgs& want) {
   // What draining at every block boundary costs.
   if (want.drain && !session.stopped()) {
     auto time = [&](u32 blocks, u32 size) {
-      auto gpu = Gpu::make(exponent, shared, fft, asExtraConf(options), false, TestKind::PRP);
+      auto gpu = Gpu::make(exponent, shared, fft, asExtraConf(fft, options), false, TestKind::PRP);
       return statsOf(gpu->timeIters(blocks, size, 5000 / size).usPerIt).mean;
     };
 

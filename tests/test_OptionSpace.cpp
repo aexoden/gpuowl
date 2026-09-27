@@ -510,6 +510,43 @@ TEST(swiz_recompute) {
   CHECK_EQ(defaultOf(amd(), "512:15:512:101", swizW, "SWIZ_RECOMPUTE"), 1);
 }
 
+TEST(lds_fit_writes_in_what_the_host_would_derive) {
+  FFTConfig const wide{"4K:12:512:101"};
+  FFTConfig const oneK{"1K:8:1K:101"};
+  FFTConfig const narrow{"512:15:512:101"};
+
+  // At 4K the host caps its WMUL of 2 at 1, and 4K * 8 * 1 then fills the budget.
+  CHECK(withLdsFit(wide, {}) == (UseConfig{{"LDSPAD_W", "0"}, {"WMUL", "1"}}));
+  CHECK(withLdsFit(wide, {{"SHUFL_BYTES_W", "4"}}) == (UseConfig{{"SHUFL_BYTES_W", "4"}, {"WMUL", "1"}}));
+
+  // 1K * 16 * 2 fills it, and 1K * 16 * 1 does not.
+  CHECK(withLdsFit(oneK, {{"SHUFL_BYTES_W", "16"}}) == (UseConfig{{"LDSPAD_W", "0"}, {"SHUFL_BYTES_W", "16"}}));
+  UseConfig const halved{{"SHUFL_BYTES_W", "16"}, {"WMUL", "1"}};
+  CHECK(withLdsFit(oneK, halved) == halved);
+  CHECK(withLdsFit(oneK, {{"LDSPAD_W", "0"}, {"SHUFL_BYTES_W", "16"}}) ==
+        (UseConfig{{"LDSPAD_W", "0"}, {"SHUFL_BYTES_W", "16"}}));
+
+  // Nothing to derive, and a WMUL that was set is the host's to cap and report.
+  CHECK(withLdsFit(narrow, {}).empty());
+  CHECK(withLdsFit(narrow, {{"WMUL", "4"}}) == (UseConfig{{"WMUL", "4"}}));
+  CHECK(withLdsFit(oneK, {{"WMUL", "4"}}) == (UseConfig{{"WMUL", "4"}}));
+}
+
+TEST(lds_aside_note_names_padding_a_move_turns_off) {
+  FFTConfig const oneK{"1K:8:1K:101"};
+  UseConfig const sixteen{{"SHUFL_BYTES_W", "16"}};
+  CHECK_EQ(ldsAsideNote(oneK, {}, sixteen, {"SHUFL_BYTES_W"}), string(" (LDSPAD_W=0: LDS budget)"));
+
+  // Not where the label already says so, the background had no padding, or the budget still fits.
+  CHECK_EQ(ldsAsideNote(oneK, {}, sixteen, {"LDSPAD_W", "SHUFL_BYTES_W"}), string());
+  CHECK_EQ(ldsAsideNote(oneK, {{"LDSPAD_W", "0"}}, sixteen, {"SHUFL_BYTES_W"}), string());
+  CHECK_EQ(ldsAsideNote(FFTConfig{"512:15:512:101"}, {}, sixteen, {"SHUFL_BYTES_W"}), string());
+
+  // Padding a move makes room for is not set aside: WMUL=1 at 1K, SHUFL_BYTES_W=4 at 4K.
+  CHECK_EQ(ldsAsideNote(oneK, sixteen, {{"SHUFL_BYTES_W", "16"}, {"WMUL", "1"}}, {"WMUL"}), string());
+  CHECK_EQ(ldsAsideNote(FFTConfig{"4K:12:512:101"}, {}, {{"SHUFL_BYTES_W", "4"}}, {"SHUFL_BYTES_W"}), string());
+}
+
 // Every key that applies, touchesFn, valuesFn, defaultFn or inert reads must be in dependsOn: moving any other key
 // through every value it offers must leave the option exactly as it was.
 TEST(depends_on_is_complete) {

@@ -10,6 +10,7 @@
 
 #include <algorithm>
 #include <map>
+#include <set>
 #include <string>
 #include <utility>
 #include <vector>
@@ -219,6 +220,17 @@ struct ClusterGraph {
 // tier, except that it joins Width's cluster where its only applicable key is OLD_FENCE, which touches carryFused
 // alone.
 [[nodiscard]] string clusterPictureMismatch(const ClusterGraph& graph);
+
+// `config` with WMUL and LDSPAD_W written in wherever the host would otherwise derive them from the LDS budget itself,
+// logging each change: an unset WMUL is 2 to the host until it is capped, and a width row that fills the budget loses
+// its padding. The host's lines are then left for what the table does not predict, as is a WMUL that was set.
+[[nodiscard]] UseConfig withLdsFit(const FFTConfig& fft, UseConfig config);
+
+// For a label: " (LDSPAD_W=0: LDS budget)" where the LDS budget turns the padding off under `to` but not under `from`
+// and `named` does not already give LDSPAD_W, or nothing. A move of SHUFL_BYTES_W can fill the budget, so the one move
+// a label names is then not all that is measured.
+[[nodiscard]] string ldsAsideNote(const FFTConfig& fft, const UseConfig& from, const UseConfig& to,
+                                  const std::set<string>& named);
 
 // LOADS and STORES pack one access mode per class of memory traffic into their decimal digits.
 struct AccessClass {
