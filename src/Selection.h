@@ -53,12 +53,28 @@ struct Exclusion {
   [[nodiscard]] bool operator==(const Exclusion&) const = default;
 };
 
+// How far every option set of an FFT that rounds as `rounding` does was measured to hold in one regime, where no entry
+// the file publishes says so already: production holds whatever it runs under that arithmetic to `reach`, whichever
+// path it arrives by, but never walks to a limit as it does to an entry.
+struct Limit {
+  std::string fft;
+  TestKind kind = TestKind::PRP;
+  Regime regime{};
+  u64 reach = 0;
+
+  // Only the keys held at a value that changes the rounding, as roundingOf() gives them; empty for the defaults'.
+  UseConfig rounding;
+
+  [[nodiscard]] bool operator==(const Limit&) const = default;
+};
+
 struct SelectionFile {
   std::string provenance;
 
   std::vector<std::pair<std::string, std::string>> global;
   std::vector<UseLine> family;
   std::vector<SelectionEntry> entries;
+  std::vector<Limit> limits;
   std::vector<Exclusion> excluded;
   std::vector<std::string> unknown;
 
@@ -68,8 +84,8 @@ struct SelectionFile {
 
 [[nodiscard]] std::string entryId(const std::string& fft, TestKind kind, Regime regime, const UseConfig& opts);
 
-// Fills in `id` and `regime`, canonicalizes each spec, and sorts entries by ascending cost and exclusions by what they
-// name, dropping repeats. Logs and returns false on failure.
+// Fills in `id` and `regime`, canonicalizes each spec, and sorts entries by ascending cost, and limits and exclusions
+// by what they name, dropping repeats. Logs and returns false on failure.
 [[nodiscard]] bool finalize(SelectionFile& file);
 
 [[nodiscard]] std::optional<SelectionFile> parseSelection(std::string_view text, std::string_view name);

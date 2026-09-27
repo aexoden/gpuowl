@@ -180,24 +180,19 @@ bool reduced(const Candidate& c) {
 struct Published {
   std::vector<Candidate> table;
 
-  // The sets whose reach was reduced that the table's frontier dropped as covered more cheaply, lowest reach first.
+  // Every set whose reach was reduced, in the table or not, lowest reach first.
   std::vector<Candidate> reduced;
 };
 
 Published publishedFor(const TuneDB& db, u32 env) {
-  std::vector<Candidate> const sets = gatedSets(db, env, Gating::Required);
+  std::vector<Candidate> sets = gatedSets(db, env, Gating::Required);
   Published out{.table = tableOf(sets), .reduced = {}};
 
-  std::set<std::string> ids;
-  for (const Candidate& c : out.table) { ids.insert(c.entry.id); }
-
-  for (const Candidate& c : sets) {
-    if (reduced(c) && !ids.contains(c.entry.id)) { out.reduced.push_back(c); }
-  }
-
-  std::ranges::sort(out.reduced, [](const Candidate& a, const Candidate& b) {
+  std::erase_if(sets, [](const Candidate& c) { return !reduced(c); });
+  std::ranges::sort(sets, [](const Candidate& a, const Candidate& b) {
     return std::tuple{a.entry.reach, a.entry.cost, a.entry.id} < std::tuple{b.entry.reach, b.entry.cost, b.entry.id};
   });
+  out.reduced = std::move(sets);
   return out;
 }
 
@@ -316,6 +311,7 @@ std::optional<SelectionFile> emit(const TuneDB& db, const Defaults& lines, const
                      .global = {lines.global.begin(), lines.global.end()},
                      .family = lines.family,
                      .entries = {},
+                     .limits = {},
                      .excluded = {},
                      .unknown = {}};
 
@@ -323,37 +319,35 @@ std::optional<SelectionFile> emit(const TuneDB& db, const Defaults& lines, const
   Env const built = row ? row->toEnv() : Env{};
 
   auto [table, reduced] = publishedFor(db, from.env);
-  std::vector<Candidate> kept;
 
   // The lines move as entries are tuned, and a row is not measured against them: each entry names every key they would
   // set otherwise, so that it runs as it was measured whatever they come to say.
-  auto admit = [&](Candidate& c, bool asLimit) {
+  for (Candidate& c : table) {
     SelectionEntry& e = c.entry;
     auto const fft = parseFft(e.fft);
-    if (!fft) { return; }
+    if (!fft) { continue; }
 
     e.opts = besideLines(built, *fft, e.kind, lines, e.opts);
     if (std::vector<std::string> const keys = shadowedKeys(Args{true}, built, file, e, *fft); !keys.empty()) {
       log("emit: skipping %s, whose options the default lines would change (%s)\n", e.fft.c_str(),
           keys.front().c_str());
-      return;
+      continue;
     }
+    file.entries.push_back(std::move(e));
+  }
 
-    // A reduced set outside the table is there only for the limit it puts on every set that rounds as it does, and
-    // production holds them all to the lowest such limit in the file; one already as low says the same thing.
-    if (asLimit && publishedReach(file, built, *fft, e.kind, e.opts, e.emin) <= e.reach) { return; }
+  // Production holds every set that rounds alike to the lowest reach the file publishes for any of them, so a reduced
+  // reach needs saying only where nothing published already holds its arithmetic as low -- and then as a limit rather
+  // than an entry, since what the table dropped is not something to run. A row is measured against the built-in
+  // defaults, so its own options are its arithmetic.
+  for (const Candidate& c : reduced) {
+    const SelectionEntry& e = c.entry;
+    auto const fft = parseFft(e.fft);
+    if (!fft || publishedReach(file, built, *fft, e.kind, e.opts, e.emin) <= e.reach) { continue; }
 
-    file.entries.push_back(e);
-    kept.push_back(std::move(c));
-  };
-
-  for (Candidate& c : table) { admit(c, false); }
-  for (Candidate& c : reduced) { admit(c, true); }
-
-  // In the order the table and its limits were always written in, since production breaks a tie in cost by file order.
-  sortByCost(kept);
-  file.entries.clear();
-  for (Candidate& c : kept) { file.entries.push_back(std::move(c.entry)); }
+    file.limits.push_back(Limit{
+      .fft = e.fft, .kind = e.kind, .regime = e.regime, .reach = e.reach, .rounding = roundingOf(built, *fft, e.opts)});
+  }
 
   // Leaving a configuration out of the entries only keeps the walk from it; production reaches configurations by other
   // paths, and needs to be told which ones it must not arrive at.
@@ -395,6 +389,11 @@ std::vector<TuneEntry> compatibilityView(const SelectionFile& file, const Env& e
 
     auto const [at, fresh] = cheapest.try_emplace(fft->spec(), TuneEntry{e.cost, *fft});
     if (!fresh) { at->second.cost = std::min(at->second.cost, e.cost); }
+  }
+
+  for (const Limit& l : file.limits) {
+    auto const fft = parseFft(l.fft);
+    if (fft && !movesAccuracy(env, *fft, l.rounding)) { shortOfTable.insert(fft->spec()); }
   }
 
   std::vector<TuneEntry> lines;

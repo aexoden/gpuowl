@@ -34,6 +34,7 @@ SelectionFile published(std::vector<SelectionEntry> entries, const Defaults& def
                      .global = {defaults.global.begin(), defaults.global.end()},
                      .family = defaults.family,
                      .entries = std::move(entries),
+                     .limits = {},
                      .excluded = std::move(excluded),
                      .unknown = {}};
 
@@ -612,6 +613,48 @@ TEST(an_entry_is_held_to_the_limit_published_for_its_arithmetic) {
   std::optional<Choice> const other = chooseFrom(apart, args, Env{}, band.hi, TestKind::PRP);
   CHECK(other.has_value());
   if (other) { CHECK_EQ(other->reach, band.hi); }
+}
+
+TEST(a_limit_holds_every_entry_of_its_arithmetic_as_an_entry_would) {
+  FFTConfig const small{"512:15:512:212"};
+  Interval const band = intervals(small, minExp(small), maxExp(small)).back();
+  u64 const reduced = band.lo + (band.hi - band.lo) / 2;
+  Args const args = configured({});
+
+  auto const withLimit = [&](const UseConfig& rounding) {
+    SelectionFile file = published({SelectionEntry{.id = {},
+                                                   .cost = 1700,
+                                                   .fft = small.spec(),
+                                                   .kind = TestKind::PRP,
+                                                   .emin = band.lo,
+                                                   .reach = band.hi,
+                                                   .regime = {},
+                                                   .evidence = Evidence::Confirmed,
+                                                   .opts = {{"TAIL_KERNELS", "3"}}}});
+    file.limits = {
+      Limit{.fft = small.spec(), .kind = TestKind::PRP, .regime = band.regime, .reach = reduced, .rounding = rounding}};
+    CHECK(finalize(file));
+    return file;
+  };
+
+  // The defaults' arithmetic, written as roundingOf() gives it and spelled with a key at a value that rounds as the
+  // default does: either way, the entry that rounds as they do is held to the limit.
+  for (const UseConfig& rounding : {UseConfig{}, UseConfig{{"TAIL_KERNELS", "3"}}}) {
+    SelectionFile const file = withLimit(rounding);
+    std::optional<Choice> const below = chooseFrom(file, args, Env{}, reduced, TestKind::PRP);
+    CHECK(below.has_value());
+    if (below) { CHECK_EQ(below->reach, reduced); }
+    CHECK(!chooseFrom(file, args, Env{}, reduced + 100, TestKind::PRP));
+    CHECK_EQ(publishedReach(file, Env{}, small, TestKind::PRP, {}, band.lo), reduced);
+  }
+
+  // A limit on another arithmetic does not hold it, but does hold that arithmetic wherever production lands on it.
+  SelectionFile const apart = withLimit({{"TAIL_KERNELS", "1"}});
+  std::optional<Choice> const other = chooseFrom(apart, args, Env{}, band.hi, TestKind::PRP);
+  CHECK(other.has_value());
+  if (other) { CHECK_EQ(other->reach, band.hi); }
+  CHECK_EQ(publishedReach(apart, Env{}, small, TestKind::PRP, {{"TAIL_KERNELS", "1"}}, band.lo), reduced);
+  CHECK(!chooseFrom(apart, configured({"-use TAIL_KERNELS=1"}), Env{}, reduced + 100, TestKind::PRP));
 }
 
 TEST(a_raise_is_held_by_what_alike_entries_measured_and_not_by_the_tables_reach) {

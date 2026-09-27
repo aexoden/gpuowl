@@ -131,6 +131,7 @@ TuneStatus statusOf(const Scheduler& scheduler, TuneDB& db, u32 env, double stop
       a.belowTable += e.reach < table;
       a.aboveTable += e.reach > table;
     }
+    a.limits = u32(file->limits.size());
   }
   a.owed = u32(gatesOwed(db, env).size());
   a.rejected = u32(rejectedSets(db, env).size());
@@ -169,9 +170,9 @@ void logStatus(const TuneStatus& s, const DbEnv& env, const std::string& valuedA
 
   const TuneStatus::Accuracy& a = s.accuracy;
   log("tune: status: accuracy: %u %s published (%u exact arithmetic, %u confirmed, %u unvalidated); %u held below the "
-      "table's reach, %u raised above it; %u %s owed a reading, %u rejected\n",
+      "table's reach, %u raised above it; %u %s for options no entry runs; %u %s owed a reading, %u rejected\n",
       a.entries, a.entries == 1 ? "entry" : "entries", a.exact, a.confirmed, a.unvalidated, a.belowTable, a.aboveTable,
-      a.owed, a.owed == 1 ? "set" : "sets", a.rejected);
+      a.limits, a.limits == 1 ? "limit" : "limits", a.owed, a.owed == 1 ? "set" : "sets", a.rejected);
 
   std::string const threshold = s.stop > 0 ? "stop=" + percent(s.stop) + " of T" : "anything";
   if (s.next.empty()) {
