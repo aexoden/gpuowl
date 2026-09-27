@@ -185,6 +185,11 @@ struct RunScope {
 void reportScope(const RunScope& scope, const std::vector<fs::path>& files, const Objective& objective,
                  const std::string& against);
 
+// How far `strategy` searches from one best set of each of `ffts` on `env`, as the log says it: a line per FFT, the
+// steps of each group and what they come to, and with `groups` a line per group, its bins and what each offers.
+[[nodiscard]] std::vector<std::string> searchReport(const Env& env, const std::vector<FFTConfig>& ffts,
+                                                    const Strategy& strategy, bool groups);
+
 // What `text` asks this tuner for.  Throws a message for anything it cannot read, naming -oldtune for an option word of
 // upstream's own tuner, which took this flag before this one did.
 [[nodiscard]] TuneCommand parseTuneCommand(std::string_view text);

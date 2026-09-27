@@ -219,6 +219,36 @@ TEST(a_register_cap_is_searched_a_key_at_a_time) {
   CHECK(bins.contains("Cuda 1") && bins.contains("Cuda 3"));
 }
 
+TEST(a_search_size_counts_what_the_strategy_offers_without_listing_it) {
+  // FP64 on NVIDIA OpenCL: Memory's seven axes are 5 x 3 x 2 x 5 and 5 x 3 x 2 in two bins, the first cut at 64.
+  FFTConfig const fp64{"1K:7:256:212"};
+  SearchSize const size = searchSize(nvidia(), fp64, {}, {});
+  auto const memory = std::ranges::find(size.groups, Group::Memory, &SearchSize::GroupSize::group);
+  CHECK(memory != size.groups.end());
+  if (memory != size.groups.end()) {
+    CHECK_EQ(memory->options, size_t(7));
+    CHECK(memory->points == (std::vector<u64>{149, 29}));
+    CHECK(memory->offered == (std::vector<u64>{64, 29}));
+    CHECK_EQ(memory->whole, u64(4499));
+  }
+
+  // Where no point is fitted away, what it offers is what probesOf() lists; under CUDA the register caps count one key
+  // at a time, whatever the limits.
+  Env const p100{.isNvidia = true, .cudaBackend = true, .computeCapability = 600, .pdlLaunch = true};
+  for (const char* spec : {"1K:7:256:212", "51:1K:4:256:212", "4:1K:4:256:212"}) {
+    for (const Env& env : {nvidia(), p100, amd()}) {
+      FFTConfig const fft{spec};
+      CHECK_EQ(searchSize(env, fft, {}, {}).offered(), u64(probesOf(env, fft, {}, {}).probes.size()));
+    }
+  }
+  SearchSize const cuda = searchSize(p100, FFTConfig{"51:1K:4:256:212"}, {}, {.maxPermute = NO_LIMIT});
+  auto const regs = std::ranges::find(cuda.groups, Group::Cuda, &SearchSize::GroupSize::group);
+  CHECK(regs != cuda.groups.end());
+  if (regs != cuda.groups.end()) { CHECK_EQ(regs->whole, u64(2 * 4 - 1 + 7 * 13)); }
+
+  CHECK(searchSize(nvidia(), fp64, {}, {.kind = Strategy::Kind::Single}).groups.empty());
+}
+
 TEST(a_structural_step_stands_alone_and_opens_its_dependents) {
   FFTConfig const fft{"1K:13:256:212"};
 

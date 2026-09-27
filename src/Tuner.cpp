@@ -30,6 +30,7 @@
 #include <cstdio>
 #include <ctime>
 #include <map>
+#include <numeric>
 #include <set>
 #include <vector>
 
@@ -540,6 +541,54 @@ void reportScope(const RunScope& scope, const std::vector<fs::path>& files, cons
   }
 }
 
+std::vector<std::string> searchReport(const Env& env, const std::vector<FFTConfig>& ffts, const Strategy& strategy,
+                                      bool groups) {
+  auto sum = [](const std::vector<u64>& v) { return std::accumulate(v.begin(), v.end(), u64{0}); };
+  auto list = [](const std::vector<u64>& v) {
+    std::string out;
+    for (size_t i = 0; i < v.size(); ++i) {
+      out += (i == 0 ? "" : i + 1 == v.size() ? " and " : ", ") + std::to_string(v[i]);
+    }
+    return out;
+  };
+
+  std::vector<std::string> out;
+  for (const FFTConfig& fft : ffts) {
+    SearchSize const size = searchSize(env, fft, {}, strategy);
+    if (size.groups.empty()) { continue; }
+
+    std::string parts;
+    for (const SearchSize::GroupSize& g : size.groups) {
+      u64 const offered = g.structural + sum(g.offered);
+      u64 const binned = g.structural + sum(g.points);
+      parts += (parts.empty() ? "" : ", ") + std::string{toString(g.group)} + " " + std::to_string(offered) +
+        (binned > offered ? " of " + std::to_string(binned) : "");
+    }
+    std::string line = std::string{typeName(fft.shape.fft_type)} + " " + fft.spec() + ": " +
+      std::to_string(size.offered()) + " steps from each best set (" + parts + ")";
+    if (size.whole() > size.binned()) { line += ", " + std::to_string(size.whole()) + " with maxPermute=all"; }
+    out.push_back(std::move(line));
+    if (!groups) { continue; }
+
+    for (const SearchSize::GroupSize& g : size.groups) {
+      std::string text = "  " + std::string{toString(g.group)} + ": ";
+      if (!g.points.empty()) {
+        text += std::to_string(g.options) + (g.options == 1 ? " option" : " options") + " in " +
+          (g.points.size() == 1 ? "a bin of " : "bins of ") + list(g.points) +
+          (g.points == std::vector<u64>{1} ? " point, " : " points, ") +
+          (g.offered == g.points ? std::string{"all"} : list(g.offered)) + " offered";
+        if (g.whole > sum(g.points)) { text += "; " + std::to_string(g.whole) + " with maxPermute=all"; }
+      }
+      if (g.structural) {
+        text += std::string{g.points.empty() ? "" : "; "} + std::to_string(g.structural) + " structural " +
+          (g.structural == 1 ? "step" : "steps");
+      }
+      out.push_back(std::move(text));
+    }
+  }
+  return out;
+}
+
 const char* toString(TuneVerb verb) {
   switch (verb) {
   case TuneVerb::Emit: return "emit";
@@ -586,8 +635,10 @@ TuneCommand parseTuneCommand(std::string_view text) {
   bool const isAccuracy = out.verb == TuneVerb::Accuracy;
   bool const isStatus = out.verb == TuneVerb::Status;
   bool const takesScope = out.verb == TuneVerb::Scope || out.verb == TuneVerb::Emit || isRun || isAccuracy || isStatus;
-  // A status values what a run would do next, so it takes whatever shapes the run's queue.
+  // A status values what a run would do next, so it takes whatever shapes the run's queue; a scope says how far the
+  // search reaches, so it takes what shapes that.
   bool const queues = isRun || isStatus;
+  bool const searches = queues || out.verb == TuneVerb::Scope;
 
   // Applied once the strategy they belong to is known, whichever order the settings come in.
   std::optional<u32> maxPermute;
@@ -641,21 +692,21 @@ TuneCommand parseTuneCommand(std::string_view text) {
     } else if (key == "bootstrap" && queues) {
       if (val != "0" && val != "1") { throw std::string{"-tune: bootstrap= takes 0 or 1"}; }
       out.bootstrap = val == "1";
-    } else if (key == "strategy" && queues) {
+    } else if (key == "strategy" && searches) {
       out.strategy = parseStrategy(val);
     } else if (key == "stop" && queues) {
       out.stop = parseStop(val);
     } else if (key == "tunetxt" && (isRun || out.verb == TuneVerb::Emit)) {
       if (val != "0" && val != "1") { throw who + ": tunetxt= takes 0 or 1"; }
       out.tuneTxt = val == "1";
-    } else if (key == "maxPermute" && queues) {
+    } else if (key == "maxPermute" && searches) {
       maxPermute = parseLimit(key, val);
-    } else if (key == "maxPoints" && queues) {
+    } else if (key == "maxPoints" && searches) {
       maxPoints = parseLimit(key, val);
-    } else if (key == "comboTop" && queues) {
+    } else if (key == "comboTop" && searches) {
       comboTop = parseInt<u32>(val);
       if (!comboTop || *comboTop < 1) { throw std::string{"-tune: comboTop= takes a count of 1 or more"}; }
-    } else if (key == "comboTiers" && queues) {
+    } else if (key == "comboTiers" && searches) {
       comboTiers = parseInt<u32>(val);
       if (!comboTiers || *comboTiers < 1 || *comboTiers > COMBO_TIERS) {
         throw std::string{"-tune: comboTiers= takes 1, 2 or 3"};
@@ -671,7 +722,8 @@ TuneCommand parseTuneCommand(std::string_view text) {
       case TuneVerb::Adopt: accepted = "into=<id> (or env=<id>), from=<id>"; break;
       case TuneVerb::Compact: break;
       case TuneVerb::Scope:
-        accepted = "workload=<lo>-<hi>, probe=<E>, probeWeight=<0..1>, kinds=prp|ll|prp+ll, env=<id>";
+        accepted = "workload=<lo>-<hi>, probe=<E>, probeWeight=<0..1>, kinds=prp|ll|prp+ll, env=<id>,"
+                   " strategy=<S>, maxPermute=<N>|all, maxPoints=<N>|all, comboTop=<N>, comboTiers=1|2|3";
         break;
       case TuneVerb::Run:
         accepted = "workload=<lo>-<hi>, probe=<E>, probeWeight=<0..1>, kinds=prp|ll|prp+ll, bootstrap=0|1,"
@@ -721,6 +773,26 @@ TuneCommand parseTuneCommand(std::string_view text) {
 
   return out;
 }
+
+namespace {
+
+// How far the search reaches from one best set of each family the run bootstraps, the shape of each type it would tune
+// first.
+void reportSearch(const Env& env, const RunScope& scope, const Strategy& strategy, bool groups) {
+  if (!strategy.branches()) { return; }
+  std::vector<FFTConfig> inScope;
+  for (const Baseline& b : baselines(env, scope)) { inScope.push_back(b.fft); }
+  std::vector<FFTConfig> ffts;
+  for (const Family& f : bootstrapFamilies(env, scope.probe, inScope)) { ffts.push_back(f.fft); }
+
+  std::string settings;
+  for (const std::string& s : strategySettings(strategy)) { settings += (settings.empty() ? "" : ", ") + s; }
+  log("tune: strategy=%s (%s) steps from one best set of each type, before the combinations above them:\n",
+      strategy.text().c_str(), settings.c_str());
+  for (const std::string& line : searchReport(env, ffts, strategy, groups)) { log("tune:   %s\n", line.c_str()); }
+}
+
+}  // namespace
 
 std::string runSettings(const RunScope& scope, const TuneCommand& command) {
   std::string kinds;
@@ -969,6 +1041,8 @@ bool runTuneCommand(const TuneCommand& command, const Args& args, const fs::path
     // Nothing to read, so nothing to lock: a scope checked before the first run leaves the directory as it found it.
     if (command.verb == TuneVerb::Scope && !command.env && !fs::exists(dbPath)) {
       reportScope(*scope, files, Objective{Env{}, *scope}, "with nothing measured");
+      log("tune: how far the search reaches depends on the device, which only a database here names: a run says it as "
+          "it starts\n");
       return true;
     }
   }
@@ -990,6 +1064,7 @@ bool runTuneCommand(const TuneCommand& command, const Args& args, const fs::path
 
   if (command.verb == TuneVerb::Scope) {
     reportScope(*scope, files, Objective{db, env, *scope}, "against env " + std::to_string(env));
+    reportSearch(db.findEnv(env)->toEnv(), *scope, command.strategy, true);
     return true;
   }
 
@@ -1087,6 +1162,7 @@ MeasureOutcome runTune(const GpuCommon& shared, const TuneCommand& command) {
     }
     log("tune: bootstrap at %" PRIu64 " over %s\n", scope.probe, names.empty() ? "no family" : names.c_str());
   }
+  reportSearch(env, scope, command.strategy, false);
 
   fs::path const out = dir / SELECTION_NAME;
   std::optional<fs::path> const compat =

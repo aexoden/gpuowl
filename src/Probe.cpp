@@ -335,6 +335,12 @@ Strategy parseStrategy(std::string_view text) {
   return out;
 }
 
+u64 Bin::points(const std::vector<Axis>& all) const {
+  std::vector<u64> sizes;
+  for (size_t const a : axes) { sizes.push_back(all[a].values.size()); }
+  return productOf(sizes) - 1;
+}
+
 std::vector<Bin> binsOf(const std::vector<Axis>& axes, Group group, const Strategy& strategy, bool structuralSteps) {
   std::string const name = toString(group);
   std::vector<Bin> out;
@@ -579,6 +585,55 @@ ProbeList probesOf(const Env& env, const FFTConfig& fft, const UseConfig& best, 
     }
     if (strategy.combines()) { combos(env, fft, best, strategy, readings, enumerator, out); }
     break;
+  }
+  return out;
+}
+
+u64 SearchSize::offered() const {
+  u64 out = 0;
+  for (const GroupSize& g : groups) {
+    out += g.structural + std::accumulate(g.offered.begin(), g.offered.end(), u64{0});
+  }
+  return out;
+}
+
+u64 SearchSize::binned() const {
+  u64 out = 0;
+  for (const GroupSize& g : groups) { out += g.structural + std::accumulate(g.points.begin(), g.points.end(), u64{0}); }
+  return out;
+}
+
+u64 SearchSize::whole() const {
+  u64 out = 0;
+  for (const GroupSize& g : groups) { out += g.structural + g.whole; }
+  return out;
+}
+
+SearchSize searchSize(const Env& env, const FFTConfig& fft, const UseConfig& best, const Strategy& strategy) {
+  SearchSize out;
+  if (!strategy.branches()) { return out; }
+
+  std::vector<Axis> const axes = axesOf(env, fft, best);
+  Strategy lifted = strategy;
+  lifted.maxPermute = NO_LIMIT;
+  for (Group const group : allGroups()) {
+    std::vector<Bin> const bins = binsOf(axes, group, strategy);
+    if (bins.empty()) { continue; }
+
+    SearchSize::GroupSize& g = out.groups.emplace_back();
+    g.group = group;
+    for (const Bin& bin : bins) {
+      u64 const points = bin.points(axes);
+      if (bin.structural) {
+        g.structural += points;
+        continue;
+      }
+      g.options += bin.axes.size();
+      g.points.push_back(points);
+      bool const alone = axes[bin.axes.front()].option->alone && !strategy.bootstrapTree;
+      g.offered.push_back(alone ? points : std::min<u64>(points, strategy.maxPoints));
+    }
+    for (const Bin& bin : binsOf(axes, group, lifted, false)) { g.whole += bin.points(axes); }
   }
   return out;
 }
