@@ -132,6 +132,8 @@ TEST(every_setting_the_help_names_is_accepted_where_it_says) {
         "strategy=groups,maxPermute=all,maxPoints=500",
         "tunetxt=1",
         "scope,workload=330M-340M,probe=335M,probeWeight=0.5,kinds=prp,env=1",
+        "scope,strategy=groups,maxPermute=all,maxPoints=200",
+        "scope,maxPermute=3,comboTop=2,comboTiers=2",
         "status,stop=1%,env=1,workload=100M-140M,probe=118063003,probeWeight=0.5,kinds=prp+ll,bootstrap=1,"
         "strategy=hybrid,maxPermute=4,maxPoints=64,comboTop=3,comboTiers=3",
         "emit,tunetxt=1,env=1,workload=100M-140M,probe=118063003,probeWeight=0.5,kinds=prp",
@@ -272,6 +274,36 @@ TEST(a_setting_that_belongs_to_another_subcommand_is_a_usage_error) {
   CHECK(!refusal("reset,fft=").empty());
   CHECK(!refusal("emit,verbose").empty());
   CHECK(refusal("adopt,from=3,into=1").empty());
+
+  // A scope says how far a search reaches, not when a run stops or where it starts.
+  CHECK(!refusal("scope,stop=1%").empty());
+  CHECK(!refusal("scope,bootstrap=0").empty());
+  CHECK(!refusal("emit,maxPoints=all").empty());
+}
+
+TEST(the_search_report_says_what_each_group_offers_and_what_its_bins_hold) {
+  Env const nvidia{.isNvidia = true, .computeCapability = 806};
+  FFTConfig const fft{"1K:7:256:212"};
+  SearchSize const size = searchSize(nvidia, fft, {}, {});
+  std::vector<std::string> const lines = searchReport(nvidia, {fft}, {}, true);
+  CHECK(!lines.empty());
+  if (lines.empty()) { return; }
+
+  // One line for the FFT, naming what it offers, what its bins hold where that is more, and what whole groups would.
+  CHECK(
+    lines.front().starts_with("FFT64 1K:7:256:212: " + std::to_string(size.offered()) + " steps from each best set ("));
+  CHECK(lines.front().find("Memory 93 of 178") != std::string::npos);
+  CHECK(lines.front().ends_with("), " + std::to_string(size.whole()) + " with maxPermute=all"));
+
+  // Then one per group.
+  CHECK(std::ranges::find(lines,
+                          std::string{"  Memory: 7 options in bins of 149 and 29 points, 64 and 29 offered; 4499 "
+                                      "with maxPermute=all"}) != lines.end());
+  CHECK(std::ranges::find(lines,
+                          std::string{"  Height: 2 options in a bin of 7 points, all offered; 3 structural "
+                                      "steps"}) != lines.end());
+  CHECK_EQ(searchReport(nvidia, {fft}, {}, false).size(), size_t(1));
+  CHECK(searchReport(nvidia, {fft}, {.kind = Strategy::Kind::Single}, true).empty());
 }
 
 TEST(the_env_is_the_one_these_kernels_measured) {

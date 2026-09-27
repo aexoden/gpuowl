@@ -281,8 +281,9 @@ selection.txt, which a normal run in the same directory (or its -pool) reads.  T
                          comboTiers=1|2|3    hybrid: how widely groups are combined; 1 is strategy=groups [3]
                          tunetxt=0|1         also write tune.txt, for binaries that do not read selection.txt [0]
                      Subcommands that open no device (env=<id> picks a database env where there is more than one):
-                         scope     what a run would tune for, and the time per iteration measured over it so far;
-                                   takes workload=, probe=, probeWeight=, kinds=
+                         scope     what a run would tune for, the time per iteration measured over it so far, and
+                                   how many steps each group offers; takes workload=, probe=, probeWeight=, kinds=,
+                                   and strategy=, maxPermute=, maxPoints=, comboTop=, comboTiers=
                          status    what the latest run has measured and what it would measure next; safe beside a
                                    running one; takes the run's settings, to see what they would change
                          emit      rewrite selection.txt from tunedb.txt; takes workload=, probe=, probeWeight=,
@@ -327,7 +328,8 @@ selection.txt, which a normal run in the same directory (or its -pool) reads.  T
 
 Device selection : use one of -uid <UID>, -pci <BDF>, -device <N>, see the list below
 
-)", ProofSet::diskUsageGB(120000000, 10), nSavefiles);
+)",
+         ProofSet::diskUsageGB(120'000'000, 10), nSavefiles);
 
   vector<cl_device_id> deviceIds = getAllDeviceIDs();
   if (!deviceIds.empty()) {

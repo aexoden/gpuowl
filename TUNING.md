@@ -241,12 +241,24 @@ combination of groups. A piece's combinations are listed one option moved first,
 the smaller moves: with the defaults, the larger groups are cut before any step moves all four of their options at
 once. `all` tries every combination. Default `64`.
 
-Raising either is how to spend more time on each FFT; every combination is a measurement, and `all` together with
-`maxPermute=all` can mean thousands of them for the larger groups: `Memory` alone is 4499 on NVIDIA. The run lists a
-large piece 64 combinations at a time, in the same order, and lists more as those are measured, so it keeps moving
-however large the pieces are; the progress line, `-tune status` and the summary add `and up to <N> more not listed
-yet` for what lies beyond. Neither changes the bootstrap, which always races single options and then combines their
-best answers.
+Raising either is how to spend more time on each FFT; every combination is a measurement. How many each piece holds
+depends on the card, the backend and the FFT, and a run says it as it starts, one line per FFT type; `-tune scope`
+says it group by group, and takes these settings too, so the effect of a value can be seen before a run spends
+anything on it:
+
+```text
+tune: strategy=hybrid (maxPermute=4, maxPoints=64, comboTop=3, comboTiers=3) steps from one best set of each type, before the combinations above them:
+tune:   FFT64 1K:7:256:212: 195 steps from each best set (Placement 6, Memory 93 of 178, Queues 3, Tail 23, Width 6, Height 4, Cuda 60), 4601 with maxPermute=all
+tune:     Memory: 7 options in bins of 149 and 29 points, 64 and 29 offered; 4499 with maxPermute=all
+tune:     Cuda: 6 options in bins of 7, 13, 13, 13 and 13 points, all offered; 1 structural step
+```
+
+On NVIDIA the one piece the defaults cut is `Memory`'s first, at 64 of its 149 combinations, so `maxPoints=150` lists
+every piece whole; `maxPermute=all` makes `Memory` one piece of 4499. On an AMD Radeon Pro VII nothing is cut, and the
+largest piece with `maxPermute=all` is `Placement`'s, about 400. A run lists a large piece 64 combinations at a time,
+in the same order, and more as those are measured, so it keeps moving however large the pieces are; the progress line,
+`-tune status` and the summary add `and up to <N> more not listed yet` for what lies beyond. Neither setting changes
+the bootstrap, which always races single options and then combines their best answers.
 
 **`comboTop=<N>`** (`hybrid` only): how many of each group's best answers are carried into the combinations. Default
 `3`.
@@ -388,8 +400,11 @@ prpll -tune scope
 prpll -tune scope,workload=330M-340M
 ```
 
-Takes `workload=`, `probe=`, `probeWeight=`, `kinds=` and `env=`. It changes nothing, and without a database it creates
-none.
+Takes `workload=`, `probe=`, `probeWeight=`, `kinds=` and `env=`, and the search's `strategy=`, `maxPermute=`,
+`maxPoints=`, `comboTop=` and `comboTiers=`. It changes nothing, and without a database it creates none. With a
+database it also says, group by group, how many steps the search takes from one best set of each FFT type (see
+[`maxPoints=`](#how-to-search)); without one, which card the database is for is not known, and a run says it as it
+starts instead.
 
 ```text
 tune: pending work read from no worktodo file

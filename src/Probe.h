@@ -131,6 +131,9 @@ struct Bin {
   std::vector<size_t> axes;
 
   bool structural = false;
+
+  // How many points the bin's axes have other than where they stand: its whole cross product, saturating.
+  [[nodiscard]] u64 points(const std::vector<Axis>& all) const;
 };
 
 // The bins of `group` among `axes` under `strategy`, as probesOf() enumerates them: its structural keys one step at a
@@ -226,6 +229,33 @@ struct Branch {
 [[nodiscard]] ProbeList probesOf(const Env& env, const FFTConfig& fft, const UseConfig& best, const Strategy& strategy,
                                  std::span<const Reading> readings = {}, bool structuralSteps = true,
                                  u32 listed = NO_LIMIT);
+
+// How many steps one best set of `fft` offers, group by group, at tier 1 under `strategy`: the combinations above them
+// depend on what is read, and are left out.
+struct SearchSize {
+  struct GroupSize {
+    Group group = Group::None;
+    size_t options = 0;
+    size_t structural = 0;
+
+    // Each bin's points, and how many of them the strategy offers.
+    std::vector<u64> points;
+    std::vector<u64> offered;
+
+    // What the group's points come to with every bin whole: maxPermute=all.
+    u64 whole = 0;
+  };
+  std::vector<GroupSize> groups;
+
+  [[nodiscard]] u64 offered() const;
+  [[nodiscard]] u64 binned() const;
+  [[nodiscard]] u64 whole() const;
+};
+
+// Pure: counts points without listing them.  The counts are of the cross products, so a point the table would fit onto
+// another is counted as well; for a strategy that does not search by group, nothing.
+[[nodiscard]] SearchSize searchSize(const Env& env, const FFTConfig& fft, const UseConfig& best,
+                                    const Strategy& strategy);
 
 // Whether a row measured under `row` already answers `probe`: it has every axis the probe moves where the probe puts
 // it, and agrees with the probe on every key those axes' keys depend on.  What else the row ran with does not matter,
