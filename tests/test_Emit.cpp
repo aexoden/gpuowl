@@ -622,6 +622,113 @@ TEST(a_reduced_reach_is_published_though_a_cheaper_set_covers_it) {
 
 namespace {
 
+// The 1K:8:1K defaults read short of the standard at the top of the band, beside one dearer set per `dearer` option,
+// 100 apart above them, each of which rounds as they do.
+TuneDB withAlikeSets(const std::vector<std::string>& dearer) {
+  std::string text = withRecord(ROE_1K, "roe   4 1K:8:1K:202 296960407 21 17.20 2150 0.4011 ok - 1753471430\n");
+  for (size_t i = 0; i < dearer.size(); ++i) {
+    std::string const cfg = std::to_string(30 + i);
+    text += "cfg   " + cfg + " INPLACE=1,PAD=256," + dearer[i] + "\n";
+    text += "run   4 1K:8:1K:202 prp 200000000 short32 " + cfg + " " + std::to_string(3200 + 100 * i) +
+      ".000 4.000 16 4 1.0000 ok " + std::to_string(1'753'471'470 + i) + "\n";
+  }
+  return loaded(text);
+}
+
+std::vector<SelectionEntry> publishedOf(const SelectionFile& file, const std::string& spec) {
+  std::vector<SelectionEntry> out;
+  for (const SelectionEntry& e : file.entries) {
+    if (e.fft == spec) { out.push_back(e); }
+  }
+  return out;
+}
+
+}  // namespace
+
+TEST(sets_that_round_alike_publish_the_limit_they_share_once) {
+  TuneDB db = withAlikeSets({"ENABLE_RESTRICT=1", "LOADS=1", "STORES=1"});
+  FFTConfig const fft{"1K:8:1K:202"};
+  u64 const top = 296'960'407;
+  CHECK(answerOwed(db, sloped(17.2, top / double(fft.size()))) >= 4);
+
+  // Each of the four read the same and was derived the same reach, below the band's end.
+  std::vector<OptionSet> const sets = optionSetsFor(db, 1);
+  std::set<u64> reaches;
+  u32 derived = 0;
+  for (const OptionSet& s : sets) {
+    if (s.entry.fft != fft.spec()) { continue; }
+    CHECK(s.gate.state == GateState::Passed && s.gate.derived);
+    reaches.insert(s.entry.reach);
+    ++derived;
+  }
+  CHECK_EQ(derived, 4u);
+  CHECK_EQ(reaches.size(), size_t{1});
+  if (reaches.size() != 1) { return; }
+  u64 const reach = *reaches.begin();
+  CHECK(reach < interval(fft, top).hi);
+
+  auto const file = emit(db, defaults(), provenance());
+  CHECK(file.has_value());
+  if (!file) { return; }
+
+  // The cheapest already holds every set of that arithmetic to the reach, so the dearer ones add nothing to the file.
+  std::vector<SelectionEntry> const published = publishedOf(*file, fft.spec());
+  CHECK_EQ(published.size(), size_t{1});
+  if (published.empty()) { return; }
+  CHECK_EQ(configText(published[0].opts), std::string{"INPLACE=1,PAD=256"});
+  CHECK_EQ(published[0].reach, reach);
+
+  for (const OptionSet& s : sets) {
+    if (s.entry.fft == fft.spec()) {
+      CHECK_EQ(publishedReach(*file, nvidia(), fft, TestKind::PRP, s.entry.opts, s.entry.emin), reach);
+    }
+  }
+}
+
+TEST(a_limit_below_the_one_the_table_carries_is_still_published) {
+  TuneDB db = withAlikeSets({"LOADS=1", "STORES=1"});
+  FFTConfig const fft{"1K:8:1K:202"};
+  double const at = 296'960'407 / double(fft.size());
+
+  // The LOADS=1 set reads a whole z worse than the defaults, so is derived the lowest reach of the three; STORES=1
+  // half a z worse, between the two.
+  CHECK(answerOwed(db, [&](const OptionSet& s, u64 E) {
+          double const worse = s.entry.opts.contains("LOADS") ? 1 : s.entry.opts.contains("STORES") ? 0.5 : 0;
+          return sloped(17.2 - worse, at)(s, E);
+        }) >= 3);
+
+  std::map<std::string, u64> reachOf;
+  for (const OptionSet& s : optionSetsFor(db, 1)) {
+    if (s.entry.fft != fft.spec()) { continue; }
+    CHECK(s.gate.state == GateState::Passed && s.gate.derived);
+    reachOf[configText(s.entry.opts)] = s.entry.reach;
+  }
+  u64 const defaultsReach = reachOf["INPLACE=1,PAD=256"];
+  u64 const loadsReach = reachOf["INPLACE=1,LOADS=1,PAD=256"];
+  u64 const storesReach = reachOf["INPLACE=1,PAD=256,STORES=1"];
+  CHECK(loadsReach < storesReach && storesReach < defaultsReach);
+
+  auto const file = emit(db, defaults(), provenance());
+  CHECK(file.has_value());
+  if (!file) { return; }
+
+  // The table's entry reaches further than LOADS=1 was measured to, so LOADS=1 is kept beside it as the limit of their
+  // arithmetic; STORES=1 lies between the two and adds nothing.
+  std::vector<SelectionEntry> const published = publishedOf(*file, fft.spec());
+  CHECK_EQ(published.size(), size_t{2});
+  if (published.size() != 2) { return; }
+  CHECK_EQ(configText(published[0].opts), std::string{"INPLACE=1,PAD=256"});
+  CHECK_EQ(published[0].reach, defaultsReach);
+  CHECK_EQ(configText(published[1].opts), std::string{"INPLACE=1,LOADS=1,PAD=256"});
+  CHECK_EQ(published[1].reach, loadsReach);
+
+  CHECK_EQ(publishedReach(*file, nvidia(), fft, TestKind::PRP, {{"INPLACE", "1"}}, published[0].emin), loadsReach);
+  std::optional<Choice> const choice = chooseFrom(*file, Args{true}, nvidia(), storesReach, TestKind::PRP);
+  CHECK(!choice || choice->entry->fft != fft.spec());
+}
+
+namespace {
+
 // The top regime's interval of `fft`, the one the table's reach ends in.
 Interval topOf(const FFTConfig& fft) { return intervals(fft, minExp(fft), maxExp(fft)).back(); }
 
