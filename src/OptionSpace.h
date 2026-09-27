@@ -135,6 +135,10 @@ struct Option {
   // Searched through accessClasses() rather than through values.
   bool compound = false;
 
+  // Searched one value at a time rather than permuted with the rest of its group: it caps one kernel, launched on its
+  // own, so its effect adds to theirs.  Whether it interacts after all is left to the combinations.
+  bool alone = false;
+
   AccuracyImpact accuracyImpact = AccuracyImpact::None;
 
   // Values measured to round exactly as the default does, on a key whose other values change the rounding.

@@ -240,6 +240,7 @@ void addRegOptions(vector<Option>& t) {
                  .scope = Scope::Shape,
                  .group = Group::Cuda,
                  .touches = r.touches,
+                 .alone = true,
                  .dependsOn = r.middle ? vector<string>{"NOREG", "INPLACE"} : vector<string>{"NOREG"},
                  .applies = r.applies,
                  .valuesFn = r.middle ? regMiddleLadder : regLadder,

@@ -220,12 +220,21 @@ published and the lines follow them. This is mainly useful to compare against.
 - `permute:<KEY>+<KEY>...`: every combination of exactly the options named, e.g.
   `strategy=permute:PAD+TAIL_KERNELS+IN_SIZEX`. The number of combinations grows quickly.
 
+Every step starts from the best option set the FFT has shown so far (for an option that changes which other options
+exist, such as `INPLACE`, from the best set of each of its values), and moves only the options of that step; every
+other option stays where the best set has it. When the best set changes, the steps are taken again from the new one,
+but a step whose options were already measured at the same values is not repeated unless an option they depend on
+has moved. So two changes in different pieces of a group, neither of which helps alone, are tried together only by
+the combinations (below) or by chance.
+
 Whatever the strategy, an FFT whose search has run out of steps is occasionally tried with a random option set, which
 is what lets the search find combinations no step would reach.
 
 **`maxPermute=<N>|all`** (`hybrid` and `groups`): how many options of one group are permuted together. A group with
 more is split into pieces of this many, in a fixed order, and no step moves options in two pieces at once. `all` keeps
-each group whole. Default `4`.
+each group whole. Default `4`. The register limits of the `Cuda` group (`REGMI64`, `REGTS31` and the like) are never
+permuted: each limits one kernel, run on its own, so each is searched one value at a time whatever `maxPermute` is,
+and the combinations try the best of them together.
 
 **`maxPoints=<N>|all`** (`hybrid` and `groups`): how many combinations are tried in each piece of a group, and in each
 combination of groups. A piece's combinations are listed one option moved first, then two, and so on, so a cut keeps
@@ -233,18 +242,18 @@ the smaller moves: with the defaults, the larger groups are cut before any step 
 once. `all` tries every combination. Default `64`.
 
 Raising either is how to spend more time on each FFT; every combination is a measurement, and `all` together with
-`maxPermute=all` can mean thousands of them for the larger groups -- and far more on a CUDA build, whose `Cuda` group
-holds several register-count options of 14 values each: hundreds of millions of combinations for one FFT6431 entry. The
-run lists a large piece 64 combinations at a time, in the same order, and lists more as those are measured, so it keeps
-moving however large the pieces are; the progress line, `-tune status` and the summary add `and up to <N> more not
-listed yet` for what lies beyond. Neither changes the bootstrap, which always races single options and then combines
-their best answers.
+`maxPermute=all` can mean thousands of them for the larger groups: `Memory` alone is 4499 on NVIDIA. The run lists a
+large piece 64 combinations at a time, in the same order, and lists more as those are measured, so it keeps moving
+however large the pieces are; the progress line, `-tune status` and the summary add `and up to <N> more not listed
+yet` for what lies beyond. Neither changes the bootstrap, which always races single options and then combines their
+best answers.
 
 **`comboTop=<N>`** (`hybrid` only): how many of each group's best answers are carried into the combinations. Default
 `3`.
 
 **`comboTiers=1|2|3`** (`hybrid` only): how widely groups are combined. `1`: none (the same as `strategy=groups`);
-`2`: groups that share kernels are combined; `3`: everything is combined. Default `3`.
+`2`: groups that share kernels are combined, and so are the pieces of one group (`Memory combined`, `Cuda combined`),
+each piece's best answers with the others'; `3`: everything is combined. Default `3`.
 
 ### Output
 
