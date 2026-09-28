@@ -316,7 +316,10 @@ Besides those lines:
 
 Any configuration that has taken the device down, or computed a wrong answer, is listed as soon as a run starts (so
 after a restart the new process says it again) and again in the summary, each with the command line that reproduces
-it. Neither should ever happen: either is a kernel or driver bug, worth reporting with that line.
+it. Neither should ever happen: either is a kernel or driver bug, worth reporting with that line. A wrong answer is
+only concluded from two readings: a call whose Gerbicz check fails (or, for LL, whose residue disagrees with the
+reference) is read again at once, since a card without ECC flips a bit now and then, and only a second failure is
+recorded.
 
 ```text
 tune: 1 configuration took the device down and will not be built again on this device; a kernel or driver bug, worth reporting with the line that reproduces it:

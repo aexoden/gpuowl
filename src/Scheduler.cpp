@@ -1119,6 +1119,9 @@ QueueReport runQueue(Scheduler& scheduler, TuneDB& db, u32 env, Bench& bench, co
       log("tune: %u. %s %s at %" PRIu64 "%s: %.3f us/it, %.1f s; T %.3f -> %.3f us/it\n", out.items,
           toString(item->kind), label.c_str(), item->exponent, call.c_str(), result.usPerIt, result.seconds, before,
           objective.T());
+    } else if (result.status == Status::Err) {
+      log("tune: %u. %s %s at %" PRIu64 "%s computed wrongly twice, and is held out as an error\n", out.items,
+          toString(item->kind), label.c_str(), item->exponent, call.c_str());
     } else {
       log("tune: %u. %s %s at %" PRIu64 "%s gave no reading\n", out.items, toString(item->kind), label.c_str(),
           item->exponent, call.c_str());

@@ -121,6 +121,11 @@ Call checkedAgainst(u64 reference, Call first, const std::function<Call()>& agai
   return second;
 }
 
+Call checkedTwice(Call first, const std::function<Call()>& again) {
+  if (first.measurement.status != Status::Err) { return first; }
+  return again();
+}
+
 RoeCheck roeCheck(GpuCommon shared, const FFTConfig& fft, const UseConfig& options, u64 exponent) {
   RoeCheck out{.minZ = minSafeZ(fft.shape.fft_type), .exponent = exponent};
 
@@ -511,6 +516,21 @@ Call Session::runCall(const FFTConfig& fft, TestKind kind, u64 exponent, const U
   out = attempt(shared_, fft, kind, exponent, options, nBlocks, blockSize);
   // Nothing is recorded for a stop, nor for a reading taken only to warm the device.
   if (stopped_ || !record) { return out; }
+
+  if (out.measurement.status == Status::Err) {
+    log("measure: %s -use %s failed its check at %" PRIu64 "; reading it again, since one failure decides nothing\n",
+        fft.spec().c_str(), configText(options).c_str(), exponent);
+    out =
+      checkedTwice(std::move(out), [&] { return attempt(shared_, fft, kind, exponent, options, nBlocks, blockSize); });
+    if (stopped_) { return out; }
+    if (out.measurement.status == Status::Err) {
+      log("measure: %s -use %s failed its check again: it computes wrongly, and is recorded as an error\n",
+          fft.spec().c_str(), configText(options).c_str());
+    } else if (out.measurement.ok()) {
+      log("measure: %s -use %s passed its check the second time, so the first failure was a fault of its own\n",
+          fft.spec().c_str(), configText(options).c_str());
+    }
+  }
 
   if (reference && out.measurement.ok() && out.res64 != *reference) {
     log("measure: %s -use %s read LL residue %016" PRIx64 " at %" PRIu64 " after %" PRIu64 " iterations, where the\n"

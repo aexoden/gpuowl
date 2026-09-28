@@ -74,6 +74,11 @@ inline constexpr u32 CALL_WARMUP_BLOCKS = 1;
 // can flip a bit of any one reading: the second call is recorded, and as an error only where it disagrees too.
 [[nodiscard]] Call checkedAgainst(u64 reference, Call first, const std::function<Call()>& again);
 
+// The call to record where the first failed its own check -- a PRP call's Gerbicz check.  The same fault that flips a
+// bit of an LL residue fails a Gerbicz check, so one failure is read again: the second call is recorded, and as an
+// error only where its check fails too.
+[[nodiscard]] Call checkedTwice(Call first, const std::function<Call()>& again);
+
 // Results from a rounding error check.
 struct RoeCheck {
   // False for a pure NTT: GF31 and GF61 arithmetic is exact, so there is no rounding error to measure.

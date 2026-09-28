@@ -284,8 +284,11 @@ public:
     session_.varying(moved.empty() ? std::vector<std::string>{} : std::vector<std::string>{moved});
     Call const c = session_.run(fft, kind, exponent, options, BLOCKS_PER_CALL, blockSize_);
     session_.varying({});
-    return {
-      .completed = c.measurement.ok(), .seconds = c.buildSec + c.timedSec, .usPerIt = c.measurement.mean, .ran = c.ran};
+    return {.completed = c.measurement.ok(),
+            .seconds = c.buildSec + c.timedSec,
+            .usPerIt = c.measurement.mean,
+            .ran = c.ran,
+            .status = c.measurement.status};
   }
 
   [[nodiscard]] Reading gate(const FFTConfig& fft, u64 exponent, const UseConfig& options) override {
