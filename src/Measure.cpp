@@ -360,6 +360,10 @@ void Session::declareCombo(const FFTConfig& fft, TestKind kind, u64 exponent, co
                          .ts = now()});
 }
 
+void Session::declareBootstrap(const FFTConfig& fft, u64 probe) {
+  (void)db_.add(BootRow{.sess = session_, .fft = fft.spec(), .probe = probe, .ts = now()});
+}
+
 void Session::keepAnchor() {
   if (!anchorDue()) { return; }
   raceAnchor();

@@ -55,32 +55,32 @@ A run goes through these stages, though it interleaves them and you do not need 
    *probe*). By default both come from your worktodo files.
 2. **Drift anchor.** Pick one reference configuration and re-time it every few minutes, so that a GPU that slows down
    as it warms up (or speeds up as something else stops) does not distort the comparison.
-3. **Bootstrap.** For each FFT type (FP64, the NTTs, the hybrids), race the `-use` options on one FFT at the probe
-   exponent. The winners are the first default options, written as the `use` lines at the top of `selection.txt`:
-   what an FFT with nothing published of its own runs at, and what each FFT is first timed at. A type that is so
-   much slower than the fastest one at its defaults that no plausible option gain could close the gap is not raced,
-   and starts from the options the raced types agree on.
-4. **Coverage.** Make sure every exponent in the workload has an FFT published for it: where none has, time the
+3. **Coverage.** Make sure every exponent in the workload has an FFT published for it: where none has, time the
    FFT most likely to be cheapest there (its default variant first) and read its rounding error. This runs before
-   anything else is weighed, so a short run still covers the whole workload.
-5. **Baselines.** Time every other FFT that could serve part of the workload, at those defaults, starting with the ones
-   likely to matter.
-6. **Search.** For the FFTs that are competitive, try other option sets one step at a time (how big a step is depends on
-   `strategy=`), combine the best answers of different option groups, and occasionally try a random option set to
-   escape a local optimum.
+   anything else, so a short run still covers the whole workload.
+4. **Defaults sweep.** Time every FFT within 10% of the fastest one somewhere in the workload at PRPLL's built-in
+   defaults. This is the untuned map: what each of them costs before any option is changed, which is what every later
+   gain is a gain over, and what the dashboard compares against.
+5. **Bootstrap.** For each FFT type (FP64, the NTTs, the hybrids), race the `-use` options on the type's fastest FFT
+   at the probe exponent, as the sweep found it. The winners are the first default options, written as the `use`
+   lines at the top of `selection.txt`: what an FFT with nothing published of its own runs at. A type that is so much
+   slower than the fastest one at its defaults that no plausible option gain could close the gap is not raced.
+6. **Search.** For the FFTs that are competitive, first try the default options the bootstrap found, then other option
+   sets one step at a time (how big a step is depends on `strategy=`), combine the best answers of different option
+   groups, and occasionally try a random option set to escape a local optimum. FFTs further off the pace are timed at
+   their defaults as they become worth it.
 7. **Accuracy checks.** Read the rounding error of any published configuration whose options change it.
 
 **The default options follow the search.** Once FFTs are published, each FFT type's default options are those of its
 best published FFT: the one a normal run would use at the probe exponent, or where none of that type reaches it, the
 one nearest it. A type with nothing published keeps what its bootstrap decided. Options that change the rounding
 error stay at their defaults on these lines, since nothing reads the rounding error of an FFT that merely runs under
-them. An FFT is timed at the lines as they stand when its turn comes; one already timed is not timed again when they
-move, and every published FFT names the options it was measured with, so it runs as measured whatever they come to
-say.
+them. Every FFT is first timed at the built-in defaults, and the lines are the first step of its search; every
+published FFT names the options it was measured with, so it runs as measured whatever the lines come to say.
 
-`selection.txt` is rewritten after every measurement. It holds nothing until the bootstrap has finished and the first
-FFTs have been timed and had their rounding error read; soon after, it covers the whole workload, and from then on
-it improves with each measurement, so what it holds is always usable. The run ends by itself when nothing left is expected to lower `T` by more than 0.1%, or when
+`selection.txt` is rewritten after every measurement. It holds nothing until the first FFTs have been timed and had
+their rounding error read; soon after, it covers the whole workload at the built-in defaults, and from then on it
+improves with each measurement, so what it holds is always usable. The run ends by itself when nothing left is expected to lower `T` by more than 0.1%, or when
 you press Ctrl-C.
 
 
@@ -98,9 +98,9 @@ What to expect:
 - **Duration.** Each measurement builds the FFT's kernels and times about 5000 iterations: from several seconds to a
   minute or more, depending on the FFT and the GPU. Choosing the drift anchor takes a few minutes, the bootstrap
   roughly half an hour to an hour or more per FFT type it races, and a run that goes until it stops by itself usually
-  takes many hours. Nothing is published until the bootstrap is done, so give the first run the time to get there
-  (`-tune status` shows how far it is); after that the most valuable measurements come first, and you can stop
-  whenever you need the GPU and resume later.
+  takes many hours. The workload is covered first and the defaults sweep follows, which on a wide workload can take
+  an hour or more before any option is tuned (`-tune status` shows how far it is); after that the most valuable
+  measurements come first, and you can stop whenever you need the GPU and resume later.
 - **Resuming.** Run the same command again. Every measurement is saved in `tunedb.txt` as it is taken, so nothing but
   the measurement in progress is lost.
 - **Your settings are set aside.** While tuning, every `-use` option from `config.txt` (including `!` lines) and from
@@ -129,11 +129,17 @@ tune:   118063003  75.0%    870.302 us/it  prior, from 1K:13:256  (probe)
 tune:   136279841  25.0%   1013.328 us/it  prior, from 1K:15:256
 tune: T = 906.059 us/it against env 1, 0.0% of the weight on measured entries
 tune: 945 entries could serve the workload; each measured one is searched by strategy=hybrid (maxPermute=4, maxPoints=64, comboTop=3, comboTiers=3), then by random restarts; the run goes on until nothing is expected to lower T by 0.1% of it
-tune: bootstrap at 118063003 over FFT64 1K:13:256:212, FFT3161 1:1K:8:256:202, FFT3261 2:1K:8:256:212, FFT61 3:1K:16:256:202, FFT323161 4:1K:8:256:212, FFT6431 51:1K:8:256:212
+tune: bootstrap at 118063003 once the workload is covered and every FFT within 10% of the fastest has been read at the built-in defaults, on each type's fastest there
 ```
 
 The costs marked `prior` are estimates, used only to decide what to measure first. They are replaced by measurements
-as the run goes on.
+as the run goes on. Once the sweep is done, the run names the FFT each type is raced on:
+
+```text
+tune: bootstrap at 118063003 over FFT64 1K:13:256:101, FFT3161 1:1K:8:256:202, FFT3261 2:1K:8:256:212, FFT61 3:1K:16:256:202, FFT323161 4:1K:8:256:212, FFT6431 51:1K:8:256:212
+```
+
+A database from before this rule keeps racing where its bootstrap began.
 
 
 ## Settings
@@ -206,9 +212,9 @@ A value without `%` is refused, except `0`: `0.1` could mean either 0.1% or 10%.
 
 These change how the options of each FFT are searched. The defaults are the recommended ones.
 
-**`bootstrap=0|1`**: whether to race each FFT type's options first (default `1`). With `bootstrap=0` every FFT type
-starts from PRPLL's built-in defaults, and `selection.txt` has no default `use` lines until the first FFTs are
-published and the lines follow them. This is mainly useful to compare against.
+**`bootstrap=0|1`**: whether to race each FFT type's options on its fastest FFT once the defaults sweep is done (default
+`1`). With `bootstrap=0` the search starts with no default lines to try first, and `selection.txt` has no default `use`
+lines until searched FFTs are published and the lines follow them. This is mainly useful to compare against.
 
 **`strategy=<S>`**: what one step of the per-FFT search is.
 

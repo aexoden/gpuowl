@@ -155,6 +155,9 @@ public:
   // Records that the next call is a point of a combination of tier `tier`.
   void declareCombo(const FFTConfig& fft, TestKind kind, u64 exponent, const UseConfig& options, u32 tier);
 
+  // Records that the bootstrap family of `fft`'s type races on `fft` at `probe` (a `boot` row).
+  void declareBootstrap(const FFTConfig& fft, u64 probe);
+
   [[nodiscard]] u32 id() const { return session_; }
   [[nodiscard]] u32 envId() const { return envId_; }
 

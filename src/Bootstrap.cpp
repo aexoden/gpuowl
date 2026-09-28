@@ -229,9 +229,78 @@ RaceResult decideRace(const std::vector<RaceEntry>& entries) {
 Bootstrap::Bootstrap(Env env, u64 probe, std::vector<Family> families, bool enabled, u32 comboTiers) :
   env_{std::move(env)}, probe_{probe}, families_{std::move(families)}, enabled_{enabled}, comboTiers_{comboTiers} {}
 
+std::vector<Family> Bootstrap::familiesIn(const TuneDB& db, u32 env) const {
+  std::vector<Family> out = families_;
+  std::set<enum FFT_TYPES> recorded;
+  for (const BootRow& row : db.boots()) {
+    if (row.probe != probe_ || db.envOf(row.sess) != env) { continue; }
+    auto const fft = parseFft(row.fft);
+    if (!fft || !recorded.insert(fft->shape.fft_type).second) { continue; }
+    auto const at = std::ranges::find(out, fft->shape.fft_type, &Family::type);
+    if (at != out.end()) { at->fft = *fft; }
+  }
+  if (!enabled_ || recorded.size() == out.size()) { return out; }
+
+  // A family that raced before the choice was recorded goes on where it raced.
+  BootstrapState const begun = stateOf(families_, db, env);
+
+  // Otherwise the cheapest reading of the type at the built-in defaults at the probe: what the defaults sweep found
+  // fastest there, and so what the search would tune first.
+  std::map<enum FFT_TYPES, std::pair<double, FFTConfig>> cheapest;
+  for (const RunRow& row : db.mergedRuns()) {
+    if (row.kind != TestKind::PRP || row.exponent != probe_ || !row.m.ok() || !concluded(row.m) ||
+        db.envOf(row.sess) != env) {
+      continue;
+    }
+    auto const fft = parseFft(row.fft);
+    const UseConfig* const opts = db.findCfg(row.cfg);
+    if (!fft || !opts || !canonicalConfig(env_, *fft, *opts).empty()) { continue; }
+    std::vector<u32> const variants = runnableVariants(env_, fft->shape);
+    if (std::ranges::find(variants, fft->variant) == variants.end()) { continue; }
+    auto const [at, fresh] = cheapest.try_emplace(fft->shape.fft_type, row.m.cost(), *fft);
+    if (!fresh && row.m.cost() < at->second.first) { at->second = {row.m.cost(), *fft}; }
+  }
+
+  for (size_t f = 0; f < out.size(); ++f) {
+    if (recorded.contains(out[f].type) || !begun.families[f].decisions.empty()) { continue; }
+    if (auto const at = cheapest.find(out[f].type); at != cheapest.end()) { out[f].fft = at->second.second; }
+  }
+  return out;
+}
+
+namespace {
+
+[[nodiscard]] std::set<enum FFT_TYPES> recordedTypes(const TuneDB& db, u32 env, u64 probe) {
+  std::set<enum FFT_TYPES> out;
+  for (const BootRow& row : db.boots()) {
+    if (row.probe != probe || db.envOf(row.sess) != env) { continue; }
+    if (auto const fft = parseFft(row.fft)) { out.insert(fft->shape.fft_type); }
+  }
+  return out;
+}
+
+}  // namespace
+
+bool Bootstrap::chosen(const TuneDB& db, u32 env) const {
+  std::set<enum FFT_TYPES> const types = recordedTypes(db, env, probe_);
+  return std::ranges::all_of(families_, [&](const Family& f) { return types.contains(f.type); });
+}
+
+std::vector<Family> Bootstrap::unrecorded(const TuneDB& db, u32 env) const {
+  std::set<enum FFT_TYPES> const types = recordedTypes(db, env, probe_);
+  std::vector<Family> out = familiesIn(db, env);
+  std::erase_if(out, [&](const Family& f) { return types.contains(f.type); });
+  return out;
+}
+
 BootstrapState Bootstrap::state(const TuneDB& db, u32 env, const std::set<std::string>& excluded) const {
+  return stateOf(familiesIn(db, env), db, env, excluded);
+}
+
+BootstrapState Bootstrap::stateOf(const std::vector<Family>& families, const TuneDB& db, u32 env,
+                                  const std::set<std::string>& excluded) const {
   BootstrapState out;
-  for (const Family& family : families_) { out.families.push_back({.family = family}); }
+  for (const Family& family : families) { out.families.push_back({.family = family}); }
 
   if (!enabled_) {
     for (FamilyState& f : out.families) { f.phase = FamilyPhase::Skipped; }
@@ -241,11 +310,11 @@ BootstrapState Bootstrap::state(const TuneDB& db, u32 env, const std::set<std::s
 
   std::vector<RunRow> const runs = db.mergedRuns();
   std::vector<Readings> readings;
-  for (const Family& family : families_) { readings.push_back(readingsOf(env_, family, probe_, runs, db, env)); }
+  for (const Family& family : families) { readings.push_back(readingsOf(env_, family, probe_, runs, db, env)); }
 
   auto entryOf = [&](size_t f, const UseConfig& config, std::string text) {
     std::string const key = configText(config);
-    std::string const spec = families_[f].fft.spec();
+    std::string const spec = families[f].fft.spec();
     RaceEntry e{.config = config, .text = std::move(text), .m = {}, .out = false};
     if (auto const at = readings[f].ok.find(key); at != readings[f].ok.end()) { e.m = at->second; }
 
@@ -257,7 +326,7 @@ BootstrapState Bootstrap::state(const TuneDB& db, u32 env, const std::set<std::s
 
   // A reading of every family at the defaults comes first: which of them are worth tuning is a comparison between them.
   bool anyUnread = false;
-  for (size_t f = 0; f < families_.size(); ++f) {
+  for (size_t f = 0; f < families.size(); ++f) {
     FamilyState& s = out.families[f];
     RaceEntry const defaults = entryOf(f, {}, "defaults");
     if (defaults.out) {
@@ -280,7 +349,7 @@ BootstrapState Bootstrap::state(const TuneDB& db, u32 env, const std::set<std::s
   }
 
   std::vector<size_t> order;
-  for (size_t f = 0; f < families_.size(); ++f) {
+  for (size_t f = 0; f < families.size(); ++f) {
     if (out.families[f].phase != FamilyPhase::Held) { order.push_back(f); }
   }
   std::ranges::stable_sort(order,
@@ -352,14 +421,14 @@ BootstrapState Bootstrap::state(const TuneDB& db, u32 env, const std::set<std::s
       for (u32 round = 0; round < GROUP_ROUNDS && !pending; ++round) {
         // The lines hold every key that changes the rounding at its default.  Production applies them to every shape
         // nothing was published for, where no gate ever read them.
-        std::vector<Move> moves = movesWithin(env_, families_[f].fft, s.decided, group);
-        std::erase_if(moves, [&](const Move& m) { return movesAccuracy(env_, families_[f].fft, m.config); });
+        std::vector<Move> moves = movesWithin(env_, families[f].fft, s.decided, group);
+        std::erase_if(moves, [&](const Move& m) { return movesAccuracy(env_, families[f].fft, m.config); });
         if (moves.empty()) { break; }
 
         std::vector<RaceEntry> entries{entryOf(f, s.decided, "the incumbent")};
         std::vector<std::string> keys{""};
         for (const Move& move : moves) {
-          std::string const aside = ldsAsideNote(families_[f].fft, s.decided, move.config, {move.key});
+          std::string const aside = ldsAsideNote(families[f].fft, s.decided, move.config, {move.key});
           entries.push_back(entryOf(f, move.config, move.text + aside));
           keys.push_back(move.key);
         }
@@ -384,13 +453,13 @@ BootstrapState Bootstrap::state(const TuneDB& db, u32 env, const std::set<std::s
         }
         std::ranges::stable_sort(readings.begin() + 1, readings.end(), {}, &Reading::cost);
 
-        std::string asked;
+        std::string asked = families[f].fft.spec() + " ";
         for (const Reading& r : readings) { asked += configText(r.config) + "@" + std::to_string(r.cost) + " "; }
         auto& [was, list] = stageLists_[{f, tier}];
         if (was != asked) {
           Strategy const tree{
             .kind = Strategy::Kind::Hybrid, .comboTop = COMBO_TOP, .comboTiers = tier, .bootstrapTree = true};
-          list = probesOf(env_, families_[f].fft, s.decided, tree, readings);
+          list = probesOf(env_, families[f].fft, s.decided, tree, readings);
           was = std::move(asked);
         }
         auto const next = std::ranges::find_if(
@@ -402,7 +471,7 @@ BootstrapState Bootstrap::state(const TuneDB& db, u32 env, const std::set<std::s
         std::vector<RaceEntry> entries{incumbent};
         std::vector<std::string> keys{""};
         for (const Probe& p : list.probes) {
-          if (p.stage != stage || movesAccuracy(env_, families_[f].fft, p.config)) { continue; }
+          if (p.stage != stage || movesAccuracy(env_, families[f].fft, p.config)) { continue; }
           entries.push_back(entryOf(f, p.config, p.text));
           keys.push_back(p.key);
         }
@@ -501,7 +570,10 @@ Defaults publishedLines(const Env& env, u64 probe, TestKind kind, const std::vec
   for (const SelectionEntry& e : published) {
     if (e.kind != kind) { continue; }
     auto const fft = parseFft(e.fft);
-    if (!fft) { continue; }
+    // Baselines are taken at the built-in defaults, so an entry still published there has not been searched and says
+    // nothing about its type's options: taken as evidence it would only return the lines to the defaults, and pull a
+    // key every searched type agrees on off the global line.
+    if (!fft || canonicalConfig(env, *fft, e.opts).empty()) { continue; }
 
     u64 const distance = probe < e.emin ? e.emin - probe : probe > e.reach ? probe - e.reach : 0;
     Evidence candidate{.rank = {distance, e.cost, e.id}, .family = {fft->shape.fft_type, *fft}, .config = e.opts};

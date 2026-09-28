@@ -330,7 +330,7 @@ std::optional<u32> nextRunnable(RestartScan& scan, const std::function<std::stri
 std::string Scheduler::keyOf(const Item& item) const {
   switch (item.kind) {
   case ItemKind::Anchor: return "anchor";
-  case ItemKind::Bootstrap: return bootstrap_.families()[item.index].fft.spec() + " " + configText(item.options);
+  case ItemKind::Bootstrap: return item.fft->spec() + " " + configText(item.options);
   case ItemKind::Probe:
   case ItemKind::Combo:
   case ItemKind::Refine:
@@ -365,10 +365,11 @@ Defaults Scheduler::lines(const TuneDB& db, u32 env, const BootstrapState& state
 std::vector<Item> Scheduler::bootstrapItems(const BootstrapState& state, const Objective& objective) const {
   std::vector<Item> out;
   for (const Turn& turn : state.turns) {
-    const Family& family = bootstrap_.families()[turn.family];
+    const Family& family = state.families[turn.family].family;
     double const estimate = objective.priorModel().cost(family.fft.shape);
     Item item{.kind = ItemKind::Bootstrap,
               .index = turn.family,
+              .fft = family.fft,
               .options = turn.config,
               .moved = turn.key,
               .what = std::string{typeName(family.type)} + " " + family.fft.spec() + " " + turn.text,
@@ -473,22 +474,7 @@ std::vector<Item> Scheduler::coverItems(std::span<const Item> baselines, const O
     cover.what = "covering " + std::to_string(*lo) + (*lo == hi ? "" : "-" + std::to_string(hi));
   }
 
-  // Ranked as the baselines are, except that the variants of one shape share a prior, so nothing yet tells them apart
-  // but the edges of their bands: the variant production's own shape scan runs where nothing is published goes first.
-  auto const shapeOf = [&](const Item& i) {
-    const Baseline& b = baselines_[i.index];
-    return std::tuple{b.fft.shape.spec(), b.kind, b.band.regime.label()};
-  };
-  std::map<std::tuple<std::string, TestKind, std::string>, double> best;
-  for (const Item& i : out) {
-    double& rate = best[shapeOf(i)];
-    rate = std::max(rate, i.rate());
-  }
-  auto const rank = [&](const Item& i) {
-    const FFTConfig& fft = baselines_[i.index].fft;
-    return std::tuple{-best.at(shapeOf(i)), shapeOf(i), fft.variant != defaultVariant(fft.shape), -i.rate()};
-  };
-  std::ranges::stable_sort(out, [&](const Item& a, const Item& b) { return rank(a) < rank(b); });
+  rankByShape(out);
   return out;
 }
 
@@ -548,12 +534,18 @@ std::vector<Item> Scheduler::reachItems(const TuneDB& db, u32 env, std::span<con
 
 std::vector<Item> Scheduler::baselineItems(const TuneDB& db, u32 env, const Objective& objective) const {
   Progress const progress = progressOf(db, env, bootstrap_.env());
-  return baselineItems(db, env, lines(db, env, bootstrapState(db, env)), progress, gainsOf(db, env), objective);
+  GainModel const gains = gainsOf(db, env);
+  std::vector<Item> out = baselineItems(db, env, progress, gains, objective);
+  if (strategy_) {
+    std::vector<OptionSet> const sets = optionSetsFor(db, env);
+    std::ranges::move(sweepItems(db, env, progress, readingsOf(sets, bootstrap_.env()), gains, objective),
+                      std::back_inserter(out));
+  }
+  return out;
 }
 
-std::vector<Item> Scheduler::baselineItems(const TuneDB& db, u32 env, const Defaults& lines, const Progress& progress,
-                                           const GainModel& gains, const Objective& objective) const {
-  const Env& device = bootstrap_.env();
+std::vector<Item> Scheduler::baselineItems(const TuneDB& db, u32 env, const Progress& progress, const GainModel& gains,
+                                           const Objective& objective) const {
   GainDist const unmeasured = gains.global();
 
   std::vector<Item> out;
@@ -565,7 +557,9 @@ std::vector<Item> Scheduler::baselineItems(const TuneDB& db, u32 env, const Defa
     if (progress.settled.contains(key)) { continue; }
     if (auto const at = attempts_.find(i); at != attempts_.end() && at->second >= MAX_ATTEMPTS) { continue; }
 
-    UseConfig options = underDefaults(device, b.fft, b.kind, lines);
+    // At the built-in defaults: a baseline is what the entry costs untuned, which is what everything it gains is a
+    // gain over, and the lines are one step of its search like any other.
+    UseConfig options{};
     if (progress.failed.contains({key, configText(options)})) { continue; }
 
     Partial p{};
@@ -600,24 +594,134 @@ std::vector<Item> Scheduler::baselineItems(const TuneDB& db, u32 env, const Defa
   return out;
 }
 
+std::vector<Item> Scheduler::sweepItems(const TuneDB& db, u32 env, const Progress& progress,
+                                        const std::map<EntryKey, std::vector<Reading>>& readings,
+                                        const GainModel& gains, const Objective& objective) const {
+  GainDist const unmeasured = gains.global();
+
+  // What each entry is known or estimated to cost: its cheapest reading under any options where it has one, else its
+  // prior without the optimism the value model gives it, so that the margin means the same measured or not.
+  std::vector<double> estimates;
+  for (const Baseline& b : baselines_) {
+    auto const measured = readings.find({b.fft.spec(), b.kind, b.band.regime.label()});
+    estimates.push_back(measured != readings.end() ? measured->second.front().cost
+                                                   : objective.priorModel().cost(b.fft.shape) / PRIOR_OPTIMISM);
+  }
+
+  // The fastest thing at each weighted point: what production runs there where that is measured, and where it is not,
+  // the cheapest estimate among the entries that serve it.
+  std::vector<std::optional<double>> fastest(objective.points().size());
+  for (size_t p = 0; p < objective.points().size(); ++p) {
+    const ObjectivePoint& point = objective.points()[p];
+    if (point.weight <= 0) { continue; }
+    if (point.cost && point.cost->measured()) { fastest[p] = point.cost->us; }
+    for (size_t i = 0; i < baselines_.size(); ++i) {
+      if (baselines_[i].kind != point.kind || !baselines_[i].band.contains(point.exponent)) { continue; }
+      fastest[p] = std::min(fastest[p].value_or(estimates[i]), estimates[i]);
+    }
+  }
+
+  std::vector<Item> out;
+  for (size_t i = 0; i < baselines_.size(); ++i) {
+    const Baseline& b = baselines_[i];
+    std::string const spec = b.fft.spec();
+    EntryKey const key{spec, b.kind, b.band.regime.label()};
+
+    // A reading at the built-in defaults, concluded or failed, is what the sweep is for; one under any other options
+    // does not say what the entry costs untuned.
+    if (progress.failed.contains({key, ""})) { continue; }
+    if (auto const at = progress.concluded.find(key);
+        at != progress.concluded.end() && std::ranges::any_of(at->second, &UseConfig::empty)) {
+      continue;
+    }
+    if (auto const at = attempts_.find(i); at != attempts_.end() && at->second >= MAX_ATTEMPTS) { continue; }
+
+    double const estimate = estimates[i];
+    bool contends = false;
+    for (size_t p = 0; p < objective.points().size() && !contends; ++p) {
+      const ObjectivePoint& point = objective.points()[p];
+      contends = fastest[p] && point.kind == b.kind && b.band.contains(point.exponent) &&
+        estimate <= (1 + CONTEND_MARGIN) * *fastest[p];
+    }
+    if (!contends) { continue; }
+
+    Partial p{};
+    if (auto const at = progress.partial.find({key, ""}); at != progress.partial.end()) { p = at->second; }
+    u64 const exponent = p.calls && b.band.contains(p.exponent) ? p.exponent : b.exponent;
+
+    if (db.isNogo(env, spec, {})) { continue; }
+    if (u32 const cfg = db.findCfgId({}); cfg && db.diedOn(env, cfg, b.kind, spec, exponent)) { continue; }
+
+    bool const fresh = !built_.contains(builtKey(b.fft, {}));
+    out.push_back({.kind = ItemKind::Baseline,
+                   .index = i,
+                   .options = {},
+                   .moved = {},
+                   .what = "at the built-in defaults",
+                   .exponent = exponent,
+                   .value = expectedSaving(objective.points(), b.kind, b.band, estimate, unmeasured),
+                   .cost = estimate,
+                   .seconds = clock_.seconds(estimate, fresh),
+                   .fresh = fresh,
+                   .calls = p.calls,
+                   .sweep = true});
+  }
+  rankByShape(out);
+  return out;
+}
+
+void Scheduler::rankByShape(std::vector<Item>& items) const {
+  auto const shapeOf = [&](const Item& i) {
+    const Baseline& b = baselines_[i.index];
+    return std::tuple{b.fft.shape.spec(), b.kind, b.band.regime.label()};
+  };
+  std::map<std::tuple<std::string, TestKind, std::string>, double> best;
+  for (const Item& i : items) {
+    double& rate = best[shapeOf(i)];
+    rate = std::max(rate, i.rate());
+  }
+  auto const rank = [&](const Item& i) {
+    const FFTConfig& fft = baselines_[i.index].fft;
+    return std::tuple{-best.at(shapeOf(i)), shapeOf(i), fft.variant != defaultVariant(fft.shape), -i.rate()};
+  };
+  std::ranges::stable_sort(items, [&](const Item& a, const Item& b) { return rank(a) < rank(b); });
+}
+
+bool Scheduler::swept(const TuneDB& db, u32 env, const Objective& objective) const {
+  const Env& device = bootstrap_.env();
+  Progress const progress = progressOf(db, env, device);
+  GainModel const gains = gainsOf(db, env);
+  if (!coverItems(baselineItems(db, env, progress, gains, objective), objective).empty()) { return false; }
+  if (!strategy_) { return true; }
+  return sweepItems(db, env, progress, readingsOf(optionSetsFor(db, env), device), gains, objective).empty();
+}
+
 std::vector<Item> Scheduler::admissible(const TuneDB& db, u32 env, const Objective& objective) const {
   BootstrapState const state = bootstrapState(db, env);
-  if (!state.turns.empty()) { return bootstrapItems(state, objective); }
-  if (std::vector<Item> gates = gateItems(db, env); !gates.empty()) { return gates; }
-
   const Env& device = bootstrap_.env();
   Progress const progress = progressOf(db, env, device);
   GainModel const gains = gainsOf(db, env);
 
-  std::vector<Item> out = baselineItems(db, env, lines(db, env, state), progress, gains, objective);
-  if (std::vector<Item> cover = coverItems(out, objective); !cover.empty()) { return cover; }
+  std::vector<Item> out = baselineItems(db, env, progress, gains, objective);
+  std::vector<Item> const cover = coverItems(out, objective);
 
   // The option sets of each entry, which also say how much each option set costs where it was measured.
   std::vector<OptionSet> const sets = strategy_ || gate_ ? optionSetsFor(db, env) : std::vector<OptionSet>{};
+  std::map<EntryKey, std::vector<Reading>> const readings = readingsOf(sets, device);
+  std::vector<Item> const sweep =
+    strategy_ ? sweepItems(db, env, progress, readings, gains, objective) : std::vector<Item>{};
+
+  // The bootstrap races once every contender has been read at the built-in defaults, since which configuration each
+  // family races on is the fastest of those readings at the probe.
+  if (cover.empty() && sweep.empty() && !state.turns.empty()) { return bootstrapItems(state, objective); }
+  if (std::vector<Item> gates = gateItems(db, env); !gates.empty()) { return gates; }
+  if (!cover.empty()) { return cover; }
+  if (!sweep.empty()) { return sweep; }
+
   std::ranges::move(reachItems(db, env, sets, objective), std::back_inserter(out));
 
   if (strategy_) {
-    std::map<EntryKey, std::vector<Reading>> const readings = readingsOf(sets, device);
+    Defaults const defaults = lines(db, env, state);
 
     for (size_t i = 0; i < baselines_.size(); ++i) {
       const Baseline& b = baselines_[i];
@@ -656,6 +760,37 @@ std::vector<Item> Scheduler::admissible(const TuneDB& db, u32 env, const Objecti
       GainDist const comboGains = gains.comboForEntry(key);
       size_t const before = out.size();
       std::set<std::string> offered;
+
+      // An entry still best at the built-in defaults first tries the lines: what the bootstrap and the best entries
+      // found, all at once, which is the one jump most likely to pay before any single step.
+      if (ofEntry.front().config.empty()) {
+        UseConfig const jump = underDefaults(device, b.fft, b.kind, defaults);
+        std::string const text = configText(jump);
+        double const value = expectedSaving(objective.points(), b.kind, b.band, ofEntry.front().cost, entryGains);
+        Item item{.kind = ItemKind::Probe,
+                  .index = i,
+                  .options = jump,
+                  .moved = {},
+                  .what = "the default lines " + text,
+                  .exponent = b.exponent,
+                  .value = value,
+                  .cost = ofEntry.front().cost};
+        if (auto const partial = progress.partial.find({key, text});
+            partial != progress.partial.end() && b.band.contains(partial->second.exponent)) {
+          item.exponent = partial->second.exponent;
+          item.calls = partial->second.calls;
+        }
+        auto const n = probeAttempts_.find(keyOf(item));
+        u32 const cfg = db.findCfgId(jump);
+        if (!jump.empty() && value > 0 && !progress.answered.contains({key, text}) &&
+            (n == probeAttempts_.end() || n->second < MAX_ATTEMPTS) && !db.isNogo(env, b.fft.spec(), jump) &&
+            !(cfg && db.diedOn(env, cfg, b.kind, b.fft.spec(), item.exponent))) {
+          item.fresh = !built_.contains(builtKey(b.fft, jump));
+          item.seconds = clock_.seconds(ofEntry.front().cost, item.fresh);
+          offered.insert(text);
+          out.push_back(std::move(item));
+        }
+      }
       for (size_t branch = 0; branch < branches.size(); ++branch) {
         // Every probe of a branch is worth the same: what the gains this entry and the device have shown expect a move
         // from the branch's best set to save.  Every combo likewise, by the gains combinations have shown.
@@ -808,7 +943,9 @@ std::vector<Item> Scheduler::admissible(const TuneDB& db, u32 env, const Objecti
   return out;
 }
 
-bool byRule(const Item& item) { return item.kind == ItemKind::Bootstrap || item.kind == ItemKind::Gate || item.cover; }
+bool byRule(const Item& item) {
+  return item.kind == ItemKind::Bootstrap || item.kind == ItemKind::Gate || item.cover || item.sweep;
+}
 
 bool worthRunning(const Item& item, double floor) {
   if (byRule(item)) { return true; }
@@ -1008,6 +1145,19 @@ QueueReport runQueue(Scheduler& scheduler, TuneDB& db, u32 env, Bench& bench, co
   };
 
   while (!bench.stopped()) {
+    // Once the defaults sweep is done, which configuration each family races on is recorded, so that it stays put as
+    // the races add readings.
+    if (bootstrapping && !bench.anchorDue() && !scheduler.bootstrap().chosen(db, env) &&
+        scheduler.swept(db, env, valuing)) {
+      std::string names;
+      for (const Family& f : scheduler.bootstrap().unrecorded(db, env)) {
+        bench.declareBootstrap(f.fft, scheduler.bootstrap().probe());
+        names += (names.empty() ? "" : ", ") + std::string{typeName(f.type)} + " " + f.fft.spec();
+      }
+      log("tune: bootstrap at %" PRIu64 " over %s\n", scheduler.bootstrap().probe(), names.c_str());
+      rescore();
+    }
+
     std::vector<Item> const ranked = scheduler.admissible(db, env, valuing);
     // From the ranking the pick is made from, so that the figures are the ones the stopping rule is about to use.
     if (watch) {
