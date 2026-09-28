@@ -612,19 +612,11 @@ std::vector<Item> Scheduler::sweepItems(const TuneDB& db, u32 env, const Progres
   std::vector<std::optional<double>> const fastest = fastestAt(objective, estimates);
 
   std::vector<Item> out;
+  sweepWithin_ = 0;
   for (size_t i = 0; i < baselines_.size(); ++i) {
     const Baseline& b = baselines_[i];
     std::string const spec = b.fft.spec();
     EntryKey const key{spec, b.kind, b.band.regime.label()};
-
-    // A reading at the built-in defaults, concluded or failed, is what the sweep is for; one under any other options
-    // does not say what the entry costs untuned.
-    if (progress.failed.contains({key, ""})) { continue; }
-    if (auto const at = progress.concluded.find(key);
-        at != progress.concluded.end() && std::ranges::any_of(at->second, &UseConfig::empty)) {
-      continue;
-    }
-    if (auto const at = attempts_.find(i); at != attempts_.end() && at->second >= MAX_ATTEMPTS) { continue; }
 
     double const estimate = estimates[i];
     bool contends = false;
@@ -633,7 +625,16 @@ std::vector<Item> Scheduler::sweepItems(const TuneDB& db, u32 env, const Progres
       contends = fastest[p] && point.kind == b.kind && b.band.contains(point.exponent) &&
         estimate <= (1 + CONTEND_MARGIN) * *fastest[p];
     }
-    if (!contends) { continue; }
+
+    // A reading at the built-in defaults, concluded or failed, is what the sweep is for; one under any other options
+    // does not say what the entry costs untuned.  One read is counted as read whether or not it still contends, so
+    // that what the sweep says it has read only grows as estimates give way to readings.
+    auto const at = progress.concluded.find(key);
+    bool const read = progress.failed.contains({key, ""}) ||
+      (at != progress.concluded.end() && std::ranges::any_of(at->second, &UseConfig::empty));
+    sweepWithin_ += contends || read;
+    if (!contends || read) { continue; }
+    if (auto const at = attempts_.find(i); at != attempts_.end() && at->second >= MAX_ATTEMPTS) { continue; }
 
     Partial p{};
     if (auto const at = progress.partial.find({key, ""}); at != progress.partial.end()) { p = at->second; }
@@ -657,6 +658,9 @@ std::vector<Item> Scheduler::sweepItems(const TuneDB& db, u32 env, const Progres
                    .sweep = true});
   }
   rankByShape(out);
+  sweepOwed_ = 0;
+  std::set<size_t> owed;
+  for (const Item& item : out) { sweepOwed_ += owed.insert(item.index).second; }
   return out;
 }
 
@@ -1053,6 +1057,86 @@ std::vector<Item> Scheduler::admissible(const TuneDB& db, u32 env, const Objecti
   return out;
 }
 
+Phase Scheduler::phase(const BootstrapState& state, const std::vector<Item>& ranked, const Objective& objective,
+                       double floor) const {
+  auto const any = [&](auto&& pred) { return std::ranges::any_of(ranked, pred); };
+  char buf[256];
+
+  if (any([](const Item& i) { return i.kind == ItemKind::Bootstrap; })) {
+    u32 types = 0;
+    u32 typesDone = 0;
+    const FamilyState* racing = nullptr;
+    for (const FamilyState& f : state.families) {
+      if (f.phase == FamilyPhase::Skipped || f.phase == FamilyPhase::Held || f.phase == FamilyPhase::Unread) {
+        continue;
+      }
+      ++types;
+      typesDone += f.phase == FamilyPhase::Done;
+      if (f.phase == FamilyPhase::Racing && !racing) { racing = &f; }
+    }
+    if (!racing) { return {"bootstrap: reading each FFT type at its defaults", "bootstrap"}; }
+
+    std::string const name = std::string{typeName(racing->family.type)} + " " + racing->family.fft.spec();
+    std::set<std::string> groups;
+    for (Group const g : bootstrap_.groupsOf(racing->family.fft, racing->decided)) { groups.insert(toString(g)); }
+    std::set<std::string> raced;
+    for (const Decision& d : racing->decisions) {
+      if (std::ranges::find_if(allGroups(), [&](Group g) { return d.stage == toString(g); }) != allGroups().end()) {
+        raced.insert(d.stage);
+      }
+    }
+    groups.insert(raced.begin(), raced.end());
+    bool const inGroup = groups.contains(racing->stage);
+    u32 const at = u32(raced.size()) + (inGroup && !raced.contains(racing->stage));
+    std::string const where = inGroup ? "group " + std::to_string(at) + " of " + std::to_string(groups.size()) + " (" +
+        racing->stage + "), then its combinations"
+                                      : "the combinations (" + racing->stage + ")";
+    snprintf(buf, sizeof(buf), "bootstrap: %s, %s; type %u of %u", name.c_str(), where.c_str(), typesDone + 1, types);
+    std::string const brief = inGroup ? "bootstrap " + std::to_string(at) + "/" + std::to_string(groups.size())
+                                      : std::string{"bootstrap combinations"};
+    return {buf, brief};
+  }
+
+  if (any([](const Item& i) { return i.kind == ItemKind::Gate; })) {
+    auto const n = std::ranges::count_if(ranked, [](const Item& i) { return i.kind == ItemKind::Gate; });
+    snprintf(buf, sizeof(buf), "accuracy gate: %u %s owed", u32(n), n == 1 ? "reading" : "readings");
+    return {buf, "gate " + std::to_string(n)};
+  }
+
+  if (any([](const Item& i) { return i.cover; })) {
+    snprintf(buf, sizeof(buf), "covering the workload: %.1f%% of its weight measured", 100 * objective.measured());
+    std::string const text = buf;
+    snprintf(buf, sizeof(buf), "cover %.0f%%", 100 * objective.measured());
+    return {text, buf};
+  }
+
+  if (any([](const Item& i) { return i.sweep; })) {
+    u32 const read = sweepWithin_ - std::min(sweepOwed_, sweepWithin_);
+    snprintf(buf, sizeof(buf), "defaults sweep: %u of %u FFTs read at the built-in defaults", read, sweepWithin_);
+    return {buf, "sweep " + std::to_string(read) + "/" + std::to_string(sweepWithin_)};
+  }
+
+  if (lastHalving_.active && any([](const Item& i) { return i.halving; })) {
+    const HalvingState& h = lastHalving_;
+    u32 rounds = 0;
+    for (u32 n = h.contenders; n > 1; n = (n + 1) / 2) { ++rounds; }
+    u64 const before = h.round ? u64(halving_.roundCalls) * ((u64{1} << h.round) - 1) : 0;
+    u64 const share = h.budget - before;
+    u64 done = 0;
+    for (u64 const calls : h.calls) { done += std::min(share, calls > before ? calls - before : 0); }
+    snprintf(buf, sizeof(buf), "halving: round %u of %u, %zu contenders, %" PRIu64 " of %" PRIu64 " calls", h.round + 1,
+             std::max(rounds, h.round + 1), h.pool.size(), done, share * h.pool.size());
+    std::string const text = buf;
+    snprintf(buf, sizeof(buf), "halving %u/%u", h.round + 1, std::max(rounds, h.round + 1));
+    return {text, buf};
+  }
+
+  if (any([floor](const Item& i) { return worthRunning(i, floor); })) {
+    return {"searching by expected gain", "search"};
+  }
+  return {"nothing left worth running", "done"};
+}
+
 bool byRule(const Item& item) {
   return item.kind == ItemKind::Bootstrap || item.kind == ItemKind::Gate || item.cover || item.sweep || item.halving;
 }
@@ -1285,8 +1369,10 @@ QueueReport runQueue(Scheduler& scheduler, TuneDB& db, u32 env, Bench& bench, co
     }
     // From the ranking the pick is made from, so that the figures are the ones the stopping rule is about to use.
     if (watch) {
-      watch->progress(
-        progressOf(out, objective.T(), objective.measured(), ranked, stop, stop * valuing.T(), state.complete));
+      RunProgress p =
+        progressOf(out, objective.T(), objective.measured(), ranked, stop, stop * valuing.T(), state.complete);
+      p.phase = scheduler.phase(state, ranked, objective, stop * valuing.T());
+      watch->progress(p);
       watch->state({.scheduler = scheduler,
                     .db = db,
                     .env = env,

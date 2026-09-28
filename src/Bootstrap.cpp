@@ -281,6 +281,17 @@ namespace {
 
 }  // namespace
 
+std::vector<Group> Bootstrap::groupsOf(const FFTConfig& fft, const UseConfig& background) const {
+  std::vector<Group> out;
+  for (Group const group : allGroups()) {
+    std::vector<Move> const moves = movesWithin(env_, fft, background, group);
+    if (std::ranges::any_of(moves, [&](const Move& m) { return !movesAccuracy(env_, fft, m.config); })) {
+      out.push_back(group);
+    }
+  }
+  return out;
+}
+
 bool Bootstrap::chosen(const TuneDB& db, u32 env) const {
   std::set<enum FFT_TYPES> const types = recordedTypes(db, env, probe_);
   return std::ranges::all_of(families_, [&](const Family& f) { return types.contains(f.type); });

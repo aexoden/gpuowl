@@ -64,6 +64,9 @@ struct TuneStatus {
   std::vector<RunSummary::Family> families;
   std::string heldBy;
 
+  // The phase a run started now would begin in, with its totals (Scheduler::phase()).
+  std::string phase;
+
   struct Next {
     Item item;
     std::string label;
