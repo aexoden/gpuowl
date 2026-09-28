@@ -296,7 +296,7 @@ static CUresult loadModule(_cl_program* prog, unsigned nOpts, CUjit_option* opts
     if (r == CUDA_SUCCESS) { return r; }
     const char* errName = nullptr;
     cuGetErrorName(r, &errName);
-    fprintf(stderr, "CUBIN rejected by the driver: %s (%d) — loading the PTX through the JIT instead\n", errName ? errName : "?", (int)r);
+    log("CUBIN rejected by the driver: %s (%d) — loading the PTX through the JIT instead\n", errName ? errName : "?", (int)r);
     prog->cubin.clear();
   }
   return cuModuleLoadDataEx(&prog->module, prog->ptx.c_str(), nOpts, opts, optVals);
@@ -312,7 +312,7 @@ cl_program clCreateProgramWithBinary(cl_context ctx, unsigned  /*nDevices*/, con
     // A bare ELF is a CUBIN without its PTX: nothing to read the kernels'
     // work-group sizes from. Refuse it; the caller recompiles and overwrites.
     if (blob.compare(0, 4, "\177ELF", 4) == 0) {
-      fprintf(stderr, "Cached kernel binary is a bare CUBIN (no PTX): recompiling\n");
+      log("Cached kernel binary is a bare CUBIN (no PTX): recompiling\n");
       if (binaryStatus) binaryStatus[0] = CL_INVALID_BINARY;
       if (err) *err = CL_INVALID_BINARY;
       return prog;
@@ -332,7 +332,7 @@ cl_program clCreateProgramWithBinary(cl_context ctx, unsigned  /*nDevices*/, con
       moduleRetain(prog->module);  // program owns one reference
       if (binaryStatus) binaryStatus[0] = CL_SUCCESS;
     } else {
-      fprintf(stderr, "cuModuleLoadData from cache failed: %d, blob size=%zu\n", (int)r, lengths[0]);
+      log("cuModuleLoadData from cache failed: %d, blob size=%zu\n", (int)r, lengths[0]);
       prog->compiled = false;
       if (binaryStatus) binaryStatus[0] = CL_INVALID_BINARY;
       if (err) { *err = CL_INVALID_BINARY; return prog; }
@@ -491,7 +491,7 @@ int clCompileProgram(cl_program prog, unsigned  /*nDevices*/, const cl_device_id
   } catch (const exception& e) {
     prog->buildLog = e.what();
     prog->compiled = false;
-    fprintf(stderr, "NVRTC COMPILE FAILED: %s\n", e.what());
+    log("NVRTC COMPILE FAILED: %s\n", e.what());
     // Dump the full preprocessed source for debugging
     {
       char fname[64];
@@ -504,7 +504,7 @@ int clCompileProgram(cl_program prog, unsigned  /*nDevices*/, const cl_device_id
           fprintf(f, "\n// === Header: %s (%zu bytes) ===\n%s\n", name.c_str(), src.size(), src.c_str());
         }
         fclose(f);
-        fprintf(stderr, "Dumped failed source to %s\n", fname);
+        log("Dumped failed source to %s\n", fname);
       }
     }
     return CL_COMPILE_PROGRAM_FAILURE;
@@ -573,18 +573,18 @@ cl_program clLinkProgram(cl_context ctx, unsigned  /*nDevices*/, const cl_device
   if (r != CUDA_SUCCESS) {
     const char* errName = nullptr;
     cuGetErrorName(r, &errName);
-    fprintf(stderr, "cuModuleLoadData FAILED: %s (%d)\n", errName ? errName : "?", (int)r);
-    if (jitErrorLog[0]) fprintf(stderr, "JIT error log: %s\n", jitErrorLog);
-    if (jitInfoLog[0]) fprintf(stderr, "JIT info log: %s\n", jitInfoLog);
+    log("cuModuleLoadData FAILED: %s (%d)\n", errName ? errName : "?", (int)r);
+    if (jitErrorLog[0]) log("JIT error log: %s\n", jitErrorLog);
+    if (jitInfoLog[0]) log("JIT info log: %s\n", jitInfoLog);
     // Dump first 2000 chars of PTX for debugging
-    fprintf(stderr, "PTX size: %zu bytes\n", linked->ptx.size());
+    log("PTX size: %zu bytes\n", linked->ptx.size());
     // Dump full PTX to file
     {
       FILE* ptxFile = fopen("failed_ptx.ptx", "w");
       if (ptxFile) {
         fwrite(linked->ptx.c_str(), 1, linked->ptx.size(), ptxFile);
         fclose(ptxFile);
-        fprintf(stderr, "Dumped failed PTX to failed_ptx.ptx\n");
+        log("Dumped failed PTX to failed_ptx.ptx\n");
       }
     }
     delete linked;
@@ -687,8 +687,8 @@ cl_kernel clCreateKernel(cl_program prog, const char* name, int* err) {
   k->parentModule = prog->module;
   CUresult const r = cuModuleGetFunction(&k->func, prog->module, name);
   if (r != CUDA_SUCCESS) {
-    fprintf(stderr, "cuModuleGetFunction('%s') failed: %d, moduleLoaded=%d, module=%p\n",
-            name, (int)r, prog->moduleLoaded, (void*)prog->module);
+    log("cuModuleGetFunction('%s') failed: %d, moduleLoaded=%d, module=%p\n",
+        name, (int)r, prog->moduleLoaded, (void*)prog->module);
     delete k;  // never retained the module, so nothing to release
     if (err) *err = CL_INVALID_KERNEL_NAME;
     return nullptr;
@@ -1003,7 +1003,7 @@ int clEnqueueNDRangeKernel(cl_command_queue q, cl_kernel k, unsigned workDim,
   if (r != CUDA_SUCCESS) {
     const char* errName = nullptr;
     cuGetErrorName(r, &errName);
-    fprintf(stderr, "cuLaunchKernel FAILED for '%s': %s (%d)\n", k->name.c_str(), errName ? errName : "?", (int)r);
+    log("cuLaunchKernel FAILED for '%s': %s (%d)\n", k->name.c_str(), errName ? errName : "?", (int)r);
   }
 
   if (event) *event = nullptr;
@@ -1446,8 +1446,8 @@ void cudaSetL2Persistent(cl_command_queue q, const std::vector<cl_mem>& buffers)
   int maxWindowSize = 0;
   cuDeviceGetAttribute(&maxWindowSize, CU_DEVICE_ATTRIBUTE_MAX_ACCESS_POLICY_WINDOW_SIZE, 0);
   if (maxWindowSize > 0 && std::cmp_greater(spanBytes, maxWindowSize)) {
-    fprintf(stderr, "L2 persist: span %zuMB exceeds max window %dMB, clamping\n",
-            spanBytes / (1024*1024), maxWindowSize / (1024*1024));
+    log("L2 persist: span %zuMB exceeds max window %dMB, clamping\n",
+        spanBytes / (1024*1024), maxWindowSize / (1024*1024));
     spanBytes = maxWindowSize;
   }
 
@@ -1466,11 +1466,11 @@ void cudaSetL2Persistent(cl_command_queue q, const std::vector<cl_mem>& buffers)
 
   CUresult const r = cuStreamSetAttribute(q->stream, CU_STREAM_ATTRIBUTE_ACCESS_POLICY_WINDOW, &attr);
   if (r != CUDA_SUCCESS) {
-    fprintf(stderr, "L2 persist: cuStreamSetAttribute failed (%d)\n", (int)r);
+    log("L2 persist: cuStreamSetAttribute failed (%d)\n", (int)r);
   } else {
-    fprintf(stderr, "L2 persist: window %zuMB (%.1f%% hit ratio), %zuMB actual data, %zu buffers\n",
-            spanBytes / (1024*1024), hitRatio * 100.0f, totalDataBytes / (1024*1024),
-            buffers.size());
+    log("L2 persist: window %zuMB (%.1f%% hit ratio), %zuMB actual data, %zu buffers\n",
+        spanBytes / (1024*1024), hitRatio * 100.0f, totalDataBytes / (1024*1024),
+        buffers.size());
   }
 }
 #else
@@ -1507,10 +1507,10 @@ void cudaSetL2PersistLimit(int pct) {
 
   CUresult const r = cuCtxSetLimit(CU_LIMIT_PERSISTING_L2_CACHE_SIZE, target);
   if (r != CUDA_SUCCESS) {
-    fprintf(stderr, "L2 persist limit: cuCtxSetLimit failed (%d)\n", (int)r);
+    log("L2 persist limit: cuCtxSetLimit failed (%d)\n", (int)r);
   } else {
-    fprintf(stderr, "L2 persist limit: reserved %zuMB of %dMB max (%d%%)\n",
-            target / (1024*1024), maxPersist / (1024*1024), pct);
+    log("L2 persist limit: reserved %zuMB of %dMB max (%d%%)\n",
+        target / (1024*1024), maxPersist / (1024*1024), pct);
   }
 }
 
@@ -1523,7 +1523,7 @@ void cudaReleaseL2Persist() {
   CUresult r = cuCtxResetPersistingL2Cache();
   if (r == CUDA_SUCCESS) { r = cuCtxSetLimit(CU_LIMIT_PERSISTING_L2_CACHE_SIZE, l2PersistSavedLimit); }
   if (r != CUDA_SUCCESS) {
-    fprintf(stderr, "L2 persist release failed (%d)\n", (int)r);
+    log("L2 persist release failed (%d)\n", (int)r);
   }
 }
 #else
