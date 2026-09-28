@@ -44,6 +44,7 @@ const char* const FIXTURE =
   "ref   5 512:15:512:212 1000151 2000 171f3662c332472f 1753471480\n"
   "jump  4 512:15:512:212 prp short32 17 3 1753471490\n"
   "combo 4 512:15:512:212 prp short32 17 2 1753471495\n"
+  "boot  4 512:15:512:212 143400073 1753471497\n"
   "try   4 512:15:512:212 prp 143400073 17 1753471250\n"
   "try   5 512:15:512:212 prp 143400073 1 1753481250\n"
   "done  4 1753471500\n"
@@ -170,6 +171,11 @@ TEST(rows_are_read) {
   CHECK_EQ(db.combos().at(0).cfg, 17u);
   CHECK_EQ(db.combos().at(0).tier, 2u);
   CHECK(db.combos().at(0).regime.label() == "short32");
+
+  CHECK_EQ(db.boots().size(), size_t{1});
+  CHECK_EQ(db.boots().at(0).fft, std::string{"512:15:512:212"});
+  CHECK_EQ(db.boots().at(0).probe, u64{143'400'073});
+  CHECK_EQ(db.boots().at(0).sess, 4u);
 }
 
 TEST(unknown_rows_pass_through) {
@@ -218,6 +224,10 @@ TEST(malformed_rows_are_rejected) {
   rejects("combo 4 512:15:512:212 prp short32 17 2", "combo 4 512:15:512:212 prp short32 17 1");  // not a combination
   rejects("combo 4 512:15:512:212 prp short32 17 2", "combo 4 512:15:512:212 prp short32 99 2");
   rejects("combo 4 512:15:512:212 prp short32 17 2", "combo 4 512:15:512:212 prp short32 17");
+  rejects("boot  4 512:15:512:212 143400073", "boot  4 not-an-fft 143400073");
+  rejects("boot  4 512:15:512:212 143400073", "boot  4 512:15:512:212 0");                     // no probe
+  rejects("boot  4 512:15:512:212 143400073", "boot  9 512:15:512:212 143400073");             // an undeclared session
+  rejects("boot  4 512:15:512:212 143400073 1753471497", "boot  4 512:15:512:212 143400073");  // a column short
   rejects("29.40 118 0.371094 ok - 1753471402", "29.40 118 0.371094 ok 1753471402");        // no fingerprint field
   rejects("29.40 118 0.371094 ok - 1753471402", "29.40 118 0.371094 ok 12345 1753471402");  // not 16 digits
   rejects("29.40 118 0.371094 ok - 1753471402", "29.40 118 0.371094 ok 0123456789abcdeg 1753471402");

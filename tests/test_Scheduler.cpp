@@ -105,6 +105,10 @@ public:
                            .ts = u64(clock_)}));
   }
 
+  void declareBootstrap(const FFTConfig& fft, u64 probe) override {
+    CHECK(db_.add(BootRow{.sess = sess_, .fft = fft.spec(), .probe = probe, .ts = u64(clock_)}));
+  }
+
   // What the device builds when asked for an option set: what was asked, unless a test says the host sets part of it
   // aside.
   std::function<UseConfig(const UseConfig&)> builtAs = [](const UseConfig& asked) { return asked; };
@@ -681,7 +685,7 @@ bool isFamilyCall(const std::string& call) {
 
 }  // namespace
 
-TEST(the_bootstrap_runs_first_and_every_baseline_runs_at_what_it_decided) {
+TEST(the_bootstrap_runs_first_and_every_baseline_runs_at_the_built_in_defaults) {
   Fixture f;
   BootstrapRun const run = runBootstrapped(f);
   const std::vector<std::string>& order = run.order;
@@ -691,7 +695,8 @@ TEST(the_bootstrap_runs_first_and_every_baseline_runs_at_what_it_decided) {
   CHECK(isFamilyCall(order[0]) && order[0].find(' ') == std::string::npos);
   CHECK(isFamilyCall(order[1]) && order[1].find(' ') == std::string::npos);
 
-  // Every bootstrap call comes before every baseline: the baselines run at what the races decide.
+  // With no search to choose contenders for there is no defaults sweep, so every bootstrap call comes before every
+  // baseline.
   auto const firstBaseline = std::ranges::find_if(order, [](const std::string& s) { return !isFamilyCall(s); });
   CHECK(firstBaseline != order.end());
   CHECK(std::none_of(firstBaseline, order.end(), isFamilyCall));
@@ -708,12 +713,8 @@ TEST(the_bootstrap_runs_first_and_every_baseline_runs_at_what_it_decided) {
     CHECK(run.defaults.family[0].uses == tailKernels);
   }
 
-  // Every baseline ran at the lines as production resolves them for its type.
-  for (auto it = firstBaseline; it != order.end(); ++it) {
-    FFTConfig const fft{it->substr(0, it->find('@'))};
-    std::string const want = fft.shape.fft_type == FFT64 ? "TAIL_KERNELS=3,WMUL=1" : "WMUL=1";
-    CHECK_EQ(it->substr(it->find(' ') + 1), want);
-  }
+  // Every baseline ran at the built-in defaults: what the entry costs untuned, whatever the lines say.
+  for (auto it = firstBaseline; it != order.end(); ++it) { CHECK(it->find(' ') == std::string::npos); }
 }
 
 TEST(a_bootstrap_interrupted_carries_on_from_its_rows) {
@@ -778,19 +779,23 @@ TEST(a_candidate_the_host_builds_otherwise_drops_out_of_its_race) {
   CHECK_EQ(run.defaults.family.size(), size_t(1));
 }
 
-TEST(a_baseline_measured_under_earlier_lines_is_not_measured_again) {
+TEST(a_baseline_measured_before_the_bootstrap_is_not_measured_again) {
   // A run with the bootstrap off measures every baseline at the built-in defaults; turned on, the races decide lines
   // those rows do not match.  A row names everything it ran, so it is still a measurement of its entry: the second run
-  // makes its bootstrap calls and nothing else, and what the first measured is published beside the new lines, naming
-  // what they would change.
+  // makes its bootstrap calls and nothing else, each family racing on its type's cheapest reading at the probe, and
+  // what the first measured is published beside the new lines, naming what they would change.
   Fixture f;
   BootstrapRun const off = runBootstrapped(f, ~0u, {}, false);
   CHECK(std::ranges::none_of(off.order, [](const std::string& s) { return s.find(' ') != std::string::npos; }));
 
   f.newSession();
   BootstrapRun const on = runBootstrapped(f);
+  std::vector<Family> const families = twoFamilies().familiesIn(f.db, f.env);
   CHECK(!on.order.empty());
-  CHECK(std::ranges::all_of(on.order, isFamilyCall));
+  CHECK(std::ranges::all_of(on.order, [&](const std::string& call) {
+    return std::ranges::any_of(families, [&](const Family& fam) { return call.starts_with(fam.fft.spec() + "@"); });
+  }));
+  CHECK(std::ranges::none_of(families, [](const Family& fam) { return fam.fft.spec() == "512:15:512:212"; }));
   CHECK(!on.defaults.global.empty() || !on.defaults.family.empty());
 
   auto const file = emit(f.db, on.defaults, Provenance{.ts = 0, .db = {}, .env = f.env});
@@ -802,10 +807,11 @@ TEST(a_baseline_measured_under_earlier_lines_is_not_measured_again) {
   }
 }
 
-TEST(a_baseline_is_taken_under_the_set_the_best_published_entry_runs) {
+TEST(a_baseline_is_taken_at_the_built_in_defaults_whatever_the_lines_say) {
   // With the bootstrap off the lines start empty.  FFT61 rounds nothing, so a row of it is published as soon as it
-  // concludes: here one at the probe under WMUL=1, the set a search of it found.  The lines then carry WMUL=1, and each
-  // baseline still owed is taken under it where it applies, which is what production runs an FFT with no entry at.
+  // concludes: here one at the probe under WMUL=1, the set a search of it found.  The lines then carry WMUL=1, but each
+  // baseline still owed is taken at the built-in defaults: what the entry costs untuned, which is what everything its
+  // search finds is a gain over.
   Fixture f;
   Scheduler scheduler{scope(), baselines(nvidia(), scope(), shapes()), 1000, twoFamilies(false)};
   std::string const spec = "3:1K:8:512:202";
@@ -832,9 +838,8 @@ TEST(a_baseline_is_taken_under_the_set_the_best_published_entry_runs) {
     if (item.kind != ItemKind::Baseline) { continue; }
     const Baseline& b = scheduler.baselines()[item.index];
     CHECK(!(b.fft.spec() == spec && b.band.contains(118'063'003)));
-    CHECK(item.options == underDefaults(nvidia(), b.fft, b.kind, lines));
-    auto const wmul = item.options.find("WMUL");
-    underIt += wmul != item.options.end() && wmul->second == "1";
+    CHECK(item.options.empty());
+    underIt += underDefaults(nvidia(), b.fft, b.kind, lines).contains("WMUL");
   }
   CHECK(underIt > 0);
 }
@@ -976,45 +981,187 @@ TEST(a_probe_the_host_builds_otherwise_is_given_up) {
   CHECK(run.best.find("WMUL") == std::string::npos);
 }
 
-TEST(the_bootstrap_still_runs_first_when_entries_are_probed) {
-  Fixture plain;
-  BootstrapRun const without = runBootstrapped(plain);
-  auto const firstBaseline = std::ranges::find_if(without.order, [](const std::string& s) { return !isFamilyCall(s); });
-  size_t const bootstrapCalls = size_t(firstBaseline - without.order.begin());
+namespace {
 
+// The kind and the label of every item a queue finished, in order.
+class Record final : public Watch {
+public:
+  std::vector<std::pair<ItemKind, std::string>> done;
+
+  void measuring(const std::string&) override {}
+  void progress(const RunProgress&) override {}
+  void finished(const Finished& f) override { done.emplace_back(f.kind, f.label); }
+};
+
+}  // namespace
+
+TEST(the_defaults_sweep_then_the_bootstrap_run_before_any_entry_is_searched) {
   Fixture f;
-  FakeBench bench{f.db, f.sess, false, u32(bootstrapCalls + 60)};
+  FakeBench bench{f.db, f.sess, false, 800};
   bench.optionFactor = planted;
   Scheduler scheduler{scope(), baselines(nvidia(), scope(), shapes()), 1000, twoFamilies(),
                       Strategy{.kind = Strategy::Kind::Single}};
   Defaults lines;
-  (void)runQueue(scheduler, f.db, f.env, bench, [&](const Objective&, const Defaults& d) { lines = d; });
+  Record record;
+  (void)runQueue(scheduler, f.db, f.env, bench, [&](const Objective&, const Defaults& d) { lines = d; }, 0, &record);
+  const auto& done = record.done;
 
-  // Call for call the same bootstrap, and probes only after it: a probe measures a step from what the bootstrap
-  // decides, so one taken earlier measures a step from something production is not going to run.
-  CHECK(bench.order.size() > bootstrapCalls);
-  CHECK(std::equal(without.order.begin(), firstBaseline, bench.order.begin()));
+  // First every contender at the built-in defaults: the hybrid, the cheapest, is one; 3:1K:8:512, half as dear
+  // again, is not.
+  auto const sweepEnd = std::ranges::find_if(done, [](const auto& i) {
+    return i.first != ItemKind::Baseline || !i.second.ends_with("at the built-in defaults");
+  });
+  CHECK(std::any_of(done.begin(), sweepEnd, [](const auto& i) { return i.second.starts_with("1:512:8:512:202 "); }));
+  CHECK(std::none_of(done.begin(), sweepEnd, [](const auto& i) { return i.second.starts_with("3:1K:8:512:"); }));
 
-  // Once it is complete, entries are probed: some call runs at neither the lines nor the family's own line.
-  CHECK(std::any_of(bench.order.begin() + ptrdiff_t(bootstrapCalls), bench.order.end(), [](const std::string& s) {
-    std::string const opts = s.substr(s.find(' ') + 1);
-    return s.find(' ') != std::string::npos && opts != "WMUL=1" && opts != "TAIL_KERNELS=3,WMUL=1";
-  }));
+  // Then the bootstrap, whole, on the families the run recorded once the sweep was done; a search step measures a
+  // step from what the bootstrap decides, so one taken earlier measures a step from lines that are about to move.
+  CHECK(scheduler.bootstrap().chosen(f.db, f.env));
+  auto const bootstrapEnd =
+    std::find_if(sweepEnd, done.end(), [](const auto& i) { return i.first != ItemKind::Bootstrap; });
+  CHECK(bootstrapEnd != sweepEnd);
+  CHECK(std::none_of(bootstrapEnd, done.end(), [](const auto& i) { return i.first == ItemKind::Bootstrap; }));
+  CHECK(std::any_of(bootstrapEnd, done.end(), [](const auto& i) { return i.first == ItemKind::Probe; }));
 
-  // A probe back to a key's built-in value beside a line that sets it otherwise records the set it ran, and what it
-  // would publish names the key, so that it runs as it was measured.
+  // A step from a set at a key's built-in value, beside a line that sets it otherwise, records the set it ran, and what
+  // it would publish names the key, so that it runs as it was measured.
   CHECK_EQ(configText(lines.global), std::string{"WMUL=1"});
   std::vector<Item> const items = scheduler.admissible(f.db, f.env, Objective{f.db, f.env, scope(), Gating::Assumed});
-  bool wmulBack = false;
+  bool builtIn = false;
   for (const Item& item : items) {
-    if (item.kind != ItemKind::Probe || !item.what.ends_with("WMUL=2")) { continue; }
     const Baseline& b = scheduler.baselines()[item.index];
-    wmulBack = true;
-    CHECK(!item.options.contains("WMUL"));
+    if (item.kind != ItemKind::Probe || item.options.contains("WMUL") ||
+        !underDefaults(nvidia(), b.fft, b.kind, lines).contains("WMUL")) {
+      continue;
+    }
+    builtIn = true;
     UseConfig const published = besideLines(nvidia(), b.fft, b.kind, lines, item.options);
     CHECK_EQ(published.at("WMUL"), std::string{"2"});
   }
-  CHECK(wmulBack);
+  CHECK(builtIn);
+}
+
+namespace {
+
+// A concluded row of `spec` at the probe under `options`.
+void concludedAt(Fixture& f, const std::string& spec, const UseConfig& options, double mean) {
+  CHECK(f.db.add(RunRow{.sess = f.sess,
+                        .fft = spec,
+                        .kind = TestKind::PRP,
+                        .exponent = 118'063'003,
+                        .regime = regimeOf(FFTConfig{spec}, 118'063'003),
+                        .cfg = f.db.internCfg(options),
+                        .m = {.mean = mean,
+                              .stddev = 0.1,
+                              .blocks = 4 * MIN_CALLS,
+                              .calls = MIN_CALLS,
+                              .drift = 1,
+                              .status = Status::Ok,
+                              .ts = 0}}));
+}
+
+std::vector<Baseline> only(std::initializer_list<const char*> specs) {
+  std::vector<Baseline> out;
+  for (const Baseline& b : baselines(nvidia(), scope(), shapes())) {
+    if (std::ranges::any_of(specs, [&](const char* s) { return b.fft.spec() == s; })) { out.push_back(b); }
+  }
+  return out;
+}
+
+}  // namespace
+
+TEST(the_sweep_reads_every_entry_within_the_margin_at_the_built_in_defaults) {
+  Fixture f;
+  Scheduler const scheduler{
+    scope(), baselines(nvidia(), scope(), shapes()), 1000, {}, Strategy{.kind = Strategy::Kind::Single}};
+  auto sweep = [&] {
+    std::set<std::string> out;
+    for (const Item& item : scheduler.admissible(f.db, f.env, Objective{f.db, f.env, scope(), Gating::Assumed})) {
+      if (item.sweep) {
+        CHECK(item.options.empty());
+        out.insert(scheduler.baselines()[item.index].fft.spec());
+      }
+    }
+    return out;
+  };
+
+  // The hybrid at 1450 is the fastest; 512:15:512, read at 1700, is 17% behind, and its other variants, priced from
+  // that reading, with it.  Nothing is owed.
+  concludedAt(f, "1:512:8:512:202", {}, 1450);
+  concludedAt(f, "512:15:512:212", {}, 1700);
+  CHECK(sweep().empty());
+  CHECK(scheduler.swept(f.db, f.env, Objective{f.db, f.env, scope(), Gating::Assumed}));
+
+  // A variant read under other options at 1500 is within 10%, and owes its reading at the defaults whatever else it
+  // has been read at; the shape's prior is its cheapest reading, so its other variants come within the margin with it.
+  // The one already read at the defaults does not, nor the hybrid, nor the NTT half as dear again.
+  concludedAt(f, "512:15:512:101", {{"WMUL", "1"}}, 1500);
+  std::set<std::string> const owed = sweep();
+  CHECK(owed.contains("512:15:512:101") && owed.contains("512:15:512:000") && owed.contains("512:15:512:211"));
+  CHECK(!owed.contains("512:15:512:212") && !owed.contains("1:512:8:512:202") && !owed.contains("3:1K:8:512:202"));
+  CHECK(!scheduler.swept(f.db, f.env, Objective{f.db, f.env, scope(), Gating::Assumed}));
+
+  // Read there, it is swept.
+  concludedAt(f, "512:15:512:101", {}, 1620);
+  CHECK(!sweep().contains("512:15:512:101"));
+}
+
+TEST(an_entry_at_the_built_in_defaults_tries_the_lines_first) {
+  // FFT61 rounds nothing, so its row under WMUL=1 is published with the gate off, and the lines carry WMUL=1.  The
+  // hybrid is measured only at the defaults.
+  Fixture f;
+  Scheduler const scheduler{
+    scope(), only({"1:512:8:512:202", "3:1K:8:512:202"}), 1000, {}, Strategy{.kind = Strategy::Kind::Single}};
+  concludedAt(f, "3:1K:8:512:202", {{"WMUL", "1"}}, 2000);
+  concludedAt(f, "1:512:8:512:202", {}, 1450);
+  CHECK_EQ(linesText(scheduler.lines(f.db, f.env, scheduler.bootstrapState(f.db, f.env))), std::string{"WMUL=1"});
+
+  auto firstOf = [&](const std::string& spec) -> std::optional<Item> {
+    for (const Item& item : scheduler.admissible(f.db, f.env, Objective{f.db, f.env, scope(), Gating::Assumed})) {
+      if (item.kind == ItemKind::Probe && scheduler.baselines()[item.index].fft.spec() == spec) { return item; }
+    }
+    return {};
+  };
+
+  // The hybrid's first step is the lines, all at once; FFT61's best set is already its own, so it has none.
+  std::optional<Item> const hybrid = firstOf("1:512:8:512:202");
+  CHECK(hybrid && hybrid->what == "the default lines WMUL=1" && configText(hybrid->options) == "WMUL=1");
+  std::optional<Item> const ntt = firstOf("3:1K:8:512:202");
+  CHECK(ntt && ntt->what.find("the default lines") == std::string::npos);
+
+  // Answered, it is not offered again, and the steps go on from whichever set is now the best.
+  concludedAt(f, "1:512:8:512:202", {{"WMUL", "1"}}, 1400);
+  std::optional<Item> const next = firstOf("1:512:8:512:202");
+  CHECK(next && next->what.find("the default lines") == std::string::npos);
+}
+
+TEST(a_bootstrap_completed_before_its_choice_was_recorded_is_not_raced_again) {
+  // A database written before the choice was recorded: the same run, with the boot rows it now writes taken out.
+  Fixture whole;
+  (void)runBootstrapped(whole);
+  std::string legacy;
+  for (const std::string& line : split(whole.db.text(), '\n')) {
+    if (!line.empty() && !line.starts_with("boot ")) { legacy += line + "\n"; }
+  }
+  Fixture f;
+  CHECK(f.db.parse(legacy, "legacy"));
+  CHECK(f.db.boots().empty());
+  f.newSession();
+
+  FakeBench bench{f.db, f.sess, false, 60};
+  bench.optionFactor = planted;
+  Scheduler scheduler{scope(), baselines(nvidia(), scope(), shapes()), 1000, twoFamilies(),
+                      Strategy{.kind = Strategy::Kind::Single}};
+  Record record;
+  (void)runQueue(scheduler, f.db, f.env, bench, [](const Objective&, const Defaults&) {}, 0, &record);
+
+  // Recorded on the families it raced on, and nothing of it raced again.
+  CHECK(scheduler.bootstrap().chosen(f.db, f.env));
+  CHECK(scheduler.bootstrap().familiesIn(f.db, f.env).front().fft.spec() ==
+        twoFamilies().families().front().fft.spec());
+  CHECK(scheduler.bootstrapState(f.db, f.env).complete);
+  CHECK(!record.done.empty());
+  CHECK(std::ranges::none_of(record.done, [](const auto& i) { return i.first == ItemKind::Bootstrap; }));
 }
 
 TEST(an_entry_names_every_key_a_line_would_set_once_its_own_keys_are_in_place) {
@@ -1070,8 +1217,11 @@ TEST(two_contested_entries_are_alternated_not_batched) {
 
 TEST(an_entry_whose_moves_have_paid_is_probed_ahead_of_one_whose_have_not) {
   Fixture f;
-  std::vector<FFTShape> const one{FFTShape{"512:15:512"}};
-  Scheduler scheduler{scope(), baselines(nvidia(), scope(), one), 1000, {}, Strategy{.kind = Strategy::Kind::Single}};
+  std::vector<Baseline> two;
+  for (const Baseline& b : baselines(nvidia(), scope(), {FFTShape{"512:15:512"}})) {
+    if (b.fft.variant == 211 || b.fft.variant == 212) { two.push_back(b); }
+  }
+  Scheduler scheduler{scope(), two, 1000, {}, Strategy{.kind = Strategy::Kind::Single}};
 
   auto add = [&](const std::string& fft, const UseConfig& opts, double mean) {
     CHECK(f.db.add(RunRow{.sess = f.sess,
@@ -2550,19 +2700,18 @@ TEST(the_drift_record_is_the_sessions_own_anchor_readings) {
 }
 
 TEST(entries_held_back_by_rule_are_waiting_not_ruled_out) {
-  // Stopped before the bootstrap's first call: nothing is measured, and nothing is ruled out either.
+  // Stopped before the first call: the workload's coverage comes before the bootstrap, so what is owed is covering
+  // baselines -- at a cold start every entry covers something -- nothing is measured, and nothing is ruled out either.
   Fixture f;
   Scheduler scheduler{scope(), baselines(nvidia(), scope(), shapes()), 1000, twoFamilies(), {}, false, true};
   FakeBench bench{f.db, f.sess, false, 0};
   QueueReport const report = runQueue(scheduler, f.db, f.env, bench, [](const Objective&, const Defaults&) {}, STOP);
   RunSummary const s = summarize(scheduler, f.db, f.env, f.sess, report, STOP);
   CHECK(!s.families.empty());
-  CHECK_EQ(s.heldBy, std::string{"the bootstrap"});
+  CHECK(std::ranges::all_of(report.left, [](const Item& i) { return i.cover; }));
   for (const RunSummary::Family& fam : s.families) {
     CHECK_EQ(fam.measured, 0u);
-    CHECK_EQ(fam.unmeasured, 0u);
-    CHECK_EQ(fam.waiting, fam.entries);
-    CHECK(!fam.gain.has_value());
+    CHECK_EQ(fam.unmeasured + fam.waiting, fam.entries);
   }
 
   // Stopped with a gate reading owed: the entry it reads is measured, and every other is waiting on the gate.

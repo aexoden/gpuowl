@@ -519,6 +519,72 @@ TEST(the_lines_follow_the_best_set_published_for_each_type) {
            std::string{"TAIL_KERNELS=3"});
 }
 
+TEST(an_entry_still_at_the_built_in_defaults_is_no_evidence_for_the_lines) {
+  u64 const probe = 118'063'003;
+  Family const fp64 = familyOf("512:15:512:212");
+  BootstrapState bootstrap;
+  bootstrap.families = {{.family = fp64, .phase = FamilyPhase::Done, .decided = {{"WMUL", "1"}}}};
+  bootstrap.defaults = defaultLines(nvidia(), {{fp64, {{"WMUL", "1"}}}});
+
+  // The cheapest entry at the probe has not been searched: its defaults say nothing the race did not say better.  Nor
+  // does the unsearched FFT61 entry beside it, which would otherwise pull WMUL off the global line.
+  std::vector<SelectionEntry> const unsearched{publishedAt("512:15:512:112", probe, 1650, {}),
+                                               publishedAt("3:1K:8:512:202", probe, 2200, {})};
+  CHECK_EQ(linesText(publishedLines(nvidia(), probe, TestKind::PRP, unsearched, bootstrap)), std::string{"WMUL=1"});
+
+  // Once it has been searched, what it found is the evidence.
+  std::vector<SelectionEntry> searched = unsearched;
+  searched.push_back(publishedAt("512:15:512:112", probe, 1600, {{"TAIL_KERNELS", "3"}}));
+  Defaults const d = publishedLines(nvidia(), probe, TestKind::PRP, searched, bootstrap);
+  CHECK_EQ(configText(underDefaults(nvidia(), fp64.fft, TestKind::PRP, d)), std::string{"TAIL_KERNELS=3"});
+}
+
+TEST(a_family_races_on_its_types_cheapest_reading_at_the_defaults_and_stays_there) {
+  // Two readings of FP64 at the probe at the built-in defaults, the cheaper not the smallest shape's default variant.
+  Fixture f;
+  Family const smallest = familyOf("512:15:512:212");
+  Bootstrap const b{nvidia(), PROBE, {smallest}};
+  CHECK_EQ(b.familiesIn(f.db, f.env).front().fft.spec(), smallest.fft.spec());
+
+  f.add(FFTConfig{"512:15:512:212"}, {}, reading(1700, 1, MIN_CALLS));
+  f.add(FFTConfig{"512:15:512:112"}, {}, reading(1650, 1, MIN_CALLS));
+  // A cheaper reading under other options, or one not yet concluded, is not a reading of the defaults.
+  f.add(FFTConfig{"512:15:512:202"}, {{"WMUL", "1"}}, reading(1500, 1, MIN_CALLS));
+  f.add(FFTConfig{"512:15:512:201"}, {}, reading(1400, 1, 1));
+  CHECK_EQ(b.familiesIn(f.db, f.env).front().fft.spec(), std::string{"512:15:512:112"});
+  CHECK(!b.chosen(f.db, f.env));
+
+  // Recorded, it stays there whatever is read later.
+  CHECK(f.db.add(BootRow{.sess = f.sess, .fft = "512:15:512:112", .probe = PROBE, .ts = 2}));
+  CHECK(b.chosen(f.db, f.env));
+  CHECK(b.unrecorded(f.db, f.env).empty());
+  f.add(FFTConfig{"512:15:512:211"}, {}, reading(1600, 1, MIN_CALLS));
+  CHECK_EQ(b.familiesIn(f.db, f.env).front().fft.spec(), std::string{"512:15:512:112"});
+
+  // A choice recorded at another probe is another bootstrap's.
+  Bootstrap const other{nvidia(), PROBE + 2, {smallest}};
+  CHECK(!other.chosen(f.db, f.env));
+}
+
+TEST(a_family_that_began_racing_before_the_choice_was_recorded_goes_on_where_it_raced) {
+  // A database from before the choice was recorded: the family raced on its smallest shape and decided a group.
+  Fixture f;
+  Family const smallest = familyOf("512:15:512:212");
+  Bootstrap const b{nvidia(), PROBE, {smallest}};
+  auto cost = [](const UseConfig& c) { return c.contains("WMUL") ? 1650.0 : 1700.0; };
+  for (BootstrapState s = b.state(f.db, f.env); s.families[0].decisions.empty() && !s.turns.empty();
+       s = b.state(f.db, f.env)) {
+    const Turn& t = s.turns.front();
+    f.add(smallest.fft, t.config, reading(cost(t.config), 0.5, 1));
+  }
+  CHECK(!b.state(f.db, f.env).families[0].decisions.empty());
+
+  // A cheaper FFT read at the defaults afterwards does not move the races, nor what they have decided.
+  f.add(FFTConfig{"512:15:512:112"}, {}, reading(1600, 1, MIN_CALLS));
+  CHECK_EQ(b.familiesIn(f.db, f.env).front().fft.spec(), smallest.fft.spec());
+  CHECK_EQ(b.unrecorded(f.db, f.env).front().fft.spec(), smallest.fft.spec());
+}
+
 TEST(a_key_only_amd_and_nvidia_can_choose_is_not_raced_elsewhere) {
   // Elsewhere the host builds OLD_FENCE=1 whatever is asked for.
   FFTConfig const fft{"2:1K:8:256:212"};

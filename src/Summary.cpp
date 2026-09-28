@@ -138,7 +138,11 @@ RunSummary summarize(const Scheduler& scheduler, const TuneDB& db, u32 env, u32 
     bool const bootstrapping =
       std::ranges::any_of(report.left, [](const Item& i) { return i.kind == ItemKind::Bootstrap; });
     bool const covering = std::ranges::any_of(report.left, [](const Item& i) { return i.cover; });
-    out.heldBy = bootstrapping ? "the bootstrap" : covering ? "the workload being covered" : "the accuracy gate";
+    bool const sweeping = std::ranges::any_of(report.left, [](const Item& i) { return i.sweep; });
+    out.heldBy = bootstrapping ? "the bootstrap"
+      : covering               ? "the workload being covered"
+      : sweeping               ? "the defaults sweep"
+                               : "the accuracy gate";
   }
 
   for (const auto& [key, type] : typeOf) {

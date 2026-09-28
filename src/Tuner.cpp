@@ -279,6 +279,8 @@ public:
     session_.declareCombo(fft, kind, exponent, options, tier);
   }
 
+  void declareBootstrap(const FFTConfig& fft, u64 probe) override { session_.declareBootstrap(fft, probe); }
+
   [[nodiscard]] Result run(const FFTConfig& fft, TestKind kind, u64 exponent, const UseConfig& options,
                            const std::string& moved) override {
     session_.varying(moved.empty() ? std::vector<std::string>{} : std::vector<std::string>{moved});
@@ -1179,12 +1181,18 @@ MeasureOutcome runTune(const GpuCommon& shared, const TuneCommand& command) {
   log("tune: %zu entries could serve the workload; each measured one is searched by strategy=%s%s, then by random "
       "restarts; the run goes on %s\n",
       scheduler.baselines().size(), command.strategy.text().c_str(), shaping.c_str(), until);
-  if (command.bootstrap) {
+  if (command.bootstrap && scheduler.bootstrap().families().empty()) {
+    log("tune: no family to bootstrap at %" PRIu64 "\n", scope.probe);
+  } else if (command.bootstrap && scheduler.bootstrap().chosen(db, envId)) {
     std::string names;
-    for (const Family& f : scheduler.bootstrap().families()) {
+    for (const Family& f : scheduler.bootstrap().familiesIn(db, envId)) {
       names += (names.empty() ? "" : ", ") + std::string{typeName(f.type)} + " " + f.fft.spec();
     }
-    log("tune: bootstrap at %" PRIu64 " over %s\n", scope.probe, names.empty() ? "no family" : names.c_str());
+    log("tune: bootstrap at %" PRIu64 " over %s\n", scope.probe, names.c_str());
+  } else if (command.bootstrap) {
+    log("tune: bootstrap at %" PRIu64 " once the workload is covered and every FFT within %.0f%% of the fastest has "
+        "been read at the built-in defaults, on each type's fastest there\n",
+        scope.probe, 100 * CONTEND_MARGIN);
   }
   reportSearch(env, scope, command.strategy, false);
 

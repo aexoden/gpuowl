@@ -19,8 +19,8 @@ namespace tune {
 namespace {
 
 // The row kinds whose last field is the moment they were written, and whose second is the session that wrote them.
-constexpr std::array<std::string_view, 10> STAMPED{"run",    "try",   "done", "nogo", "roe",
-                                                   "anchor", "alarm", "ref",  "jump", "combo"};
+constexpr std::array<std::string_view, 11> STAMPED{"run",   "try", "done", "nogo",  "roe", "anchor",
+                                                   "alarm", "ref", "jump", "combo", "boot"};
 
 struct Fields {
   std::string_view kind;

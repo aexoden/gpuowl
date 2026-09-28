@@ -195,8 +195,26 @@ public:
   // too often without recording anything, by configText().
   [[nodiscard]] BootstrapState state(const TuneDB& db, u32 env, const std::set<std::string>& excluded = {}) const;
 
+  // As state(), with each family on the configuration named rather than the one the database records.
+  [[nodiscard]] BootstrapState stateOf(const std::vector<Family>& families, const TuneDB& db, u32 env,
+                                       const std::set<std::string>& excluded = {}) const;
+
+  // The families, each on the configuration `env` recorded for it at this probe (a `boot` row).  Where none is
+  // recorded: on the one it was built with if its races began there, which is how a bootstrap begun before the choice
+  // was recorded goes on; else on the type's cheapest concluded reading at the built-in defaults at the probe, which
+  // after the defaults sweep is the FFT the search would tune first; else on the one it was built with.  A run records
+  // the choice once the sweep is done, so that it does not move under the races as readings are added.
+  [[nodiscard]] std::vector<Family> familiesIn(const TuneDB& db, u32 env) const;
+
+  // Whether `env` has recorded a configuration for every family at this probe.
+  [[nodiscard]] bool chosen(const TuneDB& db, u32 env) const;
+
+  // The families with no configuration recorded at this probe, on the one familiesIn() gives them.
+  [[nodiscard]] std::vector<Family> unrecorded(const TuneDB& db, u32 env) const;
+
   [[nodiscard]] const Env& env() const { return env_; }
   [[nodiscard]] u64 probe() const { return probe_; }
+  // As built: each type's smallest shape whose default variant holds the probe, before any choice is recorded.
   [[nodiscard]] const std::vector<Family>& families() const { return families_; }
   [[nodiscard]] bool enabled() const { return enabled_; }
 
@@ -224,9 +242,11 @@ private:
 // What a configuration with no option set of its own runs at under `defaults`, canonical.
 [[nodiscard]] UseConfig underDefaults(const Env& env, const FFTConfig& fft, TestKind kind, const Defaults& defaults);
 
-// The lines published beside `published`, and what the tuner baselines an entry at: the best evidence there is for
-// each FFT type, split as defaultLines() splits the bootstrap's.  A type's evidence is its `kind` entry that production
-// would run at `probe`, or where none covers it the entry nearest it, and failing both the set its bootstrap decided.
+// The lines published beside `published`, and the one jump the search tries first on an entry still at the built-in
+// defaults: the best evidence there is for each FFT type, split as defaultLines() splits the bootstrap's.  A type's
+// evidence is its `kind` entry that production would run at `probe`, or where none covers it the entry nearest it,
+// and failing both the set its bootstrap decided.  An entry published at the built-in defaults is none: it has not been
+// searched.
 // So the lines start as the bootstrap's and, as entries are tuned further, carry what they found to every FFT nothing
 // has been published for.  A key held at a value that changes the rounding is left at its default, since nothing reads
 // the accuracy of what the lines are applied to.

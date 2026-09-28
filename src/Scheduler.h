@@ -49,6 +49,11 @@ inline constexpr double CALL_OVERHEAD_SEC = 1;
 // Blocks a call runs before the ones it times (Gpu::timeIters).
 inline constexpr u32 WARMUP_BLOCKS = 1;
 
+// How far behind what production runs at some exponent an entry may be and still be worth searching: the gap tuning
+// has been seen to close between one FFT and another at their defaults.  Entries this close are all measured at the
+// built-in defaults before the bootstrap (the defaults sweep).
+inline constexpr double CONTEND_MARGIN = 0.10;
+
 // What a call is expected to take, in wall-clock seconds, learnt from the calls this process has made.
 class CallClock {
 public:
@@ -153,6 +158,10 @@ struct Item {
   // A baseline's: run by rule, because it may serve an exponent the workload weighs that nothing measured serves.
   bool cover = false;
 
+  // A baseline's: run by rule, at the built-in defaults, because the entry is within CONTEND_MARGIN of what
+  // production runs somewhere the workload weighs.
+  bool sweep = false;
+
   // The first probe or combo offered from a stage listed only in part: at most how many more points the stage has,
   // which later windows list.
   u64 unlisted = 0;
@@ -188,7 +197,7 @@ struct RestartScan {
                                               const std::function<bool(u32)>& runnable);
 
 // Whether `item` runs by rule rather than by value: a bootstrap call, a gate reading, or a baseline covering the
-// workload.
+// workload or taken in the defaults sweep.
 [[nodiscard]] bool byRule(const Item& item);
 
 // Whether `item` is worth a call where anything expected to lower T by less than `floor` is not: one that runs by rule
@@ -197,11 +206,11 @@ struct RestartScan {
 
 class Scheduler {
 public:
-  // With the default `bootstrap`, which is turned off, every baseline is admissible at once and runs at the built-in
-  // defaults.  Without a `strategy` nothing measured is measured further: no probes, and no refines.  Without
-  // `restarts` an entry whose probes are all answered is left there, so the queue can run dry; with them it never
-  // does, since a jump is always worth a little.  Without `gate` the accuracy gate reads nothing, so nothing but exact
-  // arithmetic is ever published; the search is the same either way.
+  // With the default `bootstrap`, which is turned off, every baseline is admissible at once.  Baselines run at the
+  // built-in defaults whatever the bootstrap decides.  Without a `strategy` nothing measured is measured further: no
+  // probes, and no refines.  Without `restarts` an entry whose probes are all answered is left there, so the queue can
+  // run dry; with them it never does, since a jump is always worth a little.  Without `gate` the accuracy gate reads
+  // nothing, so nothing but exact arithmetic is ever published; the search is the same either way.
   Scheduler(RunScope scope, std::vector<Baseline> baselines, u32 blockSize = 1000, Bootstrap bootstrap = {},
             std::optional<Strategy> strategy = {}, bool restarts = false, bool gate = false);
 
@@ -218,15 +227,17 @@ public:
   [[nodiscard]] Defaults lines(const TuneDB& db, u32 env, const BootstrapState& state) const;
 
   // Every item that may run now, scored against what `env` has measured, by `objective` -- which should count the sets
-  // the gate still owes a reading, Gating::Assumed, since those readings are taken first.  While a family still has a
-  // bootstrap call to make, those calls are all there is, most wanted first: every other configuration runs at what the
-  // bootstrap decides, so measuring one earlier would measure something production is not going to run.  Then, while
-  // the table would publish a set the accuracy gate owes a reading -- of the set, or of its accuracy reference -- those
-  // readings are all there is, quickest first: they are what stands between what has been found and what production
-  // runs, and the objective cannot price them, since its prior is below what the entries they publish cost.  Then,
-  // with the gate, while an exponent the workload weighs has no entry, the baselines whose bands hold one: nothing
-  // would be published there otherwise, and the value of a first measurement is only the gain it might show over the
-  // prior, which is its own shape's.  After that, together and best rate first: the baselines; the probes and combos of
+  // the gate still owes a reading, Gating::Assumed, since those readings are taken first.  Once the workload is covered
+  // and, with a strategy, the defaults sweep is done, while a family still has a bootstrap call to make those calls
+  // are all there is, most wanted first: the search tries the lines they decide first, so a step taken earlier is a
+  // step from lines about to move.  Otherwise, while the table would publish a set the accuracy gate owes a reading --
+  // of the set, or of its accuracy reference -- those readings are all there is, quickest first: they are what stands
+  // between what has been found and what production runs, and the objective cannot price them, since its prior is
+  // below what the entries they publish cost.  Then, with the gate, while an exponent the workload weighs has no entry,
+  // the baselines whose bands hold one: nothing would be published there otherwise, and the value of a first
+  // measurement is only the gain it might show over the prior, which is its own shape's.  Then, with a strategy, the
+  // defaults sweep (sweepItems()).  After that, together and best rate first: the baselines, at the built-in defaults;
+  // for an entry still best at the built-in defaults, the lines as one step, first; the probes and combos of
   // every entry with a row emission could publish, from its best set or, under a strategy that searches by group, from
   // the best set of each of its cheapest MAX_BRANCHES structural branches, each valued at that branch's cost -- a probe
   // under the entry's move gains and a combo under its combination gains -- and a combo only once its branch has
@@ -239,6 +250,10 @@ public:
   // generation's death or an unbuildable key holds it, and once this process has tried it more often than any entry
   // needs.
   [[nodiscard]] std::vector<Item> admissible(const TuneDB& db, u32 env, const Objective& objective) const;
+
+  // Whether nothing is left of the workload's coverage or, with a strategy, of the defaults sweep: what the bootstrap
+  // waits for.
+  [[nodiscard]] bool swept(const TuneDB& db, u32 env, const Objective& objective) const;
 
 
   // The first measurements admissible() offers once nothing runs ahead of them by rule, whether or not a bootstrap
@@ -262,9 +277,19 @@ private:
 
   [[nodiscard]] std::vector<Item> bootstrapItems(const BootstrapState& state, const Objective& objective) const;
 
-  [[nodiscard]] std::vector<Item> baselineItems(const TuneDB& db, u32 env, const Defaults& lines,
-                                                const Progress& progress, const GainModel& gains,
-                                                const Objective& objective) const;
+  [[nodiscard]] std::vector<Item> baselineItems(const TuneDB& db, u32 env, const Progress& progress,
+                                                const GainModel& gains, const Objective& objective) const;
+
+  // The defaults sweep: every entry with no reading at the built-in defaults whose cheapest reading, or where it has
+  // none its prior, is within CONTEND_MARGIN of c* at some exponent of its band the workload weighs.
+  [[nodiscard]] std::vector<Item> sweepItems(const TuneDB& db, u32 env, const Progress& progress,
+                                             const std::map<EntryKey, std::vector<Reading>>& readings,
+                                             const GainModel& gains, const Objective& objective) const;
+
+  // Best rate first by shape, the variants of one shape together.  The variants of a shape share a prior, so nothing
+  // yet tells them apart but the edges of their bands: the variant production's own shape scan runs where nothing is
+  // published goes first.
+  void rankByShape(std::vector<Item>& items) const;
 
   [[nodiscard]] std::vector<Item> gateItems(const TuneDB& db, u32 env) const;
 
@@ -363,6 +388,9 @@ public:
 
   // Declares that the next call is a point of a combination of tier `tier`, before it is made.
   virtual void declareCombo(const FFTConfig& fft, TestKind kind, u64 exponent, const UseConfig& options, u32 tier) = 0;
+
+  // Records that the bootstrap family of `fft`'s type races on `fft` at `probe`.
+  virtual void declareBootstrap(const FFTConfig& fft, u64 probe) = 0;
 
   struct Reading {
     bool completed = false;

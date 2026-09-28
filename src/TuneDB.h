@@ -210,6 +210,16 @@ struct ComboRow {
   u64 ts = 0;
 };
 
+// Which configuration a bootstrap family races on at one probe, chosen once and kept: after the defaults sweep the
+// cheapest reading of the type there, and for a bootstrap begun before that rule its smallest shape.  Recorded, since
+// the choice reads measurements that later calls keep adding to, and a race that moved would begin again.
+struct BootRow {
+  u32 sess = 0;
+  std::string fft;
+  u64 probe = 0;
+  u64 ts = 0;
+};
+
 // One LL residue reading.
 struct RefRow {
   u32 sess = 0;
@@ -262,6 +272,7 @@ public:
   [[nodiscard]] const std::vector<RefRow>& refs() const { return refs_; }
   [[nodiscard]] const std::vector<JumpRow>& jumps() const { return jumps_; }
   [[nodiscard]] const std::vector<ComboRow>& combos() const { return combos_; }
+  [[nodiscard]] const std::vector<BootRow>& boots() const { return boots_; }
   [[nodiscard]] const std::vector<std::string>& unknownRows() const { return unknown_; }
 
   // One row per distinct measurement, duplicates folded as a running mean and pooled variance with the calls summed
@@ -307,6 +318,7 @@ public:
   [[nodiscard]] bool add(const RefRow& row);
   [[nodiscard]] bool add(const JumpRow& row);
   [[nodiscard]] bool add(const ComboRow& row);
+  [[nodiscard]] bool add(const BootRow& row);
   [[nodiscard]] bool add(const DoneRow& row);
 
   // The id an identical entry already has, or a fresh one.
@@ -378,6 +390,7 @@ private:
   std::vector<RefRow> refs_;
   std::vector<JumpRow> jumps_;
   std::vector<ComboRow> combos_;
+  std::vector<BootRow> boots_;
   std::vector<std::string> unknown_;
 
   std::map<u32, TryRow> open_;
@@ -401,6 +414,7 @@ private:
 [[nodiscard]] std::string formatRow(const RefRow& row);
 [[nodiscard]] std::string formatRow(const JumpRow& row);
 [[nodiscard]] std::string formatRow(const ComboRow& row);
+[[nodiscard]] std::string formatRow(const BootRow& row);
 [[nodiscard]] std::string formatRow(const DoneRow& row);
 
 // Whether `locks`, in the form of Linux's /proc/locks, lists a lock held on the file at (major, minor, inode); a
