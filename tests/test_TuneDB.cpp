@@ -45,6 +45,8 @@ const char* const FIXTURE =
   "jump  4 512:15:512:212 prp short32 17 3 1753471490\n"
   "combo 4 512:15:512:212 prp short32 17 2 1753471495\n"
   "boot  4 512:15:512:212 143400073 1753471497\n"
+  "round 4 1 0 0 1753471498\n"
+  "round 4 2 1 16 1753471499 512:15:512:212 prp short32 6 1K:8:1K:101 ll long32 0\n"
   "try   4 512:15:512:212 prp 143400073 17 1753471250\n"
   "try   5 512:15:512:212 prp 143400073 1 1753481250\n"
   "done  4 1753471500\n"
@@ -176,6 +178,18 @@ TEST(rows_are_read) {
   CHECK_EQ(db.boots().at(0).fft, std::string{"512:15:512:212"});
   CHECK_EQ(db.boots().at(0).probe, u64{143'400'073});
   CHECK_EQ(db.boots().at(0).sess, 4u);
+
+  CHECK_EQ(db.rounds().size(), size_t{2});
+  CHECK(db.rounds().at(0).members.empty());
+  CHECK_EQ(db.rounds().at(0).round, 0u);
+  const RoundRow& round = db.rounds().at(1);
+  CHECK_EQ(round.n, 2u);
+  CHECK_EQ(round.round, 1u);
+  CHECK_EQ(round.calls, u64{16});
+  CHECK(round.members ==
+        (std::vector<RoundMember>{
+          {.fft = "512:15:512:212", .kind = TestKind::PRP, .regime = *parseRegime("short32"), .from = 6},
+          {.fft = "1K:8:1K:101", .kind = TestKind::LL, .regime = *parseRegime("long32"), .from = 0}}));
 }
 
 TEST(unknown_rows_pass_through) {
@@ -228,6 +242,14 @@ TEST(malformed_rows_are_rejected) {
   rejects("boot  4 512:15:512:212 143400073", "boot  4 512:15:512:212 0");                     // no probe
   rejects("boot  4 512:15:512:212 143400073", "boot  9 512:15:512:212 143400073");             // an undeclared session
   rejects("boot  4 512:15:512:212 143400073 1753471497", "boot  4 512:15:512:212 143400073");  // a column short
+  rejects("round 4 2 1 16 1753471499 512:15:512:212", "round 4 2 1 16 1753471499 not-an-fft");
+  rejects("round 4 2 1 16 1753471499 512:15:512:212 prp short32 6",
+          "round 4 2 1 16 1753471499 512:15:512:212 prp sideways 6");
+  rejects("1K:8:1K:101 ll long32 0", "1K:8:1K:101 ll long32");        // an entry a column short
+  rejects("round 4 2 1 16 1753471499", "round 4 0 1 16 1753471499");  // no round number
+  rejects("round 4 2 1 16 1753471499", "round 4 2 0 16 1753471499");  // entries in a round of none
+  rejects("round 4 1 0 0 1753471498", "round 4 1 1 0 1753471498");    // a round of none numbered as one
+  rejects("round 4 1 0 0 1753471498", "round 9 1 0 0 1753471498");    // an undeclared session
   rejects("29.40 118 0.371094 ok - 1753471402", "29.40 118 0.371094 ok 1753471402");        // no fingerprint field
   rejects("29.40 118 0.371094 ok - 1753471402", "29.40 118 0.371094 ok 12345 1753471402");  // not 16 digits
   rejects("29.40 118 0.371094 ok - 1753471402", "29.40 118 0.371094 ok 0123456789abcdeg 1753471402");

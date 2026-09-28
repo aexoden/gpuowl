@@ -109,6 +109,13 @@ public:
     CHECK(db_.add(BootRow{.sess = sess_, .fft = fft.spec(), .probe = probe, .ts = u64(clock_)}));
   }
 
+  void declareRound(const RoundRow& round) override {
+    RoundRow row = round;
+    row.sess = sess_;
+    row.ts = u64(clock_);
+    CHECK(db_.add(row));
+  }
+
   // What the device builds when asked for an option set: what was asked, unless a test says the host sets part of it
   // aside.
   std::function<UseConfig(const UseConfig&)> builtAs = [](const UseConfig& asked) { return asked; };
@@ -1408,6 +1415,39 @@ TEST(the_first_round_takes_one_variant_of_each_shape_before_a_second_of_any) {
   }
 }
 
+namespace {
+
+// Calls of search on an entry: rows at a set other than the built-in defaults, dearer than its defaults so that its gap
+// stays where it was.
+void searched(Fixture& f, const char* spec, u32 calls, double mean = 1600) {
+  for (u32 c = 0; c < calls; ++c) {
+    CHECK(f.db.add(
+      RunRow{.sess = f.sess,
+             .fft = spec,
+             .kind = TestKind::PRP,
+             .exponent = 118'063'003,
+             .regime = regimeOf(FFTConfig{spec}, 118'063'003),
+             .cfg = f.db.internCfg({{"ZEROHACK_W", "0"}}),
+             .m = {.mean = mean, .stddev = 0.1, .blocks = 4, .calls = 1, .drift = 1, .status = Status::Ok, .ts = 0}}));
+  }
+}
+
+// Ranks the queue, and records the rounds that begins, as a run does before its next call; then where the halving
+// stands, its pool by spec.
+std::tuple<bool, u32, u64, std::vector<std::string>> halvingAfter(Fixture& f, const Scheduler& scheduler) {
+  (void)scheduler.admissible(f.db, f.env, Objective{f.db, f.env, scope(), Gating::Assumed});
+  const HalvingState& h = scheduler.lastHalving();
+  for (RoundRow row : h.unrecorded) {
+    row.sess = f.sess;
+    CHECK(f.db.add(row));
+  }
+  std::vector<std::string> pool;
+  for (size_t const i : h.pool) { pool.push_back(scheduler.baselines()[i].fft.spec()); }
+  return {h.active, h.round, h.budget, pool};
+}
+
+}  // namespace
+
 TEST(each_round_keeps_the_faster_half_and_doubles_the_calls_until_one_is_left) {
   Fixture f;
   std::vector<const char*> const specs{"512:15:512:101", "512:15:512:102", "512:15:512:110", "512:15:512:111"};
@@ -1422,49 +1462,196 @@ TEST(each_round_keeps_the_faster_half_and_doubles_the_calls_until_one_is_left) {
                             false,
                             Halving{.contenders = 4, .roundCalls = 4}};
 
-  // Calls of search on an entry: rows at any set but the built-in defaults, dearer than its defaults so that its gap
-  // stays where it was.
-  auto search = [&](const char* spec, u32 calls) {
-    for (u32 c = 0; c < calls; ++c) {
-      CHECK(f.db.add(RunRow{
-        .sess = f.sess,
-        .fft = spec,
-        .kind = TestKind::PRP,
-        .exponent = 118'063'003,
-        .regime = regimeOf(FFTConfig{spec}, 118'063'003),
-        .cfg = f.db.internCfg({{"ZEROHACK_W", "0"}}),
-        .m = {.mean = 1600, .stddev = 0.1, .blocks = 4, .calls = 1, .drift = 1, .status = Status::Ok, .ts = 0}}));
-    }
-  };
-  auto state = [&] {
-    (void)scheduler.admissible(f.db, f.env, Objective{f.db, f.env, scope(), Gating::Assumed});
-    const HalvingState& h = scheduler.lastHalving();
-    std::vector<std::string> pool;
-    for (size_t const i : h.pool) { pool.push_back(scheduler.baselines()[i].fft.spec()); }
-    return std::tuple{h.active, h.round, h.budget, pool};
-  };
+  CHECK(halvingAfter(f, scheduler) ==
+        std::tuple(true, 0u, u64(4), std::vector<std::string>(specs.begin(), specs.end())));
 
-  CHECK(state() == std::tuple(true, 0u, u64(4), std::vector<std::string>(specs.begin(), specs.end())));
-
-  // Round 1: all four had their 4 calls; the two nearest the fastest go on, to 4 + 8.
-  for (const char* spec : specs) { search(spec, 4); }
-  CHECK(state() == std::tuple(true, 1u, u64(12), std::vector<std::string>{"512:15:512:101", "512:15:512:102"}));
+  // Round 2: all four had their 4 calls; the two nearest the fastest go on, to 8 more each.
+  for (const char* spec : specs) { searched(f, spec, 4); }
+  CHECK(halvingAfter(f, scheduler) ==
+        std::tuple(true, 1u, u64(8), std::vector<std::string>{"512:15:512:101", "512:15:512:102"}));
 
   // One is short of its calls, and it alone is offered.
-  search("512:15:512:101", 8);
+  searched(f, "512:15:512:101", 8);
   for (const Item& item : scheduler.admissible(f.db, f.env, Objective{f.db, f.env, scope(), Gating::Assumed})) {
     CHECK_EQ(scheduler.baselines()[item.index].fft.spec(), std::string{"512:15:512:102"});
   }
 
   // Both had theirs: one is left, and the search is ranked by value again, whatever it offers.
-  search("512:15:512:102", 8);
-  auto const [active, round, budget, pool] = state();
+  searched(f, "512:15:512:102", 8);
+  auto const [active, round, budget, pool] = halvingAfter(f, scheduler);
   CHECK(!active);
   CHECK(pool == std::vector<std::string>{"512:15:512:101"});
   std::vector<Item> const items = scheduler.admissible(f.db, f.env, Objective{f.db, f.env, scope(), Gating::Assumed});
   CHECK(std::ranges::any_of(
     items, [&](const Item& i) { return scheduler.baselines()[i.index].fft.spec() == "512:15:512:111"; }));
   CHECK(std::ranges::none_of(items, [](const Item& i) { return i.halving; }));
+}
+
+TEST(a_round_keeps_its_entries_until_each_has_had_its_calls) {
+  // 101 starts at 1450 and 102 at 1495, 3% behind.  101's first two calls find 15%: 102 is now 22% behind it, outside
+  // the margin, but the round began with it and it is owed its calls before anything is decided.
+  Fixture f;
+  concludedAt(f, "512:15:512:101", {}, 1450);
+  concludedAt(f, "512:15:512:102", {}, 1495);
+  Scheduler const scheduler{scope(), only({"512:15:512:101", "512:15:512:102"}), 1000,
+                            {},      Strategy{.kind = Strategy::Kind::Single},   false,
+                            false,   Halving{.contenders = 2, .roundCalls = 16}};
+
+  CHECK(halvingAfter(f, scheduler) ==
+        std::tuple(true, 0u, u64(16), std::vector<std::string>{"512:15:512:101", "512:15:512:102"}));
+  concludedAt(f, "512:15:512:101", {{"INPLACE", "1"}}, 1230);
+
+  auto const [active, round, budget, pool] = halvingAfter(f, scheduler);
+  CHECK(active);
+  CHECK(pool == (std::vector<std::string>{"512:15:512:101", "512:15:512:102"}));
+  std::vector<Item> const items = scheduler.admissible(f.db, f.env, Objective{f.db, f.env, scope(), Gating::Assumed});
+  CHECK(!items.empty() && scheduler.baselines()[items.front().index].fft.spec() == "512:15:512:102");
+
+  // A later process reads the same round from the rows, whatever the gaps say now.
+  f.newSession();
+  Scheduler const again{scope(), only({"512:15:512:101", "512:15:512:102"}), 1000,
+                        {},      Strategy{.kind = Strategy::Kind::Single},   false,
+                        false,   Halving{.contenders = 2, .roundCalls = 16}};
+  CHECK(std::get<3>(halvingAfter(f, again)) == (std::vector<std::string>{"512:15:512:101", "512:15:512:102"}));
+
+  // Once each has had its calls, the round is decided by the gaps as they stand then.
+  searched(f, "512:15:512:101", 14);
+  searched(f, "512:15:512:102", 16);
+  auto const [over, last, calls, left] = halvingAfter(f, again);
+  CHECK(!over);
+  CHECK(left == std::vector<std::string>{"512:15:512:101"});
+}
+
+TEST(a_round_waiting_on_readings_taken_by_rule_is_still_under_way) {
+  // 110, 17% behind under other options, is not swept; a round begins over 101 and 102.  A step of 110's then puts it
+  // within the margin, and its reading at the defaults is taken first -- which leaves the round where it was.
+  Fixture f;
+  concludedAt(f, "512:15:512:101", {}, 1450);
+  concludedAt(f, "512:15:512:102", {}, 1460);
+  concludedAt(f, "512:15:512:110", {{"INPLACE", "1"}}, 1700);
+  Scheduler const scheduler{scope(),
+                            only({"512:15:512:101", "512:15:512:102", "512:15:512:110"}),
+                            1000,
+                            {},
+                            Strategy{.kind = Strategy::Kind::Single},
+                            false,
+                            false,
+                            Halving{.contenders = 4, .roundCalls = 4}};
+  CHECK(halvingAfter(f, scheduler) ==
+        std::tuple(true, 0u, u64(4), std::vector<std::string>{"512:15:512:101", "512:15:512:102"}));
+
+  concludedAt(f, "512:15:512:110", {{"WMUL", "1"}}, 1470);
+  std::vector<Item> const items = scheduler.admissible(f.db, f.env, Objective{f.db, f.env, scope(), Gating::Assumed});
+  CHECK(!items.empty() && items.front().sweep);
+  CHECK(scheduler.lastHalving().active);
+  CHECK(scheduler.lastHalving().unrecorded.empty());
+}
+
+TEST(calls_made_before_a_round_do_not_count_towards_it) {
+  // 101 alone is read at first, and has 40 calls at other sets -- a bootstrap's, say -- before 102 is read and a round
+  // can begin.  Those do not count towards its calls in the round.
+  Fixture f;
+  concludedAt(f, "512:15:512:101", {}, 1450);
+  Scheduler const scheduler{scope(), only({"512:15:512:101", "512:15:512:102"}), 1000,
+                            {},      Strategy{.kind = Strategy::Kind::Single},   false,
+                            false,   Halving{.contenders = 2, .roundCalls = 16}};
+  CHECK(!std::get<0>(halvingAfter(f, scheduler)));
+  searched(f, "512:15:512:101", 40);
+  concludedAt(f, "512:15:512:102", {}, 1460);
+
+  auto const [active, round, budget, pool] = halvingAfter(f, scheduler);
+  CHECK(active && round == 0 && budget == 16);
+  CHECK(scheduler.lastHalving().calls == (std::vector<u64>{0, 0}));
+}
+
+TEST(an_entry_that_has_had_its_calls_finishes_the_step_it_began) {
+  Fixture f;
+  concludedAt(f, "512:15:512:101", {}, 1450);
+  concludedAt(f, "512:15:512:102", {}, 1460);
+  Scheduler const scheduler{scope(), only({"512:15:512:101", "512:15:512:102"}), 1000,
+                            {},      Strategy{.kind = Strategy::Kind::Single},   false,
+                            false,   Halving{.contenders = 2, .roundCalls = 4}};
+  (void)halvingAfter(f, scheduler);
+  searched(f, "512:15:512:101", 4);
+  searched(f, "512:15:512:102", 4);
+
+  // 101's last call began a step one call short of concluding.
+  CHECK(f.db.add(
+    RunRow{.sess = f.sess,
+           .fft = "512:15:512:101",
+           .kind = TestKind::PRP,
+           .exponent = 118'063'003,
+           .regime = regimeOf(FFTConfig{"512:15:512:101"}, 118'063'003),
+           .cfg = f.db.internCfg({{"INPLACE", "1"}}),
+           .m = {.mean = 1440, .stddev = 0.1, .blocks = 4, .calls = 1, .drift = 1, .status = Status::Ok, .ts = 0}}));
+
+  CHECK(std::get<0>(halvingAfter(f, scheduler)));
+  std::vector<Item> const items = scheduler.admissible(f.db, f.env, Objective{f.db, f.env, scope(), Gating::Assumed});
+  CHECK_EQ(items.size(), size_t{1});
+  for (const Item& item : items) {
+    CHECK(item.halving && item.calls == 1 && configText(item.options) == "INPLACE=1");
+    CHECK_EQ(scheduler.baselines()[item.index].fft.spec(), std::string{"512:15:512:101"});
+  }
+
+  concludedAt(f, "512:15:512:101", {{"INPLACE", "1"}}, 1440);
+  CHECK(!std::get<0>(halvingAfter(f, scheduler)));
+}
+
+TEST(a_database_with_no_rounds_takes_up_the_halving_where_the_calls_left_it) {
+  // Four contenders under the rule before rounds were recorded: all past round 1's 4 calls, and 101 past round 2's
+  // 4 + 8.  The halving goes on in round 2, 102 owed the rest of its 8, not begun again.
+  Fixture f;
+  std::vector<const char*> const specs{"512:15:512:101", "512:15:512:102", "512:15:512:110", "512:15:512:111"};
+  double cost = 1450;
+  for (const char* spec : specs) { concludedAt(f, spec, {}, cost += 5); }
+  searched(f, "512:15:512:101", 12);
+  searched(f, "512:15:512:102", 7);
+  searched(f, "512:15:512:110", 4);
+  searched(f, "512:15:512:111", 4);
+  Scheduler const scheduler{scope(),
+                            only({"512:15:512:101", "512:15:512:102", "512:15:512:110", "512:15:512:111"}),
+                            1000,
+                            {},
+                            Strategy{.kind = Strategy::Kind::Single},
+                            false,
+                            false,
+                            Halving{.contenders = 4, .roundCalls = 4}};
+
+  CHECK(halvingAfter(f, scheduler) ==
+        std::tuple(true, 1u, u64(8), std::vector<std::string>{"512:15:512:101", "512:15:512:102"}));
+  CHECK(scheduler.lastHalving().calls == (std::vector<u64>{8, 3}));
+
+  // Over, it stays over; and those that took part are not newcomers.
+  searched(f, "512:15:512:102", 5);
+  CHECK(!std::get<0>(halvingAfter(f, scheduler)));
+  CHECK(!std::get<0>(halvingAfter(f, scheduler)));
+  CHECK(std::get<3>(halvingAfter(f, scheduler)) == std::vector<std::string>{"512:15:512:101"});
+}
+
+TEST(an_entry_that_comes_within_the_margin_later_is_halved_with_the_one_left) {
+  // 110 is 17% behind at its defaults, and the first halving is over before a step of its search is found to put it
+  // within the margin.
+  Fixture f;
+  concludedAt(f, "512:15:512:101", {}, 1450);
+  concludedAt(f, "512:15:512:102", {}, 1460);
+  concludedAt(f, "512:15:512:110", {}, 1700);
+  Scheduler const scheduler{scope(),
+                            only({"512:15:512:101", "512:15:512:102", "512:15:512:110"}),
+                            1000,
+                            {},
+                            Strategy{.kind = Strategy::Kind::Single},
+                            false,
+                            false,
+                            Halving{.contenders = 4, .roundCalls = 4}};
+  (void)halvingAfter(f, scheduler);
+  searched(f, "512:15:512:101", 4);
+  searched(f, "512:15:512:102", 4);
+  CHECK(!std::get<0>(halvingAfter(f, scheduler)));
+
+  // Tuned to within the margin, it and the one left are halved.
+  concludedAt(f, "512:15:512:110", {{"INPLACE", "1"}}, 1470);
+  CHECK(halvingAfter(f, scheduler) ==
+        std::tuple(true, 0u, u64(4), std::vector<std::string>{"512:15:512:101", "512:15:512:110"}));
 }
 
 TEST(the_search_is_spread_over_the_contenders_before_it_settles_on_one) {

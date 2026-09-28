@@ -158,6 +158,9 @@ public:
   // Records that the bootstrap family of `fft`'s type races on `fft` at `probe` (a `boot` row).
   void declareBootstrap(const FFTConfig& fft, u64 probe);
 
+  // Records a round of the halving as `round` has it, in this session and at this time (a `round` row).
+  void declareRound(RoundRow round);
+
   [[nodiscard]] u32 id() const { return session_; }
   [[nodiscard]] u32 envId() const { return envId_; }
 

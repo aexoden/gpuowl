@@ -364,6 +364,12 @@ void Session::declareBootstrap(const FFTConfig& fft, u64 probe) {
   (void)db_.add(BootRow{.sess = session_, .fft = fft.spec(), .probe = probe, .ts = now()});
 }
 
+void Session::declareRound(RoundRow round) {
+  round.sess = session_;
+  round.ts = now();
+  (void)db_.add(round);
+}
+
 void Session::keepAnchor() {
   if (!anchorDue()) { return; }
   raceAnchor();
