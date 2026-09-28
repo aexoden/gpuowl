@@ -578,18 +578,24 @@ ProbeList probesOf(const Env& env, const FFTConfig& fft, const UseConfig& best, 
   }
 
   case Strategy::Kind::Hybrid:
-  case Strategy::Kind::Groups:
+  case Strategy::Kind::Groups: {
+    // Every structural step before any group's own moves: which side of a structural key is the faster one decides
+    // where the rest of the entry's search is best spent, and each side is worth only what its best set costs.
+    std::vector<Bin> bins;
     for (Group const group : allGroups()) {
-      for (const Bin& bin : binsOf(out.axes, group, strategy, structuralSteps)) {
-        bool const whole = bin.structural || (out.axes[bin.axes.front()].option->alone && !strategy.bootstrapTree);
-        enumerator.enumerate(bin.axes, bin.stage, whole ? ~0u : strategy.maxPoints);
-      }
+      std::ranges::move(binsOf(out.axes, group, strategy, structuralSteps), std::back_inserter(bins));
+    }
+    std::ranges::stable_partition(bins, &Bin::structural);
+    for (const Bin& bin : bins) {
+      bool const whole = bin.structural || (out.axes[bin.axes.front()].option->alone && !strategy.bootstrapTree);
+      enumerator.enumerate(bin.axes, bin.stage, whole ? ~0u : strategy.maxPoints);
     }
     for (size_t const i : axesWhere([](const Axis& a) { return a.option->group == Group::None; })) {
       enumerator.enumerate({i}, "single", ~0u);
     }
     if (strategy.combines()) { combos(env, fft, best, strategy, readings, enumerator, out); }
     break;
+  }
   }
   return out;
 }

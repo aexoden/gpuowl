@@ -277,6 +277,24 @@ TEST(a_structural_step_stands_alone_and_opens_its_dependents) {
   CHECK(findProbe(outOfPlace, "PAD=512") != nullptr);
 }
 
+TEST(every_structural_step_comes_before_any_other_move) {
+  for (auto const& [env, spec] : std::vector<std::pair<Env, std::string>>{
+         {nvidia(), "512:15:512:212"}, {nvidia(), "2:1K:8:256:212"}, {amd(), "1K:10:256:010"}}) {
+    ProbeList const list = probesOf(env, FFTConfig{spec}, {}, {.kind = Strategy::Kind::Hybrid});
+    auto const structural = [&](const Probe& p) {
+      return p.moves.size() == 1 && list.axes[p.moves.front().first].option->structural;
+    };
+    auto const firstOther = std::ranges::find_if(list.probes, [&](const Probe& p) { return !structural(p); });
+    CHECK(firstOther != list.probes.begin());
+    CHECK(std::none_of(firstOther, list.probes.end(), structural));
+
+    // Structural keys sit in several groups, and each group's are still listed together.
+    std::set<std::string> stages;
+    for (auto it = list.probes.begin(); it != firstOther; ++it) { stages.insert(it->stage); }
+    CHECK(stages.size() > 1);
+  }
+}
+
 TEST(memory_probes_move_access_classes_never_the_packed_integer) {
   FFTConfig const fft{"512:15:512:212"};
 

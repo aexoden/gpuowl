@@ -225,7 +225,8 @@ exist, such as `INPLACE`, from the best set of each of its values), and moves on
 other option stays where the best set has it. When the best set changes, the steps are taken again from the new one,
 but a step whose options were already measured at the same values is not repeated unless an option they depend on
 has moved. So two changes in different pieces of a group, neither of which helps alone, are tried together only by
-the combinations (below) or by chance.
+the combinations (below) or by chance. The steps that switch an option of the `INPLACE` kind come before any other
+step of the FFT, so the search learns early which side of each is the faster one and spends its time there.
 
 Whatever the strategy, an FFT whose search has run out of steps is occasionally tried with a random option set, which
 is what lets the search find combinations no step would reach.
