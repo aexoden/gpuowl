@@ -19,6 +19,7 @@
 #include "Objective.h"
 #include "OptionSpace.h"
 #include "Probe.h"
+#include "Search.h"
 #include "TuneDB.h"
 #include "Tuner.h"
 #include "UseResolve.h"
@@ -114,22 +115,6 @@ private:
   u32 compileN_ = 0;
 };
 
-// An entry nothing has measured yet: one configuration at the built-in defaults, in one test kind and one regime band.
-struct Baseline {
-  FFTConfig fft;
-  TestKind kind;
-
-  // Where the entry would be eligible, and so the band whose workload weight its value is taken over.
-  Interval band;
-
-  // Where it is timed when nothing has been started on it: the probe where the band holds it, and otherwise the largest
-  // prime the band reaches.
-  u64 exponent;
-
-  // "<spec> <kind> <regime>"
-  [[nodiscard]] std::string label() const;
-};
-
 // Every entry `env` could publish that the workload gives any weight to: each shape, at each variant `env` can compile,
 // in each regime band of the automatic carry that holds a grid point.
 [[nodiscard]] std::vector<Baseline> baselines(const Env& env, const RunScope& scope,
@@ -204,33 +189,6 @@ struct Item {
   [[nodiscard]] double rate() const { return seconds > 0 ? value / seconds : 0; }
 };
 
-// Where each entry stands, from the rows of an env.
-struct Progress;
-
-// Draws in a row that repeat a configuration already seen, after which a restart space is taken to be spent.  A space
-// with one point left unseen among n survives this many draws with probability (1 - 1/n)^256: for n = 64, under 2%,
-// and the next process starts the count again.
-inline constexpr u32 RESTART_REPEATS = 256;
-
-// How far one entry's restart sequence has been read.  Only what can never become runnable again is passed -- a draw a
-// row answers, a hold, a draw given up on, one the lines shadow, which once the bootstrap is complete they keep doing
-// -- so the cursor never goes back, and a long stretch of such draws is read once rather than on every re-score.
-struct RestartScan {
-  u32 next = 0;
-  u32 repeats = 0;
-  bool exhausted = false;
-
-  // The configurations drawn or measured so far, as their canonical text.
-  std::set<std::string> seen;
-};
-
-// Moves `scan` to the first draw from where it stands that `runnable` accepts, and returns it; `text` names the
-// configuration a draw is.  Nothing once RESTART_REPEATS draws in a row have repeated configurations in `seen`, which
-// is what a space whose every point has been measured or ruled out looks like: a long run of new configurations that
-// cannot run is the space still being explored, however long it is.
-[[nodiscard]] std::optional<u32> nextRunnable(RestartScan& scan, const std::function<std::string(u32)>& text,
-                                              const std::function<bool(u32)>& runnable);
-
 // Whether `item` runs by rule rather than by value: a bootstrap call, a gate reading, a baseline covering the workload
 // or taken in the defaults sweep, or a step of a halving round.
 [[nodiscard]] bool byRule(const Item& item);
@@ -281,18 +239,14 @@ public:
   // the baselines whose bands hold one: nothing would be published there otherwise, and the value of a first
   // measurement is only the gain it might show over the prior, which is its own shape's.  Then, with a strategy, the
   // defaults sweep (sweepItems()).  After that, together and best rate first: the baselines, at the built-in defaults;
-  // for an entry still best at the built-in defaults, the lines as one step, first; the probes and combos of
-  // every entry with a row emission could publish, from its best set or, under a strategy that searches by group, from
-  // the best set of each of its cheapest MAX_BRANCHES structural branches, each valued at that branch's cost -- a probe
-  // under the entry's move gains and a combo under its combination gains -- and a combo only once its branch has
-  // nothing of a lower tier left to offer, since it combines what those found; one more call on each side of every
-  // contest production decides that the race rule leaves undecided (refineValues()); for an entry with no probe or
-  // combo left, the next draw of its restart sequence; and with the gate, the next reading of each passed set whose
-  // reach may be raised above the table, worth what that set would save over the exponents between its reach and that
-  // reading, at what it costs.  A baseline is left out once a row has concluded it or recorded a failure of it, and a
-  // probe, a combo or a restart once a row answers it or recorded a failure of it; any of them while an earlier
-  // generation's death or an unbuildable key holds it, and once this process has tried it more often than any entry
-  // needs.
+  // what the search of every entry with a row emission could publish offers (EntrySearch::offers()), the lines and each
+  // probe valued under the entry's move gains, each combo under its combination gains and a restart under its restart
+  // gains, from the cost of the best set it is a step from; one more call on each side of every contest production
+  // decides that the race rule leaves undecided (refineValues()); and with the gate, the next reading of each passed
+  // set whose reach may be raised above the table, worth what that set would save over the exponents between its reach
+  // and that reading, at what it costs.  A baseline is left out once a row has concluded it or recorded a failure of
+  // it, while an earlier generation's death or an unbuildable key holds it, and once this process has tried it more
+  // often than any entry needs.
   [[nodiscard]] std::vector<Item> admissible(const TuneDB& db, u32 env, const Objective& objective) const;
 
   // Whether nothing is left of the workload's coverage or, with a strategy, of the defaults sweep: what the bootstrap
@@ -386,32 +340,9 @@ private:
   // "<spec> <canonical options>", which is what makes a later build of the same configuration find it compiled.
   [[nodiscard]] std::string builtKey(const FFTConfig& fft, const UseConfig& options) const;
 
-  // probesOf(), which is pure, for one (entry, best set, whether it steps into other branches), listing at most
-  // `listed` points of each stage, and which of its probes the entry's rows checked against it so far answer.  A row
-  // that answers a probe always will, so each is checked once.  Per entry, not per FFT: another regime or kind of the
-  // same FFT has rows of its own.
-  struct ListMemo {
-    std::string from;
-    u32 listed = PROBE_WINDOW;
-    ProbeList list;
-    std::vector<bool> answered;
-    std::set<std::string> checked;
-  };
-
-  // The memo for `best`, rebuilt when `from` -- what the readings of its branch say, which only the combo tiers read
-  // -- changes: a best set changes rarely, and each re-score asks again for every entry.  With `widen`, rebuilt
-  // listing twice as many points of each stage.  A probe the rebuilt list shares with the old one keeps what the rows
-  // answered it.
-  [[nodiscard]] ListMemo& probeList(const Baseline& entry, const UseConfig& best, std::span<const Reading> readings,
-                                    bool structuralSteps, std::string from, bool widen = false) const;
-
-  // restartOf() for the entry of `baselines_[index]`, canonical, likewise: a draw takes one enumeration of the axes per
-  // axis.
-  [[nodiscard]] const UseConfig& draw(size_t index, u32 k) const;
-
-  // The restart `baselines_[index]` would make next, if its space has anything left to offer.
-  [[nodiscard]] std::optional<Item> nextRestart(const TuneDB& db, u32 env, const Progress& progress,
-                                                size_t index) const;
+  // What `baselines_[index]`'s search offered, as an item: what it is expected to take, and whether its kernels are
+  // still to be built.
+  [[nodiscard]] Item itemOf(size_t index, Candidate candidate) const;
 
   RunScope scope_;
   std::vector<Baseline> baselines_;
@@ -431,12 +362,9 @@ private:
   std::set<std::string> built_;
 
   std::map<size_t, u32> attempts_;
-  std::map<std::string, u32> probeAttempts_;
-  mutable std::map<std::string, ListMemo> probeLists_;
-  mutable std::map<std::pair<size_t, u32>, UseConfig> draws_;
 
-  // How far each entry's restart sequence has been read in this process.
-  mutable std::map<size_t, RestartScan> scans_;
+  // Each entry's search, as baselines_ has them.
+  mutable std::vector<EntrySearch> searches_;
 
   // Gate and reach readings by keyOf(), however they ended: one that recorded a reading is not owed again unless its
   // kernels were built otherwise, and asking again would only repeat that.

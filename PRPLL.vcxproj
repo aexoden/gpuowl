@@ -69,6 +69,7 @@
     <ClCompile Include=".\src\Scheduler.cpp" />
     <ClCompile Include=".\src\Bootstrap.cpp" />
     <ClCompile Include=".\src\Probe.cpp" />
+    <ClCompile Include=".\src\Search.cpp" />
     <ClCompile Include=".\src\Value.cpp" />
     <ClCompile Include=".\src\Gate.cpp" />
     <ClCompile Include=".\src\Reach.cpp" />
