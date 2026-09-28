@@ -347,6 +347,9 @@ public:
 
     // The options the kernels were built with, after whatever the host set aside.
     UseConfig ran{};
+
+    // What was recorded where the call did not complete.
+    Status status = Status::Ok;
   };
 
   virtual ~Bench() = default;

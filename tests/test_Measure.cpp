@@ -184,6 +184,29 @@ TEST(an_ll_call_that_gave_no_reading_says_nothing_about_the_residue) {
   CHECK(checkedAgainst(REFERENCE, llCall(0x1234), stopped.reader()).measurement.status == Status::Lost);
 }
 
+TEST(a_call_that_fails_its_own_check_is_read_again_before_anything_is_concluded) {
+  Again passes{.second = llCall(0)};
+  Call const c = checkedTwice(llCall(0, Status::Err), passes.reader());
+  CHECK_EQ(passes.asked, 1u);
+  CHECK(c.measurement.ok());
+
+  Again fails{.second = llCall(0, Status::Err)};
+  CHECK(checkedTwice(llCall(0, Status::Err), fails.reader()).measurement.status == Status::Err);
+  CHECK_EQ(fails.asked, 1u);
+
+  // A second call cut short is not a second failure.
+  Again stopped{.second = llCall(0, Status::Lost)};
+  CHECK(checkedTwice(llCall(0, Status::Err), stopped.reader()).measurement.status == Status::Lost);
+}
+
+TEST(a_call_that_passed_its_check_or_gave_no_reading_is_not_read_again) {
+  for (Status const status : {Status::Ok, Status::NoCompile, Status::Unsupported, Status::Lost}) {
+    Again again{.second = llCall(0, Status::Err)};
+    CHECK(checkedTwice(llCall(0, status), again.reader()).measurement.status == status);
+    CHECK_EQ(again.asked, 0u);
+  }
+}
+
 // What a thrown message means. A verdict here goes into the database and is read as final, so the cost of reading a
 // lost device as a fact about the configuration is every configuration measured after it.
 TEST(a_stop_is_not_a_failure_of_anything) {
