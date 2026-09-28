@@ -38,9 +38,10 @@ struct WorkRow;
 inline constexpr u64 DEFAULT_WORKLOAD_LO = 100'000'000;
 inline constexpr u64 DEFAULT_WORKLOAD_HI = 400'000'000;
 
-// How far past the pending work a derived range reaches, at each end. The point is to cover the assignments that will
-// arrive as well as the ones in hand.
+// How far past the pending work a derived range reaches: below the lowest, and above the highest.  A worktodo holds a
+// few days of work, and a tune serves for months of assignments, which move upward.
 inline constexpr double WORKLOAD_PAD = 0.05;
+inline constexpr double WORKLOAD_AHEAD = 0.25;
 
 // How much of the workload weight sits on the probe exponent alone. 0 optimises the range evenly, 1 optimises exactly
 // the exponent the user runs.
@@ -150,9 +151,6 @@ struct GridPoint {
 // The grid of one test kind: its points in ascending order, with weights summing to 1.
 struct Grid {
   TestKind kind = TestKind::PRP;
-
-  // False where the kind had no pending work and the points are spread across the range instead.
-  bool fromWorktodo = false;
 
   std::vector<GridPoint> points;
 

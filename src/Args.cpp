@@ -264,8 +264,8 @@ selection.txt, which a normal run in the same directory (or its -pool) reads.  T
                      it again resumes.  The -use options from config.txt and the command line, and -carry, are set
                      aside while tuning.
                      Settings (defaults in brackets):
-                         workload=<lo>-<hi>  exponents to tune for, e.g. 100M-400M [the worktodo's range +-5%%,
-                                             else 100M-400M]
+                         workload=<lo>-<hi>  exponents to tune for, weighed evenly, e.g. 100M-400M [5%% below the
+                                             worktodo's lowest to 25%% above its highest, else 100M-400M]
                          probe=<E>           the exponent that matters most [the commonest worktodo exponent, else the
                                              middle of the workload]
                          probeWeight=<0..1>  share of the weight on the probe alone; 0 weighs the workload evenly [0.5]
