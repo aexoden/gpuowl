@@ -206,6 +206,9 @@ public:
   // the choice once the sweep is done, so that it does not move under the races as readings are added.
   [[nodiscard]] std::vector<Family> familiesIn(const TuneDB& db, u32 env) const;
 
+  // The groups a race is owed in on `fft` from `background`: those with a move the lines could carry.
+  [[nodiscard]] std::vector<Group> groupsOf(const FFTConfig& fft, const UseConfig& background) const;
+
   // Whether `env` has recorded a configuration for every family at this probe.
   [[nodiscard]] bool chosen(const TuneDB& db, u32 env) const;
 

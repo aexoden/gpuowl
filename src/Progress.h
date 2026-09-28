@@ -55,6 +55,9 @@ struct RunProgress {
   u64 unlisted = 0;
 
   bool bootstrapComplete = false;
+
+  // What the run is doing now, with its own totals; empty where nobody said.
+  Phase phase{};
 };
 
 // Where the run `sofar` stands, with T now at `T`, `measured` of the weight on measured entries and `ranked` what

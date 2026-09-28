@@ -316,12 +316,18 @@ tune: bootstrap: FFT3161 1:1K:8:256:202 is not tuned: at 2917.815 us/it it would
 
 Besides those lines:
 
-- Every 5 minutes, and once when the bootstrap finishes, a `tune: progress:` line gives the time spent, the
-  measurements taken by kind, how `T` has moved, and how much measuring is currently worth doing:
+- Every 5 minutes, and once when the bootstrap finishes, a `tune: progress:` line gives the time spent, what the run
+  is doing and how far through it it is, the measurements taken by kind, how `T` has moved, and how much measuring is
+  currently worth doing:
 
   ```text
-  tune: progress: 5:05 in, 21 items and 1 anchor reading: 21 bootstrap (2.9 min); T 906.059 -> 889.053 us/it, 0.0% of the weight on measured entries; 12 items are worth running now, ~97 s by the queue's estimates
+  tune: progress: 5:05 in, bootstrap: FFT64 1K:13:256:101, group 3 of 9 (Memory), then its combinations; type 1 of 2; 21 items and 1 anchor reading: 21 bootstrap (2.9 min); T 906.059 -> 889.053 us/it, 100.0% of the weight on measured entries; 12 items are worth running now, ~97 s by the queue's estimates
   ```
+
+  The first part counts through the phase the run is in: `covering the workload: 62.0% of its weight measured`,
+  `defaults sweep: 23 of 70 FFTs read at the built-in defaults`, the bootstrap's races as above, `accuracy gate: 3
+  readings owed`, `halving: round 2 of 4, 8 contenders, 150 of 256 calls`, and then `searching by expected gain`.
+  "Items worth running now" is only what the queue can take next, which in the bootstrap is the race in hand.
 
 - When the default options move to follow a newly published FFT, the run says what they are now:
 
@@ -516,6 +522,7 @@ tune: status: nothing holds the database
 tune: status: the latest session on env 1 is session 1, a run started 2026-09-25 22:34
 tune: status: valued as session 1's run, over the 2 assignments pending when it started: workload=112159852-143093833,probe=118063003,probeWeight=0.5,kinds=prp,bootstrap=1,strategy=hybrid,maxPermute=4,maxPoints=64,comboTop=3,comboTiers=3,contenders=16,roundCalls=16,stop=0.1%
 tune: status: T 888.322 us/it, 0.0% of the weight on measured entries
+tune: status: a run started now would begin in bootstrap: FFT64 1K:13:256:212, group 2 of 9 (Memory), then its combinations; type 1 of 1
 tune: status: FFT64: 1 of 600 entries measured, 599 waiting on the bootstrap
 ...
 tune: status: accuracy: 0 entries published (0 exact arithmetic, 0 confirmed, 0 unvalidated); 0 held below the table's reach, 0 raised above it; 0 limits for options no entry runs; 1 set owed a reading, 0 rejected

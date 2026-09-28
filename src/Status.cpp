@@ -102,6 +102,7 @@ TuneStatus statusOf(const Scheduler& scheduler, TuneDB& db, u32 env, double stop
   RunSummary summary = summarize(scheduler, db, env, out.latest ? out.latest->id : 0, report, stop);
   out.families = std::move(summary.families);
   out.heldBy = std::move(summary.heldBy);
+  out.phase = scheduler.phase(state, report.left, published, out.floor).text;
 
   for (const Item& item : report.left) {
     if (!worthRunning(item, out.floor)) {
@@ -167,6 +168,7 @@ void logStatus(const TuneStatus& s, const DbEnv& env, const std::string& valuedA
 
   log("tune: status: valued as %s\n", valuedAs.c_str());
   log("tune: status: T %.3f us/it, %.1f%% of the weight on measured entries\n", s.T, s.measured * 100);
+  if (!s.phase.empty()) { log("tune: status: a run started now would begin in %s\n", s.phase.c_str()); }
 
   for (const RunSummary::Family& f : s.families) {
     log("tune: status: %s: %s\n", typeName(f.type), familyCounts(f, s.heldBy).c_str());

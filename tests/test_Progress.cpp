@@ -133,6 +133,20 @@ TEST(the_periodic_line_says_where_the_run_stands_against_its_start_and_its_stop)
                        "measured entries; nothing is worth running now"});
 }
 
+TEST(both_lines_say_what_the_run_is_doing_and_how_far_through_it_it_is) {
+  RunProgress sweeping = midRun();
+  sweeping.phase = {.text = "defaults sweep: 23 of 70 FFTs read at the built-in defaults", .brief = "sweep 23/70"};
+  CHECK(progressLine(sweeping, 1181)
+          .starts_with("19:41 in, defaults sweep: 23 of 70 FFTs read at the built-in defaults; 212 items and 4 anchor "
+                       "readings"));
+
+  // On the bottom line it is the last of the figures to be given up.
+  std::string const what = "213. baseline 1K:10:256:010 prp short32 at the built-in defaults at 89843291";
+  CHECK_EQ(liveLine(sweeping, what, 1184, 3, 200),
+           "[19:44] " + what + " (0:03) | sweep 23/70 | T 199.518 us/it (91% measured) | worth 1.8x stop");
+  CHECK(liveLine(sweeping, what, 1184, 3, 110).ends_with(" (0:03) | sweep 23/70"));
+}
+
 TEST(a_heartbeat_names_the_call_and_how_long_it_has_run) {
   CHECK_EQ(heartbeatLine("213. probe 512:5:256:202 prp short32 PAD=512 at 24698117", 125),
            std::string{"still measuring 213. probe 512:5:256:202 prp short32 PAD=512 at 24698117, 2:05 so far"});

@@ -95,11 +95,12 @@ std::string clockText(double seconds) {
 
 std::string progressLine(const RunProgress& p, double elapsed) {
   std::string const spent = spentText(p.spent);
-  std::string out = format("%s in, %u %s and %u anchor %s%s%s; T %.3f -> %.3f us/it, %.1f%% of the weight on measured "
-                           "entries; ",
-                           clockText(elapsed).c_str(), p.items, p.items == 1 ? "item" : "items", p.anchors,
-                           p.anchors == 1 ? "reading" : "readings", spent.empty() ? "" : ": ", spent.c_str(), p.startT,
-                           p.T, 100 * p.measured);
+  std::string const phase = p.phase.text.empty() ? "" : p.phase.text + "; ";
+  std::string out = format("%s in, %s%u %s and %u anchor %s%s%s; T %.3f -> %.3f us/it, %.1f%% of the weight on "
+                           "measured entries; ",
+                           clockText(elapsed).c_str(), phase.c_str(), p.items, p.items == 1 ? "item" : "items",
+                           p.anchors, p.anchors == 1 ? "reading" : "readings", spent.empty() ? "" : ": ", spent.c_str(),
+                           p.startT, p.T, 100 * p.measured);
 
   if (!p.worthRunning) { return out + "nothing is worth running now"; }
 
@@ -127,6 +128,7 @@ std::string liveLine(const RunProgress& p, const std::string& what, double elaps
 
   // What is being measured comes first; where the terminal is too narrow for it, these are given up from the last.
   std::vector<std::string> extras;
+  if (!p.phase.brief.empty()) { extras.push_back(" | " + p.phase.brief); }
   if (p.T > 0) { extras.push_back(format(" | T %.3f us/it (%.0f%% measured)", p.T, 100 * p.measured)); }
   if (p.mostWorth > 0 && p.stop > 0 && p.floor > 0) {
     extras.push_back(format(" | worth %.1fx stop", p.mostWorth / p.floor));

@@ -188,7 +188,7 @@ constexpr Glyphs ASCII{"...", "|", "  |  ", {"_", ".", "-", "~", "=", "+", "*", 
   if (!b.started) { return {{"starting", Style::Bold}}; }
   std::string const sep{glyphs(b).sep};
   const RunProgress& p = b.progress;
-  Line out{{b.phase, Style::Bold}};
+  Line out{{p.phase.text.empty() ? b.phase : p.phase.text, Style::Bold}};
   out.push_back({sep + format("T %.3f us/it, %.1f%% measured", p.T, 100 * p.measured), Style::Plain});
   if (p.mostWorth > 0) {
     out.push_back({sep +

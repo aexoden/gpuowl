@@ -55,6 +55,13 @@ inline constexpr u32 WARMUP_BLOCKS = 1;
 inline constexpr double CONTEND_MARGIN = 0.10;
 
 
+// What a run is doing now, and how far through it it is: "defaults sweep: 23 of 70 FFTs read", with a brief form for
+// the terminal's bottom line ("sweep 23/70").
+struct Phase {
+  std::string text;
+  std::string brief;
+};
+
 // Where the halving stands, as the rows say: which round, which entries are still in it, and how many calls of search
 // each is to have had by the round's end.
 struct HalvingState {
@@ -242,6 +249,11 @@ public:
   // Where the halving stood when admissible() last ranked the queue.
   [[nodiscard]] const HalvingState& lastHalving() const { return lastHalving_; }
 
+  // The phase `ranked` is in, as admissible() just gave it from `state`, with its own totals: how many races of the
+  // family being raced are decided, how many contenders the sweep has read, how far the halving's round has got.
+  [[nodiscard]] Phase phase(const BootstrapState& state, const std::vector<Item>& ranked, const Objective& objective,
+                            double floor) const;
+
   [[nodiscard]] BootstrapState bootstrapState(const TuneDB& db, u32 env) const;
 
   // The default lines as they stand -- what the selection file publishes beside its entries, and what a baseline is
@@ -377,6 +389,10 @@ private:
   bool gate_;
   Halving halving_;
   mutable HalvingState lastHalving_;
+
+  // How many entries the last defaults sweep found within the margin or already read there, and how many it still owed.
+  mutable u32 sweepWithin_ = 0;
+  mutable u32 sweepOwed_ = 0;
 
   // The configurations this process has built, whose next build finds its kernels compiled.
   std::set<std::string> built_;

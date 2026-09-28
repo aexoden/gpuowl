@@ -1164,6 +1164,64 @@ TEST(a_bootstrap_completed_before_its_choice_was_recorded_is_not_raced_again) {
   CHECK(std::ranges::none_of(record.done, [](const auto& i) { return i.first == ItemKind::Bootstrap; }));
 }
 
+TEST(each_phase_says_how_far_through_it_the_run_is_and_never_goes_back) {
+  // The whole of a small run: the sweep, the bootstrap of two families, the halving and the search after it.
+  class Phases final : public Watch {
+  public:
+    std::vector<Phase> seen;
+    void measuring(const std::string&) override {}
+    void progress(const RunProgress& p) override { seen.push_back(p.phase); }
+  };
+  // The variants of one shape, within a few percent of one another, so that several contend.
+  Fixture f;
+  FakeBench bench{f.db, f.sess, false, 600};
+  bench.optionFactor = planted;
+  FFTShape const shape{"512:15:512"};
+  Scheduler scheduler{scope(),
+                      baselines(nvidia(), scope(), {shape}),
+                      1000,
+                      Bootstrap{nvidia(), 118'063'003, {{.type = FFT64, .fft = FFTConfig{"512:15:512:212"}}}},
+                      Strategy{.kind = Strategy::Kind::Single},
+                      false,
+                      false,
+                      Halving{.contenders = 4, .roundCalls = 2}};
+  Phases phases;
+  (void)runQueue(scheduler, f.db, f.env, bench, [](const Objective&, const Defaults&) {}, 0, &phases);
+
+  // "<a> of <b>" after `prefix` in `text`.
+  auto fraction = [](const std::string& text, const std::string& prefix) -> std::optional<std::pair<u32, u32>> {
+    size_t const at = text.find(prefix);
+    if (at == std::string::npos) { return {}; }
+    u32 a = 0;
+    u32 b = 0;
+    if (sscanf(text.c_str() + at + prefix.size(), "%u of %u", &a, &b) != 2) { return {}; }
+    return std::pair{a, b};
+  };
+
+  std::set<std::string> kinds;
+  std::optional<std::pair<u32, u32>> lastSweep;
+  std::map<std::string, u32> lastGroup;
+  for (const Phase& p : phases.seen) {
+    CHECK(!p.text.empty() && !p.brief.empty());
+    kinds.insert(p.text.substr(0, p.text.find(':')));
+    if (auto const s = fraction(p.text, "defaults sweep: ")) {
+      CHECK(s->first <= s->second);
+      CHECK(!lastSweep || s->first >= lastSweep->first);
+      lastSweep = s;
+    }
+    if (auto const g = fraction(p.text, ", group ")) {
+      std::string const family = p.text.substr(0, p.text.find(", group "));
+      CHECK(g->first >= 1 && g->first <= g->second);
+      CHECK(g->first >= lastGroup[family]);
+      lastGroup[family] = g->first;
+    }
+  }
+  CHECK(kinds.contains("defaults sweep"));
+  CHECK(kinds.contains("bootstrap"));
+  CHECK(kinds.contains("halving"));
+  CHECK(lastGroup.size() == 1);
+}
+
 TEST(the_first_round_takes_one_variant_of_each_shape_before_a_second_of_any) {
   // Three variants of 512:15:512 ahead of the hybrid, which is still within the margin.
   Fixture f;
