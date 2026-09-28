@@ -1222,6 +1222,41 @@ TEST(each_phase_says_how_far_through_it_the_run_is_and_never_goes_back) {
   CHECK(lastGroup.size() == 1);
 }
 
+TEST(an_ll_only_run_measures_and_publishes_nothing_in_prp) {
+  Fixture f;
+  FakeBench bench{f.db, f.sess, false, 400};
+  bench.optionFactor = planted;
+  RunScope const ll =
+    makeScope(ScopeArgs{.lo = 110'000'000, .hi = 135'000'000, .probe = 118'063'003, .kinds = {TestKind::LL}}, {});
+  std::vector<Family> families;
+  for (const char* spec : {"512:15:512", "1:512:8:512"}) {
+    FFTShape const shape{spec};
+    families.push_back({.type = shape.fft_type, .fft = FFTConfig{shape, defaultVariant(shape), CARRY_AUTO}});
+  }
+  Scheduler scheduler{ll,
+                      baselines(nvidia(), ll, shapes()),
+                      1000,
+                      Bootstrap{nvidia(), 118'063'003, families, true, COMBO_TIERS, TestKind::LL},
+                      Strategy{.kind = Strategy::Kind::Single},
+                      false,
+                      false,
+                      Halving{.contenders = 4, .roundCalls = 2}};
+  Record record;
+  (void)runQueue(scheduler, f.db, f.env, bench, [](const Objective&, const Defaults&) {}, 0, &record);
+
+  CHECK(std::ranges::any_of(record.done, [](const auto& i) { return i.first == ItemKind::Bootstrap; }));
+  CHECK(std::ranges::any_of(record.done, [](const auto& i) {
+    return i.first == ItemKind::Bootstrap && i.second.find(" ll ") != std::string::npos;
+  }));
+  CHECK(std::ranges::none_of(f.db.mergedRuns(), [](const RunRow& r) { return r.kind == TestKind::PRP; }));
+  auto const file = emit(f.db, scheduler.lines(f.db, f.env, scheduler.bootstrapState(f.db, f.env)),
+                         Provenance{.ts = 0, .db = {}, .env = f.env});
+  CHECK(file.has_value());
+  if (file) {
+    CHECK(std::ranges::none_of(file->entries, [](const SelectionEntry& e) { return e.kind == TestKind::PRP; }));
+  }
+}
+
 TEST(the_first_round_takes_one_variant_of_each_shape_before_a_second_of_any) {
   // Three variants of 512:15:512 ahead of the hybrid, which is still within the margin.
   Fixture f;

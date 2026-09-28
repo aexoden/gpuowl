@@ -184,7 +184,9 @@ tunes for the probe exponent and nothing else.
 **`kinds=prp|ll|prp+ll`**: which tests to tune for. Default `prp`. LL work is only worth tuning for if you actually
 run LL tests; with `prp+ll` each kind gets its own measurements and its own share of `T`. An LL measurement's residue is
 checked against the residue two different FFTs agree on at their built-in defaults, since there is no known LL residue
-to compare with.
+to compare with. The bootstrap races in PRP when PRP is among the kinds and in LL otherwise, so an LL-only tune takes
+no PRP measurements; a bootstrap a database already holds, finished in either kind, is used as it is by a run of the
+other, since the default options it decides serve both.
 
 Examples:
 

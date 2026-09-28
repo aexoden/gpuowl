@@ -62,10 +62,10 @@ struct Fixture {
     CHECK(env && sess);
   }
 
-  void add(const FFTConfig& fft, const UseConfig& options, const Measurement& m) {
+  void add(const FFTConfig& fft, const UseConfig& options, const Measurement& m, TestKind kind = TestKind::PRP) {
     CHECK(db.add(RunRow{.sess = sess,
                         .fft = fft.spec(),
-                        .kind = TestKind::PRP,
+                        .kind = kind,
                         .exponent = PROBE,
                         .regime = regimeOf(fft, PROBE),
                         .cfg = db.internCfg(options),
@@ -583,6 +583,60 @@ TEST(a_family_that_began_racing_before_the_choice_was_recorded_goes_on_where_it_
   f.add(FFTConfig{"512:15:512:112"}, {}, reading(1600, 1, MIN_CALLS));
   CHECK_EQ(b.familiesIn(f.db, f.env).front().fft.spec(), smallest.fft.spec());
   CHECK_EQ(b.unrecorded(f.db, f.env).front().fft.spec(), smallest.fft.spec());
+}
+
+TEST(a_bootstrap_is_raced_in_the_kind_the_run_tunes_and_taken_whole_by_a_run_of_the_other) {
+  // Groups alone, one family; WMUL=1 saves 2%, every other move costs 1%.
+  auto cost = [](const UseConfig& c) {
+    double us = 1576;
+    for (const auto& [key, value] : c) { us *= key == "WMUL" && value == "1" ? 0.98 : 1.01; }
+    return us;
+  };
+  auto raceToTheEnd = [&](Fixture& f, const Bootstrap& b) {
+    u32 calls = 0;
+    for (BootstrapState s = b.state(f.db, f.env); !s.turns.empty() && calls < 2000; s = b.state(f.db, f.env), ++calls) {
+      const Turn& t = s.turns.front();
+      f.add(s.families[t.family].family.fft, t.config, reading(cost(t.config), cost(t.config) * 0.0005, 1), s.kind);
+    }
+    CHECK(calls < 2000);
+  };
+  auto rowsOf = [](const TuneDB& db, TestKind kind) {
+    return std::ranges::count_if(db.mergedRuns(), [&](const RunRow& r) { return r.kind == kind; });
+  };
+  Family const family = familyOf("2:1K:8:256:212");
+
+  // An LL-only run races in LL, and records nothing in PRP.
+  Fixture ll;
+  Bootstrap const byLl{nvidia(), PROBE, {family}, true, 1, TestKind::LL};
+  CHECK(byLl.state(ll.db, ll.env).kind == TestKind::LL);
+  raceToTheEnd(ll, byLl);
+  BootstrapState const done = byLl.state(ll.db, ll.env);
+  CHECK(done.complete && done.kind == TestKind::LL);
+  CHECK_EQ(configText(done.defaults.global), std::string{"WMUL=1"});
+  CHECK(rowsOf(ll.db, TestKind::PRP) == 0 && rowsOf(ll.db, TestKind::LL) > 0);
+
+  // A PRP run on that database takes the LL bootstrap as it stands rather than racing it again.
+  Bootstrap const byPrp{nvidia(), PROBE, {family}, true, 1, TestKind::PRP};
+  BootstrapState const taken = byPrp.state(ll.db, ll.env);
+  CHECK(taken.complete && taken.turns.empty() && taken.kind == TestKind::LL);
+  CHECK_EQ(configText(taken.defaults.global), std::string{"WMUL=1"});
+
+  // And the other way about: a PRP bootstrap, finished, serves an LL-only run.
+  Fixture prp;
+  raceToTheEnd(prp, byPrp);
+  BootstrapState const served = byLl.state(prp.db, prp.env);
+  CHECK(served.complete && served.turns.empty() && served.kind == TestKind::PRP);
+
+  // Begun in one kind and not finished, it goes on in that kind whichever the run prefers.
+  Fixture half;
+  for (u32 n = 0; n < 60; ++n) {
+    BootstrapState const s = byPrp.state(half.db, half.env);
+    if (s.turns.empty()) { break; }
+    const Turn& t = s.turns.front();
+    half.add(s.families[t.family].family.fft, t.config, reading(cost(t.config), cost(t.config) * 0.0005, 1), s.kind);
+  }
+  BootstrapState const begun = byLl.state(half.db, half.env);
+  CHECK(!begun.complete && begun.kind == TestKind::PRP);
 }
 
 TEST(a_key_only_amd_and_nvidia_can_choose_is_not_raced_elsewhere) {
