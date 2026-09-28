@@ -273,6 +273,8 @@ public:
 
   void declareBootstrap(const FFTConfig& fft, u64 probe) override { session_.declareBootstrap(fft, probe); }
 
+  void declareRound(const RoundRow& round) override { session_.declareRound(round); }
+
   [[nodiscard]] Result run(const FFTConfig& fft, TestKind kind, u64 exponent, const UseConfig& options,
                            const std::string& moved) override {
     session_.varying(moved.empty() ? std::vector<std::string>{} : std::vector<std::string>{moved});

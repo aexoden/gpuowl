@@ -70,8 +70,9 @@ A run goes through these stages, though it interleaves them and you do not need 
    groups, and occasionally try a random option set to escape a local optimum. The search is first spread over the
    contenders, the FFTs within 10% of the fastest, since which of them tunes best cannot be told from their defaults:
    each gets an equal share in rounds, the slower half dropping out after each round and the share doubling, until
-   one is left (see `contenders=`). After that it goes wherever the next step is expected to gain most. FFTs further
-   off the pace are timed at their defaults as they become worth it.
+   one is left (see `contenders=`). An FFT that comes within 10% later is given rounds of its own against the one
+   left. After that it goes wherever the next step is expected to gain most. FFTs further off the pace are timed at
+   their defaults as they become worth it.
 7. **Accuracy checks.** Read the rounding error of any published configuration whose options change it.
 
 **The default options follow the search.** Once FFTs are published, each FFT type's default options are those of its
@@ -284,12 +285,15 @@ each piece's best answers with the others'; `3`: everything is combined. Default
 **`contenders=<N>`**: how many FFTs the search is first spread over. The contenders are the FFTs within 10% of the
 fastest one somewhere in the workload, one variant of each shape before a second variant of any, so that the search
 looks at several shapes rather than the variants of one. Each is searched for `roundCalls` calls, then the slower half
-drops out, the rest get twice as many calls, and so on until one is left. These rounds run by rule, whatever `stop=`
-says, so a short run still looks at more than one shape. `0` ranks the search by expected gain from the start, which
+drops out, the rest get twice as many calls, and so on until one is left. An FFT stays in a round until it has had its
+calls, however far ahead another pulls meanwhile, and a round is recorded in the database, so an interrupted run picks
+it up where it stopped. FFTs that come within 10% later, as the workload changes or tuning improves them, and that
+were never in a round, are halved the same way together with the FFT the last rounds left. These rounds run by rule,
+whatever `stop=` says, so a short run still looks at more than one shape. `0` ranks the search by expected gain from the start, which
 tends to spend everything on whichever FFT was fastest before tuning. Default `16`.
 
 **`roundCalls=<N>`**: how many calls each contender is searched for in the first round; each later round doubles it.
-Default `16`, so 16 contenders take about 1000 calls in all.
+Only calls made during a round count towards it. Default `16`, so 16 contenders take about 1000 calls in all.
 
 ### Output
 

@@ -220,6 +220,35 @@ struct BootRow {
   u64 ts = 0;
 };
 
+// One entry of a round of the halving, and the calls of search it had had when the round began, which its calls in the
+// round are counted from.
+struct RoundMember {
+  std::string fft;
+  TestKind kind = TestKind::PRP;
+  Regime regime{};
+  u64 from = 0;
+
+  bool operator==(const RoundMember&) const = default;
+};
+
+// A round of the halving as it began: its entries, and the calls of search each is to have in it.  Recorded, since the
+// calls a round is made of move the gaps its pool would be chosen by, and a pool chosen afresh would drop an entry
+// before it had its calls.  A round of one entry ends its halving.  A round of none says only that the env's rounds are
+// recorded from here on, so that none is inferred from calls made before.
+struct RoundRow {
+  u32 sess = 0;
+
+  // The round's place among the env's rounds, from 1.
+  u32 n = 0;
+
+  // Its place in its halving, from 1; 0 for a round of no entries.
+  u32 round = 0;
+
+  u64 calls = 0;
+  u64 ts = 0;
+  std::vector<RoundMember> members;
+};
+
 // One LL residue reading.
 struct RefRow {
   u32 sess = 0;
@@ -273,6 +302,7 @@ public:
   [[nodiscard]] const std::vector<JumpRow>& jumps() const { return jumps_; }
   [[nodiscard]] const std::vector<ComboRow>& combos() const { return combos_; }
   [[nodiscard]] const std::vector<BootRow>& boots() const { return boots_; }
+  [[nodiscard]] const std::vector<RoundRow>& rounds() const { return rounds_; }
   [[nodiscard]] const std::vector<std::string>& unknownRows() const { return unknown_; }
 
   // One row per distinct measurement, duplicates folded as a running mean and pooled variance with the calls summed
@@ -319,6 +349,7 @@ public:
   [[nodiscard]] bool add(const JumpRow& row);
   [[nodiscard]] bool add(const ComboRow& row);
   [[nodiscard]] bool add(const BootRow& row);
+  [[nodiscard]] bool add(const RoundRow& row);
   [[nodiscard]] bool add(const DoneRow& row);
 
   // The id an identical entry already has, or a fresh one.
@@ -391,6 +422,7 @@ private:
   std::vector<JumpRow> jumps_;
   std::vector<ComboRow> combos_;
   std::vector<BootRow> boots_;
+  std::vector<RoundRow> rounds_;
   std::vector<std::string> unknown_;
 
   std::map<u32, TryRow> open_;
@@ -415,6 +447,7 @@ private:
 [[nodiscard]] std::string formatRow(const JumpRow& row);
 [[nodiscard]] std::string formatRow(const ComboRow& row);
 [[nodiscard]] std::string formatRow(const BootRow& row);
+[[nodiscard]] std::string formatRow(const RoundRow& row);
 [[nodiscard]] std::string formatRow(const DoneRow& row);
 
 // Whether `locks`, in the form of Linux's /proc/locks, lists a lock held on the file at (major, minor, inode); a

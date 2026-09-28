@@ -363,6 +363,15 @@ std::string formatRow(const BootRow& row) {
   return "boot  " + to_string(row.sess) + ' ' + row.fft + ' ' + to_string(row.probe) + ' ' + to_string(row.ts);
 }
 
+std::string formatRow(const RoundRow& row) {
+  std::string out = "round " + to_string(row.sess) + ' ' + to_string(row.n) + ' ' + to_string(row.round) + ' ' +
+    to_string(row.calls) + ' ' + to_string(row.ts);
+  for (const RoundMember& m : row.members) {
+    out += ' ' + m.fft + ' ' + toString(m.kind) + ' ' + m.regime.label() + ' ' + to_string(m.from);
+  }
+  return out;
+}
+
 std::string formatRow(const NogoRow& row) {
   return "nogo  " + to_string(row.sess) + ' ' + row.fft + ' ' + row.key + '=' + row.val + ' ' + to_string(row.ts);
 }
@@ -633,6 +642,22 @@ bool TuneDB::add(const BootRow& row) {
   u64 const ts = row.ts;
   if (!record(boots_, row)) { return false; }
   noteRow(row.sess, ts);
+  return true;
+}
+
+bool TuneDB::add(const RoundRow& row) {
+  if (!findSession(row.sess) || !row.n || (row.round == 0) != row.members.empty() || isSealed(row.sess)) {
+    return false;
+  }
+  RoundRow held = row;
+  for (RoundMember& m : held.members) {
+    auto const fft = canonicalFft(m.fft);
+    if (!fft) { return false; }
+    m.fft = *fft;
+  }
+  if (!append(formatRow(held))) { return false; }
+  rounds_.push_back(std::move(held));
+  noteRow(row.sess, row.ts);
   return true;
 }
 
@@ -946,6 +971,7 @@ bool TuneDB::reset(u32 env, std::string_view fft) {
   std::erase_if(jumps_, drop);
   std::erase_if(combos_, drop);
   std::erase_if(boots_, drop);
+  std::erase_if(rounds_, drop);
   std::erase_if(tries_, drop);
 
   std::vector<std::pair<u32, u64>> orphaned;
@@ -1051,6 +1077,7 @@ void TuneDB::clear() {
   jumps_.clear();
   combos_.clear();
   boots_.clear();
+  rounds_.clear();
   unknown_.clear();
 }
 
@@ -1105,7 +1132,7 @@ bool TuneDB::parse(std::string_view text, std::string_view name) {
 
     auto const known = tag == "env" || tag == "cfg" || tag == "sess" || tag == "work" || tag == "run" || tag == "try" ||
       tag == "done" || tag == "nogo" || tag == "roe" || tag == "ref" || tag == "jump" || tag == "combo" ||
-      tag == "boot";
+      tag == "boot" || tag == "round";
     if (known && f.size() < 2) {
       refuse(tag + " row has no fields");
       continue;
@@ -1344,6 +1371,48 @@ bool TuneDB::parse(std::string_view text, std::string_view name) {
       if (!add(BootRow{.sess = *sess, .fft = *fft, .probe = *probe, .ts = *ts})) {
         refuse("boot row names a session that is not declared");
       }
+    } else if (tag == "round") {
+      if (f.size() < 6 || (f.size() - 6) % 4 != 0) {
+        refuse("round row has " + to_string(f.size()) + " fields, expected 5 and 4 for each entry in the round");
+        continue;
+      }
+      std::optional<u32> const sess = sessionOf();
+      auto const n = parseInt<u32>(f[2]);
+      auto const round = parseInt<u32>(f[3]);
+      auto const calls = parseInt<u64>(f[4]);
+      auto const ts = parseInt<u64>(f[5]);
+      if (!n || !*n) { refuse("'" + f[2] + "' is not a round number"); }
+      if (!round) { refuse("'" + f[3] + "' is not a round of a halving"); }
+      if (!calls) { refuse("'" + f[4] + "' is not a call count"); }
+      if (!ts) { refuse("'" + f[5] + "' is not a timestamp"); }
+      bool ok = sess && n && *n && round && calls && ts;
+      RoundRow row{.sess = sess.value_or(0),
+                   .n = n.value_or(0),
+                   .round = round.value_or(0),
+                   .calls = calls.value_or(0),
+                   .ts = ts.value_or(0),
+                   .members = {}};
+      for (size_t at = 6; at < f.size(); at += 4) {
+        auto const fft = canonicalFft(f[at]);
+        auto const kind = parseTestKind(f[at + 1]);
+        auto const regime = parseRegime(f[at + 2]);
+        auto const from = parseInt<u64>(f[at + 3]);
+        if (!fft) { refuse("'" + f[at] + "' is not an FFT specification"); }
+        if (!kind) { refuse("'" + f[at + 1] + "' is not a test kind"); }
+        if (!regime) { refuse("'" + f[at + 2] + "' is not a regime"); }
+        if (!from) { refuse("'" + f[at + 3] + "' is not a call count"); }
+        if (!fft || !kind || !regime || !from) {
+          ok = false;
+          continue;
+        }
+        row.members.push_back({.fft = *fft, .kind = *kind, .regime = *regime, .from = *from});
+      }
+      if (!ok) { continue; }
+      if ((row.round == 0) != row.members.empty()) {
+        refuse("round row numbers its round " + f[3] + " but has " + to_string(row.members.size()) + " entries");
+        continue;
+      }
+      if (!add(row)) { refuse("round row names a session that is not declared"); }
     } else if (tag == "alarm") {
       if (f.size() != 3) {
         refuse("alarm row has " + to_string(f.size()) + " fields, expected 3");
@@ -1557,6 +1626,7 @@ std::string TuneDB::text() const {
   for (const JumpRow& r : jumps_) { out += formatRow(r) + '\n'; }
   for (const ComboRow& r : combos_) { out += formatRow(r) + '\n'; }
   for (const BootRow& r : boots_) { out += formatRow(r) + '\n'; }
+  for (const RoundRow& r : rounds_) { out += formatRow(r) + '\n'; }
   for (const TryRow& r : tries_) { out += formatRow(r) + '\n'; }
   for (const auto& [sess, ts] : answered_) { out += formatRow(DoneRow{.sess = sess, .ts = ts}) + '\n'; }
   for (const std::string& line : unknown_) { out += line + '\n'; }

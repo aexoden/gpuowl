@@ -62,19 +62,28 @@ struct Phase {
   std::string brief;
 };
 
-// Where the halving stands, as the rows say: which round, which entries are still in it, and how many calls of search
-// each is to have had by the round's end.
+// Where the halving stands, as the rows say: which round, which entries are in it, and how many calls of search each
+// is to have in it.
 struct HalvingState {
   bool active = false;
+
+  // The round's place in its halving, from 0, and among the env's rounds (RoundRow::n).
   u32 round = 0;
+  u32 n = 0;
+
   u64 budget = 0;
 
-  // Into Scheduler::baselines(), the smallest gap to what production runs first; and the calls of search each has had.
+  // Into Scheduler::baselines(), the round's entries this workload weighs, and the calls of search each has had in it.
+  // Once the halving is over, the one it left.
   std::vector<size_t> pool;
   std::vector<u64> calls;
 
-  // How many contenders the first round took.
+  // How many entries the halving's first round took.
   u32 contenders = 0;
+
+  // Rounds the rows do not hold yet, which a run records before its next call: the rounds just begun, and in a
+  // database no round was recorded in, where an earlier build's halving stood.
+  std::vector<RoundRow> unrecorded;
 };
 
 // What a call is expected to take, in wall-clock seconds, learnt from the calls this process has made.
@@ -290,15 +299,18 @@ public:
   // waits for.
   [[nodiscard]] bool swept(const TuneDB& db, u32 env, const Objective& objective) const;
 
-  // The halving as the rows stand.  The contenders are the entries with a publishable reading within CONTEND_MARGIN
-  // of what production is measured to run at some exponent of their band the workload weighs, the best `contenders` of
-  // them taken one variant of each shape before a second of any, since what the search is spread over is which shape
-  // tunes best.  A round ends once every contender still in it has had its calls of search or has no step left to take
-  // in `offering`; the pool then keeps its better half, by gap, and the calls double.  It is over once one is left.
+  // The halving as the rows stand.  Its first round takes the contenders: the entries with a publishable reading within
+  // CONTEND_MARGIN of what production is measured to run at some exponent of their band the workload weighs, the best
+  // `contenders` of them taken one variant of each shape before a second of any, since what the search is spread over
+  // is which shape tunes best.  A round's entries are recorded as it begins, and stay in it until each has had its
+  // calls of search, counted from then, or has no step left to take in `offering`, and has finished any step begun, in
+  // `resuming`; the better half by gap then go on to a round of twice the calls.  It is over once one is left.  An
+  // entry that comes within the margin later, and has never been in a round, begins a halving of its own with the
+  // others like it and the one the last halving left.
   [[nodiscard]] HalvingState halvingState(const TuneDB& db, u32 env,
                                           const std::map<EntryKey, std::vector<Reading>>& readings,
-                                          const Objective& objective, const std::set<size_t>& offering) const;
-
+                                          const Objective& objective, const std::set<size_t>& offering,
+                                          const std::set<size_t>& resuming) const;
 
   // The first measurements admissible() offers once nothing runs ahead of them by rule, whether or not a bootstrap
   // call or a gate reading is holding them back now.
@@ -345,6 +357,28 @@ private:
 
   [[nodiscard]] std::vector<Item> reachItems(const TuneDB& db, u32 env, std::span<const OptionSet> sets,
                                              const Objective& objective) const;
+
+  // How far behind what production is measured to run each entry with a publishable reading is, at the best of its
+  // points; nothing for any other.
+  [[nodiscard]] std::vector<std::optional<double>> gapsOf(const std::map<EntryKey, std::vector<Reading>>& readings,
+                                                          const Objective& objective) const;
+
+  // The calls of search each entry has had: every call at an option set other than the built-in defaults.
+  [[nodiscard]] std::vector<u64> searchCalls(const TuneDB& db, u32 env) const;
+
+  // Up to `limit` of the entries within CONTEND_MARGIN that `eligible` accepts, one variant of each shape before a
+  // second of any, nearest the fastest first.
+  [[nodiscard]] std::vector<size_t> poolOf(const std::vector<std::optional<double>>& gaps,
+                                           const std::function<bool(size_t)>& eligible, u32 limit) const;
+
+  // For a database no round was recorded in, the rounds that say where the halving stood by the rule before rounds
+  // were recorded, which counted every call of search an entry had ever had: over, or in a later round, as that rule
+  // has it.  A first round is begun afresh, since it cannot be told from a bootstrap's calls, which that rule also
+  // counted; and so is a database whose halving has not begun.
+  [[nodiscard]] std::vector<RoundRow> adoption(const std::vector<std::optional<double>>& gaps,
+                                               const std::vector<u64>& calls) const;
+
+  [[nodiscard]] RoundMember memberOf(size_t index, u64 from) const;
 
   // Into baselines_, by the entry each is of.
   [[nodiscard]] std::map<EntryKey, size_t> entryIndex() const;
@@ -445,6 +479,9 @@ public:
 
   // Records that the bootstrap family of `fft`'s type races on `fft` at `probe`.
   virtual void declareBootstrap(const FFTConfig& fft, u64 probe) = 0;
+
+  // Records a round of the halving as `round` has it, in this session and at this time.
+  virtual void declareRound(const RoundRow& round) = 0;
 
   struct Reading {
     bool completed = false;
