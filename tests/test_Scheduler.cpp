@@ -1123,6 +1123,85 @@ TEST(a_failed_reading_at_the_built_in_defaults_is_not_swept_again) {
   CHECK(scheduler.swept(f.db, f.env, Objective{f.db, f.env, scope(), Gating::Assumed}));
 }
 
+TEST(a_prior_that_cannot_be_read_does_not_keep_measured_entries_from_contending) {
+  // Two variants of 1K:8:1K read 3% apart, and the smaller 512:15:512, whose prior is well below both, failing at the
+  // built-in defaults: the prior will never be replaced by a reading, and the two measured entries are what production
+  // runs.
+  Fixture f;
+  concludedAt(f, "1K:8:1K:101", {}, 3000);
+  concludedAt(f, "1K:8:1K:102", {}, 3090);
+  FFTConfig const failed{"512:15:512:101"};
+  CHECK(f.db.add(RunRow{.sess = f.sess,
+                        .fft = failed.spec(),
+                        .kind = TestKind::PRP,
+                        .exponent = 118'063'003,
+                        .regime = regimeOf(failed, 118'063'003),
+                        .cfg = f.db.internCfg({}),
+                        .m = {.status = Status::Err}}));
+  std::vector<Baseline> entries = only({"1K:8:1K:101", "1K:8:1K:102", "512:15:512:101"});
+  std::erase_if(entries, [](const Baseline& b) { return !b.band.contains(118'063'003); });
+  Scheduler const scheduler{scope(),
+                            entries,
+                            1000,
+                            {},
+                            Strategy{.kind = Strategy::Kind::Single},
+                            false,
+                            false,
+                            Halving{.contenders = 2, .roundCalls = 16}};
+
+  (void)scheduler.admissible(f.db, f.env, Objective{f.db, f.env, scope(), Gating::Assumed});
+  CHECK(scheduler.lastHalving().active);
+  CHECK_EQ(scheduler.lastHalving().pool.size(), size_t{2});
+}
+
+TEST(a_cheaper_entry_still_to_be_read_is_read_before_the_margin_takes_in_dearer_ones) {
+  // 512:15:512 read at 1700 prices 512:16:512 about 7% dearer, within 10% of it; but the hybrid, not read yet, is
+  // priced well below both.  It is read first, and only its reading says whether 512:16:512 is still within the margin.
+  Fixture f;
+  concludedAt(f, "512:15:512:212", {}, 1700);
+  std::vector<Baseline> entries;
+  for (const Baseline& b :
+       baselines(nvidia(), scope(), {FFTShape{"512:15:512"}, FFTShape{"512:16:512"}, FFTShape{"1:512:8:512"}})) {
+    if (b.band.contains(118'063'003) &&
+        (b.fft.spec() == "512:15:512:212" || b.fft.spec() == "512:16:512:101" || b.fft.spec() == "1:512:8:512:202")) {
+      entries.push_back(b);
+    }
+  }
+  CHECK_EQ(entries.size(), size_t{3});
+  Scheduler const scheduler{scope(), entries, 1000, {}, Strategy{.kind = Strategy::Kind::Single}};
+  auto sweep = [&] {
+    std::set<std::string> out;
+    for (const Item& item : scheduler.admissible(f.db, f.env, Objective{f.db, f.env, scope(), Gating::Assumed})) {
+      if (item.sweep) { out.insert(scheduler.baselines()[item.index].fft.spec()); }
+    }
+    return out;
+  };
+
+  CHECK(sweep() == std::set<std::string>{"1:512:8:512:202"});
+  concludedAt(f, "1:512:8:512:202", {}, 1800);
+  CHECK(sweep() == std::set<std::string>{"512:16:512:101"});
+}
+
+TEST(where_nothing_measured_serves_a_point_an_entry_that_cannot_be_read_does_not_set_its_margin) {
+  // Nothing measured anywhere, and the cheapest shape by its prior failing at the built-in defaults: the NTT, half as
+  // dear again, is the cheapest thing left that could serve the workload, and is read.
+  Fixture f;
+  FFTConfig const failed{"512:15:512:101"};
+  CHECK(f.db.add(RunRow{.sess = f.sess,
+                        .fft = failed.spec(),
+                        .kind = TestKind::PRP,
+                        .exponent = 118'063'003,
+                        .regime = regimeOf(failed, 118'063'003),
+                        .cfg = f.db.internCfg({}),
+                        .m = {.status = Status::Err}}));
+  Scheduler const scheduler{
+    scope(), only({"512:15:512:101", "3:1K:8:512:202"}), 1000, {}, Strategy{.kind = Strategy::Kind::Single}};
+
+  std::vector<Item> const items = scheduler.admissible(f.db, f.env, Objective{f.db, f.env, scope(), Gating::Assumed});
+  CHECK(std::ranges::any_of(
+    items, [&](const Item& i) { return i.sweep && scheduler.baselines()[i.index].fft.spec() == "3:1K:8:512:202"; }));
+}
+
 TEST(a_sweep_reading_is_resumed_where_it_was_started) {
   // One call at the prime below the probe, as a run over an earlier probe would have left it.
   Fixture f;

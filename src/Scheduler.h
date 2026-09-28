@@ -291,10 +291,10 @@ public:
   [[nodiscard]] bool swept(const TuneDB& db, u32 env, const Objective& objective) const;
 
   // The halving as the rows stand.  The contenders are the entries with a publishable reading within CONTEND_MARGIN
-  // of the fastest thing at some exponent of their band the workload weighs, the best `contenders` of them taken one
-  // variant of each shape before a second of any, since what the search is spread over is which shape tunes best.  A
-  // round ends once every contender still in it has had its calls of search or has no step left to take in
-  // `offering`; the pool then keeps its better half, by gap, and the calls double.  It is over once one is left.
+  // of what production is measured to run at some exponent of their band the workload weighs, the best `contenders` of
+  // them taken one variant of each shape before a second of any, since what the search is spread over is which shape
+  // tunes best.  A round ends once every contender still in it has had its calls of search or has no step left to take
+  // in `offering`; the pool then keeps its better half, by gap, and the calls double.  It is over once one is left.
   [[nodiscard]] HalvingState halvingState(const TuneDB& db, u32 env,
                                           const std::map<EntryKey, std::vector<Reading>>& readings,
                                           const Objective& objective, const std::set<size_t>& offering) const;
@@ -325,15 +325,14 @@ private:
                                                 const GainModel& gains, const Objective& objective) const;
 
   // The defaults sweep: every entry with no reading at the built-in defaults whose cheapest reading, or where it has
-  // none its prior, is within CONTEND_MARGIN of c* at some exponent of its band the workload weighs.
+  // none its prior, is within CONTEND_MARGIN of the fastest thing at some exponent of its band the workload weighs:
+  // what production is measured to run there, or the prior of an entry that can still be read there, if cheaper.
   [[nodiscard]] std::vector<Item> sweepItems(const TuneDB& db, u32 env, const Progress& progress,
                                              const std::map<EntryKey, std::vector<Reading>>& readings,
                                              const GainModel& gains, const Objective& objective) const;
 
-  // The fastest thing at each weighted point of `objective`: what production runs there where that is measured, and
-  // where it is not, the cheapest of `estimates` among the entries that serve it.  Nothing at a point with no weight.
-  [[nodiscard]] std::vector<std::optional<double>> fastestAt(const Objective& objective,
-                                                             const std::vector<double>& estimates) const;
+  // What production runs at each weighted point of `objective`, where that is measured; nothing elsewhere.
+  [[nodiscard]] std::vector<std::optional<double>> measuredAt(const Objective& objective) const;
 
   // Best rate first by shape, the variants of one shape together.  The variants of a shape share a prior, so nothing
   // yet tells them apart but the edges of their bands: the variant production's own shape scan runs where nothing is
