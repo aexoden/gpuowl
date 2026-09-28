@@ -394,22 +394,28 @@ Every line still goes to the log file exactly as it does without the dashboard. 
 to a file, say), the setting is ignored with a note. From top to bottom:
 
 - **The header**: the device, the workload and probe, how long this run and every session of this env so far have
-  measured, and the restart generation when a restart has happened. Below it, what the run is doing (the bootstrap,
-  accuracy readings, covering the workload, or searching), `T`, what the best item left is worth, and how much is left
+  measured, and the restart generation when a restart has happened. Below it, what the run is doing and how far
+  through it it is (the phase from the `progress` line), `T`, what the best item left is worth, and how much is left
   worth running.
 - **FAULTS**, in red, only when there are any: every configuration that took the device down or computed a wrong
   answer on this env, newest first, each as the `-fft`/`-use` line that reproduces it.
 - **NOW**: the measurement in progress and how long it has taken so far.
 - **BENEFIT**: the `benefit` line described above, and under it two charts over all the measuring this env has had,
-  across every session and restart: `T` over the workload, and what a normal run would spend per iteration at the
-  probe. They are rebuilt from the timestamps in `tunedb.txt` when the run starts (for up to 10 seconds; a long
-  history is then drawn more coarsely), so they need nothing that an older build did not write. The part of the `T`
-  chart drawn dim is where some of the workload had no measured FFT yet, so `T` still included estimates. `^ this run`
-  marks where the current run began.
+  across every session and restart, each with a line of its own saying what it is and where it has gone, its highest
+  and lowest values at its right, and a time axis below it: `T` over the workload, and what a normal run would spend
+  per iteration at the probe. Both fall as the tuning pays. They are rebuilt from the timestamps in `tunedb.txt` when
+  the run starts (for up to 10 seconds; a long history is then drawn more coarsely), so they need nothing that an older
+  build did not write. `T` is charted only from when every exponent of the workload had a measured FFT, since until
+  then it still includes estimates. `^ this run` marks where the current run began.
 - **PRODUCTION**: what `selection.txt` runs over the workload, one row per stretch of exponents served by the same FFT
-  and options: its share of the workload, its cost, and how that changed since this run began. A stretch nothing
-  measured serves yet is marked `prior`. On a small screen the stretches carrying the least weight are counted rather
-  than listed.
+  and options: its share of the workload, its cost, and how that compares with the fastest FFT measured there at the
+  built-in defaults, which is what the tuning as a whole bought, the choice of FFT included. `untuned` marks a stretch
+  still run at that FFT's defaults, `not read at the defaults` one with no such reading to compare with, and `prior` one
+  nothing measured serves yet. On a small screen the stretches carrying the least weight are counted rather than
+  listed.
+- **SAMPLES**: up to seven exponents spread over the workload, the probe among them (marked `*`): for each, the fastest
+  FFT at the built-in defaults and its cost, what a normal run would use there now and its cost, and the change. Where
+  the tuning moved an exponent to another FFT, this is where it shows.
 - **RECENT**: the measurements this run has made, newest first, with their results; a new best set for an FFT is shown
   in green with the set.
 - **NEXT**: what the queue would measure next and what each is worth.

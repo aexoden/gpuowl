@@ -47,6 +47,9 @@ inline constexpr size_t TWO_COLUMNS_FROM = 160;
 // From this height the charts are drawn three rows tall.
 inline constexpr size_t TALL_CHARTS_FROM = 50;
 
+// How many exponents across the workload the samples panel follows.
+inline constexpr size_t SAMPLES_SHOWN = 7;
+
 enum class Style : u8 { Plain, Bold, Dim, Good, Bad, Warn, Heading };
 
 struct Span {
@@ -72,20 +75,39 @@ struct Stretch {
   std::string fft;
   bool measured = false;
 
-  // What an iteration costs there now, and what it cost at the run's start, both weighted over the stretch's points.
+  // What an iteration costs there now, and what it cost in the reference it is set against, both weighted over the
+  // stretch's points.
   double us = 0;
   double was = 0;
 
-  // Whether the run changed what production runs anywhere in it, and whether all of it was measured at the run's
-  // start: a prior is an estimate, so a change from one is a first measurement rather than a gain or a loss.
+  // Whether what production runs anywhere in it differs from the reference, and whether the reference priced all of it:
+  // with no reference a change is a first measurement rather than a gain or a loss.
   bool moved = false;
   bool wasMeasured = true;
 };
 
-// `now`'s points grouped into stretches of one entry, in exponent order within each kind, set against `start`, the
-// same grid's points when the run began.
+// `now`'s points grouped into stretches of one entry, in exponent order within each kind, set against `reference`,
+// the same grid's points as something else prices them.
 [[nodiscard]] std::vector<Stretch> stretchesOf(const std::vector<ObjectivePoint>& now,
-                                               const std::vector<ObjectivePoint>& start);
+                                               const std::vector<ObjectivePoint>& reference);
+
+// `now`'s points, each priced as it would be untuned; without a cost where nothing read at the defaults serves it.
+[[nodiscard]] std::vector<ObjectivePoint> untunedPoints(const std::vector<ObjectivePoint>& now, const Untuned& untuned);
+
+// One exponent followed across the workload: the fastest FFT at the built-in defaults there, and what production runs
+// there now.
+struct Sample {
+  TestKind kind = TestKind::PRP;
+  u64 exponent = 0;
+  bool probe = false;
+  std::optional<Cost> untuned;
+  std::optional<Cost> now;
+};
+
+// Up to `n` exponents of `kind` the workload weighs, spread over it: its first and last, the probe where the grid
+// holds it, and the rest evenly between, in exponent order.
+[[nodiscard]] std::vector<u64> sampleExponents(const std::vector<ObjectivePoint>& points, TestKind kind, u64 probe,
+                                               size_t n);
 
 // One item the queue would take, as far as NEXT_KEPT.
 struct NextUp {
@@ -128,6 +150,7 @@ struct Board {
   std::vector<HistoryPoint> history;
 
   std::vector<Stretch> production;
+  std::vector<Sample> samples;
   std::vector<NextUp> next;
 
   // Newest first.
@@ -201,8 +224,6 @@ private:
   bool closed_ = false;
   Board board_;
   Clock::time_point whatSince_{};
-  std::vector<ObjectivePoint> startPoints_;
-  bool haveStart_ = false;
   std::string partial_;
 
   std::thread ticker_;

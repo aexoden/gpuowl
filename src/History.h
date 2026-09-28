@@ -100,4 +100,18 @@ struct Benefit {
 // "at <probe> production runs <fft> at <us> us/it, <p>% less per iteration than ..."
 [[nodiscard]] std::string benefitText(const Benefit& benefit);
 
+// What an exponent would cost untuned: the cheapest entry of `env` measured at the built-in defaults whose interval
+// holds it, at the cost the selection file ranks by.  What every gain the tuning made is a gain over, whichever FFT it
+// was made on.
+class Untuned {
+public:
+  Untuned(const TuneDB& db, u32 env, const Env& device);
+
+  // Nothing where no reading at the built-in defaults serves `E`.
+  [[nodiscard]] std::optional<Cost> at(TestKind kind, u64 E) const;
+
+private:
+  std::vector<SelectionEntry> entries_;
+};
+
 }  // namespace tune

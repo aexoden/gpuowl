@@ -8,6 +8,7 @@
 
 #include "test.h"
 
+#include <cmath>
 #include <cstdio>
 #include <string>
 #include <vector>
@@ -89,6 +90,21 @@ Board board(bool unicode) {
                    .was = 561.0,
                    .moved = true,
                    .wasMeasured = false}};
+  b.samples = {{.kind = TestKind::PRP,
+                .exponent = 67'000'000,
+                .probe = false,
+                .untuned = Cost{.us = 523.907, .entry = "u1", .fft = "1K:7:256:212"},
+                .now = Cost{.us = 502.712, .entry = "e1", .fft = "512:7:512:202"}},
+               {.kind = TestKind::PRP,
+                .exponent = 67'513'549,
+                .probe = true,
+                .untuned = Cost{.us = 523.907, .entry = "u1", .fft = "1K:7:256:212"},
+                .now = Cost{.us = 502.712, .entry = "e1", .fft = "512:7:512:202"}},
+               {.kind = TestKind::PRP,
+                .exponent = 80'000'000,
+                .probe = false,
+                .untuned = std::nullopt,
+                .now = Cost{.us = 594.645, .entry = "e2", .fft = "256:15:512:101"}}};
   b.next = {
     {.kind = ItemKind::Probe, .label = "512:7:512:202 prp short32 Memory 3 STORES=4", .value = 2.9, .seconds = 22},
     {.kind = ItemKind::Gate, .label = "256:15:512:101 prp short32 LOADS=1", .byRule = true, .seconds = 5}};
@@ -241,16 +257,56 @@ TEST(the_wide_frame_holds_every_panel_in_two_columns) {
   CHECK(lines.size() > 1 && lines[0].ends_with("generation 1"));
   CHECK(find("NOW  13. probe 512:7:512:202 prp short32 Memory 2 LOADS=42552,STORES=3 at 67513549 (call 2)  (0:17)"));
   CHECK(find("BENEFIT  at 67513549 production runs 512:7:512:202 at 502.712 us/it, 4.0% less per iteration"));
-  CHECK(find("T over the workload"));
-  CHECK(find("at the probe 67513549"));
+  CHECK(find("T, the time per iteration over the workload: now 1120.000 us/it, from 1270.000"));
+  CHECK(find("what production runs at the probe 67513549: now 503.507 us/it, from 522.207"));
   CHECK(find("^ this run"));
+  CHECK(find("SAMPLES  across the workload"));
+  CHECK(find("*   67513549  1K:7:256:212   523.907  →  512:7:512:202   502.712  -4.05%"));
+  CHECK(find("    80000000  not read                →  256:15:512:101   594.645"));
   CHECK(std::ranges::any_of(
     lines, [](const std::string& l) { return l.starts_with("PRODUCTION") && l.find("│ NEXT") != std::string::npos; }));
   CHECK(find("67000000-68364640   55.0%  512:7:512:202     502.712 us/it  -4.05%"));
-  CHECK(find("68412189-80000000   45.0%  256:15:512:101    594.645 us/it  first measured this run"));
+  CHECK(find("68412189-80000000   45.0%  256:15:512:101    594.645 us/it  not read at the defaults"));
   CHECK(find("now best at LOADS=30050,SHUFL_BYTES_H=16, 509.799 us/it"));
   CHECK(find("by rule, ~5 s"));
   CHECK(find("16:44:12 bootstrap complete; the defaults are MULTI_Q=1,SHUFL_BYTES_H=16"));
+}
+
+TEST(the_samples_are_spread_over_the_workload_with_the_probe_among_them) {
+  std::vector<ObjectivePoint> points;
+  for (u64 k = 0; k < 20; ++k) { points.push_back(point(60'000'000 + k * 1'000'000, 0.05, "e", "512:7:512:202", 500)); }
+  // The probe, weighing nothing, is still followed; a point no FFT can run, or of another kind, is not.
+  points.push_back(point(67'513'549, 0, "e", "512:7:512:202", 500));
+  points.push_back({.kind = TestKind::PRP, .exponent = 99'000'000, .weight = 0.05, .cost = std::nullopt});
+  ObjectivePoint ll = point(70'500'000, 0.05, "e", "512:7:512:202", 500);
+  ll.kind = TestKind::LL;
+  points.push_back(ll);
+
+  std::vector<u64> const seven = sampleExponents(points, TestKind::PRP, 67'513'549, 7);
+  CHECK_EQ(seven.size(), size_t(7));
+  CHECK(std::ranges::is_sorted(seven));
+  CHECK_EQ(seven.front(), u64(60'000'000));
+  CHECK_EQ(seven.back(), u64(79'000'000));
+  CHECK(std::ranges::find(seven, u64(67'513'549)) != seven.end());
+  CHECK(std::ranges::find(seven, u64(70'500'000)) == seven.end());
+
+  // Fewer points than samples: every one.
+  std::vector<ObjectivePoint> const few(points.begin(), points.begin() + 3);
+  CHECK(sampleExponents(few, TestKind::PRP, 1, 7) == (std::vector<u64>{60'000'000, 61'000'000, 62'000'000}));
+  CHECK(sampleExponents(points, TestKind::PRP, 67'513'549, 0).empty());
+}
+
+TEST(a_stretch_production_runs_as_it_did_untuned_says_so) {
+  // Production's reference is the fastest at the built-in defaults: where it runs that very entry the stretch has not
+  // moved, and where the reference is another FFT or another set, the change is against it.
+  std::vector<ObjectivePoint> const now{point(67'000'000, 0.5, "d1", "1K:7:256:212", 520),
+                                        point(68'000'000, 0.5, "t1", "512:7:512:201", 480)};
+  std::vector<ObjectivePoint> const untuned{point(67'000'000, 0.5, "d1", "1K:7:256:212", 520),
+                                            point(68'000'000, 0.5, "d1", "1K:7:256:212", 520)};
+  std::vector<Stretch> const s = stretchesOf(now, untuned);
+  CHECK_EQ(s.size(), size_t(2));
+  CHECK(!s[0].moved && s[0].wasMeasured);
+  CHECK(s[1].moved && s[1].wasMeasured && std::abs(s[1].was - 520) < 1e-9);
 }
 
 TEST(a_narrow_frame_is_one_column_drawn_in_ascii_where_the_terminal_wants_it) {
@@ -268,30 +324,30 @@ TEST(a_narrow_frame_is_one_column_drawn_in_ascii_where_the_terminal_wants_it) {
     "|\n"
     "BENEFIT  at 67513549 production runs 512:7:512:202 at 502.712 us/it, 4.0% less per iteration than|\n"
     "         the best measured there at the built-in defaults (1K:7:256:212, 523.907 us/it)|\n"
-    "  T over the workload           ###********+++========~~~----......._  1270.000 -> 1120.000 us/it|\n"
-    "  at the probe 67513549     ####*******++++=======~~~~~~~----......._  522.207 -> 503.507 us/it|\n"
-    "                         0:00                           this run ^   |\n"
+    "  T, the time per iteration over the workload: now 1120.000 us/it, from 1270.000|\n"
+    "                 #######*************+++++++=============~~~~~~~-------............._  1120-1270|\n"
+    "    0:00                                                             this run ^      |\n"
     "|\n"
-    "PRODUCTION  what selection.txt runs over the workload; change since this run began|\n"
+    "  what production runs at the probe 67513549: now 503.507 us/it, from 522.207|\n"
+    "          #######*************+++++++==============~~~~~~~~~~~~~-------............._  504-522|\n"
+    "    0:00                                                             this run ^      |\n"
+    "|\n"
+    "PRODUCTION  what selection.txt runs over the workload; change against the fastest untuned there|\n"
     "  67000000-68364640   55.0%  512:7:512:202     502.712 us/it  -4.05%|\n"
-    "  68412189-80000000   45.0%  256:15:512:101    594.645 us/it  first measured this run|\n"
+    "  68412189-80000000   45.0%  256:15:512:101    594.645 us/it  not read at the defaults|\n"
+    "|\n"
+    "SAMPLES  across the workload: the fastest at the built-in defaults, and what runs there now|\n"
+    "    67000000  1K:7:256:212   523.907  ->  512:7:512:202   502.712  -4.05%|\n"
+    "*   67513549  1K:7:256:212   523.907  ->  512:7:512:202   502.712  -4.05%|\n"
     "|\n"
     "RECENT  items this run, newest first|\n"
     "    12  16:49:47  probe 512:7:5...ory 2 LOADS=30050 at 67513549    509.799 us/it    6.2 s  T -1.094|\n"
-    "      now best at LOADS=30050,SHUFL_BYTES_H=16, 509.799 us/it|\n"
-    "    11  16:49:40  probe 512:7:5...ory 2 LOADS=30049 at 67513549    511.200 us/it    6.2 s  T +0.000|\n"
     "|\n"
     "NEXT  what the queue ranks highest, best rate first|\n"
     "   1. probe 512:7:512:202 prp short32 Memory 3 STORES=4                         2.9000 us/it, ~22 s|\n"
-    "   2. gate 256:15:512:101 prp short32 LOADS=1                                         by rule, ~5 s|\n"
-    "  and 38 more worth running|\n"
     "|\n"
     "EVENTS  the rest of the log, newest first|\n"
-    "  16:49:47 512:7:512:202 prp short32 is now best at LOADS=30050,SHUFL_BYTES_H=16, 509.799 us/it|\n"
-    "  16:44:12 bootstrap complete; the defaults are MULTI_Q=1,SHUFL_BYTES_H=16|\n"
-    "|\n"
-    "|\n"
-    "|\n";
+    "  16:49:47 512:7:512:202 prp short32 is now best at LOADS=30050,SHUFL_BYTES_H=16, 509.799 us/it|\n";
   if (all != golden) { printf("%s", all.c_str()); }
   CHECK_EQ(all, golden);
 }

@@ -57,10 +57,11 @@ struct Glyphs {
   std::string_view bar;
   std::string_view sep;
   std::array<std::string_view, 8> blocks;
+  std::string_view arrow;
 };
 
-constexpr Glyphs UNICODE{"…", "│", "  ·  ", {"▁", "▂", "▃", "▄", "▅", "▆", "▇", "█"}};
-constexpr Glyphs ASCII{"...", "|", "  |  ", {"_", ".", "-", "~", "=", "+", "*", "#"}};
+constexpr Glyphs UNICODE{"…", "│", "  ·  ", {"▁", "▂", "▃", "▄", "▅", "▆", "▇", "█"}, "→"};
+constexpr Glyphs ASCII{"...", "|", "  |  ", {"_", ".", "-", "~", "=", "+", "*", "#"}, "->"};
 
 [[nodiscard]] const Glyphs& glyphs(const Board& b) { return b.unicode ? UNICODE : ASCII; }
 
@@ -340,9 +341,12 @@ struct Series {
   return std::nullopt;
 }
 
-constexpr size_t CHART_LEFT = 25;
-constexpr size_t CHART_RIGHT = 30;
+// Each chart has a row of its own saying what it is, so the margins only hold the scale.
+constexpr size_t CHART_LEFT = 4;
+constexpr size_t CHART_RIGHT = 14;
 
+// `s` under a row naming it and saying where it has gone, with its highest value beside its top row and its lowest
+// beside its bottom one.
 void addChart(std::vector<Line>& out, const Series& s, size_t height, size_t width, const Glyphs& g) {
   size_t const cw = width - CHART_LEFT - CHART_RIGHT;
   std::vector<Line> const rows = chart(s, height, g);
@@ -350,27 +354,52 @@ void addChart(std::vector<Line>& out, const Series& s, size_t height, size_t wid
   std::optional<double> const first = firstOf(s);
   std::optional<double> const last = lastOf(s);
 
+  std::string title = "  " + s.name + ": ";
+  title += last ? format("now %.3f us/it, from %.3f", *last, *first) : s.empty;
+  out.push_back(fit({{title, Style::Plain}}, width, g.ellipsis));
+
   for (size_t r = 0; r < height; ++r) {
-    std::string left = r == 0 ? "  " + s.name : "";
     std::string right;
-    if (!last) {
-      right = r == 0 ? "  " + s.empty : "";
-    } else if (height == 1) {
-      right = format("  %.3f -> %.3f us/it", *first, *last);
-    } else if (r == 0) {
+    if (last && height == 1) {
+      right = format("  %.0f-%.0f", lo, hi);
+    } else if (last && r == 0) {
       right = format("  %.3f", hi);
-    } else if (r + 1 == height) {
+    } else if (last && r + 1 == height) {
       right = format("  %.3f", lo);
-    } else if (r == height / 2) {
-      right = format("  now %.3f, from %.3f", *last, *first);
     }
-    Line line{{clipEnd(left, CHART_LEFT, g.ellipsis), Style::Plain}};
-    line = padded(std::move(line), CHART_LEFT);
+    Line line{{std::string(CHART_LEFT, ' '), Style::Plain}};
     line.insert(line.end(), rows[r].begin(), rows[r].end());
     line = padded(std::move(line), CHART_LEFT + cw);
     line.push_back({right, Style::Dim});
     out.push_back(fit(line, width, g.ellipsis));
   }
+}
+
+// Under a chart: measuring time from the env's first session to now, and where this process began, which is placed
+// first; the ends are labelled where that leaves room.
+void addAxis(std::vector<Line>& out, const Board& b, size_t width, double total, const Glyphs& g) {
+  size_t const cw = width - CHART_LEFT - CHART_RIGHT;
+  std::string axis(cw, ' ');
+  std::vector<bool> taken(cw, false);
+  auto place = [&](size_t at, std::string_view text) {
+    if (at + text.size() > cw) { return false; }
+    for (size_t i = at > 0 ? at - 1 : 0; i < std::min(cw, at + text.size() + 1); ++i) {
+      if (taken[i]) { return false; }
+    }
+    axis.replace(at, text.size(), text);
+    std::fill(taken.begin() + i64(at), taken.begin() + i64(at + text.size()), true);
+    return true;
+  };
+  size_t const mark = std::min(cw - 1, size_t(double(cw) * b.before / total));
+  std::string_view constexpr AFTER = "^ this run";
+  std::string_view constexpr BEFORE = "this run ^";
+  if (!place(mark, AFTER) && !(mark + 1 >= BEFORE.size() && place(mark + 1 - BEFORE.size(), BEFORE))) {
+    (void)place(mark, "^");
+  }
+  (void)place(0, "0:00");
+  std::string const to = clockText(total) + " measured";
+  if (to.size() <= cw) { (void)place(cw - to.size(), to); }
+  out.push_back(fit({{std::string(CHART_LEFT, ' '), Style::Plain}, {axis, Style::Dim}}, width, g.ellipsis));
 }
 
 void addBenefit(std::vector<Line>& out, const Board& b, size_t width, size_t chartHeight) {
@@ -397,43 +426,23 @@ void addBenefit(std::vector<Line>& out, const Board& b, size_t width, size_t cha
   if (total <= 0) { return; }
 
   Series T = resample(b.history, total, cw, false);
-  T.name = "T over the workload";
+  T.name = "T, the time per iteration over the workload";
   addChart(out, T, chartHeight, width, g);
+  addAxis(out, b, width, total, g);
+  out.emplace_back();
   Series probe = resample(b.history, total, cw, true);
-  probe.name = "at the probe " + std::to_string(b.benefit.probe);
+  probe.name = "what production runs at the probe " + std::to_string(b.benefit.probe);
   addChart(out, probe, chartHeight, width, g);
-
-  // The axis: measuring time from the env's first session, and where this process began, which is placed first; the
-  // ends are labelled where that leaves room.
-  std::string axis(cw, ' ');
-  std::vector<bool> taken(cw, false);
-  auto place = [&](size_t at, std::string_view text) {
-    if (at + text.size() > cw) { return false; }
-    for (size_t i = at > 0 ? at - 1 : 0; i < std::min(cw, at + text.size() + 1); ++i) {
-      if (taken[i]) { return false; }
-    }
-    axis.replace(at, text.size(), text);
-    std::fill(taken.begin() + i64(at), taken.begin() + i64(at + text.size()), true);
-    return true;
-  };
-  size_t const mark = std::min(cw - 1, size_t(double(cw) * b.before / total));
-  std::string_view constexpr AFTER = "^ this run";
-  std::string_view constexpr BEFORE = "this run ^";
-  if (!place(mark, AFTER) && !(mark + 1 >= BEFORE.size() && place(mark + 1 - BEFORE.size(), BEFORE))) {
-    (void)place(mark, "^");
-  }
-  (void)place(0, "0:00");
-  std::string const to = clockText(total) + " measured";
-  if (to.size() <= cw) { (void)place(cw - to.size(), to); }
-  out.push_back(fit({{std::string(CHART_LEFT, ' '), Style::Plain}, {axis, Style::Dim}}, width, g.ellipsis));
+  addAxis(out, b, width, total, g);
 }
 
 [[nodiscard]] std::vector<Line> productionPanel(const Board& b, size_t width, size_t rows) {
   std::vector<Line> out;
   if (!rows) { return out; }
   const Glyphs& g = glyphs(b);
-  out.push_back(fit(headingLine("PRODUCTION", "what selection.txt runs over the workload; change since this run began"),
-                    width, g.ellipsis));
+  out.push_back(fit(
+    headingLine("PRODUCTION", "what selection.txt runs over the workload; change against the fastest untuned there"),
+    width, g.ellipsis));
   if (b.production.empty()) {
     if (rows > 1) { out.push_back({{"  nothing yet", Style::Dim}}); }
     return out;
@@ -477,8 +486,10 @@ void addBenefit(std::vector<Line>& out, const Board& b, size_t width, size_t cha
     if (!s.measured) {
       line.push_back({"  prior", Style::Dim});
     } else if (s.moved && !s.wasMeasured) {
-      line.push_back({"  first measured this run", Style::Good});
-    } else if (s.moved && s.was > 0) {
+      line.push_back({"  not read at the defaults", Style::Dim});
+    } else if (!s.moved) {
+      line.push_back({"  untuned", Style::Dim});
+    } else if (s.was > 0) {
       double const change = (s.us - s.was) / s.was;
       line.push_back({format("  %+.2f%%", 100 * change),
                       change < 0     ? Style::Good
@@ -491,6 +502,49 @@ void addBenefit(std::vector<Line>& out, const Board& b, size_t width, size_t cha
     out.push_back(
       {{format("  and %zu more stretches, %.1f%% of the weight", b.production.size() - shown.size(), 100 * hidden),
         Style::Dim}});
+  }
+  return out;
+}
+
+[[nodiscard]] std::vector<Line> samplesPanel(const Board& b, size_t width, size_t rows) {
+  std::vector<Line> out;
+  if (!rows) { return out; }
+  const Glyphs& g = glyphs(b);
+  out.push_back(
+    fit(headingLine("SAMPLES", "across the workload: the fastest at the built-in defaults, and what runs there now"),
+        width, g.ellipsis));
+  if (b.samples.empty()) {
+    if (rows > 1) { out.push_back({{"  nothing yet", Style::Dim}}); }
+    return out;
+  }
+
+  size_t fftWidth = 0;
+  for (const Sample& s : b.samples) {
+    if (s.untuned) { fftWidth = std::max(fftWidth, s.untuned->fft.size()); }
+  }
+  bool const kinds = std::ranges::any_of(b.samples, [&](const Sample& s) { return s.kind != b.samples[0].kind; });
+  for (const Sample& s : b.samples) {
+    if (out.size() == rows) { break; }
+    Line line{{s.probe ? "* " : "  ", Style::Bold}};
+    if (kinds) { line.push_back({std::string{toString(s.kind)} + " ", Style::Dim}); }
+    line.push_back({format("%10" PRIu64 "  ", s.exponent), Style::Plain});
+    std::string from = s.untuned ? format("%s %9.3f", s.untuned->fft.c_str(), s.untuned->us) : "not read";
+    from.resize(std::max(from.size(), fftWidth + 10), ' ');
+    line.push_back({from, Style::Dim});
+    line.push_back({"  " + std::string{g.arrow} + "  ", Style::Dim});
+    bool const measured = s.now && s.now->measured();
+    line.push_back({s.now ? format("%s %9.3f", s.now->fft.c_str(), s.now->us) : std::string{"-"},
+                    measured ? Style::Plain : Style::Dim});
+    if (!measured) {
+      line.push_back({"  prior", Style::Dim});
+    } else if (s.untuned && s.untuned->us > 0) {
+      double const change = (s.now->us - s.untuned->us) / s.untuned->us;
+      line.push_back({format("  %+.2f%%", 100 * change),
+                      change < 0     ? Style::Good
+                        : change > 0 ? Style::Bad
+                                     : Style::Dim});
+    }
+    out.push_back(fit(line, width, g.ellipsis));
   }
   return out;
 }
@@ -618,6 +672,7 @@ using Panel = std::vector<Line> (*)(const Board&, size_t, size_t);
 
 [[nodiscard]] size_t wantOf(const Board& b, Panel panel) {
   if (panel == productionPanel) { return 1 + std::max<size_t>(1, b.production.size()); }
+  if (panel == samplesPanel) { return 1 + std::max<size_t>(1, b.samples.size()); }
   if (panel == nextPanel) { return 2 + std::max<size_t>(1, b.next.size()); }
   if (panel == recentPanel) {
     size_t n = 1;
@@ -664,9 +719,43 @@ std::string plain(const Line& line) {
   return out;
 }
 
-std::vector<Stretch> stretchesOf(const std::vector<ObjectivePoint>& now, const std::vector<ObjectivePoint>& start) {
+std::vector<ObjectivePoint> untunedPoints(const std::vector<ObjectivePoint>& now, const Untuned& untuned) {
+  std::vector<ObjectivePoint> out = now;
+  for (ObjectivePoint& p : out) { p.cost = untuned.at(p.kind, p.exponent); }
+  return out;
+}
+
+std::vector<u64> sampleExponents(const std::vector<ObjectivePoint>& points, TestKind kind, u64 probe, size_t n) {
+  std::vector<u64> all;
+  bool probed = false;
+  for (const ObjectivePoint& p : points) {
+    if (p.kind != kind || !p.cost) { continue; }
+    if (p.exponent == probe) { probed = true; }
+    if (p.weight > 0) { all.push_back(p.exponent); }
+  }
+  std::ranges::sort(all);
+  auto const [first, last] = std::ranges::unique(all);
+  all.erase(first, last);
+  if (!n) { return {}; }
+
+  std::vector<u64> out;
+  if (probed) { out.push_back(probe); }
+  size_t const spread = n - out.size();
+  if (spread && !all.empty()) {
+    for (size_t k = 0; k < spread; ++k) {
+      size_t const i = spread == 1 ? 0 : k * (all.size() - 1) / (spread - 1);
+      out.push_back(all[i]);
+    }
+  }
+  std::ranges::sort(out);
+  auto const [from, to] = std::ranges::unique(out);
+  out.erase(from, to);
+  return out;
+}
+
+std::vector<Stretch> stretchesOf(const std::vector<ObjectivePoint>& now, const std::vector<ObjectivePoint>& reference) {
   std::map<std::pair<TestKind, u64>, const Cost*> before;
-  for (const ObjectivePoint& p : start) {
+  for (const ObjectivePoint& p : reference) {
     if (p.cost) { before[{p.kind, p.exponent}] = &*p.cost; }
   }
 
@@ -749,7 +838,7 @@ std::vector<Line> frame(const Board& b, size_t rows, size_t cols) {
   // The charts are the first thing given up on a short screen, then their height.
   size_t const below = 12;
   size_t chartHeight = rows >= TALL_CHARTS_FROM ? 3 : 1;
-  auto benefitRows = [&](size_t h) { return 2 + (h ? 2 * h + 1 : 0) + 1; };
+  auto benefitRows = [&](size_t h) { return 2 + (h ? 2 * (h + 2) + 1 : 0) + 1; };
   while (chartHeight && out.size() + benefitRows(chartHeight) + below > rows) { --chartHeight; }
   if (chartHeight == 2) { chartHeight = 1; }
   addBenefit(out, b, width, chartHeight);
@@ -761,7 +850,7 @@ std::vector<Line> frame(const Board& b, size_t rows, size_t cols) {
       std::string const bar = " " + std::string{g.bar} + " ";
       size_t const lw = (width - columns(bar)) / 2;
       size_t const rw = width - columns(bar) - lw;
-      std::vector<Line> const l = stack(b, {productionPanel, recentPanel}, lw, left);
+      std::vector<Line> const l = stack(b, {productionPanel, samplesPanel, recentPanel}, lw, left);
       std::vector<Line> const r = stack(b, {nextPanel, eventsPanel}, rw, left);
       for (size_t i = 0; i < left; ++i) {
         Line line = padded(i < l.size() ? l[i] : Line{}, lw);
@@ -770,7 +859,8 @@ std::vector<Line> frame(const Board& b, size_t rows, size_t cols) {
         out.push_back(fit(line, width, g.ellipsis));
       }
     } else {
-      std::vector<Line> const all = stack(b, {productionPanel, recentPanel, nextPanel, eventsPanel}, width, left);
+      std::vector<Line> const all =
+        stack(b, {productionPanel, samplesPanel, recentPanel, nextPanel, eventsPanel}, width, left);
       out.insert(out.end(), all.begin(), all.end());
     }
   }
@@ -949,11 +1039,16 @@ void DashboardView::progress(const RunProgress& p) {
 }
 
 void DashboardView::state(const QueueState& q) {
-  if (!haveStart_) {
-    startPoints_ = q.objective.points();
-    haveStart_ = true;
+  Untuned const untuned{q.db, q.env, setup_.card};
+  std::vector<Stretch> production = stretchesOf(q.objective.points(), untunedPoints(q.objective.points(), untuned));
+  std::vector<Sample> samples;
+  for (u64 const E : sampleExponents(q.objective.points(), kind_, setup_.runScope.probe, SAMPLES_SHOWN)) {
+    samples.push_back({.kind = kind_,
+                       .exponent = E,
+                       .probe = E == setup_.runScope.probe,
+                       .untuned = untuned.at(kind_, E),
+                       .now = q.objective.cStar(kind_, E)});
   }
-  std::vector<Stretch> production = stretchesOf(q.objective.points(), startPoints_);
   Benefit benefit = benefitOf(q.db, q.env, setup_.card, q.objective, kind_, setup_.runScope.probe);
   std::vector<Fault> faults = faultsOf(q.db, q.env);
 
@@ -976,6 +1071,7 @@ void DashboardView::state(const QueueState& q) {
 
   std::unique_lock const lock{mutex_};
   board_.production = std::move(production);
+  board_.samples = std::move(samples);
   board_.benefit = std::move(benefit);
   board_.faults = std::move(faults);
   board_.next = std::move(next);
