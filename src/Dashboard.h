@@ -73,6 +73,9 @@ struct Stretch {
   double weight = 0;
 
   std::string fft;
+
+  // The entry that serves it, where one does.
+  std::string entry;
   bool measured = false;
 
   // What an iteration costs there now, and what it cost in the reference it is set against, both weighted over the
@@ -87,9 +90,11 @@ struct Stretch {
 };
 
 // `now`'s points grouped into stretches of one entry, in exponent order within each kind, set against `reference`,
-// the same grid's points as something else prices them.
+// the same grid's points as something else prices them.  Two stretches of a kind meet where `entries` say the first
+// one's entry stops serving or the second's starts, so that together they cover every exponent between their points.
 [[nodiscard]] std::vector<Stretch> stretchesOf(const std::vector<ObjectivePoint>& now,
-                                               const std::vector<ObjectivePoint>& reference);
+                                               const std::vector<ObjectivePoint>& reference,
+                                               const std::vector<SelectionEntry>& entries = {});
 
 // `now`'s points, each priced as it would be untuned; without a cost where nothing read at the defaults serves it.
 [[nodiscard]] std::vector<ObjectivePoint> untunedPoints(const std::vector<ObjectivePoint>& now, const Untuned& untuned);

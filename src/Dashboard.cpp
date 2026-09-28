@@ -753,7 +753,8 @@ std::vector<u64> sampleExponents(const std::vector<ObjectivePoint>& points, Test
   return out;
 }
 
-std::vector<Stretch> stretchesOf(const std::vector<ObjectivePoint>& now, const std::vector<ObjectivePoint>& reference) {
+std::vector<Stretch> stretchesOf(const std::vector<ObjectivePoint>& now, const std::vector<ObjectivePoint>& reference,
+                                 const std::vector<SelectionEntry>& entries) {
   std::map<std::pair<TestKind, u64>, const Cost*> before;
   for (const ObjectivePoint& p : reference) {
     if (p.cost) { before[{p.kind, p.exponent}] = &*p.cost; }
@@ -787,7 +788,7 @@ std::vector<Stretch> stretchesOf(const std::vector<ObjectivePoint>& now, const s
     std::string const k = std::string{toString(p->kind)} + " " + (c.measured() ? c.entry : "prior " + c.fft);
     if (out.empty() || k != key || out.back().kind != p->kind) {
       close();
-      out.push_back({.kind = p->kind, .lo = p->exponent, .fft = c.fft, .measured = c.measured()});
+      out.push_back({.kind = p->kind, .lo = p->exponent, .fft = c.fft, .entry = c.entry, .measured = c.measured()});
       key = k;
       usWeighted = wasWeighted = weights = usPlain = wasPlain = 0;
       count = 0;
@@ -808,6 +809,28 @@ std::vector<Stretch> stretchesOf(const std::vector<ObjectivePoint>& now, const s
     if (!was || !was->measured()) { s.wasMeasured = false; }
   }
   close();
+
+  // The grid only samples the workload, so two stretches meet somewhere between their points: where the first's entry
+  // stops serving, or the second's starts, and where neither says, just before the second's first point.
+  std::map<std::string, const SelectionEntry*> byId;
+  for (const SelectionEntry& e : entries) { byId.emplace(e.id, &e); }
+  auto intervalOf = [&](const Stretch& s) -> const SelectionEntry* {
+    auto const at = s.measured ? byId.find(s.entry) : byId.end();
+    return at == byId.end() ? nullptr : at->second;
+  };
+  for (size_t i = 1; i < out.size(); ++i) {
+    Stretch& prev = out[i - 1];
+    Stretch& cur = out[i];
+    if (prev.kind != cur.kind || prev.hi + 1 >= cur.lo) { continue; }
+    u64 boundary = cur.lo - 1;
+    if (const SelectionEntry* e = intervalOf(prev); e && e->reach >= prev.hi && e->reach < cur.lo) {
+      boundary = e->reach;
+    } else if (const SelectionEntry* f = intervalOf(cur); f && f->emin > prev.hi && f->emin <= cur.lo) {
+      boundary = f->emin - 1;
+    }
+    prev.hi = boundary;
+    cur.lo = boundary + 1;
+  }
   return out;
 }
 
@@ -1040,7 +1063,8 @@ void DashboardView::progress(const RunProgress& p) {
 
 void DashboardView::state(const QueueState& q) {
   Untuned const untuned{q.db, q.env, setup_.card};
-  std::vector<Stretch> production = stretchesOf(q.objective.points(), untunedPoints(q.objective.points(), untuned));
+  std::vector<Stretch> production =
+    stretchesOf(q.objective.points(), untunedPoints(q.objective.points(), untuned), q.objective.entries());
   std::vector<Sample> samples;
   for (u64 const E : sampleExponents(q.objective.points(), kind_, setup_.runScope.probe, SAMPLES_SHOWN)) {
     samples.push_back({.kind = kind_,

@@ -76,6 +76,7 @@ Board board(bool unicode) {
                    .hi = 68'364'640,
                    .weight = 0.55,
                    .fft = "512:7:512:202",
+                   .entry = "e1",
                    .measured = true,
                    .us = 502.712,
                    .was = 523.907,
@@ -85,6 +86,7 @@ Board board(bool unicode) {
                    .hi = 80'000'000,
                    .weight = 0.45,
                    .fft = "256:15:512:101",
+                   .entry = "e2",
                    .measured = true,
                    .us = 594.645,
                    .was = 561.0,
@@ -159,7 +161,7 @@ TEST(the_logs_lines_are_listed_as_events_but_for_what_the_panels_already_show) {
   CHECK_EQ(event("    -fft 1K:7:256:212 -use LOADS=1\n"), std::string{"             -fft 1K:7:256:212 -use LOADS=1"});
 }
 
-TEST(production_is_grouped_into_stretches_of_one_entry_and_set_against_the_runs_start) {
+TEST(production_is_grouped_into_stretches_of_one_entry_and_set_against_a_reference) {
   std::vector<ObjectivePoint> const start{
     point(100, 0.2, "a", "512:7:512:202", 520), point(200, 0.2, "a", "512:7:512:202", 520),
     point(300, 0.2, "", "256:15:512:101", 600), point(400, 0.2, "", "256:15:512:101", 600),
@@ -174,11 +176,12 @@ TEST(production_is_grouped_into_stretches_of_one_entry_and_set_against_the_runs_
   std::vector<Stretch> const s = stretchesOf(now, start);
   CHECK_EQ(s.size(), size_t{4});
   if (s.size() != 4) { return; }
-  CHECK(s[0].lo == 100 && s[0].hi == 200 && s[0].measured && !s[0].moved && s[0].wasMeasured);
+  // With no entries to say where each stops serving, the stretches meet just before the next one's first point.
+  CHECK(s[0].lo == 100 && s[0].hi == 299 && s[0].measured && !s[0].moved && s[0].wasMeasured);
   CHECK(std::abs(s[0].weight - 0.4) < 1e-12);
   // Measured where the prior stood at the start: a first measurement, not a change.
-  CHECK(s[1].lo == 300 && s[1].hi == 300 && s[1].measured && s[1].moved && !s[1].wasMeasured);
-  CHECK(s[2].lo == 400 && !s[2].measured && !s[2].moved);
+  CHECK(s[1].lo == 300 && s[1].hi == 399 && s[1].measured && s[1].moved && !s[1].wasMeasured);
+  CHECK(s[2].lo == 400 && s[2].hi == 499 && !s[2].measured && !s[2].moved);
   CHECK(s[3].moved && s[3].wasMeasured && s[3].was == 700 && s[3].us == 690);
 
   // A point that weighs nothing (a probe with probeWeight=0) costs what the entry costs, not what dividing by its
@@ -307,6 +310,32 @@ TEST(a_stretch_production_runs_as_it_did_untuned_says_so) {
   CHECK_EQ(s.size(), size_t(2));
   CHECK(!s[0].moved && s[0].wasMeasured);
   CHECK(s[1].moved && s[1].wasMeasured && std::abs(s[1].was - 520) < 1e-9);
+}
+
+TEST(stretches_meet_where_one_entry_stops_serving_and_cover_the_whole_workload) {
+  // The 5070 Ti's LL table in miniature: 2:512:4:512:202 serves up to 67004008, between the grid's first two points,
+  // and 1:256:4:1K:202 from there to 70500000; then a stretch the prior prices.
+  std::vector<ObjectivePoint> const now{
+    point(67'000'000, 0.3, "a", "2:512:4:512:202", 172.8), point(67'046'600, 0.3, "b", "1:256:4:1K:202", 223.4),
+    point(70'000'000, 0.2, "b", "1:256:4:1K:202", 223.4), point(71'000'000, 0.2, "", "256:16:512", 300)};
+  std::vector<SelectionEntry> entries(2);
+  entries[0].id = "a";
+  entries[0].emin = 39'845'888;
+  entries[0].reach = 67'004'008;
+  entries[1].id = "b";
+  entries[1].emin = 39'845'888;
+  entries[1].reach = 70'500'000;
+
+  std::vector<Stretch> const s = stretchesOf(now, now, entries);
+  CHECK_EQ(s.size(), size_t(3));
+  CHECK(s[0].lo == 67'000'000 && s[0].hi == 67'004'008);
+  CHECK(s[1].lo == 67'004'009 && s[1].hi == 70'500'000);
+  CHECK(s[2].lo == 70'500'001 && s[2].hi == 71'000'000);
+
+  // Without the entries, the stretches still meet, just before each one's first point.
+  std::vector<Stretch> const plain = stretchesOf(now, now);
+  CHECK(plain[0].hi + 1 == plain[1].lo && plain[1].hi + 1 == plain[2].lo);
+  CHECK_EQ(plain[0].hi, u64(67'046'599));
 }
 
 TEST(a_narrow_frame_is_one_column_drawn_in_ascii_where_the_terminal_wants_it) {
