@@ -179,3 +179,24 @@ TEST(what_production_runs_at_the_probe_is_set_against_the_built_in_defaults_ther
   CHECK(elsewhere.untunedFft.empty() && !elsewhere.saving());
   CHECK(benefitText(elsewhere).ends_with("; nothing was measured there at the built-in defaults to set it against"));
 }
+
+TEST(an_exponent_is_priced_untuned_by_the_cheapest_entry_read_at_the_built_in_defaults_that_serves_it) {
+  TuneDB db;
+  CHECK(db.parse(DB, "fixture"));
+  Env const card = db.findEnv(1)->toEnv();
+  Untuned const untuned{db, 1, card};
+
+  // 512:15:512:212 was read at the defaults and under INPLACE=1,PAD=256,TAIL_KERNELS=3; the NTT only under
+  // INPLACE=1,PAD=256, which is not its defaults.  So the defaults reading prices the probe, and at the published cost.
+  std::optional<Cost> const at = untuned.at(TestKind::PRP, PROBE);
+  CHECK(at && at->fft == "512:15:512:212" && at->measured());
+  CHECK(at && at->us > 1900 && at->us < 1902);
+
+  // Past what the FFT can serve, nothing read at the defaults does; and another kind has nothing at all.
+  CHECK(!untuned.at(TestKind::PRP, 400'000'000));
+  CHECK(!untuned.at(TestKind::LL, PROBE));
+
+  // Another card's readings are not this env's.
+  Untuned const other{db, 2, db.findEnv(2)->toEnv()};
+  CHECK(!other.at(TestKind::PRP, PROBE));
+}

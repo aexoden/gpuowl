@@ -2,6 +2,7 @@
 
 #include "History.h"
 
+#include "Bootstrap.h"
 #include "LLCheck.h"
 #include "Stats.h"
 
@@ -231,6 +232,22 @@ std::string benefitText(const Benefit& b) {
     out += buf;
   } else {
     out += "; nothing was measured there at the built-in defaults to set it against";
+  }
+  return out;
+}
+
+Untuned::Untuned(const TuneDB& db, u32 env, const Env& device) {
+  for (const OptionSet& s : optionSetsFor(db, env)) {
+    std::optional<FFTConfig> const fft = parseFft(s.entry.fft);
+    if (fft && canonicalConfig(device, *fft, s.entry.opts).empty()) { entries_.push_back(s.entry); }
+  }
+}
+
+std::optional<Cost> Untuned::at(TestKind kind, u64 E) const {
+  std::optional<Cost> out;
+  for (const SelectionEntry& e : entries_) {
+    if (e.kind != kind || E < e.emin || E > e.reach || (out && out->us <= e.cost)) { continue; }
+    out = Cost{.us = e.cost, .entry = e.id, .fft = e.fft};
   }
   return out;
 }
