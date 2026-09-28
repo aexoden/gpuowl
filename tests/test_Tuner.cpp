@@ -675,7 +675,6 @@ TEST(with_no_pending_work_the_grid_spreads_over_the_default_range) {
 
   const Grid* const grid = scope.grid(TestKind::PRP);
   CHECK(grid != nullptr);
-  CHECK(!grid->fromWorktodo);
   CHECK_EQ(grid->points.size(), size_t{GRID_POINTS} + 1);  // the probe is not one of the spread points
   CHECK_EQ(grid->points.front().exponent, DEFAULT_WORKLOAD_LO);
   CHECK_EQ(grid->points.back().exponent, DEFAULT_WORKLOAD_HI);
@@ -710,22 +709,24 @@ TEST(the_range_and_the_probe_come_from_the_pending_work) {
 
   RunScope const scope = makeScope(scopeOf("scope"), pending);
 
-  // Padded 5% either side of the PRP work alone, the LL exponent not being a kind this run is tuning for.
+  // From 5% below the PRP work to 25% above it, the LL exponent not being a kind this run is tuning for: a worktodo is
+  // a few days of work, and the assignments a tune serves move upward.
   CHECK_EQ(scope.lo, u64(124'647'911 * 0.95));
-  CHECK_EQ(scope.hi, u64(131'088'689 * 1.05));
+  CHECK_EQ(scope.hi, u64(131'088'689 * 1.25));
 
   // The three assignments at 124647911 outnumber the one at 131088689, and they are a 2% bin apart.
   CHECK_EQ(scope.probe, 124'647'911u);
 
+  // The range is weighed evenly, not at the assignments: only the probe carries weight of its own.
   const Grid* const grid = scope.grid(TestKind::PRP);
   CHECK(grid != nullptr);
-  CHECK(grid->fromWorktodo);
-  CHECK_EQ(grid->points.size(), size_t{2});
+  CHECK_EQ(grid->points.size(), size_t{GRID_POINTS} + 1);
+  CHECK_EQ(grid->points.front().exponent, scope.lo);
+  CHECK_EQ(grid->points.back().exponent, scope.hi);
   CHECK(near(total(*grid), 1));
-
-  // Half the weight on the probe, and the other half over the four assignments as they fall.
-  CHECK(near(grid->weight(124'647'911), 0.5 + 0.5 * 3 / 4.0));
-  CHECK(near(grid->weight(131'088'689), 0.5 / 4));
+  CHECK(near(grid->weight(124'647'911), 0.5));
+  CHECK(near(grid->weight(131'088'689), 0));
+  CHECK(near(grid->weight(scope.lo), 0.5 / GRID_POINTS));
 }
 
 TEST(each_kind_has_its_own_grid) {
@@ -739,29 +740,17 @@ TEST(each_kind_has_its_own_grid) {
   const Grid* const ll = scope.grid(TestKind::LL);
   CHECK(prp != nullptr);
   CHECK(ll != nullptr);
-
-  CHECK(prp->fromWorktodo);
-  CHECK(ll->fromWorktodo);
   CHECK(near(total(*prp), 1));
   CHECK(near(total(*ll), 1));
 
-  // An LL entry and a PRP entry are never compared, so the one LL assignment carries its kind's whole range weight
-  // while the PRP exponents carry none of it.  The probe is the one exponent both kinds share: it is where the user
-  // is, whichever kind is running there.
-  CHECK(near(ll->weight(286'472'227), 0.5));
-  CHECK(near(prp->weight(286'472'227), 0));
+  // An LL entry and a PRP entry are never compared, so each kind is weighed over the whole range on its own, whatever
+  // work of it is pending.  The probe is the one exponent both kinds share: it is where the user is, whichever kind is
+  // running there.
+  CHECK(prp->points == ll->points);
+  CHECK(near(ll->weight(286'472'227), 0));
   CHECK_EQ(scope.probe, 124'647'911u);
   CHECK(near(ll->weight(scope.probe), 0.5));
-  CHECK(near(prp->weight(scope.probe), 0.5 + 0.5 * 3 / 4.0));
-}
-
-TEST(a_kind_with_no_pending_work_of_its_own_spreads_over_the_range) {
-  std::vector<PendingWork> const pending{{TestKind::PRP, 124'647'911}};
-  RunScope const scope = makeScope(scopeOf("scope,kinds=prp+ll,workload=100M-400M"), pending);
-
-  CHECK(scope.grid(TestKind::PRP)->fromWorktodo);
-  CHECK(!scope.grid(TestKind::LL)->fromWorktodo);
-  CHECK(near(total(*scope.grid(TestKind::LL)), 1));
+  CHECK(near(prp->weight(scope.probe), 0.5));
 }
 
 TEST(a_cert_is_prp_work) {
@@ -800,11 +789,15 @@ TEST(a_named_workload_is_what_bounds_the_grid) {
   CHECK_EQ(scope.lo, 100'000'000u);
   CHECK_EQ(scope.hi, 400'000'000u);
 
+  // Spread evenly across the range named, whatever is pending: the work in hand is a few days of what the tune is for.
   // The exponents outside the range are outside the workload, which is what "outside the workload" is meant to mean.
   const Grid* const grid = scope.grid(TestKind::PRP);
-  CHECK_EQ(grid->points.size(), size_t{1});
-  CHECK_EQ(grid->points.front().exponent, 124'647'911u);
+  CHECK_EQ(grid->points.size(), size_t{GRID_POINTS} + 1);
+  CHECK_EQ(grid->points.front().exponent, 100'000'000u);
+  CHECK_EQ(grid->points.back().exponent, 400'000'000u);
   CHECK(near(total(*grid), 1));
+  CHECK_EQ(scope.probe, 124'647'911u);
+  CHECK(near(grid->weight(scope.probe), 0.5));
 }
 
 TEST(a_probe_outside_a_named_workload_is_a_usage_error) {
@@ -846,8 +839,8 @@ TEST(the_probe_weight_moves_all_of_the_weight_and_none_of_it) {
   CHECK(near(total(*all.grid(TestKind::PRP)), 1));
 
   RunScope const none = makeScope(scopeOf("scope,probeWeight=0"), pending);
-  CHECK(near(none.grid(TestKind::PRP)->weight(124'647'911), 0.5));
-  CHECK(near(none.grid(TestKind::PRP)->weight(131'088'689), 0.5));
+  CHECK(near(none.grid(TestKind::PRP)->weight(none.probe), 0));
+  CHECK(near(none.grid(TestKind::PRP)->weight(none.lo), 1.0 / GRID_POINTS));
   CHECK(near(total(*none.grid(TestKind::PRP)), 1));
 }
 
@@ -951,8 +944,9 @@ TEST(one_worktodo_reached_two_ways_is_read_once) {
   CHECK_EQ(scanWorktodo(files).size(), size_t{2});
 
   RunScope const scope = makeScope(ScopeArgs{}, scanWorktodo(files));
-  CHECK(near(scope.grid(TestKind::PRP)->weight(124'647'911), 0.75));
-  CHECK(near(scope.grid(TestKind::PRP)->weight(131'088'689), 0.25));
+  CHECK_EQ(scope.lo, u64(124'647'911 * 0.95));
+  CHECK_EQ(scope.hi, u64(131'088'689 * 1.25));
+  CHECK_EQ(scope.rangeSource, std::string{"2 assignments pending, from 5% below to 25% above"});
 }
 
 TEST(the_bootstrap_is_on_unless_a_run_turns_it_off) {
@@ -978,7 +972,7 @@ bool sameGrids(const RunScope& a, const RunScope& b) {
   for (size_t i = 0; i < a.grids.size(); ++i) {
     const Grid& x = a.grids[i];
     const Grid& y = b.grids[i];
-    if (x.kind != y.kind || x.fromWorktodo != y.fromWorktodo || x.points.size() != y.points.size()) { return false; }
+    if (x.kind != y.kind || x.points.size() != y.points.size()) { return false; }
     for (size_t j = 0; j < x.points.size(); ++j) {
       if (x.points[j].exponent != y.points[j].exponent || !near(x.points[j].weight, y.points[j].weight)) {
         return false;
@@ -996,7 +990,7 @@ TEST(a_runs_settings_read_back_as_the_same_run) {
 
   // Resolved from the pending work, the range and the probe are named in the word.
   CHECK_EQ(runSettings(makeScope(parsed("").scope, pending), parsed("")),
-           std::string{"workload=118415515-137643123,probe=124647911,probeWeight=0.5,kinds=prp,bootstrap=1,"
+           std::string{"workload=118415515-163860861,probe=124647911,probeWeight=0.5,kinds=prp,bootstrap=1,"
                        "strategy=hybrid,maxPermute=4,maxPoints=64,comboTop=3,comboTiers=3,contenders=16,roundCalls=16,"
                        "stop=0.1%"});
 
@@ -1055,7 +1049,8 @@ TEST(a_run_is_weighted_by_the_work_it_recorded_whatever_the_worktodo_says_now) {
   CHECK_EQ(recorded.size(), pending.size());
   CHECK(pendingOf(back, 4).empty());
 
-  // The worktodo has since emptied; the run's own settings over its own work still give the grid and the T it had.
+  // The worktodo has since emptied; the run's own settings still give the grid and the T it had.  Once the range and
+  // the probe are named, as a run's settings name them, the grid no longer depends on the work pending at all.
   for (const char* const text : {"", "kinds=prp+ll,probeWeight=0.2"}) {
     TuneCommand const command = parsed(text);
     RunScope const then = makeScope(command.scope, pending);
@@ -1063,7 +1058,7 @@ TEST(a_run_is_weighted_by_the_work_it_recorded_whatever_the_worktodo_says_now) {
     RunScope const now = makeScope(saved.scope, {});
     RunScope const restored = makeScope(saved.scope, recorded);
     CHECK(sameGrids(restored, then));
-    CHECK(!sameGrids(now, then));
+    CHECK(sameGrids(now, then));
     CHECK_EQ(Objective(back, 1, restored).T(), Objective(back, 1, then).T());
   }
 

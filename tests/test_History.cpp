@@ -46,7 +46,7 @@ RunScope probeScope() {
   out.lo = 90'000'000;
   out.hi = 110'000'000;
   out.probe = PROBE;
-  out.grids.push_back({.kind = TestKind::PRP, .fromWorktodo = true, .points = {{PROBE, 1.0}}});
+  out.grids.push_back({.kind = TestKind::PRP, .points = {{PROBE, 1.0}}});
   return out;
 }
 

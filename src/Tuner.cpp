@@ -239,22 +239,14 @@ void parseKinds(std::string_view text, ScopeArgs& out) {
   return out;
 }
 
-[[nodiscard]] Grid gridFor(TestKind kind, const std::vector<PendingWork>& pending, u64 lo, u64 hi, u64 probe,
-                           double probeWeight) {
-  std::vector<u64> mine;
-  for (const PendingWork& work : pending) {
-    if (work.kind == kind && lo <= work.exponent && work.exponent <= hi) { mine.push_back(work.exponent); }
-  }
-
-  Grid out{.kind = kind, .fromWorktodo = !mine.empty(), .points = {}};
+// Spread evenly across the range whatever is pending: a worktodo is a few days of the months of work a tune serves, so
+// weighting its exponents would tune for this week's assignments and leave the rest of the range unmeasured.
+[[nodiscard]] Grid gridFor(TestKind kind, u64 lo, u64 hi, u64 probe, double probeWeight) {
+  Grid out{.kind = kind, .points = {}};
 
   std::map<u64, double> weights;
-  if (out.fromWorktodo) {
-    for (u64 const E : mine) { weights[E] += (1 - probeWeight) / double(mine.size()); }
-  } else {
-    std::vector<u64> const spread = spreadOver(lo, hi);
-    for (u64 const E : spread) { weights[E] += (1 - probeWeight) / double(spread.size()); }
-  }
+  std::vector<u64> const spread = spreadOver(lo, hi);
+  for (u64 const E : spread) { weights[E] += (1 - probeWeight) / double(spread.size()); }
   weights[probe] += probeWeight;
 
   for (const auto& [E, weight] : weights) { out.points.push_back({.exponent = E, .weight = weight}); }
@@ -401,9 +393,10 @@ RunScope makeScope(const ScopeArgs& args, const std::vector<PendingWork>& pendin
   } else if (!wanted.empty()) {
     auto const [lo, hi] = std::ranges::minmax(wanted);
     out.lo = u64(double(lo) * (1 - WORKLOAD_PAD));
-    out.hi = u64(double(hi) * (1 + WORKLOAD_PAD));
+    out.hi = u64(double(hi) * (1 + WORKLOAD_AHEAD));
     out.rangeSource = std::to_string(wanted.size()) + (wanted.size() == 1 ? " assignment" : " assignments") +
-      " pending, padded " + std::to_string(u32(WORKLOAD_PAD * 100)) + "% at each end";
+      " pending, from " + std::to_string(u32(WORKLOAD_PAD * 100)) + "% below to " +
+      std::to_string(u32(WORKLOAD_AHEAD * 100)) + "% above";
   } else {
     out.lo = DEFAULT_WORKLOAD_LO;
     out.hi = DEFAULT_WORKLOAD_HI;
@@ -460,7 +453,7 @@ RunScope makeScope(const ScopeArgs& args, const std::vector<PendingWork>& pendin
   if (out.probe != asked) { out.probeSource += ", the prime at or below " + std::to_string(asked); }
 
   for (TestKind const kind : args.kinds) {
-    out.grids.push_back(gridFor(kind, pending, out.lo, out.hi, out.probe, out.probeWeight));
+    out.grids.push_back(gridFor(kind, out.lo, out.hi, out.probe, out.probeWeight));
   }
   return out;
 }
@@ -512,9 +505,8 @@ void reportScope(const RunScope& scope, const std::vector<fs::path>& files, cons
       scope.probeWeight * 100);
 
   for (const Grid& grid : scope.grids) {
-    log("tune: %s grid: %zu %s, %s\n", toString(grid.kind), grid.points.size(),
-        grid.points.size() == 1 ? "exponent" : "exponents",
-        grid.fromWorktodo ? "from the pending work" : "spread across the range");
+    log("tune: %s grid: %zu %s, spread across the range\n", toString(grid.kind), grid.points.size(),
+        grid.points.size() == 1 ? "exponent" : "exponents");
 
     // The whole grid where it is short enough to read, and otherwise the points carrying the most weight, which are
     // the ones a ranking is going to turn on.

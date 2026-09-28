@@ -125,9 +125,9 @@ A run begins by reporting what it will do:
 ```text
 tune: Tuning from built-in defaults; no -use settings to ignore
 tune: pending work read from worktodo-0.txt
-tune: workload 112159852-143093833 (2 assignments pending, padded 5% at each end)
+tune: workload 112159852-170349795 (2 assignments pending, from 5% below to 25% above)
 tune: probe 118063003 (the most-populated 2% bin of the pending work), carrying 50% of the weight
-tune: prp grid: 2 exponents, from the pending work
+tune: prp grid: 65 exponents, spread across the range
 tune:   118063003  75.0%    870.302 us/it  prior, from 1K:13:256  (probe)
 tune:   136279841  25.0%   1013.328 us/it  prior, from 1K:15:256
 tune: T = 906.059 us/it against env 1, 0.0% of the weight on measured entries
@@ -157,11 +157,13 @@ Exponents may be written in full or with a `K`, `M` or `G` suffix (`118063003`, 
 
 ### What to tune for
 
-**`workload=<lo>-<hi>`**: the range of exponents to tune for. FFTs that cannot serve any exponent in the range are
-never measured. A single exponent (`workload=118063003`) is allowed.
+**`workload=<lo>-<hi>`**: the range of exponents to tune for, weighed evenly across it (64 points spread over it, plus
+the probe). FFTs that cannot serve any exponent in the range are never measured. A single exponent
+(`workload=118063003`) is allowed. The exponents in your worktodo do not weigh in: a worktodo holds a few days of the
+months of work a tune is used for.
 
-- Default: the range of the exponents in your worktodo files, widened by 5% at each end so that the assignments you
-  receive next are covered too. With no pending work, `100M-400M`.
+- Default: from 5% below the lowest exponent in your worktodo files to 25% above the highest, since the assignments
+  you receive next tend to be larger. With no pending work, `100M-400M`.
 - The worktodo files read are the ones a normal run would read: `worktodo-<N>.txt` for each worker, the pool's
   `worktodo.txt` when `-pool` is given, and a `worktodo.txt` in the run directory. Exponents that are not prime, and
   lines for anything other than Mersenne numbers, are skipped. `Cert` lines count as PRP work.
@@ -175,8 +177,8 @@ weight in `T`.
 - A probe outside a workload you named is refused. A probe outside the range derived from your worktodo widens that
   range to reach it.
 
-**`probeWeight=<0..1>`**: how much of the weight in `T` sits on the probe alone; the rest is spread over the workload
-(by the worktodo, or evenly across the range when there is none). Default `0.5`. `0` tunes the whole range evenly; `1`
+**`probeWeight=<0..1>`**: how much of the weight in `T` sits on the probe alone; the rest is spread evenly across the
+workload. Default `0.5`. `0` tunes the whole range evenly; `1`
 tunes for the probe exponent and nothing else.
 
 **`kinds=prp|ll|prp+ll`**: which tests to tune for. Default `prp`. LL work is only worth tuning for if you actually
@@ -187,7 +189,7 @@ to compare with.
 Examples:
 
 ```sh
-# Tune for the worktodo, whatever it holds (the default).
+# Tune for the worktodo's range and a way past it, whatever it holds (the default).
 prpll -tune
 
 # First-time checks around 118M, with most of the effort on the exponent in hand.
