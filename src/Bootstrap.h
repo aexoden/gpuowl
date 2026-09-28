@@ -27,6 +27,7 @@
 #include <optional>
 #include <set>
 #include <string>
+#include <tuple>
 #include <vector>
 
 namespace tune {
@@ -183,28 +184,39 @@ struct BootstrapState {
   // The lines the families decided so far make, and whether any family has a race still to run.
   Defaults defaults;
   bool complete = false;
+
+  // The test kind the races are called in.
+  TestKind kind = TestKind::PRP;
 };
 
 class Bootstrap {
 public:
   Bootstrap() = default;
   // `comboTiers` is how many tiers of the combination tree are raced after the groups: 1 races the groups alone.
-  Bootstrap(Env env, u64 probe, std::vector<Family> families, bool enabled = true, u32 comboTiers = COMBO_TIERS);
+  // `prefer` is the test kind the races are called in unless the database holds a bootstrap of the other kind already.
+  Bootstrap(Env env, u64 probe, std::vector<Family> families, bool enabled = true, u32 comboTiers = COMBO_TIERS,
+            TestKind prefer = TestKind::PRP);
 
   // Where every family stands against what `env` has measured.  `excluded` names the candidates this process has tried
-  // too often without recording anything, by configText().
+  // too often without recording anything, by configText().  In the preferred test kind, unless the other kind's
+  // bootstrap is complete, or it alone has decided anything: the lines serve both kinds, so what was raced in one is
+  // not raced again in the other.
   [[nodiscard]] BootstrapState state(const TuneDB& db, u32 env, const std::set<std::string>& excluded = {}) const;
 
-  // As state(), with each family on the configuration named rather than the one the database records.
+  // As state(), in `kind`, with each family on the configuration named rather than the one the database records.
   [[nodiscard]] BootstrapState stateOf(const std::vector<Family>& families, const TuneDB& db, u32 env,
-                                       const std::set<std::string>& excluded = {}) const;
+                                       const std::set<std::string>& excluded = {}, TestKind kind = TestKind::PRP) const;
 
-  // The families, each on the configuration `env` recorded for it at this probe (a `boot` row).  Where none is
+  // The families, as state() races them: each on the configuration `env` recorded for it at this probe (a `boot` row).
+  // Where none is
   // recorded: on the one it was built with if its races began there, which is how a bootstrap begun before the choice
   // was recorded goes on; else on the type's cheapest concluded reading at the built-in defaults at the probe, which
   // after the defaults sweep is the FFT the search would tune first; else on the one it was built with.  A run records
   // the choice once the sweep is done, so that it does not move under the races as readings are added.
   [[nodiscard]] std::vector<Family> familiesIn(const TuneDB& db, u32 env) const;
+
+  // As familiesIn(), reading the races and the defaults readings of `kind`.
+  [[nodiscard]] std::vector<Family> familiesFor(const TuneDB& db, u32 env, TestKind kind) const;
 
   // The groups a race is owed in on `fft` from `background`: those with a move the lines could carry.
   [[nodiscard]] std::vector<Group> groupsOf(const FFTConfig& fft, const UseConfig& background) const;
@@ -227,10 +239,11 @@ private:
   std::vector<Family> families_;
   bool enabled_ = false;
   u32 comboTiers_ = COMBO_TIERS;
+  TestKind prefer_ = TestKind::PRP;
 
   // The last probesOf() for each family's combination tier, which is pure, and what it was asked: a decided family's
   // stages are asked for again on every re-score.
-  mutable std::map<std::pair<size_t, u32>, std::pair<std::string, ProbeList>> stageLists_;
+  mutable std::map<std::tuple<size_t, u32, TestKind>, std::pair<std::string, ProbeList>> stageLists_;
 };
 
 // The families a run over `baselines` bootstraps: for each type some baseline belongs to, its smallest shape whose

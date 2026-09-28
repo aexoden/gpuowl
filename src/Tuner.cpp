@@ -308,7 +308,8 @@ private:
                                      bool enabled) {
   std::vector<FFTConfig> inScope;
   for (const Baseline& b : entries) { inScope.push_back(b.fft); }
-  return Bootstrap{device, scope.probe, bootstrapFamilies(device, scope.probe, inScope), enabled};
+  return Bootstrap{device,  scope.probe, bootstrapFamilies(device, scope.probe, inScope),
+                   enabled, COMBO_TIERS, probeKind(scope)};
 }
 
 // The lines what `env` has measured supports, for a command that has no run of its own to take them from.

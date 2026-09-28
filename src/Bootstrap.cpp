@@ -26,13 +26,13 @@ struct Readings {
   std::set<std::string> failed;
 };
 
-[[nodiscard]] Readings readingsOf(const Env& env, const Family& family, u64 probe, const std::vector<RunRow>& runs,
-                                  const TuneDB& db, u32 envId) {
+[[nodiscard]] Readings readingsOf(const Env& env, const Family& family, u64 probe, TestKind kind,
+                                  const std::vector<RunRow>& runs, const TuneDB& db, u32 envId) {
   Readings out;
   std::string const spec = family.fft.spec();
 
   for (const RunRow& row : runs) {
-    if (row.fft != spec || row.kind != TestKind::PRP || row.exponent != probe || row.m.status == Status::Lost ||
+    if (row.fft != spec || row.kind != kind || row.exponent != probe || row.m.status == Status::Lost ||
         db.envOf(row.sess) != envId) {
       continue;
     }
@@ -226,10 +226,19 @@ RaceResult decideRace(const std::vector<RaceEntry>& entries) {
   return {.how = tied.size() > 1 ? RaceHow::Margin : RaceHow::Separated, .winner = winner, .next = {}};
 }
 
-Bootstrap::Bootstrap(Env env, u64 probe, std::vector<Family> families, bool enabled, u32 comboTiers) :
-  env_{std::move(env)}, probe_{probe}, families_{std::move(families)}, enabled_{enabled}, comboTiers_{comboTiers} {}
+Bootstrap::Bootstrap(Env env, u64 probe, std::vector<Family> families, bool enabled, u32 comboTiers, TestKind prefer) :
+  env_{std::move(env)},
+  probe_{probe},
+  families_{std::move(families)},
+  enabled_{enabled},
+  comboTiers_{comboTiers},
+  prefer_{prefer} {}
 
 std::vector<Family> Bootstrap::familiesIn(const TuneDB& db, u32 env) const {
+  return familiesFor(db, env, state(db, env).kind);
+}
+
+std::vector<Family> Bootstrap::familiesFor(const TuneDB& db, u32 env, TestKind kind) const {
   std::vector<Family> out = families_;
   std::set<enum FFT_TYPES> recorded;
   for (const BootRow& row : db.boots()) {
@@ -242,14 +251,13 @@ std::vector<Family> Bootstrap::familiesIn(const TuneDB& db, u32 env) const {
   if (!enabled_ || recorded.size() == out.size()) { return out; }
 
   // A family that raced before the choice was recorded goes on where it raced.
-  BootstrapState const begun = stateOf(families_, db, env);
+  BootstrapState const begun = stateOf(families_, db, env, {}, kind);
 
   // Otherwise the cheapest reading of the type at the built-in defaults at the probe: what the defaults sweep found
   // fastest there, and so what the search would tune first.
   std::map<enum FFT_TYPES, std::pair<double, FFTConfig>> cheapest;
   for (const RunRow& row : db.mergedRuns()) {
-    if (row.kind != TestKind::PRP || row.exponent != probe_ || !row.m.ok() || !concluded(row.m) ||
-        db.envOf(row.sess) != env) {
+    if (row.kind != kind || row.exponent != probe_ || !row.m.ok() || !concluded(row.m) || db.envOf(row.sess) != env) {
       continue;
     }
     auto const fft = parseFft(row.fft);
@@ -305,12 +313,26 @@ std::vector<Family> Bootstrap::unrecorded(const TuneDB& db, u32 env) const {
 }
 
 BootstrapState Bootstrap::state(const TuneDB& db, u32 env, const std::set<std::string>& excluded) const {
-  return stateOf(familiesIn(db, env), db, env, excluded);
+  BootstrapState preferred = stateOf(familiesFor(db, env, prefer_), db, env, excluded, prefer_);
+  if (!enabled_) { return preferred; }
+  auto const decided = [](const BootstrapState& s) {
+    return std::ranges::any_of(s.families, [](const FamilyState& f) { return !f.decisions.empty(); });
+  };
+  if (preferred.complete && decided(preferred)) { return preferred; }
+
+  // A bootstrap the other kind has finished, or failing that begun, is taken rather than raced again in this one: the
+  // lines it decides serve both kinds, and a run changing kinds should not repeat hours of races.
+  TestKind const other = prefer_ == TestKind::PRP ? TestKind::LL : TestKind::PRP;
+  BootstrapState alternative = stateOf(familiesFor(db, env, other), db, env, excluded, other);
+  if (alternative.complete && decided(alternative)) { return alternative; }
+  if (!decided(preferred) && decided(alternative)) { return alternative; }
+  return preferred;
 }
 
 BootstrapState Bootstrap::stateOf(const std::vector<Family>& families, const TuneDB& db, u32 env,
-                                  const std::set<std::string>& excluded) const {
+                                  const std::set<std::string>& excluded, TestKind kind) const {
   BootstrapState out;
+  out.kind = kind;
   for (const Family& family : families) { out.families.push_back({.family = family}); }
 
   if (!enabled_) {
@@ -321,7 +343,7 @@ BootstrapState Bootstrap::stateOf(const std::vector<Family>& families, const Tun
 
   std::vector<RunRow> const runs = db.mergedRuns();
   std::vector<Readings> readings;
-  for (const Family& family : families) { readings.push_back(readingsOf(env_, family, probe_, runs, db, env)); }
+  for (const Family& family : families) { readings.push_back(readingsOf(env_, family, probe_, kind, runs, db, env)); }
 
   auto entryOf = [&](size_t f, const UseConfig& config, std::string text) {
     std::string const key = configText(config);
@@ -331,7 +353,7 @@ BootstrapState Bootstrap::stateOf(const std::vector<Family>& families, const Tun
 
     u32 const cfg = db.findCfgId(config);
     e.out = readings[f].failed.contains(key) || excluded.contains(spec + " " + key) || db.isNogo(env, spec, config) ||
-      (cfg && db.diedOn(env, cfg, TestKind::PRP, spec, probe_));
+      (cfg && db.diedOn(env, cfg, kind, spec, probe_));
     return e;
   };
 
@@ -466,7 +488,7 @@ BootstrapState Bootstrap::stateOf(const std::vector<Family>& families, const Tun
 
         std::string asked = families[f].fft.spec() + " ";
         for (const Reading& r : readings) { asked += configText(r.config) + "@" + std::to_string(r.cost) + " "; }
-        auto& [was, list] = stageLists_[{f, tier}];
+        auto& [was, list] = stageLists_[{f, tier, kind}];
         if (was != asked) {
           Strategy const tree{
             .kind = Strategy::Kind::Hybrid, .comboTop = COMBO_TOP, .comboTiers = tier, .bootstrapTree = true};

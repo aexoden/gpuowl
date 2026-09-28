@@ -373,7 +373,8 @@ std::vector<Item> Scheduler::bootstrapItems(const BootstrapState& state, const O
               .fft = family.fft,
               .options = turn.config,
               .moved = turn.key,
-              .what = std::string{typeName(family.type)} + " " + family.fft.spec() + " " + turn.text,
+              .what = std::string{typeName(family.type)} + " " + family.fft.spec() + " " +
+                (state.kind == TestKind::PRP ? "" : std::string{toString(state.kind)} + " ") + turn.text,
               .exponent = bootstrap_.probe(),
               .value = 1,
               .seconds = 0,
@@ -1406,7 +1407,7 @@ QueueReport runQueue(Scheduler& scheduler, TuneDB& db, u32 env, Bench& bench, co
     const FFTConfig& fft = item->fft ? *item->fft
       : baseline                     ? baseline->fft
                                      : scheduler.bootstrap().families()[item->index].fft;
-    TestKind const kind = baseline ? baseline->kind : TestKind::PRP;
+    TestKind const kind = baseline ? baseline->kind : item->kind == ItemKind::Bootstrap ? state.kind : TestKind::PRP;
     bool const reads = item->kind == ItemKind::Gate || item->kind == ItemKind::Reach;
     bool const probing = baseline && item->kind != ItemKind::Baseline && !reads;
     std::string const label = !baseline ? item->what
