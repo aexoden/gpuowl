@@ -279,6 +279,9 @@ selection.txt, which a normal run in the same directory (or its -pool) reads.  T
                          maxPoints=<N>|all   hybrid, groups: how many combinations each of those tries [64]
                          comboTop=<N>        hybrid: how many of each group's best answers are combined [3]
                          comboTiers=1|2|3    hybrid: how widely groups are combined; 1 is strategy=groups [3]
+                         contenders=<N>      how many FFTs the search is first spread over, halving them each round
+                                             to the faster half; 0 ranks the search by expected gain alone [16]
+                         roundCalls=<N>      calls each contender is searched for in the first round, doubling [16]
                          tunetxt=0|1         also write tune.txt, for binaries that do not read selection.txt [0]
                          dashboard=0|1       a full-screen view of the run on a terminal; the log file is unchanged [0]
                      Subcommands that open no device (env=<id> picks a database env where there is more than one):

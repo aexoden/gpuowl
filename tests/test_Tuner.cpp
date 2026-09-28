@@ -997,12 +997,14 @@ TEST(a_runs_settings_read_back_as_the_same_run) {
   // Resolved from the pending work, the range and the probe are named in the word.
   CHECK_EQ(runSettings(makeScope(parsed("").scope, pending), parsed("")),
            std::string{"workload=118415515-137643123,probe=124647911,probeWeight=0.5,kinds=prp,bootstrap=1,"
-                       "strategy=hybrid,maxPermute=4,maxPoints=64,comboTop=3,comboTiers=3,stop=0.1%"});
+                       "strategy=hybrid,maxPermute=4,maxPoints=64,comboTop=3,comboTiers=3,contenders=16,roundCalls=16,"
+                       "stop=0.1%"});
 
   for (const char* const text :
        {"", "workload=100M-400M,probe=136279841,stop=0", "kinds=prp+ll,probeWeight=0.3,bootstrap=0,stop=0.25%",
         "strategy=permute:PAD+IN_SIZEX", "comboTop=2,comboTiers=1", "strategy=single,stop=2%",
-        "maxPermute=all,maxPoints=200", "strategy=groups,maxPermute=2,maxPoints=all"}) {
+        "maxPermute=all,maxPoints=200", "strategy=groups,maxPermute=2,maxPoints=all", "contenders=0",
+        "contenders=4,roundCalls=40"}) {
     TuneCommand const command = parsed(text);
     RunScope const scope = makeScope(command.scope, pending);
     std::string const word = runSettings(scope, command);
@@ -1020,8 +1022,20 @@ TEST(a_runs_settings_read_back_as_the_same_run) {
     CHECK_EQ(again.strategy.maxPoints, command.strategy.maxPoints);
     CHECK_EQ(again.strategy.comboTop, command.strategy.comboTop);
     CHECK_EQ(again.strategy.comboTiers, command.strategy.comboTiers);
+    CHECK_EQ(again.halving.contenders, command.halving.contenders);
+    CHECK_EQ(again.halving.roundCalls, command.halving.roundCalls);
     CHECK(near(again.stop, command.stop));
   }
+
+  // A count, or for roundCalls= one of at least 1; and a run's settings, not an emit's.
+  for (const char* const bad : {"contenders=", "contenders=-1", "contenders=all", "roundCalls=0", "roundCalls=x"}) {
+    bool refused = false;
+    try {
+      (void)parsed(bad);
+    } catch (const std::string&) { refused = true; }
+    CHECK(refused);
+  }
+  CHECK_EQ(parsed("contenders=0").halving.on(), false);
 }
 
 TEST(a_run_is_weighted_by_the_work_it_recorded_whatever_the_worktodo_says_now) {

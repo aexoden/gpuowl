@@ -209,14 +209,15 @@ const char* toString(ItemKind kind) {
 }
 
 Scheduler::Scheduler(RunScope scope, std::vector<Baseline> baselines, u32 blockSize, Bootstrap bootstrap,
-                     std::optional<Strategy> strategy, bool restarts, bool gate) :
+                     std::optional<Strategy> strategy, bool restarts, bool gate, Halving halving) :
   scope_{std::move(scope)},
   baselines_{std::move(baselines)},
   clock_{blockSize},
   bootstrap_{std::move(bootstrap)},
   strategy_{std::move(strategy)},
   restarts_{restarts},
-  gate_{gate} {}
+  gate_{gate},
+  halving_{halving} {}
 
 std::string Scheduler::builtKey(const FFTConfig& fft, const UseConfig& options) const {
   return fft.spec() + " " + configText(canonicalConfig(bootstrap_.env(), fft, options));
@@ -608,18 +609,7 @@ std::vector<Item> Scheduler::sweepItems(const TuneDB& db, u32 env, const Progres
                                                    : objective.priorModel().cost(b.fft.shape) / PRIOR_OPTIMISM);
   }
 
-  // The fastest thing at each weighted point: what production runs there where that is measured, and where it is not,
-  // the cheapest estimate among the entries that serve it.
-  std::vector<std::optional<double>> fastest(objective.points().size());
-  for (size_t p = 0; p < objective.points().size(); ++p) {
-    const ObjectivePoint& point = objective.points()[p];
-    if (point.weight <= 0) { continue; }
-    if (point.cost && point.cost->measured()) { fastest[p] = point.cost->us; }
-    for (size_t i = 0; i < baselines_.size(); ++i) {
-      if (baselines_[i].kind != point.kind || !baselines_[i].band.contains(point.exponent)) { continue; }
-      fastest[p] = std::min(fastest[p].value_or(estimates[i]), estimates[i]);
-    }
-  }
+  std::vector<std::optional<double>> const fastest = fastestAt(objective, estimates);
 
   std::vector<Item> out;
   for (size_t i = 0; i < baselines_.size(); ++i) {
@@ -667,6 +657,101 @@ std::vector<Item> Scheduler::sweepItems(const TuneDB& db, u32 env, const Progres
                    .sweep = true});
   }
   rankByShape(out);
+  return out;
+}
+
+std::vector<std::optional<double>> Scheduler::fastestAt(const Objective& objective,
+                                                        const std::vector<double>& estimates) const {
+  std::vector<std::optional<double>> out(objective.points().size());
+  for (size_t p = 0; p < objective.points().size(); ++p) {
+    const ObjectivePoint& point = objective.points()[p];
+    if (point.weight <= 0) { continue; }
+    if (point.cost && point.cost->measured()) { out[p] = point.cost->us; }
+    for (size_t i = 0; i < baselines_.size(); ++i) {
+      if (baselines_[i].kind != point.kind || !baselines_[i].band.contains(point.exponent)) { continue; }
+      out[p] = std::min(out[p].value_or(estimates[i]), estimates[i]);
+    }
+  }
+  return out;
+}
+
+HalvingState Scheduler::halvingState(const TuneDB& db, u32 env,
+                                     const std::map<EntryKey, std::vector<Reading>>& readings,
+                                     const Objective& objective, const std::set<size_t>& offering) const {
+  HalvingState out;
+  if (!halving_.on() || !strategy_) { return out; }
+  const Env& device = bootstrap_.env();
+
+  std::vector<double> estimates;
+  for (const Baseline& b : baselines_) {
+    auto const measured = readings.find({b.fft.spec(), b.kind, b.band.regime.label()});
+    estimates.push_back(measured != readings.end() ? measured->second.front().cost
+                                                   : objective.priorModel().cost(b.fft.shape) / PRIOR_OPTIMISM);
+  }
+  std::vector<std::optional<double>> const fastest = fastestAt(objective, estimates);
+
+  // How far behind the fastest each measured entry is at the best of its points.
+  std::vector<std::optional<double>> gaps(baselines_.size());
+  for (size_t i = 0; i < baselines_.size(); ++i) {
+    const Baseline& b = baselines_[i];
+    if (!readings.contains({b.fft.spec(), b.kind, b.band.regime.label()})) { continue; }
+    for (size_t p = 0; p < objective.points().size(); ++p) {
+      const ObjectivePoint& point = objective.points()[p];
+      if (!fastest[p] || point.kind != b.kind || !b.band.contains(point.exponent)) { continue; }
+      double const gap = estimates[i] / *fastest[p] - 1;
+      gaps[i] = std::min(gaps[i].value_or(gap), gap);
+    }
+  }
+
+  // Each shape's variants ranked by gap, and the pool filled rank by rank.
+  std::map<std::tuple<std::string, TestKind>, std::vector<size_t>> byShape;
+  for (size_t i = 0; i < baselines_.size(); ++i) {
+    if (gaps[i] && *gaps[i] <= CONTEND_MARGIN) {
+      byShape[{baselines_[i].fft.shape.spec(), baselines_[i].kind}].push_back(i);
+    }
+  }
+  std::vector<std::tuple<size_t, double, size_t>> ranked;
+  for (auto& [shape, members] : byShape) {
+    std::ranges::stable_sort(members, [&](size_t a, size_t b) { return *gaps[a] < *gaps[b]; });
+    for (size_t r = 0; r < members.size(); ++r) { ranked.emplace_back(r, *gaps[members[r]], members[r]); }
+  }
+  std::ranges::sort(ranked);
+  std::vector<size_t> pool;
+  for (const auto& [rank, gap, i] : ranked) {
+    if (pool.size() < halving_.contenders) { pool.push_back(i); }
+  }
+  out.contenders = u32(pool.size());
+
+  // The calls of search each has had: every call at an option set other than the built-in defaults.
+  std::map<EntryKey, u64> searched;
+  for (const RunRow& row : db.mergedRuns()) {
+    if (db.envOf(row.sess) != env || row.m.status == Status::Lost) { continue; }
+    auto const fft = parseFft(row.fft);
+    const UseConfig* const opts = db.findCfg(row.cfg);
+    if (!fft || !opts || canonicalConfig(device, *fft, *opts).empty()) { continue; }
+    searched[{row.fft, row.kind, row.regime.label()}] += std::max<u32>(row.m.calls, 1);
+  }
+  auto callsOf = [&](size_t i) {
+    auto const at = searched.find({baselines_[i].fft.spec(), baselines_[i].kind, baselines_[i].band.regime.label()});
+    return at == searched.end() ? u64{0} : at->second;
+  };
+
+  auto byGap = [&](size_t a, size_t b) { return std::tuple{*gaps[a], a} < std::tuple{*gaps[b], b}; };
+  std::ranges::sort(pool, byGap);
+  for (u32 round = 0; pool.size() > 1 && round < 40; ++round) {
+    u64 const budget = u64(halving_.roundCalls) * ((u64{2} << round) - 1);
+    bool const owed = std::ranges::any_of(pool, [&](size_t i) { return callsOf(i) < budget && offering.contains(i); });
+    if (owed) {
+      out.active = true;
+      out.round = round;
+      out.budget = budget;
+      out.pool = pool;
+      for (size_t const i : pool) { out.calls.push_back(callsOf(i)); }
+      return out;
+    }
+    pool.resize((pool.size() + 1) / 2);
+  }
+  out.pool = pool;
   return out;
 }
 
@@ -940,11 +1025,36 @@ std::vector<Item> Scheduler::admissible(const TuneDB& db, u32 env, const Objecti
   }
 
   std::ranges::stable_sort(out, [](const Item& a, const Item& b) { return a.rate() > b.rate(); });
+
+  // While the halving is on, its round is all there is: the steps of the contenders still short of their calls.
+  auto const search = [](const Item& i) {
+    return i.kind == ItemKind::Probe || i.kind == ItemKind::Combo || i.kind == ItemKind::Restart;
+  };
+  std::set<size_t> offering;
+  for (const Item& item : out) {
+    if (search(item)) { offering.insert(item.index); }
+  }
+  lastHalving_ = halvingState(db, env, readings, objective, offering);
+  if (lastHalving_.active) {
+    std::map<size_t, u64> owed;
+    for (size_t k = 0; k < lastHalving_.pool.size(); ++k) {
+      if (lastHalving_.calls[k] < lastHalving_.budget) { owed.emplace(lastHalving_.pool[k], lastHalving_.calls[k]); }
+    }
+    std::vector<Item> round;
+    for (Item& item : out) {
+      if (!search(item) || !owed.contains(item.index)) { continue; }
+      item.halving = true;
+      round.push_back(std::move(item));
+    }
+    // The contender furthest from its calls first, so that a round is spread across its contenders as it goes.
+    std::ranges::stable_sort(round, [&](const Item& a, const Item& b) { return owed.at(a.index) < owed.at(b.index); });
+    return round;
+  }
   return out;
 }
 
 bool byRule(const Item& item) {
-  return item.kind == ItemKind::Bootstrap || item.kind == ItemKind::Gate || item.cover || item.sweep;
+  return item.kind == ItemKind::Bootstrap || item.kind == ItemKind::Gate || item.cover || item.sweep || item.halving;
 }
 
 bool worthRunning(const Item& item, double floor) {
@@ -1128,6 +1238,9 @@ QueueReport runQueue(Scheduler& scheduler, TuneDB& db, u32 env, Bench& bench, co
   out.startT = objective.T();
   publish(objective, lines);
 
+  // The halving's round as last said, so that each is said once as it begins.
+  std::optional<u32> saidRound;
+
   auto rescore = [&] {
     state = scheduler.bootstrapState(db, env);
     objective = Objective{db, env, scheduler.scope()};
@@ -1159,6 +1272,17 @@ QueueReport runQueue(Scheduler& scheduler, TuneDB& db, u32 env, Bench& bench, co
     }
 
     std::vector<Item> const ranked = scheduler.admissible(db, env, valuing);
+    if (const HalvingState& h = scheduler.lastHalving(); h.active && saidRound != h.round) {
+      std::string names;
+      for (size_t const i : h.pool) { names += (names.empty() ? "" : ", ") + scheduler.baselines()[i].fft.spec(); }
+      log("tune: halving: round %u, %zu of the %u contenders, %" PRIu64 " calls of search each: %s\n", h.round + 1,
+          h.pool.size(), h.contenders, h.budget, names.c_str());
+      saidRound = h.round;
+    } else if (!h.active && saidRound) {
+      log("tune: halving done; %s is left, and the search is ranked by what it is expected to gain from here\n",
+          h.pool.empty() ? "nothing" : scheduler.baselines()[h.pool.front()].label().c_str());
+      saidRound.reset();
+    }
     // From the ranking the pick is made from, so that the figures are the ones the stopping rule is about to use.
     if (watch) {
       watch->progress(
