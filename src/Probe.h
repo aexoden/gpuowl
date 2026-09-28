@@ -85,6 +85,19 @@ struct Strategy {
   [[nodiscard]] std::string text() const;
 };
 
+// Successive halving over the entries worth searching: how many contenders the first round takes, and how many calls
+// each is searched for in it.  Each later round halves the pool and doubles the calls.
+inline constexpr u32 CONTENDERS = 16;
+inline constexpr u32 ROUND_CALLS = 16;
+
+struct Halving {
+  // 0 or 1: no halving, and the search is ranked by value alone from the start.
+  u32 contenders = 0;
+  u32 roundCalls = ROUND_CALLS;
+
+  [[nodiscard]] bool on() const { return contenders > 1; }
+};
+
 // "hybrid", "single", "groups", or "permute:" followed by tunable keys joined by '+'.  Throws a message for anything
 // else, since a mistyped key would otherwise search nothing.
 [[nodiscard]] Strategy parseStrategy(std::string_view text);

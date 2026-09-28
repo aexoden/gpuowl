@@ -67,8 +67,11 @@ A run goes through these stages, though it interleaves them and you do not need 
    slower than the fastest one at its defaults that no plausible option gain could close the gap is not raced.
 6. **Search.** For the FFTs that are competitive, first try the default options the bootstrap found, then other option
    sets one step at a time (how big a step is depends on `strategy=`), combine the best answers of different option
-   groups, and occasionally try a random option set to escape a local optimum. FFTs further off the pace are timed at
-   their defaults as they become worth it.
+   groups, and occasionally try a random option set to escape a local optimum. The search is first spread over the
+   contenders, the FFTs within 10% of the fastest, since which of them tunes best cannot be told from their defaults:
+   each gets an equal share in rounds, the slower half dropping out after each round and the share doubling, until
+   one is left (see `contenders=`). After that it goes wherever the next step is expected to gain most. FFTs further
+   off the pace are timed at their defaults as they become worth it.
 7. **Accuracy checks.** Read the rounding error of any published configuration whose options change it.
 
 **The default options follow the search.** Once FFTs are published, each FFT type's default options are those of its
@@ -273,6 +276,16 @@ the bootstrap, which always races single options and then combines their best an
 **`comboTiers=1|2|3`** (`hybrid` only): how widely groups are combined. `1`: none (the same as `strategy=groups`);
 `2`: groups that share kernels are combined, and so are the pieces of one group (`Memory combined`, `Cuda combined`),
 each piece's best answers with the others'; `3`: everything is combined. Default `3`.
+
+**`contenders=<N>`**: how many FFTs the search is first spread over. The contenders are the FFTs within 10% of the
+fastest one somewhere in the workload, one variant of each shape before a second variant of any, so that the search
+looks at several shapes rather than the variants of one. Each is searched for `roundCalls` calls, then the slower half
+drops out, the rest get twice as many calls, and so on until one is left. These rounds run by rule, whatever `stop=`
+says, so a short run still looks at more than one shape. `0` ranks the search by expected gain from the start, which
+tends to spend everything on whichever FFT was fastest before tuning. Default `16`.
+
+**`roundCalls=<N>`**: how many calls each contender is searched for in the first round; each later round doubles it.
+Default `16`, so 16 contenders take about 1000 calls in all.
 
 ### Output
 
@@ -501,7 +514,7 @@ prpll -tune status,stop=1%        # what would a run with stop=1% still do?
 tune: status: env 1, Tesla P100-PCIE-16GB (nvidia,ocl,cc600); tunedb.txt last written 5 min ago
 tune: status: nothing holds the database
 tune: status: the latest session on env 1 is session 1, a run started 2026-09-25 22:34
-tune: status: valued as session 1's run, over the 2 assignments pending when it started: workload=112159852-143093833,probe=118063003,probeWeight=0.5,kinds=prp,bootstrap=1,strategy=hybrid,maxPermute=4,maxPoints=64,comboTop=3,comboTiers=3,stop=0.1%
+tune: status: valued as session 1's run, over the 2 assignments pending when it started: workload=112159852-143093833,probe=118063003,probeWeight=0.5,kinds=prp,bootstrap=1,strategy=hybrid,maxPermute=4,maxPoints=64,comboTop=3,comboTiers=3,contenders=16,roundCalls=16,stop=0.1%
 tune: status: T 888.322 us/it, 0.0% of the weight on measured entries
 tune: status: FFT64: 1 of 600 entries measured, 599 waiting on the bootstrap
 ...

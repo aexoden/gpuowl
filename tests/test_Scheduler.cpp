@@ -1164,6 +1164,129 @@ TEST(a_bootstrap_completed_before_its_choice_was_recorded_is_not_raced_again) {
   CHECK(std::ranges::none_of(record.done, [](const auto& i) { return i.first == ItemKind::Bootstrap; }));
 }
 
+TEST(the_first_round_takes_one_variant_of_each_shape_before_a_second_of_any) {
+  // Three variants of 512:15:512 ahead of the hybrid, which is still within the margin.
+  Fixture f;
+  concludedAt(f, "512:15:512:101", {}, 1450);
+  concludedAt(f, "512:15:512:102", {}, 1455);
+  concludedAt(f, "512:15:512:110", {}, 1460);
+  concludedAt(f, "1:512:8:512:202", {}, 1500);
+  Scheduler const scheduler{scope(),
+                            only({"512:15:512:101", "512:15:512:102", "512:15:512:110", "1:512:8:512:202"}),
+                            1000,
+                            {},
+                            Strategy{.kind = Strategy::Kind::Single},
+                            false,
+                            false,
+                            Halving{.contenders = 2, .roundCalls = 4}};
+  std::vector<Item> const items = scheduler.admissible(f.db, f.env, Objective{f.db, f.env, scope(), Gating::Assumed});
+
+  const HalvingState& h = scheduler.lastHalving();
+  CHECK(h.active);
+  CHECK_EQ(h.round, 0u);
+  CHECK_EQ(h.budget, u64(4));
+  std::vector<std::string> pool;
+  for (size_t const i : h.pool) { pool.push_back(scheduler.baselines()[i].fft.spec()); }
+  CHECK(pool == (std::vector<std::string>{"512:15:512:101", "1:512:8:512:202"}));
+
+  // Its round is all there is, by rule, and only its members' steps.
+  CHECK(!items.empty());
+  for (const Item& item : items) {
+    CHECK(item.halving && byRule(item));
+    CHECK(std::ranges::find(h.pool, item.index) != h.pool.end());
+  }
+}
+
+TEST(each_round_keeps_the_faster_half_and_doubles_the_calls_until_one_is_left) {
+  Fixture f;
+  std::vector<const char*> const specs{"512:15:512:101", "512:15:512:102", "512:15:512:110", "512:15:512:111"};
+  double cost = 1450;
+  for (const char* spec : specs) { concludedAt(f, spec, {}, cost += 5); }
+  Scheduler const scheduler{scope(),
+                            only({"512:15:512:101", "512:15:512:102", "512:15:512:110", "512:15:512:111"}),
+                            1000,
+                            {},
+                            Strategy{.kind = Strategy::Kind::Single},
+                            false,
+                            false,
+                            Halving{.contenders = 4, .roundCalls = 4}};
+
+  // Calls of search on an entry: rows at any set but the built-in defaults, dearer than its defaults so that its gap
+  // stays where it was.
+  auto search = [&](const char* spec, u32 calls) {
+    for (u32 c = 0; c < calls; ++c) {
+      CHECK(f.db.add(RunRow{
+        .sess = f.sess,
+        .fft = spec,
+        .kind = TestKind::PRP,
+        .exponent = 118'063'003,
+        .regime = regimeOf(FFTConfig{spec}, 118'063'003),
+        .cfg = f.db.internCfg({{"ZEROHACK_W", "0"}}),
+        .m = {.mean = 1600, .stddev = 0.1, .blocks = 4, .calls = 1, .drift = 1, .status = Status::Ok, .ts = 0}}));
+    }
+  };
+  auto state = [&] {
+    (void)scheduler.admissible(f.db, f.env, Objective{f.db, f.env, scope(), Gating::Assumed});
+    const HalvingState& h = scheduler.lastHalving();
+    std::vector<std::string> pool;
+    for (size_t const i : h.pool) { pool.push_back(scheduler.baselines()[i].fft.spec()); }
+    return std::tuple{h.active, h.round, h.budget, pool};
+  };
+
+  CHECK(state() == std::tuple(true, 0u, u64(4), std::vector<std::string>(specs.begin(), specs.end())));
+
+  // Round 1: all four had their 4 calls; the two nearest the fastest go on, to 4 + 8.
+  for (const char* spec : specs) { search(spec, 4); }
+  CHECK(state() == std::tuple(true, 1u, u64(12), std::vector<std::string>{"512:15:512:101", "512:15:512:102"}));
+
+  // One is short of its calls, and it alone is offered.
+  search("512:15:512:101", 8);
+  for (const Item& item : scheduler.admissible(f.db, f.env, Objective{f.db, f.env, scope(), Gating::Assumed})) {
+    CHECK_EQ(scheduler.baselines()[item.index].fft.spec(), std::string{"512:15:512:102"});
+  }
+
+  // Both had theirs: one is left, and the search is ranked by value again, whatever it offers.
+  search("512:15:512:102", 8);
+  auto const [active, round, budget, pool] = state();
+  CHECK(!active);
+  CHECK(pool == std::vector<std::string>{"512:15:512:101"});
+  std::vector<Item> const items = scheduler.admissible(f.db, f.env, Objective{f.db, f.env, scope(), Gating::Assumed});
+  CHECK(std::ranges::any_of(
+    items, [&](const Item& i) { return scheduler.baselines()[i.index].fft.spec() == "512:15:512:111"; }));
+  CHECK(std::ranges::none_of(items, [](const Item& i) { return i.halving; }));
+}
+
+TEST(the_search_is_spread_over_the_contenders_before_it_settles_on_one) {
+  // The variants of 512:15:512 within a few percent of one another at their defaults, :101 3% further behind but 15%
+  // faster in place (INPLACE=1, off by default here); every other move costs 1%.  Ranked by value alone the search
+  // spends its calls on the variants cheapest at their defaults, since a single step of :101 would have to gain what
+  // they are ahead by, and the move that pays is never reached.
+  auto run = [](u32 contenders) {
+    Fixture f;
+    FakeBench bench{f.db, f.sess, false, 200};
+    bench.optionFactor = [](const FFTConfig& fft, const UseConfig& options) {
+      double factor = fft.variant == 101 ? 1.03 : 1;
+      for (const auto& [key, value] : options) {
+        factor *= fft.variant == 101 && key == "INPLACE" && value == "1" ? 0.85 : 1.01;
+      }
+      return factor;
+    };
+    Scheduler scheduler{scope(),
+                        baselines(nvidia(), scope(), {FFTShape{"512:15:512"}}),
+                        1000,
+                        {},
+                        Strategy{.kind = Strategy::Kind::Single},
+                        false,
+                        false,
+                        Halving{.contenders = contenders, .roundCalls = 4}};
+    (void)runQueue(scheduler, f.db, f.env, bench, [](const Objective&, const Defaults&) {});
+    return std::ranges::count(bench.order, std::string{"512:15:512:101@118063003 INPLACE=1"});
+  };
+
+  CHECK(run(16) >= 2);
+  CHECK_EQ(run(0), 0);
+}
+
 TEST(an_entry_names_every_key_a_line_would_set_once_its_own_keys_are_in_place) {
   // FFT3161 at width 512 offers L2_STRIPING up to 512/64 = 8 alone and 512/128 = 4 beside MULTI_Q=1, so under these
   // lines L2_STRIPING=8 is fitted away.  A set back at MULTI_Q=0 makes it legal again: the entry must name L2_STRIPING

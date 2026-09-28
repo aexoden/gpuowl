@@ -54,6 +54,22 @@ inline constexpr u32 WARMUP_BLOCKS = 1;
 // built-in defaults before the bootstrap (the defaults sweep).
 inline constexpr double CONTEND_MARGIN = 0.10;
 
+
+// Where the halving stands, as the rows say: which round, which entries are still in it, and how many calls of search
+// each is to have had by the round's end.
+struct HalvingState {
+  bool active = false;
+  u32 round = 0;
+  u64 budget = 0;
+
+  // Into Scheduler::baselines(), the smallest gap to what production runs first; and the calls of search each has had.
+  std::vector<size_t> pool;
+  std::vector<u64> calls;
+
+  // How many contenders the first round took.
+  u32 contenders = 0;
+};
+
 // What a call is expected to take, in wall-clock seconds, learnt from the calls this process has made.
 class CallClock {
 public:
@@ -162,6 +178,9 @@ struct Item {
   // production runs somewhere the workload weighs.
   bool sweep = false;
 
+  // A probe's, a combo's or a restart's: run by rule, as a round of the halving.
+  bool halving = false;
+
   // The first probe or combo offered from a stage listed only in part: at most how many more points the stage has,
   // which later windows list.
   u64 unlisted = 0;
@@ -196,8 +215,8 @@ struct RestartScan {
 [[nodiscard]] std::optional<u32> nextRunnable(RestartScan& scan, const std::function<std::string(u32)>& text,
                                               const std::function<bool(u32)>& runnable);
 
-// Whether `item` runs by rule rather than by value: a bootstrap call, a gate reading, or a baseline covering the
-// workload or taken in the defaults sweep.
+// Whether `item` runs by rule rather than by value: a bootstrap call, a gate reading, a baseline covering the workload
+// or taken in the defaults sweep, or a step of a halving round.
 [[nodiscard]] bool byRule(const Item& item);
 
 // Whether `item` is worth a call where anything expected to lower T by less than `floor` is not: one that runs by rule
@@ -212,12 +231,16 @@ public:
   // run dry; with them it never does, since a jump is always worth a little.  Without `gate` the accuracy gate reads
   // nothing, so nothing but exact arithmetic is ever published; the search is the same either way.
   Scheduler(RunScope scope, std::vector<Baseline> baselines, u32 blockSize = 1000, Bootstrap bootstrap = {},
-            std::optional<Strategy> strategy = {}, bool restarts = false, bool gate = false);
+            std::optional<Strategy> strategy = {}, bool restarts = false, bool gate = false, Halving halving = {});
 
   [[nodiscard]] const RunScope& scope() const { return scope_; }
   [[nodiscard]] const std::vector<Baseline>& baselines() const { return baselines_; }
   [[nodiscard]] const Bootstrap& bootstrap() const { return bootstrap_; }
   [[nodiscard]] const std::optional<Strategy>& strategy() const { return strategy_; }
+  [[nodiscard]] const Halving& halving() const { return halving_; }
+
+  // Where the halving stood when admissible() last ranked the queue.
+  [[nodiscard]] const HalvingState& lastHalving() const { return lastHalving_; }
 
   [[nodiscard]] BootstrapState bootstrapState(const TuneDB& db, u32 env) const;
 
@@ -255,6 +278,15 @@ public:
   // waits for.
   [[nodiscard]] bool swept(const TuneDB& db, u32 env, const Objective& objective) const;
 
+  // The halving as the rows stand.  The contenders are the entries with a publishable reading within CONTEND_MARGIN
+  // of the fastest thing at some exponent of their band the workload weighs, the best `contenders` of them taken one
+  // variant of each shape before a second of any, since what the search is spread over is which shape tunes best.  A
+  // round ends once every contender still in it has had its calls of search or has no step left to take in
+  // `offering`; the pool then keeps its better half, by gap, and the calls double.  It is over once one is left.
+  [[nodiscard]] HalvingState halvingState(const TuneDB& db, u32 env,
+                                          const std::map<EntryKey, std::vector<Reading>>& readings,
+                                          const Objective& objective, const std::set<size_t>& offering) const;
+
 
   // The first measurements admissible() offers once nothing runs ahead of them by rule, whether or not a bootstrap
   // call or a gate reading is holding them back now.
@@ -285,6 +317,11 @@ private:
   [[nodiscard]] std::vector<Item> sweepItems(const TuneDB& db, u32 env, const Progress& progress,
                                              const std::map<EntryKey, std::vector<Reading>>& readings,
                                              const GainModel& gains, const Objective& objective) const;
+
+  // The fastest thing at each weighted point of `objective`: what production runs there where that is measured, and
+  // where it is not, the cheapest of `estimates` among the entries that serve it.  Nothing at a point with no weight.
+  [[nodiscard]] std::vector<std::optional<double>> fastestAt(const Objective& objective,
+                                                             const std::vector<double>& estimates) const;
 
   // Best rate first by shape, the variants of one shape together.  The variants of a shape share a prior, so nothing
   // yet tells them apart but the edges of their bands: the variant production's own shape scan runs where nothing is
@@ -338,6 +375,8 @@ private:
   std::optional<Strategy> strategy_;
   bool restarts_;
   bool gate_;
+  Halving halving_;
+  mutable HalvingState lastHalving_;
 
   // The configurations this process has built, whose next build finds its kernels compiled.
   std::set<std::string> built_;

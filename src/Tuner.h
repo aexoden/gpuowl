@@ -114,6 +114,9 @@ struct TuneCommand {
   // `run` only: what counts as one step from an entry's best option set.
   Strategy strategy{};
 
+  // `run` only: how the search is first spread over the entries worth searching.
+  Halving halving{.contenders = CONTENDERS, .roundCalls = ROUND_CALLS};
+
   // `run` only: the fraction of T an item has to be expected to remove to be worth running; 0 to run until stopped.
   double stop = STOP;
 
