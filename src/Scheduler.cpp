@@ -601,49 +601,78 @@ std::vector<Item> Scheduler::sweepItems(const TuneDB& db, u32 env, const Progres
                                         const GainModel& gains, const Objective& objective) const {
   GainDist const unmeasured = gains.global();
 
-  // What each entry is known or estimated to cost: its cheapest reading under any options where it has one, else its
-  // prior without the optimism the value model gives it, so that the margin means the same measured or not.
-  std::vector<double> estimates;
-  for (const Baseline& b : baselines_) {
-    auto const measured = readings.find({b.fft.spec(), b.kind, b.band.regime.label()});
-    estimates.push_back(measured != readings.end() ? measured->second.front().cost
-                                                   : objective.priorModel().cost(b.fft.shape) / PRIOR_OPTIMISM);
+  // Where each entry stands at the built-in defaults.  An entry is read once a reading there has concluded or failed;
+  // one under any other options does not say what the entry costs untuned.
+  struct Owed {
+    EntryKey key;
+    bool measured = false;
+    bool read = false;
+    bool runnable = false;
+    Partial partial{};
+    u64 exponent = 0;
+
+    // Its cheapest reading under any options where it has one, else its prior without the optimism the value model
+    // gives it, so that the margin means the same measured or not.
+    double estimate = 0;
+  };
+  std::vector<Owed> owed;
+  for (size_t i = 0; i < baselines_.size(); ++i) {
+    const Baseline& b = baselines_[i];
+    std::string const spec = b.fft.spec();
+    Owed& o = owed.emplace_back(Owed{.key = {spec, b.kind, b.band.regime.label()}});
+    EntrySet const defaults{o.key, configText({})};
+
+    auto const measured = readings.find(o.key);
+    o.measured = measured != readings.end();
+    o.estimate = o.measured ? measured->second.front().cost : objective.priorModel().cost(b.fft.shape) / PRIOR_OPTIMISM;
+
+    auto const at = progress.concluded.find(o.key);
+    o.read = progress.failed.contains(defaults) ||
+      (at != progress.concluded.end() && std::ranges::any_of(at->second, &UseConfig::empty));
+
+    if (auto const p = progress.partial.find(defaults); p != progress.partial.end()) { o.partial = p->second; }
+    o.exponent = o.partial.calls && b.band.contains(o.partial.exponent) ? o.partial.exponent : b.exponent;
+
+    // Held back as a measurement would hold it back.
+    auto const tried = attempts_.find(i);
+    u32 const cfg = db.findCfgId({});
+    o.runnable = !o.read && (tried == attempts_.end() || tried->second < MAX_ATTEMPTS) && !db.isNogo(env, spec, {}) &&
+      !(cfg && db.diedOn(env, cfg, b.kind, spec, o.exponent));
   }
 
-  std::vector<std::optional<double>> const fastest = fastestAt(objective, estimates);
+  // What each point is held to: what production is measured to run there, or the prior of an entry not read yet that
+  // serves it, if cheaper -- the cheapest are read first, and each reading replaces its prior.  Not the prior of one
+  // that cannot be read, which nothing would ever replace, nor a reading production does not run there.
+  std::vector<std::optional<double>> fastest = measuredAt(objective);
+  for (size_t p = 0; p < objective.points().size(); ++p) {
+    const ObjectivePoint& point = objective.points()[p];
+    if (point.weight <= 0) { continue; }
+    for (size_t i = 0; i < baselines_.size(); ++i) {
+      const Baseline& b = baselines_[i];
+      if (owed[i].measured || !owed[i].runnable || b.kind != point.kind || !b.band.contains(point.exponent)) {
+        continue;
+      }
+      fastest[p] = std::min(fastest[p].value_or(owed[i].estimate), owed[i].estimate);
+    }
+  }
 
   std::vector<Item> out;
   sweepWithin_ = 0;
   for (size_t i = 0; i < baselines_.size(); ++i) {
     const Baseline& b = baselines_[i];
-    std::string const spec = b.fft.spec();
-    EntryKey const key{spec, b.kind, b.band.regime.label()};
+    const Owed& o = owed[i];
 
-    double const estimate = estimates[i];
     bool contends = false;
     for (size_t p = 0; p < objective.points().size() && !contends; ++p) {
       const ObjectivePoint& point = objective.points()[p];
       contends = fastest[p] && point.kind == b.kind && b.band.contains(point.exponent) &&
-        estimate <= (1 + CONTEND_MARGIN) * *fastest[p];
+        o.estimate <= (1 + CONTEND_MARGIN) * *fastest[p];
     }
 
-    // A reading at the built-in defaults, concluded or failed, is what the sweep is for; one under any other options
-    // does not say what the entry costs untuned.  One read is counted as read whether or not it still contends, so
-    // that what the sweep says it has read only grows as estimates give way to readings.
-    EntrySet const defaults{key, configText({})};
-    auto const at = progress.concluded.find(key);
-    bool const read = progress.failed.contains(defaults) ||
-      (at != progress.concluded.end() && std::ranges::any_of(at->second, &UseConfig::empty));
-    sweepWithin_ += contends || read;
-    if (!contends || read) { continue; }
-    if (auto const at = attempts_.find(i); at != attempts_.end() && at->second >= MAX_ATTEMPTS) { continue; }
-
-    Partial p{};
-    if (auto const at = progress.partial.find(defaults); at != progress.partial.end()) { p = at->second; }
-    u64 const exponent = p.calls && b.band.contains(p.exponent) ? p.exponent : b.exponent;
-
-    if (db.isNogo(env, spec, {})) { continue; }
-    if (u32 const cfg = db.findCfgId({}); cfg && db.diedOn(env, cfg, b.kind, spec, exponent)) { continue; }
+    // One read is counted as read whether or not it still contends, so that what the sweep says it has read only
+    // grows as estimates give way to readings.
+    sweepWithin_ += contends || o.read;
+    if (!contends || !o.runnable) { continue; }
 
     bool const fresh = !built_.contains(builtKey(b.fft, {}));
     out.push_back({.kind = ItemKind::Baseline,
@@ -651,32 +680,26 @@ std::vector<Item> Scheduler::sweepItems(const TuneDB& db, u32 env, const Progres
                    .options = {},
                    .moved = {},
                    .what = "at the built-in defaults",
-                   .exponent = exponent,
-                   .value = expectedSaving(objective.points(), b.kind, b.band, estimate, unmeasured),
-                   .cost = estimate,
-                   .seconds = clock_.seconds(estimate, fresh),
+                   .exponent = o.exponent,
+                   .value = expectedSaving(objective.points(), b.kind, b.band, o.estimate, unmeasured),
+                   .cost = o.estimate,
+                   .seconds = clock_.seconds(o.estimate, fresh),
                    .fresh = fresh,
-                   .calls = p.calls,
+                   .calls = o.partial.calls,
                    .sweep = true});
   }
   rankByShape(out);
   sweepOwed_ = 0;
-  std::set<size_t> owed;
-  for (const Item& item : out) { sweepOwed_ += owed.insert(item.index).second; }
+  std::set<size_t> indices;
+  for (const Item& item : out) { sweepOwed_ += indices.insert(item.index).second; }
   return out;
 }
 
-std::vector<std::optional<double>> Scheduler::fastestAt(const Objective& objective,
-                                                        const std::vector<double>& estimates) const {
+std::vector<std::optional<double>> Scheduler::measuredAt(const Objective& objective) const {
   std::vector<std::optional<double>> out(objective.points().size());
   for (size_t p = 0; p < objective.points().size(); ++p) {
     const ObjectivePoint& point = objective.points()[p];
-    if (point.weight <= 0) { continue; }
-    if (point.cost && point.cost->measured()) { out[p] = point.cost->us; }
-    for (size_t i = 0; i < baselines_.size(); ++i) {
-      if (baselines_[i].kind != point.kind || !baselines_[i].band.contains(point.exponent)) { continue; }
-      out[p] = std::min(out[p].value_or(estimates[i]), estimates[i]);
-    }
+    if (point.weight > 0 && point.cost && point.cost->measured()) { out[p] = point.cost->us; }
   }
   return out;
 }
@@ -688,23 +711,20 @@ HalvingState Scheduler::halvingState(const TuneDB& db, u32 env,
   if (!halving_.on() || !strategy_) { return out; }
   const Env& device = bootstrap_.env();
 
-  std::vector<double> estimates;
-  for (const Baseline& b : baselines_) {
-    auto const measured = readings.find({b.fft.spec(), b.kind, b.band.regime.label()});
-    estimates.push_back(measured != readings.end() ? measured->second.front().cost
-                                                   : objective.priorModel().cost(b.fft.shape) / PRIOR_OPTIMISM);
-  }
-  std::vector<std::optional<double>> const fastest = fastestAt(objective, estimates);
+  std::vector<std::optional<double>> const fastest = measuredAt(objective);
 
-  // How far behind the fastest each measured entry is at the best of its points.
+  // How far behind what production runs each measured entry is at the best of its points.  Only against what is
+  // measured: an estimate says what to read next, and a prior that is wrong, or can never be read, must not decide
+  // which of the entries already read is searched.
   std::vector<std::optional<double>> gaps(baselines_.size());
   for (size_t i = 0; i < baselines_.size(); ++i) {
     const Baseline& b = baselines_[i];
-    if (!readings.contains({b.fft.spec(), b.kind, b.band.regime.label()})) { continue; }
+    auto const measured = readings.find({b.fft.spec(), b.kind, b.band.regime.label()});
+    if (measured == readings.end()) { continue; }
     for (size_t p = 0; p < objective.points().size(); ++p) {
       const ObjectivePoint& point = objective.points()[p];
       if (!fastest[p] || point.kind != b.kind || !b.band.contains(point.exponent)) { continue; }
-      double const gap = estimates[i] / *fastest[p] - 1;
+      double const gap = measured->second.front().cost / *fastest[p] - 1;
       gaps[i] = std::min(gaps[i].value_or(gap), gap);
     }
   }
