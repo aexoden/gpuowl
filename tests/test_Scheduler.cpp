@@ -1106,6 +1106,45 @@ TEST(the_sweep_reads_every_entry_within_the_margin_at_the_built_in_defaults) {
   CHECK(!sweep().contains("512:15:512:101"));
 }
 
+TEST(a_failed_reading_at_the_built_in_defaults_is_not_swept_again) {
+  Fixture f;
+  FFTConfig const failed{"512:15:512:101"};
+  CHECK(f.db.add(RunRow{.sess = f.sess,
+                        .fft = failed.spec(),
+                        .kind = TestKind::PRP,
+                        .exponent = 118'063'003,
+                        .regime = regimeOf(failed, 118'063'003),
+                        .cfg = f.db.internCfg({}),
+                        .m = {.status = Status::Err}}));
+  Scheduler const scheduler{scope(), only({"512:15:512:101"}), 1000, {}, Strategy{.kind = Strategy::Kind::Single}};
+
+  CHECK(std::ranges::none_of(scheduler.admissible(f.db, f.env, Objective{f.db, f.env, scope(), Gating::Assumed}),
+                             [](const Item& i) { return i.sweep; }));
+  CHECK(scheduler.swept(f.db, f.env, Objective{f.db, f.env, scope(), Gating::Assumed}));
+}
+
+TEST(a_sweep_reading_is_resumed_where_it_was_started) {
+  // One call at the prime below the probe, as a run over an earlier probe would have left it.
+  Fixture f;
+  FFTConfig const fft{"512:15:512:101"};
+  u64 const started = Primes{}.prevPrime(118'063'003);
+  CHECK(f.db.add(
+    RunRow{.sess = f.sess,
+           .fft = fft.spec(),
+           .kind = TestKind::PRP,
+           .exponent = started,
+           .regime = regimeOf(fft, started),
+           .cfg = f.db.internCfg({}),
+           .m = {.mean = 1700, .stddev = 0.1, .blocks = 4, .calls = 1, .drift = 1, .status = Status::Ok, .ts = 0}}));
+  Scheduler const scheduler{scope(), only({"512:15:512:101"}), 1000, {}, Strategy{.kind = Strategy::Kind::Single}};
+
+  std::vector<Item> const items = scheduler.admissible(f.db, f.env, Objective{f.db, f.env, scope(), Gating::Assumed});
+  CHECK(!items.empty() && items.front().sweep);
+  if (items.empty()) { return; }
+  CHECK_EQ(items.front().exponent, started);
+  CHECK_EQ(items.front().calls, 1u);
+}
+
 TEST(an_entry_at_the_built_in_defaults_tries_the_lines_first) {
   // FFT61 rounds nothing, so its row under WMUL=1 is published with the gate off, and the lines carry WMUL=1.  The
   // hybrid is measured only at the defaults.

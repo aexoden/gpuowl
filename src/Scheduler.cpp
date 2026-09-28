@@ -630,15 +630,16 @@ std::vector<Item> Scheduler::sweepItems(const TuneDB& db, u32 env, const Progres
     // A reading at the built-in defaults, concluded or failed, is what the sweep is for; one under any other options
     // does not say what the entry costs untuned.  One read is counted as read whether or not it still contends, so
     // that what the sweep says it has read only grows as estimates give way to readings.
+    EntrySet const defaults{key, configText({})};
     auto const at = progress.concluded.find(key);
-    bool const read = progress.failed.contains({key, ""}) ||
+    bool const read = progress.failed.contains(defaults) ||
       (at != progress.concluded.end() && std::ranges::any_of(at->second, &UseConfig::empty));
     sweepWithin_ += contends || read;
     if (!contends || read) { continue; }
     if (auto const at = attempts_.find(i); at != attempts_.end() && at->second >= MAX_ATTEMPTS) { continue; }
 
     Partial p{};
-    if (auto const at = progress.partial.find({key, ""}); at != progress.partial.end()) { p = at->second; }
+    if (auto const at = progress.partial.find(defaults); at != progress.partial.end()) { p = at->second; }
     u64 const exponent = p.calls && b.band.contains(p.exponent) ? p.exponent : b.exponent;
 
     if (db.isNogo(env, spec, {})) { continue; }
