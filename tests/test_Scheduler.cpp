@@ -693,7 +693,7 @@ struct BootstrapRun {
   // The calls that were steps of the bootstrap.
   [[nodiscard]] std::vector<std::string> bootstrapped() const {
     std::vector<std::string> out;
-    for (size_t k = 0; k < done.size(); ++k) {
+    for (size_t k = 0; k < done.size() && k < order.size(); ++k) {
       if (done[k].bootstrap) { out.push_back(order[k]); }
     }
     return out;
@@ -728,22 +728,30 @@ BootstrapRun runBootstrapped(Fixture& f, u32 stopAfter = ~0u,
 
 }  // namespace
 
-TEST(the_bootstrap_searches_each_family_for_its_calls_before_anything_is_valued) {
+TEST(the_bootstrap_searches_each_family_for_its_calls_in_turn_with_the_rest) {
   Fixture f;
   BootstrapRun const run = runBootstrapped(f);
   const std::vector<Record::Done>& done = run.done;
   CHECK(!run.report.stopped);
 
-  // The bootstrap's steps come together, after every reading at the built-in defaults the sweep takes, and before
-  // anything valued.
+  // First the readings at the built-in defaults the sweep takes at the probe, in turn with the search, then the
+  // bootstrap's steps, each at most a turn of the sweep and a turn of the search after the last, until the families
+  // have had their calls.  Every band here holds the probe.
   auto const first = std::ranges::find_if(done, &Record::Done::bootstrap);
-  auto const last = std::find_if(first, done.end(), [](const Record::Done& d) { return !d.bootstrap; });
   CHECK(first != done.end() && first != done.begin());
-  CHECK(std::none_of(last, done.end(), [](const Record::Done& d) { return d.bootstrap; }));
-  CHECK(std::all_of(done.begin(), first, [](const Record::Done& d) {
-    return d.first == ItemKind::Baseline && d.second.ends_with("at the built-in defaults");
+  CHECK(std::none_of(first, done.end(), [](const Record::Done& d) {
+    return !d.bootstrap && d.second.ends_with(" at the built-in defaults");
   }));
-  CHECK(last != done.end());
+  auto const last = std::find_if(done.rbegin(), done.rend(), [](const Record::Done& d) { return d.bootstrap; });
+  if (first == done.end() || last == done.rend()) { return; }
+  u32 between = 0;
+  for (auto it = first; it != last.base(); ++it) {
+    between = it->bootstrap ? 0 : between + 1;
+    CHECK(between <= 2);
+  }
+  CHECK(std::any_of(first, last.base(), [](const Record::Done& d) {
+    return !d.bootstrap && !d.second.ends_with("at the built-in defaults");
+  }));
 
   // Each family's search for its calls in turn, one step at a time from the built-in defaults.
   std::vector<Family> const families = twoFamilies().familiesIn(f.db, f.env);
@@ -762,7 +770,7 @@ TEST(the_bootstrap_searches_each_family_for_its_calls_before_anything_is_valued)
   CHECK_EQ(configText(run.defaults.global), std::string{"WMUL=1"});
 
   // Every baseline ran at the built-in defaults: what the entry costs untuned, whatever the lines say.
-  for (size_t k = 0; k < done.size(); ++k) {
+  for (size_t k = 0; k < done.size() && k < run.order.size(); ++k) {
     if (done[k].first == ItemKind::Baseline) { CHECK(run.order[k].find(' ') == std::string::npos); }
   }
 }
@@ -1036,7 +1044,7 @@ TEST(a_probe_the_host_builds_otherwise_is_given_up) {
 }
 
 
-TEST(the_defaults_sweep_then_the_bootstrap_run_before_any_entry_is_searched) {
+TEST(the_sweep_at_the_probe_comes_before_the_bootstrap_which_takes_turns_with_the_search) {
   Fixture f;
   FakeBench bench{f.db, f.sess, false, 800};
   bench.optionFactor = planted;
@@ -1047,20 +1055,24 @@ TEST(the_defaults_sweep_then_the_bootstrap_run_before_any_entry_is_searched) {
   (void)runQueue(scheduler, f.db, f.env, bench, [&](const Objective&, const Defaults& d) { lines = d; }, 0, &record);
   const auto& done = record.done;
 
-  // First every contender at the built-in defaults: the hybrid, the cheapest, is one; 3:1K:8:512, half as dear
-  // again, is not.
-  auto const sweepEnd = std::ranges::find_if(done, [](const auto& i) {
-    return i.first != ItemKind::Baseline || !i.second.ends_with("at the built-in defaults");
-  });
-  CHECK(std::any_of(done.begin(), sweepEnd, [](const auto& i) { return i.second.starts_with("1:512:8:512:202 "); }));
-  CHECK(std::none_of(done.begin(), sweepEnd, [](const auto& i) { return i.second.starts_with("3:1K:8:512:"); }));
+  // Every contender read at the built-in defaults in the sweep: the hybrid, the cheapest, is one; 3:1K:8:512, half as
+  // dear again, is not.  The search takes its turns with it from the start.
+  auto const swept = [](const auto& i) { return !i.bootstrap && i.second.ends_with(" at the built-in defaults"); };
+  auto const firstBootstrap = std::ranges::find_if(done, [](const auto& i) { return i.bootstrap; });
+  auto const sweepEnd = std::find_if(done.rbegin(), done.rend(), swept).base();
+  CHECK(std::any_of(done.begin(), sweepEnd,
+                    [&](const auto& i) { return swept(i) && i.second.starts_with("1:512:8:512:202 "); }));
+  CHECK(std::none_of(done.begin(), done.end(),
+                     [&](const auto& i) { return swept(i) && i.second.starts_with("3:1K:8:512:"); }));
+  CHECK(std::any_of(done.begin(), sweepEnd, [&](const auto& i) { return !swept(i); }));
 
-  // Then the bootstrap, whole, on the families the run recorded once the sweep was done, and only then the search.
+  // Then the bootstrap, on the families the run recorded once the sweep was done there, and the search in turn with it.
   CHECK(scheduler.bootstrap().chosen(f.db, f.env));
-  auto const bootstrapEnd = std::find_if(sweepEnd, done.end(), [](const auto& i) { return !i.bootstrap; });
-  CHECK(bootstrapEnd != sweepEnd);
-  CHECK(std::none_of(bootstrapEnd, done.end(), [](const auto& i) { return i.bootstrap; }));
-  CHECK(std::any_of(bootstrapEnd, done.end(), [](const auto& i) { return i.first == ItemKind::Probe; }));
+  CHECK(sweepEnd <= firstBootstrap && firstBootstrap != done.end());
+  auto const searched = [](const auto& i) { return !i.bootstrap && i.first == ItemKind::Probe; };
+  auto const firstSearched = std::find_if(firstBootstrap, done.end(), searched);
+  CHECK(firstSearched != done.end());
+  CHECK(std::any_of(firstSearched, done.end(), [](const auto& i) { return i.bootstrap; }));
 
   // A set at a key's built-in value, measured beside a line that sets it otherwise, records the set it ran, and what
   // it would publish names the key, so that it runs as it was measured.
@@ -1105,6 +1117,68 @@ std::vector<Baseline> only(std::initializer_list<const char*> specs) {
 }
 
 }  // namespace
+
+TEST(the_sweep_the_bootstrap_and_the_search_take_turns) {
+  // 1K:8:1K serves the probe in one band and the top of this workload in another, which only the sweep reads.
+  u64 const probe = 118'063'003;
+  RunScope const wide = makeScope(ScopeArgs{.lo = 110'000'000, .hi = 200'000'000, .probe = probe}, {});
+  std::vector<Baseline> const entries = baselines(nvidia(), wide, {FFTShape{"1K:8:1K"}});
+  CHECK(std::ranges::any_of(entries, [&](const Baseline& b) { return !b.band.contains(probe); }));
+  Fixture f;
+  Scheduler scheduler{wide, entries, 1000,
+                      Bootstrap{nvidia(), probe, {{.type = FFT64, .fft = FFTConfig{"1K:8:1K:212"}}}},
+                      Strategy{.kind = Strategy::Kind::Single}};
+  auto next = [&] {
+    Objective const objective{f.db, f.env, wide, Gating::Assumed};
+    std::vector<Item> const items = scheduler.admissible(f.db, f.env, objective);
+    CHECK(!items.empty());
+    return std::pair{items.empty() ? Item{} : items.front(),
+                     scheduler.phase(scheduler.bootstrapState(f.db, f.env), items, objective, 0)};
+  };
+  auto atProbe = [&](const Item& item) { return scheduler.baselines()[item.index].band.contains(probe); };
+
+  // Two variants read at the probe: the rest of the sweep there goes first, and in turn with the search of those two;
+  // the bootstrap waits for its configuration to be chosen.
+  std::vector<std::string> atTheProbe;
+  for (const Baseline& b : entries) {
+    if (b.band.contains(probe)) { atTheProbe.push_back(b.fft.spec()); }
+  }
+  CHECK(atTheProbe.size() > 2);
+  concludedAt(f, atTheProbe[0], {}, 1500);
+  concludedAt(f, atTheProbe[1], {}, 1505);
+  CHECK(!scheduler.swept(f.db, f.env, Objective{f.db, f.env, wide, Gating::Assumed}));
+  Item const first = next().first;
+  CHECK(first.sweep && atProbe(first));
+  scheduler.ran(first, 1, 0);
+  Item const early = next().first;
+  CHECK(!early.sweep && !early.bootstrap);
+  scheduler.ran(early, 1, 0);
+  CHECK(next().first.sweep);
+
+  // Every variant read there and the choice recorded: round and round, a call at a time, and all three said together.
+  for (size_t k = 2; k < atTheProbe.size(); ++k) { concludedAt(f, atTheProbe[k], {}, 1510 + double(k)); }
+  CHECK(scheduler.swept(f.db, f.env, Objective{f.db, f.env, wide, Gating::Assumed}));
+  CHECK(f.db.add(BootRow{.sess = f.sess, .fft = atTheProbe[0], .probe = probe, .ts = 1}));
+  std::vector<Item> const ranked = scheduler.admissible(f.db, f.env, Objective{f.db, f.env, wide, Gating::Assumed});
+  CHECK(ranked.size() > 4);
+  if (ranked.size() > 4) {
+    CHECK(ranked[0].sweep && ranked[1].bootstrap && !ranked[2].sweep && !ranked[2].bootstrap && ranked[3].sweep);
+  }
+  auto const [sweep, phase] = next();
+  CHECK(sweep.sweep && !atProbe(sweep));
+  CHECK(phase.text.starts_with("defaults sweep: ") && phase.text.find(" + bootstrap: ") != std::string::npos &&
+        phase.text.ends_with(" + searching by expected gain"));
+  CHECK(phase.brief.starts_with("sweep ") && phase.brief.find(" + bootstrap ") != std::string::npos);
+  scheduler.ran(sweep, 1, 0);
+  Item const step = next().first;
+  CHECK(step.bootstrap && step.kind == ItemKind::Probe &&
+        scheduler.baselines()[step.index].fft.spec() == atTheProbe[0]);
+  scheduler.ran(step, 1, 0);
+  Item const searched = next().first;
+  CHECK(!searched.bootstrap && !searched.sweep && searched.kind == ItemKind::Probe);
+  scheduler.ran(searched, 1, 0);
+  CHECK(next().first.sweep);
+}
 
 TEST(the_sweep_reads_every_entry_within_the_margin_at_the_built_in_defaults) {
   Fixture f;
@@ -1379,6 +1453,26 @@ TEST(an_ll_only_run_measures_and_publishes_nothing_in_prp) {
   if (file) {
     CHECK(std::ranges::none_of(file->entries, [](const SelectionEntry& e) { return e.kind == TestKind::PRP; }));
   }
+}
+
+TEST(what_waits_while_a_halving_round_runs_waits_on_the_halving) {
+  // Two contenders read, and an NTT half as dear again, outside the margin, owed its first measurement.
+  Fixture f;
+  concludedAt(f, "512:15:512:101", {}, 1450);
+  concludedAt(f, "512:15:512:102", {}, 1455);
+  Scheduler const scheduler{scope(),
+                            only({"512:15:512:101", "512:15:512:102", "3:1K:8:512:202"}),
+                            1000,
+                            {},
+                            Strategy{.kind = Strategy::Kind::Single},
+                            false,
+                            false,
+                            Halving{.contenders = 2, .roundCalls = 4}};
+  QueueReport report;
+  report.left = scheduler.admissible(f.db, f.env, Objective{f.db, f.env, scope(), Gating::Assumed});
+  CHECK(std::ranges::any_of(report.left, [](const Item& i) { return i.halving; }));
+  RunSummary const s = summarize(scheduler, f.db, f.env, f.sess, report, STOP);
+  CHECK_EQ(s.heldBy, std::string{"the halving"});
 }
 
 TEST(the_first_round_takes_one_variant_of_each_shape_before_a_second_of_any) {

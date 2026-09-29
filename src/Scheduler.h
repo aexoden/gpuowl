@@ -221,9 +221,9 @@ public:
   // Where the halving stood when admissible() last ranked the queue.
   [[nodiscard]] const HalvingState& lastHalving() const { return lastHalving_; }
 
-  // The phase `ranked` is in, as admissible() just gave it from `state`, with its own totals: how many calls of search
-  // the family being bootstrapped has had, how many contenders the sweep has read, how far the halving's round has
-  // got.
+  // The phase `ranked` is in, as admissible() just gave it from `state`, with its own totals: how many contenders the
+  // sweep has read, how many calls of search the family being bootstrapped has had, how far the halving's round has
+  // got.  What takes turns is said together, joined by " + ".
   [[nodiscard]] Phase phase(const BootstrapState& state, const std::vector<Item>& ranked, const Objective& objective,
                             double floor) const;
 
@@ -243,22 +243,25 @@ public:
   // objective cannot price them, since its prior is below what the entries they publish cost.  Then, with the gate,
   // while an exponent the workload weighs has no entry, the baselines whose bands hold one: nothing would be published
   // there otherwise, and the value of a first measurement is only the gain it might show over the prior, which is its
-  // own shape's.  Then, with a strategy, the defaults sweep (sweepItems()).  Then the bootstrap: each family still to
-  // be read at the built-in defaults, cheapest first, and once every one is, what the search of the cheapest family
-  // still owed its calls offers, in the search's own order and whatever it is priced at.  After that, together and best
-  // rate first: the baselines, at the built-in defaults;
-  // what the search of every entry with a row emission could publish offers (EntrySearch::offers()), the lines and each
-  // probe valued under the entry's move gains, each combo under its combination gains and a restart under its restart
-  // gains, from the cost of the best set it is a step from; one more call on each side of every contest production
-  // decides that the race rule leaves undecided (refineValues()); and with the gate, the next reading of each passed
-  // set whose reach may be raised above the table, worth what that set would save over the exponents between its reach
-  // and that reading, at what it costs.  A baseline is left out once a row has concluded it or recorded a failure of
-  // it, while an earlier generation's death or an unbuildable key holds it, and once this process has tried it more
-  // often than any entry needs.
+  // own shape's.  After that three kinds of work take turns, a call at a time, starting after the kind the last call
+  // was: with a strategy, the defaults sweep (sweepItems()), the entries whose bands hold the probe first, since each
+  // family is searched on its type's cheapest reading there; the bootstrap, once the configuration each family is on
+  // is recorded -- each family still to be read at the built-in defaults, cheapest first, and once every one is, what
+  // the search of the cheapest family still owed its calls offers, in the search's own order and whatever it is
+  // priced at; and the search.  The
+  // search is the halving's round while one is under way (halvingState()), and otherwise, together and best rate
+  // first: the baselines, at the built-in defaults; what the search of every entry with a row emission could publish
+  // offers (EntrySearch::offers()), the lines and each probe valued under the entry's move gains, each combo under its
+  // combination gains and a restart under its restart gains, from the cost of the best set it is a step from; one more
+  // call on each side of every contest production decides that the race rule leaves undecided (refineValues()); and
+  // with the gate, the next reading of each passed set whose reach may be raised above the table, worth what that set
+  // would save over the exponents between its reach and that reading, at what it costs.  A baseline is left out once a
+  // row has concluded it or recorded a failure of it, while an earlier generation's death or an unbuildable key holds
+  // it, and once this process has tried it more often than any entry needs.
   [[nodiscard]] std::vector<Item> admissible(const TuneDB& db, u32 env, const Objective& objective) const;
 
-  // Whether nothing is left of the workload's coverage or, with a strategy, of the defaults sweep: what the bootstrap's
-  // choice of configurations waits for.
+  // Whether nothing is left of the workload's coverage or, with a strategy, of the defaults sweep at the probe: what
+  // the bootstrap's choice of configurations waits for.
   [[nodiscard]] bool swept(const TuneDB& db, u32 env, const Objective& objective) const;
 
   // The halving as the rows stand.  Its first round takes the contenders: the entries with a publishable reading within
@@ -298,6 +301,14 @@ private:
   // Into baselines_, the entry a family's bootstrap searches: its configuration in `kind`, in the band that holds the
   // probe.  Nothing where the workload gives that entry no weight.
   [[nodiscard]] std::optional<size_t> entryOf(const Family& family, TestKind kind) const;
+
+  // The kinds of work that take turns, in the order the turns go round.
+  enum class Turn : u8 { Sweep, Bootstrap, Search };
+  static constexpr size_t TURNS = 3;
+
+  // Each kind's items taken a turn at a time, the kind after the one the last call was first, then round from there,
+  // each in its own order.
+  [[nodiscard]] std::vector<Item> inTurn(std::array<std::vector<Item>, TURNS> turns) const;
 
   [[nodiscard]] std::vector<Item> baselineItems(const TuneDB& db, u32 env, const Progress& progress,
                                                 const GainModel& gains, const Objective& objective) const;
@@ -386,6 +397,9 @@ private:
   std::map<std::string, u32> unrecordedRefines_;
 
   std::string last_;
+
+  // The kind of work the last call was, of those that take turns.
+  std::optional<Turn> lastTurn_;
 };
 
 // What the queue runs its items on.

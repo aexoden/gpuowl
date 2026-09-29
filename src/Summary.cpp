@@ -134,14 +134,12 @@ RunSummary summarize(const Scheduler& scheduler, const TuneDB& db, u32 env, u32 
     if (offered.contains(keyOf(b)) || !waiting.insert(keyOf(b)).second) { continue; }
     ++families[b.fft.shape.fft_type].waiting;
   }
+  // The sweep and the bootstrap take turns with the search, so only the barriers ahead of them, or a halving's round,
+  // which is all the search there is while it lasts, hold anything back.
   if (!waiting.empty()) {
-    bool const bootstrapping = std::ranges::any_of(report.left, &Item::bootstrap);
     bool const covering = std::ranges::any_of(report.left, [](const Item& i) { return i.cover; });
-    bool const sweeping = std::ranges::any_of(report.left, [](const Item& i) { return i.sweep; });
-    out.heldBy = bootstrapping ? "the bootstrap"
-      : covering               ? "the workload being covered"
-      : sweeping               ? "the defaults sweep"
-                               : "the accuracy gate";
+    bool const halving = std::ranges::any_of(report.left, [](const Item& i) { return i.halving; });
+    out.heldBy = covering ? "the workload being covered" : halving ? "the halving" : "the accuracy gate";
   }
 
   for (const auto& [key, type] : typeOf) {

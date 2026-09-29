@@ -54,7 +54,8 @@ struct RunSummary {
   };
   std::vector<Family> families;
 
-  // What the waiting entries wait on: "the bootstrap" or "the accuracy gate"; empty where none wait.
+  // What the waiting entries wait on: "the accuracy gate", "the workload being covered" or "the halving"; empty where
+  // none wait.
   std::string heldBy;
 
   // What the queue still offers of one kind, and the one of them it values most.
