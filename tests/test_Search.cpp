@@ -11,6 +11,7 @@
 
 #include <algorithm>
 #include <map>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -51,7 +52,7 @@ struct Rows {
   }
 
   void add(const UseConfig& options, double mean, u32 calls = MIN_CALLS, Status status = Status::Ok,
-           u64 exponent = PROBE) {
+           u64 exponent = PROBE, u64 ts = 0) {
     CHECK(db.add(RunRow{
       .sess = sess,
       .fft = SPEC,
@@ -59,7 +60,8 @@ struct Rows {
       .exponent = exponent,
       .regime = regimeOf(FFTConfig{SPEC}, exponent),
       .cfg = db.internCfg(options),
-      .m = {.mean = mean, .stddev = 0.1, .blocks = 4 * calls, .calls = calls, .drift = 1, .status = status, .ts = 0}}));
+      .m = {
+        .mean = mean, .stddev = 0.1, .blocks = 4 * calls, .calls = calls, .drift = 1, .status = status, .ts = ts}}));
   }
 };
 
@@ -329,4 +331,90 @@ TEST(a_restart_is_offered_only_where_no_step_is_and_carries_on_from_the_last_dra
   std::vector<Candidate> const resumed = ask(later, rows, readings, jumpsOnly);
   CHECK(resumed.size() == 1 && resumed.front().draw == 2 && resumed.front().calls == 1);
   CHECK(resumed.size() == 1 && resumed.front().options == third);
+}
+
+TEST(a_restart_is_due_ahead_of_every_step_each_time_the_entry_has_measured_another_period_of_sets) {
+  Rows rows;
+  Baseline const b = entry();
+  std::vector<Reading> const readings{{.config = {}, .cost = 1700}};
+  Asking const ask{.strategy = {.kind = Strategy::Kind::Single}, .restarts = true};
+  auto const noJumps = [](Offer kind, double) { return kind == Offer::Restart ? 0.0 : 2.0; };
+
+  // Sets that are neither steps from the defaults nor draws of the entry's own sequence, all dearer than the defaults.
+  std::set<std::string> filled{"-"};
+  u32 k = 0;
+  auto fill = [&](u32 sets, u64 ts) {
+    for (u32 added = 0; added < sets; ++k) {
+      UseConfig const other = canonicalConfig(nvidia(), b.fft, restartOf(nvidia(), b.fft, "elsewhere", k));
+      if (other.size() < 2 || !filled.insert(configText(other)).second) { continue; }
+      rows.add(other, 1800, MIN_CALLS, Status::Ok, PROBE, ts);
+      ++added;
+    }
+  };
+  rows.add({}, 1700, MIN_CALLS, Status::Ok, PROBE, 100);
+  fill(RESTART_PERIOD - 2, 100);
+
+  EntrySearch search{b};
+  std::vector<Candidate> const early = ask(search, rows, readings, noJumps);
+  CHECK(!early.empty());
+  CHECK_EQ(countOf(early, Offer::Restart), size_t(0));
+
+  fill(1, 100);
+  std::vector<Candidate> const due = ask(search, rows, readings, noJumps);
+  CHECK(!due.empty() && due.front().kind == Offer::Restart && due.front().draw == 0);
+  CHECK(!due.empty() && due.front().value == 2.0);
+  CHECK(countOf(due, Offer::Probe) > 0);
+  if (due.empty()) { return; }
+
+  // Not without restarts at all.
+  Asking const none{.strategy = {.kind = Strategy::Kind::Single}};
+  CHECK_EQ(countOf(none(search, rows, readings, noJumps), Offer::Restart), size_t(0));
+
+  // Declared: the next is due once as many sets again have been measured since.
+  CHECK(rows.db.add(JumpRow{.sess = rows.sess,
+                            .fft = SPEC,
+                            .kind = TestKind::PRP,
+                            .regime = b.band.regime,
+                            .cfg = rows.db.internCfg(due.front().options),
+                            .k = 0,
+                            .ts = 200}));
+  // Begun, it is finished before anything else, and then not offered again until as many sets again are measured.
+  rows.add(due.front().options, 1800, 1, Status::Ok, PROBE, 201);
+  std::vector<Candidate> const begun = ask(search, rows, readings, noJumps);
+  CHECK(!begun.empty() && begun.front().kind == Offer::Restart && begun.front().draw == 0 && begun.front().calls == 1);
+  rows.add(due.front().options, 1800, MIN_CALLS, Status::Ok, PROBE, 202);
+  CHECK_EQ(countOf(ask(search, rows, readings, noJumps), Offer::Restart), size_t(0));
+  fill(RESTART_PERIOD - 2, 300);
+  CHECK_EQ(countOf(ask(search, rows, readings, noJumps), Offer::Restart), size_t(0));
+  fill(1, 300);
+  std::vector<Candidate> const next = ask(search, rows, readings, noJumps);
+  CHECK(!next.empty() && next.front().kind == Offer::Restart && next.front().draw == 1);
+}
+
+TEST(a_restart_draw_answers_only_itself) {
+  Rows rows;
+  rows.add({}, 1700);
+  Baseline const b = entry();
+  Asking const ask{.strategy = {.kind = Strategy::Kind::Single}};
+  std::vector<Reading> const readings{{.config = {}, .cost = 1700}};
+
+  // A draw that moves WMUL among much else, measured and dear.
+  UseConfig const drawn = canonicalConfig(nvidia(), b.fft, {{"WMUL", "1"}, {"ZEROHACK_W", "0"}, {"TAIL_KERNELS", "3"}});
+  rows.add(drawn, 1900);
+  EntrySearch undeclared{b};
+  CHECK(!find(ask(undeclared, rows, readings, flat), "WMUL=1"));
+
+  // Declared as a draw, it says nothing of what WMUL=1 alone does, and the step is offered; the point it is stays
+  // answered.
+  CHECK(rows.db.add(JumpRow{.sess = rows.sess,
+                            .fft = SPEC,
+                            .kind = TestKind::PRP,
+                            .regime = b.band.regime,
+                            .cfg = rows.db.internCfg(drawn),
+                            .k = 0,
+                            .ts = 0}));
+  EntrySearch declared{b};
+  std::vector<Candidate> const offers = ask(declared, rows, readings, flat);
+  CHECK(find(offers, "WMUL=1"));
+  CHECK(!find(offers, configText(drawn)));
 }

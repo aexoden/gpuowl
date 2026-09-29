@@ -202,7 +202,8 @@ public:
   // With the default `bootstrap`, which is turned off, every baseline is admissible at once.  Baselines run at the
   // built-in defaults whatever the bootstrap decides.  Without a `strategy` nothing measured is measured further: no
   // probes, and no refines.  Without `restarts` an entry whose probes are all answered is left there, so the queue can
-  // run dry; with them it never does, since a jump is always worth a little.  Without `gate` the accuracy gate reads
+  // run dry; with them it never does, since a jump is always worth a little, and an entry also jumps once each
+  // RESTART_PERIOD option sets it measures.  Without `gate` the accuracy gate reads
   // nothing, so nothing but exact arithmetic is ever published; the search is the same either way.
   Scheduler(RunScope scope, std::vector<Baseline> baselines, u32 blockSize = 1000, Bootstrap bootstrap = {},
             std::optional<Strategy> strategy = {}, bool restarts = false, bool gate = false, Halving halving = {});
