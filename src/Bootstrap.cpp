@@ -585,10 +585,20 @@ Defaults defaultLines(const Env& env, const std::vector<std::pair<Family, UseCon
   return out;
 }
 
-UseConfig underDefaults(const Env& env, const FFTConfig& fft, TestKind kind, const Defaults& defaults) {
+UseConfig underDefaults(const Env& env, const FFTConfig& fft, TestKind kind, const Defaults& defaults,
+                        const UseConfig& over) {
   SelectionLayers const layers{
     .global = {defaults.global.begin(), defaults.global.end()}, .family = defaults.family, .entry = {}};
-  return canonicalConfig(env, fft, resolveConfig(Args{true}, fft, kind, fittedTo(layers, env, fft, kind)));
+  UseConfig const lines = resolveConfig(Args{true}, fft, kind, fittedTo(layers, env, fft, kind));
+  if (over.empty()) { return canonicalConfig(env, fft, lines); }
+
+  // What `over` holds of a key the lines leave alone is what a value the lines set has to fit against.
+  std::vector<std::pair<std::string, std::string>> kept;
+  for (const auto& [key, value] : over) {
+    if (!lines.contains(key)) { kept.emplace_back(key, value); }
+  }
+  SelectionLayers const stacked{.global = {lines.begin(), lines.end()}, .family = {}, .entry = std::move(kept)};
+  return canonicalConfig(env, fft, resolveConfig(Args{true}, fft, kind, fittedTo(stacked, env, fft, kind)));
 }
 
 Defaults publishedLines(const Env& env, u64 probe, TestKind kind, const std::vector<SelectionEntry>& published,

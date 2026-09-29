@@ -207,20 +207,27 @@ std::vector<Candidate> EntrySearch::offers(const SearchContext& context, std::sp
   std::vector<Candidate> out;
   std::set<std::string> offered;
 
-  if (best.config.empty()) {
-    UseConfig const jump = underDefaults(device, entry_.fft, entry_.kind, context.lines);
+  // The lines move as other entries are searched, so an entry is offered them as they stand whatever it has found
+  // itself, and where it has found something, what it found with the lines laid over it.
+  auto offerLines = [&](UseConfig jump, const std::string& what) {
     std::string const text = configText(jump);
+    if (jump.empty() || offered.contains(text)) { return; }
     Candidate c{.kind = Offer::Lines,
-                .options = jump,
-                .what = "the default lines " + text,
+                .options = std::move(jump),
+                .what = what + text,
                 .exponent = entry_.exponent,
                 .cost = best.cost,
-                .value = jump.empty() ? 0 : worth(Offer::Lines, best.cost)};
+                .value = worth(Offer::Lines, best.cost)};
     resume(context, text, c);
-    if (c.value > 0 && !progress.answered.contains({key_, text}) && runnable(context, jump, c.exponent)) {
+    if (c.value > 0 && !progress.answered.contains({key_, text}) && runnable(context, c.options, c.exponent)) {
       offered.insert(text);
       out.push_back(std::move(c));
     }
+  };
+  offerLines(underDefaults(device, entry_.fft, entry_.kind, context.lines), "the default lines ");
+  if (!best.config.empty()) {
+    offerLines(underDefaults(device, entry_.fft, entry_.kind, context.lines, best.config),
+               "its best set under the default lines ");
   }
 
   for (size_t branch = 0; branch < branches.size(); ++branch) {

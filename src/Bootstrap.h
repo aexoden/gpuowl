@@ -255,8 +255,11 @@ private:
 // key needs no line for it, since the global line does not set it.
 [[nodiscard]] Defaults defaultLines(const Env& env, const std::vector<std::pair<Family, UseConfig>>& decided);
 
-// What a configuration with no option set of its own runs at under `defaults`, canonical.
-[[nodiscard]] UseConfig underDefaults(const Env& env, const FFTConfig& fft, TestKind kind, const Defaults& defaults);
+// What a configuration with no option set of its own runs at under `defaults`, canonical.  With `over`, that set with
+// the lines laid on top of it: a key the lines set takes their value, refitted against the rest of `over`, and every
+// other key keeps its own.
+[[nodiscard]] UseConfig underDefaults(const Env& env, const FFTConfig& fft, TestKind kind, const Defaults& defaults,
+                                      const UseConfig& over = {});
 
 // The lines published beside `published`, and the one jump the search tries first on an entry still at the built-in
 // defaults: the best evidence there is for each FFT type, split as defaultLines() splits the bootstrap's.  A type's
