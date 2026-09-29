@@ -225,9 +225,9 @@ std::string minutes(std::optional<double> seconds) {
 
 }  // namespace
 
-// Every scenario under the default policy and with the halving turned off, and how each went: set
-// PRPLL_LANDSCAPES to run it, to part of a scenario's name for that scenario alone.  It takes minutes, so the suite
-// leaves it out.
+// Every scenario under the default policy run to the end, with the halving turned off, and at a run's default stop
+// fraction, and how each went: set PRPLL_LANDSCAPES to run it, to part of a scenario's name for that scenario alone.
+// It takes minutes, so the suite leaves it out.
 TEST(landscape_report) {
   const char* const only = std::getenv("PRPLL_LANDSCAPES");
   if (!only) { return; }
@@ -235,7 +235,8 @@ TEST(landscape_report) {
     if (std::string{n.name}.find(only) == std::string::npos) { continue; }
     Scenario const s = n.make();
     for (const auto& [label, policy] :
-         {std::pair{"default", Policy{}}, std::pair{"no halving", Policy{.halving = {.contenders = 0}}}}) {
+         {std::pair{"default", Policy{}}, std::pair{"no halving", Policy{.halving = {.contenders = 0}}},
+          std::pair{"stop", Policy{.stop = STOP}}}) {
       Outcome const o = simulate(s, policy);
       std::optional<double> const r = o.regret();
       fprintf(stderr, "LANDSCAPE %-18s %-10s settled %-9s regret %s items %u in %.0f min;", n.name, label,

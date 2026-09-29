@@ -38,6 +38,9 @@ struct Policy {
   bool bootstrap = true;
   bool restarts = true;
   bool gate = true;
+
+  // The fraction of T below which nothing valued is worth a call; 0 runs until nothing is worth anything.
+  double stop = 0;
 };
 
 struct Scenario {

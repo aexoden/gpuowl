@@ -1293,6 +1293,132 @@ TEST(a_cheaper_entry_still_to_be_read_is_read_before_the_margin_takes_in_dearer_
   CHECK(sweep() == std::set<std::string>{"512:16:512:101"});
 }
 
+namespace {
+
+// The entries of `specs` among the shapes they name, in every band of `in` that the workload weighs.
+std::vector<Baseline> entriesOf(const RunScope& in, std::initializer_list<const char*> specs) {
+  std::vector<FFTShape> shapes;
+  for (const char* s : specs) { shapes.push_back(FFTConfig{s}.shape); }
+  std::vector<Baseline> out;
+  for (const Baseline& b : baselines(nvidia(), in, shapes)) {
+    if (std::ranges::any_of(specs, [&](const char* s) { return b.fft.spec() == s; })) { out.push_back(b); }
+  }
+  return out;
+}
+
+std::set<std::string> sweptBy(const Fixture& f, const Scheduler& scheduler) {
+  std::set<std::string> out;
+  for (const Item& item :
+       scheduler.admissible(f.db, f.env, Objective{f.db, f.env, scheduler.scope(), Gating::Assumed})) {
+    if (item.sweep) { out.insert(scheduler.baselines()[item.index].fft.spec()); }
+  }
+  return out;
+}
+
+void failedAt(Fixture& f, const std::string& spec) {
+  CHECK(f.db.add(RunRow{.sess = f.sess,
+                        .fft = spec,
+                        .kind = TestKind::PRP,
+                        .exponent = 118'063'003,
+                        .regime = regimeOf(FFTConfig{spec}, 118'063'003),
+                        .cfg = f.db.internCfg({}),
+                        .m = {.status = Status::Err}}));
+}
+
+}  // namespace
+
+TEST(a_cheaper_entry_read_as_cheap_as_its_estimate_leaves_dearer_ones_unread) {
+  // As above, but the hybrid is as cheap as its prior says: what production runs is now 1500, and 512:16:512 is never
+  // within 10% of it, so its reading is saved.
+  Fixture f;
+  concludedAt(f, "512:15:512:212", {}, 1700);
+  Scheduler const scheduler{scope(),
+                            entriesOf(scope(), {"512:15:512:212", "512:16:512:101", "1:512:8:512:202"}),
+                            1000,
+                            {},
+                            Strategy{.kind = Strategy::Kind::Single}};
+
+  CHECK(sweptBy(f, scheduler) == std::set<std::string>{"1:512:8:512:202"});
+  concludedAt(f, "1:512:8:512:202", {}, 1500);
+  CHECK(sweptBy(f, scheduler).empty());
+  CHECK(scheduler.swept(f.db, f.env, Objective{f.db, f.env, scope(), Gating::Assumed}));
+}
+
+TEST(each_cheaper_estimate_holds_dearer_entries_back_until_its_own_reading_proves_it_wrong) {
+  // Two hybrids of different types, each priced by its type's stated constant well below the 1700 measured: both are
+  // read before 512:16:512, and it is owed only once the second has also come in above 1700.
+  Fixture f;
+  concludedAt(f, "512:15:512:212", {}, 1700);
+  Scheduler const scheduler{
+    scope(),
+    entriesOf(scope(), {"512:15:512:212", "512:16:512:101", "1:512:8:512:202", "2:512:8:512:202"}),
+    1000,
+    {},
+    Strategy{.kind = Strategy::Kind::Single}};
+
+  CHECK(sweptBy(f, scheduler) == (std::set<std::string>{"1:512:8:512:202", "2:512:8:512:202"}));
+  concludedAt(f, "2:512:8:512:202", {}, 1800);
+  CHECK(sweptBy(f, scheduler) == std::set<std::string>{"1:512:8:512:202"});
+  concludedAt(f, "1:512:8:512:202", {}, 1800);
+  CHECK(sweptBy(f, scheduler) == std::set<std::string>{"512:16:512:101"});
+}
+
+TEST(a_cheaper_entry_that_fails_at_the_built_in_defaults_holds_nothing_back) {
+  Fixture f;
+  concludedAt(f, "512:15:512:212", {}, 1700);
+  Scheduler const scheduler{scope(),
+                            entriesOf(scope(), {"512:15:512:212", "512:16:512:101", "1:512:8:512:202"}),
+                            1000,
+                            {},
+                            Strategy{.kind = Strategy::Kind::Single}};
+
+  CHECK(sweptBy(f, scheduler) == std::set<std::string>{"1:512:8:512:202"});
+  failedAt(f, "1:512:8:512:202");
+  CHECK(sweptBy(f, scheduler) == std::set<std::string>{"512:16:512:101"});
+}
+
+TEST(the_first_call_of_a_cheaper_entry_replaces_its_estimate_while_the_reading_is_finished) {
+  // One call of the hybrid at 1800, as an interrupted run leaves it: that call, not the prior, is what it is expected
+  // to cost, so 512:16:512 is owed at once, beside the hybrid's own reading, which is resumed.
+  Fixture f;
+  concludedAt(f, "512:15:512:212", {}, 1700);
+  FFTConfig const hybrid{"1:512:8:512:202"};
+  CHECK(f.db.add(
+    RunRow{.sess = f.sess,
+           .fft = hybrid.spec(),
+           .kind = TestKind::PRP,
+           .exponent = 118'063'003,
+           .regime = regimeOf(hybrid, 118'063'003),
+           .cfg = f.db.internCfg({}),
+           .m = {.mean = 1800, .stddev = 0.1, .blocks = 4, .calls = 1, .drift = 1, .status = Status::Ok, .ts = 0}}));
+  Scheduler const scheduler{scope(),
+                            entriesOf(scope(), {"512:15:512:212", "512:16:512:101", hybrid.spec().c_str()}),
+                            1000,
+                            {},
+                            Strategy{.kind = Strategy::Kind::Single}};
+
+  CHECK(sweptBy(f, scheduler) == (std::set<std::string>{"512:16:512:101", "1:512:8:512:202"}));
+}
+
+TEST(a_cheaper_estimate_holds_an_entry_back_only_where_it_serves) {
+  // 2:512:8:512 is priced well below the 1700 measured but serves nothing above about 132M.  Over a workload it covers,
+  // 512:16:512 waits on it; over one reaching to 140M, 512:16:512 is within 10% of what production runs up there, and
+  // is owed whatever the hybrid turns out to cost.
+  Fixture f;
+  concludedAt(f, "512:15:512:212", {}, 1700);
+  for (u64 const hi : {130'000'000ull, 140'000'000ull}) {
+    RunScope const in = makeScope(ScopeArgs{.lo = 110'000'000, .hi = hi, .probe = 118'063'003}, {});
+    Scheduler const scheduler{in,
+                              entriesOf(in, {"512:15:512:212", "512:16:512:101", "2:512:8:512:202"}),
+                              1000,
+                              {},
+                              Strategy{.kind = Strategy::Kind::Single}};
+    std::set<std::string> const owed = sweptBy(f, scheduler);
+    CHECK(owed.contains("2:512:8:512:202"));
+    CHECK_EQ(owed.contains("512:16:512:101"), hi > 132'000'000);
+  }
+}
+
 TEST(where_nothing_measured_serves_a_point_an_entry_that_cannot_be_read_does_not_set_its_margin) {
   // Nothing measured anywhere, and the cheapest shape by its prior failing at the built-in defaults: the NTT, half as
   // dear again, is the cheapest thing left that could serve the workload, and is read.

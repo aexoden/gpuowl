@@ -214,10 +214,11 @@ Outcome simulate(const Scenario& scenario, const Policy& policy, TuneDB* given) 
   SimBench bench{db, sess, scenario.landscape, scenario.budget, epoch};
   Outcome out;
   u32 items = 0;
-  QueueReport const report = runQueue(scheduler, db, id, bench, [&](const Objective& objective, const Defaults&) {
+  auto const publish = [&](const Objective& objective, const Defaults&) {
     out.trace.push_back(
       {.seconds = bench.clock(), .items = items++, .regret = regretOf(objective, entries, scenario.landscape)});
-  });
+  };
+  QueueReport const report = runQueue(scheduler, db, id, bench, publish, policy.stop);
 
   out.seconds = bench.clock();
   out.items = report.items;
