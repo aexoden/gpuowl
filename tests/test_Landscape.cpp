@@ -203,6 +203,31 @@ Scenario transfer() {
   return s;
 }
 
+// A finds 8% early in its list (MM_CHAIN=1), which puts B, 3% behind it at the defaults, outside the margin; B's own
+// 12% is the last step it offers (ZEROHACK_H=0).
+Scenario pulledAway() {
+  Scenario s = scenario(around(110'000'000, 135'000'000), {A, B, C}, 12 * 3600);
+  s.landscape.cost = [](const FFTConfig& fft, TestKind, const UseConfig& o) {
+    if (fft.spec() == C) { return flat(fft, o, 1060); }
+    if (fft.spec() == A) {
+      double f = 1000 * others(o, {"MM_CHAIN"});
+      if (has(o, "MM_CHAIN", "1")) {
+        f *= 0.92;
+      } else if (o.contains("MM_CHAIN")) {
+        f *= 1.01;
+      }
+      return f;
+    }
+    double f = 1030 * others(o, {"ZEROHACK_H"});
+    if (has(o, "ZEROHACK_H", "0")) { f *= 0.88; }
+    return f;
+  };
+  s.landscape.best = [](const FFTConfig& fft, TestKind) {
+    return fft.spec() == A ? 920.0 : fft.spec() == C ? 1060.0 : 1030 * 0.88;
+  };
+  return s;
+}
+
 struct Named {
   const char* name;
   Scenario (*make)();
@@ -212,7 +237,7 @@ const std::vector<Named>& scenarios() {
   static const std::vector<Named> all{{"two steps", twoSteps},       {"structural branch", structuralBranch},
                                       {"cross bins", crossBins},     {"late group", lateGroup},
                                       {"failed prior", failedPrior}, {"disjoint bands", disjointBands},
-                                      {"transfer", transfer}};
+                                      {"transfer", transfer},        {"pulled away", pulledAway}};
   return all;
 }
 
