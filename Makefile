@@ -127,7 +127,7 @@ $(BIN)/prpll-amd: ${OBJS} | $(CHECKERS)
 	$(CXX) $(LDFLAGS) $(CXXFLAGS) -o $@ ${OBJS} $(LIBPATH) -lamdocl64 -L/opt/rocm/lib
 
 # GPU-free unit tests (tests/).
-TESTSRCS = test_main.cpp test_Gpu.cpp test_OptionSpace.cpp test_UseResolve.cpp test_FFTVariants.cpp test_Eligibility.cpp test_TuneDB.cpp test_Selection.cpp test_Stats.cpp test_Anchor.cpp test_BuildId.cpp test_Measure.cpp test_Restart.cpp test_GpuFault.cpp test_Emit.cpp test_Production.cpp test_Tuner.cpp test_Objective.cpp test_Scheduler.cpp test_Bootstrap.cpp test_Probe.cpp test_Search.cpp test_Value.cpp test_Combo.cpp test_Gate.cpp test_Reach.cpp test_Accuracy.cpp test_LLCheck.cpp test_Status.cpp test_Progress.cpp test_Faults.cpp test_History.cpp test_Dashboard.cpp
+TESTSRCS = test_main.cpp test_Gpu.cpp test_OptionSpace.cpp test_UseResolve.cpp test_FFTVariants.cpp test_Eligibility.cpp test_TuneDB.cpp test_Selection.cpp test_Stats.cpp test_Anchor.cpp test_BuildId.cpp test_Measure.cpp test_Restart.cpp test_GpuFault.cpp test_Emit.cpp test_Production.cpp test_Tuner.cpp test_Objective.cpp test_Scheduler.cpp test_Bootstrap.cpp test_Probe.cpp test_Search.cpp test_Value.cpp test_Combo.cpp test_Gate.cpp test_Reach.cpp test_Accuracy.cpp test_LLCheck.cpp test_Status.cpp test_Progress.cpp test_Faults.cpp test_History.cpp test_Dashboard.cpp Landscape.cpp test_Landscape.cpp
 TESTOBJS = $(TESTSRCS:%.cpp=$(BIN)/tests/%.o)
 
 .PHONY: check
