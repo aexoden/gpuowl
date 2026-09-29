@@ -337,7 +337,7 @@ float FFTConfig::maxBpw() const {
   return (carry == CARRY_32 && carry32Caps) ? std::min(shape.carry32BPW(), b) : b;
 }
 
-FFTConfig FFTConfig::bestFit(const Args& args, u64 E, const string& spec, std::optional<bool> fp64) {
+FFTConfig FFTConfig::bestFit(const Args& args, u64 E, const string& spec, std::optional<bool> fp64, bool quiet) {
   // A FFT-spec was given, simply take the first FFT from the spec that can handle E
   if (!spec.empty()) {
     FFTConfig fft{spec};
@@ -360,7 +360,7 @@ FFTConfig FFTConfig::bestFit(const Args& args, u64 E, const string& spec, std::o
     if (fits(e.fft) && (*fp64 || !e.fft.FFT_FP64)) { return e.fft; }
   }
 
-  log("No FFTs found in tune.txt that can handle %" PRIu64 ". Consider tuning with -tune\n", E);
+  if (!quiet) { log("No FFTs found in tune.txt that can handle %" PRIu64 ". Consider tuning with -tune\n", E); }
 
   // Take the smallest FFT that can handle E.  allShapes() sorts by size alone, which lets an FP32 hybrid (e.g. FP32+M31+M61) win
   // without any timing, and some OpenCL compilers can't build the FP32 code (hence -tune nofp32).  Prefer FP64 and M31+M61

@@ -75,7 +75,9 @@ enum CARRY_KIND {CARRY_32=0, CARRY_64=1, CARRY_AUTO=2};
 struct FFTConfig {
 public:
   // fp64: whether the device has FP64, or empty to ask the device.
-  static FFTConfig bestFit(const Args& args, u64 E, const std::string& spec, std::optional<bool> fp64 = {});
+  // quiet: the caller only asks whether some FFT fits, or has already said why tune.txt is not what answers.
+  static FFTConfig bestFit(const Args& args, u64 E, const std::string& spec, std::optional<bool> fp64 = {},
+                           bool quiet = false);
 
   // Which FP and NTT primes are involved in the FFT
   bool FFT_FP64;
