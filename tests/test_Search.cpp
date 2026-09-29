@@ -119,15 +119,47 @@ TEST(an_entry_best_at_the_built_in_defaults_offers_the_lines_before_any_step) {
     ask(search, rows, {{.config = {}, .cost = 1700}, {.config = {{"WMUL", "1"}}, .cost = 1750}}, flat);
   CHECK_EQ(countOf(lost, Offer::Lines), size_t(0));
 
-  // An entry whose best set is its own has no jump to take.
+  // An entry whose best set is its own is offered the lines as well, and its set with the lines laid over it, which
+  // is not offered again as a step of its own.
   Rows other;
   other.add({}, 1700);
   other.add({{"ZEROHACK_W", "0"}}, 1650);
   EntrySearch fresh{entry()};
   std::vector<Candidate> const moved =
     ask(fresh, other, {{.config = {{"ZEROHACK_W", "0"}}, .cost = 1650}, {.config = {}, .cost = 1700}}, flat);
-  CHECK_EQ(countOf(moved, Offer::Lines), size_t(0));
+  CHECK_EQ(countOf(moved, Offer::Lines), size_t(2));
+  CHECK(moved.size() > 2 && configText(moved[0].options) == "WMUL=1" &&
+        configText(moved[1].options) == "WMUL=1,ZEROHACK_W=0");
+  CHECK(moved.size() > 2 && moved[1].what == "its best set under the default lines WMUL=1,ZEROHACK_W=0");
+  CHECK(std::ranges::all_of(moved, [](const Candidate& c) { return c.cost == 1650; }));
+  CHECK_EQ(
+    std::ranges::count_if(moved, [](const Candidate& c) { return configText(c.options) == "WMUL=1,ZEROHACK_W=0"; }), 1);
   CHECK(countOf(moved, Offer::Probe) > 0);
+}
+
+TEST(an_entry_tries_the_lines_again_each_time_they_move_whatever_it_has_found) {
+  Rows rows;
+  rows.add({}, 1700);
+  rows.add({{"ZEROHACK_W", "0"}}, 1650);
+  rows.add({{"WMUL", "1"}}, 1690);
+  rows.add({{"WMUL", "1"}, {"ZEROHACK_W", "0"}}, 1660);
+  std::vector<Reading> const readings{{.config = {{"ZEROHACK_W", "0"}}, .cost = 1650},
+                                      {.config = {{"WMUL", "1"}, {"ZEROHACK_W", "0"}}, .cost = 1660},
+                                      {.config = {{"WMUL", "1"}}, .cost = 1690},
+                                      {.config = {}, .cost = 1700}};
+  EntrySearch search{entry()};
+
+  // Both measured under the lines as they stood.
+  Asking const stood{.strategy = {.kind = Strategy::Kind::Single}, .lines = {.global = {{"WMUL", "1"}}, .family = {}}};
+  CHECK_EQ(countOf(stood(search, rows, readings, flat), Offer::Lines), size_t(0));
+
+  // Another entry found a key the lines now carry.
+  Asking const moved{.strategy = {.kind = Strategy::Kind::Single},
+                     .lines = {.global = {{"TAIL_KERNELS", "3"}, {"WMUL", "1"}}, .family = {}}};
+  std::vector<Candidate> const again = moved(search, rows, readings, flat);
+  CHECK_EQ(countOf(again, Offer::Lines), size_t(2));
+  CHECK(again.size() > 2 && configText(again[0].options) == "TAIL_KERNELS=3,WMUL=1");
+  CHECK(again.size() > 2 && configText(again[1].options) == "TAIL_KERNELS=3,WMUL=1,ZEROHACK_W=0");
 }
 
 TEST(each_offer_is_priced_by_its_kind_from_the_best_set_it_steps_from_and_nothing_worth_nothing_is_offered) {

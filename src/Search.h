@@ -153,7 +153,7 @@ struct SearchContext {
   u32 env;
   const Progress& progress;
 
-  // The lines as they stand, which an entry still best at the built-in defaults tries first.
+  // The lines as they stand, which every entry tries first.
   const Defaults& lines;
 
   // Whether an entry with no step left jumps.
@@ -172,13 +172,14 @@ public:
   // What the entry offers now, in the order the search would take it.  `readings` are its publishable option sets,
   // canonical and cheapest first, so the first is its best set; there must be at least one.
   //
-  // An entry still best at the built-in defaults offers the lines first: what the bootstrap and the best entries found,
-  // all at once, which is the one jump most likely to pay before any single step.  Then the steps of each structural
-  // branch the strategy searches, each from that branch's best set -- only the entry's best set steps into other
-  // branches -- in the order probesOf() lists them, and a combination only once its branch has nothing of a lower tier
-  // left, since it combines what those found.  At a local optimum of the declared moves, and only there, the next draw
-  // of the restart sequence.  Nothing a row answers or recorded a failure of, nothing a hold or an earlier
-  // generation's death keeps out, and nothing tried MAX_ATTEMPTS times in this process.
+  // Offered first: the lines, which carry what the best entries found, all at once, the one jump most likely to pay
+  // before any single step; and where the entry's best set is not the built-in defaults, that set with the lines laid
+  // over it.  Each is offered while no row has measured it, so as the lines move each entry tries them again.  Then
+  // the steps of each structural branch the strategy searches, each from that branch's best set -- only the entry's
+  // best set steps into other branches -- in the order probesOf() lists them, and a combination only once its branch
+  // has nothing of a lower tier left, since it combines what those found.  At a local optimum of the declared moves,
+  // and only there, the next draw of the restart sequence.  Nothing a row answers or recorded a failure of, nothing a
+  // hold or an earlier generation's death keeps out, and nothing tried MAX_ATTEMPTS times in this process.
   [[nodiscard]] std::vector<Candidate> offers(const SearchContext& context, std::span<const Reading> readings,
                                               const Worth& worth);
 
