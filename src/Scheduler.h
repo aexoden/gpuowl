@@ -3,8 +3,9 @@
 // The tuning queue: every item that may run, re-scored from the database after every item.  The readings the accuracy
 // gate owes, and baselines where the workload has nothing measured, go first, by rule.  Then the defaults sweep, the
 // bootstrap and the search take turns a call at a time.  The search is spread over the contenders by successive
-// halving, which is begun again, for longer, each time the one it left has had its share; otherwise, and between
-// halvings, each item is ranked by how much of the objective T it is expected to remove per second it costs.
+// halving, which is begun again, for longer, each time the one it left has had its share, for as long as a step of one
+// of them is worth the stop fraction; otherwise, and between halvings, each item is ranked by how much of the objective
+// T it is expected to remove per second it costs.
 //
 // The value model is only as good as its gain distribution, and a bad one misallocates time without ever making a wrong
 // decision: what is published is chosen by ranking measured rows, never by these scores.  That asymmetry is what lets
@@ -71,7 +72,7 @@ struct Phase {
 struct HalvingState {
   bool active = false;
 
-  // Which of the env's halvings, from 1.  The first runs by rule; a later one first, but held to the stop fraction.
+  // Which of the env's halvings, from 1.
   u32 halving = 0;
 
   // Between two halvings: `pool` is the one the last left, `budget` the calls of search it has before the next
@@ -95,6 +96,17 @@ struct HalvingState {
   // Rounds the rows do not hold yet, which a run records before its next call: the rounds just begun, and in a
   // database no round was recorded in, where an earlier build's halving stood.
   std::vector<RoundRow> unrecorded;
+};
+
+// What the halving asks of each entry's search, by its index into Scheduler::baselines().
+struct Explored {
+  // Whether the search has a step to take, whatever the value model makes of it; and whether one of those is a
+  // measurement begun and not finished.
+  std::function<bool(size_t)> offers;
+  std::function<bool(size_t)> resumes;
+
+  // Whether it has a step worth a call on its value alone, which under a stop fraction is one worth that much of T.
+  std::function<bool(size_t)> worth;
 };
 
 // What a call is expected to take, in wall-clock seconds, learnt from the calls this process has made.
@@ -189,10 +201,8 @@ struct Item {
   // production runs somewhere the workload weighs.
   bool sweep = false;
 
-  // A probe's, a combo's or a restart's: a step of a halving's round, run ahead of anything else, and by rule unless
-  // `again`, a step of a halving after the first, which is valued like any step and so held to the stop fraction.
+  // A probe's, a combo's or a restart's: a step of a halving's round, run by rule ahead of anything else.
   bool halving = false;
-  bool again = false;
 
   // A baseline's, a probe's, a combo's or a restart's: run by rule, as a step of a family's bootstrap, whose worth is
   // the lines it gives every entry of its type rather than what it saves on its own.
@@ -206,7 +216,7 @@ struct Item {
 };
 
 // Whether `item` runs by rule rather than by value: a step of the bootstrap, a gate reading, a baseline covering the
-// workload or taken in the defaults sweep, or a step of a round of the first halving.
+// workload or taken in the defaults sweep, or a step of a halving's round.
 [[nodiscard]] bool byRule(const Item& item);
 
 // Whether `item` is worth a call where anything expected to lower T by less than `floor` is not: one that runs by rule
@@ -260,17 +270,19 @@ public:
   // family is searched on its type's cheapest reading there; the bootstrap, once the configuration each family is on
   // is recorded -- each family still to be read at the built-in defaults, cheapest first, and once every one is, what
   // the search of the cheapest family still owed its calls offers, in the search's own order and whatever it is
-  // priced at; and the search.  The
-  // search is the halving's round while one is under way (halvingState()), and otherwise, together and best rate
-  // first: the baselines, at the built-in defaults; what the search of every entry with a row emission could publish
-  // offers (EntrySearch::offers()), the lines and each probe valued under the entry's move gains, each combo under its
-  // combination gains and a restart under its restart gains, from the cost of the best set it is a step from; one more
-  // call on each side of every contest production decides that the race rule leaves undecided (refineValues()); and
-  // with the gate, the next reading of each passed set whose reach may be raised above the table, worth what that set
-  // would save over the exponents between its reach and that reading, at what it costs.  A baseline is left out once a
-  // row has concluded it or recorded a failure of it, while an earlier generation's death holds it, and once this
-  // process has tried it more often than any entry needs.
-  [[nodiscard]] std::vector<Item> admissible(const TuneDB& db, u32 env, const Objective& objective) const;
+  // priced at; and the search.  The search is the halving's round while one is under way (halvingState()): what the
+  // search of each of its entries still short of its calls offers, priced by rule, and whether a later halving begins
+  // is decided by `floor`, what a step must be worth to be run on its value (pick()).  Otherwise, together and best
+  // rate first: the baselines, at the built-in defaults; what the search of every entry with a row emission could
+  // publish offers (EntrySearch::offers()), the lines and each probe valued under the entry's move gains, each combo
+  // under its combination gains and a restart under its restart gains, from the cost of the best set it is a step from;
+  // one more call on each side of every contest production decides that the race rule leaves undecided
+  // (refineValues()); and with the gate, the next reading of each passed set whose reach may be raised above the table,
+  // worth what that set would save over the exponents between its reach and that reading, at what it costs.  A baseline
+  // is left out once a row has concluded it or recorded a failure of it, while an earlier generation's death holds it,
+  // and once this process has tried it more often than any entry needs.
+  [[nodiscard]] std::vector<Item> admissible(const TuneDB& db, u32 env, const Objective& objective,
+                                             double floor = 0) const;
 
   // Whether nothing is left of the workload's coverage or, with a strategy, of the defaults sweep at the probe: what
   // the bootstrap's choice of configurations waits for.
@@ -280,18 +292,20 @@ public:
   // CONTEND_MARGIN of what production is measured to run at some exponent of their band the workload weighs, the best
   // `contenders` of them taken one variant of each shape before a second of any, since what the search is spread over
   // is which shape tunes best.  A round's entries are recorded as it begins, and stay in it until each has had its
-  // calls of search, counted from then, or has no step left to take in `offering`, and has finished any step begun, in
-  // `resuming`; the better half by gap then go on to a round of twice the calls.  It is over once one is left, which
-  // then has as many calls of search as the halving's rounds gave out, under the ranking by value, before the next
-  // halving begins: over every contender as they stand then, those an earlier halving left behind among them, its first
-  // round twice as long as the last halving's.  So an entry whose gains lie further down its search than one round
-  // reaches is searched again, for longer each time, and the one ahead keeps at least half of the calls.  The first
-  // halving does not begin while `sweeping`, the defaults sweep still owing readings at the probe, so that it takes
-  // every contender at once.
+  // calls of search, counted from then, or has no step left to take whatever it is worth, and has finished any step
+  // begun; the better half by gap then go on to a round of twice the calls.  It is over once one is left, which then
+  // has as many calls of search as the halving's rounds gave out, under the ranking by value, or until it has no step
+  // worth a call, before the next halving begins: over every contender as they stand then, those an earlier halving
+  // left behind among them, its first round twice as long as the last halving's.  So an entry whose gains lie further
+  // down its search than one round reaches is searched again, for longer each time, and the one ahead keeps at least
+  // half of the calls.  A halving once begun runs to its end, since what a round is for is what the value model cannot
+  // see coming; so whether a later one is worth running is decided as it would begin, by whether one of its contenders
+  // has a step worth a call on its value alone.  That keeps a run with a stop fraction finite: each later halving takes
+  // such a step in its first round.  The first halving does not begin while `sweeping`, the defaults sweep still owing
+  // readings at the probe, so that it takes every contender at once.
   [[nodiscard]] HalvingState halvingState(const TuneDB& db, u32 env,
                                           const std::map<EntryKey, std::vector<Reading>>& readings,
-                                          const Objective& objective, const std::set<size_t>& offering,
-                                          const std::set<size_t>& resuming, bool sweeping) const;
+                                          const Objective& objective, const Explored& explored, bool sweeping) const;
 
   // The first measurements admissible() offers once nothing runs ahead of them by rule, whether or not a bootstrap
   // call or a gate reading is holding them back now.

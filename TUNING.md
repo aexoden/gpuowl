@@ -217,7 +217,8 @@ To see what a set of settings would tune for without opening a GPU, put `scope` 
 
 **`stop=<P>%|0`**: the run ends once nothing left is expected to lower `T` by `P` percent. Default `0.1%`. A larger
 value gives a shorter run (`stop=1%`); `stop=0` runs until you stop it with Ctrl-C. The bootstrap, the accuracy
-checks and the coverage of the workload are always completed, whatever `stop=` says.
+checks, the coverage of the workload and a halving of the search once begun (see `contenders=`) are always completed,
+whatever `stop=` says.
 
 A value without `%` is refused, except `0`: `0.1` could mean either 0.1% or 10%.
 
@@ -295,10 +296,12 @@ drops out, the rest get twice as many calls, and so on until one is left. An FFT
 calls, however far ahead another pulls meanwhile, and a round is recorded in the database, so an interrupted run picks
 it up where it stopped. The FFT left is then searched by expected gain for as many calls as the rounds gave out,
 after which the contenders as they stand then, including those that dropped out and those that have come within 10%
-since, are halved again, each round twice as long as the matching round of the last halving. The first halving runs
-by rule, whatever `stop=` says, so a short run still looks at more than one shape; the later ones go first but are
-held to `stop=`. `0` ranks the search by expected gain from the start, which tends to spend everything on whichever
-FFT was fastest before tuning. Default `16`.
+since, are halved again, each round twice as long as the matching round of the last halving. A round gives each FFT
+in it its calls whatever the search expects them to gain, since what it is for is a gain several steps away that no
+single step shows. A halving, once begun, runs to its end whatever `stop=` says, so a short run still looks at more
+than one shape; `stop=` decides whether the next one begins, which it does only while a step of one of its FFTs is
+worth `stop=` on its own. `0` ranks the search by expected gain from the start, which tends to spend everything on
+whichever FFT was fastest before tuning. Default `16`.
 
 **`roundCalls=<N>`**: how many calls each contender is searched for in the first round of the first halving; each
 later round doubles it, and so does each later halving. Only calls made during a round count towards it. Default

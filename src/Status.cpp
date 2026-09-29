@@ -96,7 +96,7 @@ TuneStatus statusOf(const Scheduler& scheduler, TuneDB& db, u32 env, double stop
   out.floor = stop * valuing.T();
 
   QueueReport report;
-  report.left = scheduler.admissible(db, env, valuing);
+  report.left = scheduler.admissible(db, env, valuing, out.floor);
   report.valuedT = out.valuedT;
   report.floor = out.floor;
   RunSummary summary = summarize(scheduler, db, env, out.latest ? out.latest->id : 0, report, stop);
