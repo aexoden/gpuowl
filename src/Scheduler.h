@@ -289,9 +289,11 @@ public:
   [[nodiscard]] bool swept(const TuneDB& db, u32 env, const Objective& objective) const;
 
   // The halving as the rows stand.  Its first round takes the contenders: the entries with a publishable reading within
-  // CONTEND_MARGIN of what production is measured to run at some exponent of their band the workload weighs, the best
-  // `contenders` of them taken one variant of each shape before a second of any, since what the search is spread over
-  // is which shape tunes best.  A round's entries are recorded as it begins, and stay in it until each has had its
+  // CONTEND_MARGIN of what production is measured to run at some exponent of their band the workload weighs, or within
+  // it at the built-in defaults of the cheapest reading there at the built-in defaults -- an entry behind only because
+  // the one ahead of it has been searched is compared as the two stood before either was -- the best `contenders` of
+  // them by gap now, taken one variant of each shape before a second of any, since what the search is spread over is
+  // which shape tunes best.  A round's entries are recorded as it begins, and stay in it until each has had its
   // calls of search, counted from then, or has no step left to take whatever it is worth, and has finished any step
   // begun; the better half by gap then go on to a round of twice the calls.  It is over once one is left, which then
   // has as many calls of search as the halving's rounds gave out, under the ranking by value, or until it has no step
@@ -365,25 +367,42 @@ private:
   [[nodiscard]] std::vector<Item> reachItems(const TuneDB& db, u32 env, std::span<const OptionSet> sets,
                                              const Objective& objective) const;
 
-  // How far behind what production is measured to run each entry with a publishable reading is, at the best of its
-  // points; nothing for any other.
-  [[nodiscard]] std::vector<std::optional<double>> gapsOf(const std::map<EntryKey, std::vector<Reading>>& readings,
-                                                          const Objective& objective) const;
+  // Where each entry stands against the others, by its index into baselines_.
+  struct Standing {
+    // How far behind what production is measured to run it is, at the best of its points; nothing for an entry with
+    // no publishable reading.
+    std::vector<std::optional<double>> gap;
+
+    // How far its reading at the built-in defaults is behind the cheapest such reading at the best of its points:
+    // where it would stand had nothing been searched.  Nothing where either reading is missing.
+    std::vector<std::optional<double>> atDefaults;
+
+    // The weight of the workload production runs it at.
+    std::vector<double> weight;
+
+    // Within CONTEND_MARGIN now, or at the built-in defaults.
+    [[nodiscard]] bool contends(size_t i) const;
+
+    // Nearest the fastest first, the one production runs over more of the workload first where two are as near.
+    [[nodiscard]] bool ahead(size_t a, size_t b) const;
+  };
+
+  [[nodiscard]] Standing standingOf(const std::map<EntryKey, std::vector<Reading>>& readings,
+                                    const Objective& objective) const;
 
   // The calls of search each entry has had: every call at an option set other than the built-in defaults.
   [[nodiscard]] std::vector<u64> searchCalls(const TuneDB& db, u32 env) const;
 
-  // Up to `limit` of the entries within CONTEND_MARGIN that `eligible` accepts, one variant of each shape before a
-  // second of any, nearest the fastest first.
-  [[nodiscard]] std::vector<size_t> poolOf(const std::vector<std::optional<double>>& gaps,
-                                           const std::function<bool(size_t)>& eligible, u32 limit) const;
+  // Up to `limit` of the entries with a gap that `eligible` accepts, one variant of each shape before a second of any,
+  // ahead first.
+  [[nodiscard]] std::vector<size_t> poolOf(const Standing& standing, const std::function<bool(size_t)>& eligible,
+                                           u32 limit) const;
 
   // For a database no round was recorded in, the rounds that say where the halving stood by the rule before rounds
   // were recorded, which counted every call of search an entry had ever had: over, or in a later round, as that rule
   // has it.  A first round is begun afresh, since it cannot be told from a bootstrap's calls, which that rule also
   // counted; and so is a database whose halving has not begun.
-  [[nodiscard]] std::vector<RoundRow> adoption(const std::vector<std::optional<double>>& gaps,
-                                               const std::vector<u64>& calls) const;
+  [[nodiscard]] std::vector<RoundRow> adoption(const Standing& standing, const std::vector<u64>& calls) const;
 
   [[nodiscard]] RoundMember memberOf(size_t index, u64 from) const;
 

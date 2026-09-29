@@ -1969,6 +1969,115 @@ TEST(a_later_halving_begins_only_while_one_of_its_contenders_has_a_step_worth_th
   CHECK(scheduler.lastHalving().leading);
 }
 
+TEST(a_challenger_behind_only_because_the_one_ahead_was_searched_is_halved_again) {
+  // 101 and 102 start 3% apart at their defaults.  101's first round finds 15% and 102's nothing, so after 101's turn
+  // 102 is 22% behind it -- but only as far as the two have been searched: at their defaults it is still within the
+  // margin, and the next halving takes it, for twice as long.
+  Fixture f;
+  concludedAt(f, "512:15:512:101", {}, 1450);
+  concludedAt(f, "512:15:512:102", {}, 1495);
+  Scheduler const scheduler{scope(), only({"512:15:512:101", "512:15:512:102"}), 1000,
+                            {},      Strategy{.kind = Strategy::Kind::Single},   false,
+                            false,   Halving{.contenders = 2, .roundCalls = 4}};
+  CHECK(std::get<0>(halvingAfter(f, scheduler)));
+  searched(f, "512:15:512:101", 4, 1230);
+  searched(f, "512:15:512:102", 4);
+  CHECK(halvingAfter(f, scheduler) == std::tuple(false, 0u, u64(8), std::vector<std::string>{"512:15:512:101"}));
+  searched(f, "512:15:512:101", 8, 1230);
+
+  CHECK(halvingAfter(f, scheduler) ==
+        std::tuple(true, 0u, u64(8), std::vector<std::string>{"512:15:512:101", "512:15:512:102"}));
+  CHECK_EQ(scheduler.lastHalving().halving, 2u);
+}
+
+TEST(an_entry_put_out_of_the_margin_before_any_halving_is_still_in_the_first) {
+  // 101 has been searched to 15% below its defaults before the halving begins, as a bootstrap searches its family's
+  // fastest FFT.  102, 3% behind it at the defaults, is a contender; 110, 14% behind at the defaults, is not.
+  Fixture f;
+  concludedAt(f, "512:15:512:101", {}, 1450);
+  concludedAt(f, "512:15:512:101", {{"INPLACE", "1"}}, 1230);
+  concludedAt(f, "512:15:512:102", {}, 1495);
+  concludedAt(f, "512:15:512:110", {}, 1650);
+  Scheduler const scheduler{scope(),
+                            only({"512:15:512:101", "512:15:512:102", "512:15:512:110"}),
+                            1000,
+                            {},
+                            Strategy{.kind = Strategy::Kind::Single},
+                            false,
+                            false,
+                            Halving{.contenders = 4, .roundCalls = 4}};
+  CHECK(halvingAfter(f, scheduler) ==
+        std::tuple(true, 0u, u64(4), std::vector<std::string>{"512:15:512:101", "512:15:512:102"}));
+}
+
+TEST(under_the_cap_an_entry_within_the_margin_now_goes_before_one_within_it_only_at_the_defaults) {
+  // 101 leads at 1230.  110 has found 13% and is 6% behind it; 102 is nearer at the defaults but 20% behind now, and it
+  // is 110 that has the second place.
+  Fixture f;
+  concludedAt(f, "512:15:512:101", {}, 1450);
+  concludedAt(f, "512:15:512:101", {{"INPLACE", "1"}}, 1230);
+  concludedAt(f, "512:15:512:102", {}, 1470);
+  concludedAt(f, "512:15:512:110", {}, 1490);
+  concludedAt(f, "512:15:512:110", {{"INPLACE", "1"}}, 1300);
+  Scheduler const scheduler{scope(),
+                            only({"512:15:512:101", "512:15:512:102", "512:15:512:110"}),
+                            1000,
+                            {},
+                            Strategy{.kind = Strategy::Kind::Single},
+                            false,
+                            false,
+                            Halving{.contenders = 2, .roundCalls = 4}};
+  CHECK(halvingAfter(f, scheduler) ==
+        std::tuple(true, 0u, u64(4), std::vector<std::string>{"512:15:512:101", "512:15:512:110"}));
+}
+
+TEST(of_two_as_near_the_fastest_the_one_production_runs_over_more_of_the_workload_goes_on) {
+  // Over 120M-160M, 512:15:512 runs the exponents below its reach and 1K:8:1K the rest: each is what production runs
+  // somewhere, so neither is behind anything.  The first carries more of the workload, and is the one the halving
+  // leaves, whichever comes first in the list.
+  RunScope const wide = makeScope(ScopeArgs{.lo = 120'000'000, .hi = 160'000'000, .probe = 130'000'017}, {});
+  std::vector<Baseline> entries;
+  for (const Baseline& b : baselines(nvidia(), wide, {FFTShape{"1K:8:1K"}, FFTShape{"512:15:512"}})) {
+    if ((b.fft.spec() == "1K:8:1K:202" && b.band.contains(150'000'001)) ||
+        (b.fft.spec() == "512:15:512:101" && b.band.contains(130'000'017))) {
+      entries.push_back(b);
+    }
+  }
+  CHECK_EQ(entries.size(), size_t{2});
+  CHECK_EQ(entries.front().fft.spec(), std::string{"1K:8:1K:202"});
+  CHECK(!entries.back().band.contains(150'000'001));
+
+  Fixture f;
+  auto const read = [&](const Baseline& b, u64 exponent, const UseConfig& options, double mean, u32 calls) {
+    CHECK(f.db.add(RunRow{
+      .sess = f.sess,
+      .fft = b.fft.spec(),
+      .kind = TestKind::PRP,
+      .exponent = exponent,
+      .regime = b.band.regime,
+      .cfg = f.db.internCfg(options),
+      .m = {.mean = mean, .stddev = 0.1, .blocks = 4 * calls, .calls = calls, .drift = 1, .status = Status::Ok}}));
+  };
+  read(entries[0], 150'000'001, {}, 3000, MIN_CALLS);
+  read(entries[1], 130'000'017, {}, 1700, MIN_CALLS);
+  Scheduler const scheduler{wide,
+                            entries,
+                            1000,
+                            {},
+                            Strategy{.kind = Strategy::Kind::Single},
+                            false,
+                            false,
+                            Halving{.contenders = 2, .roundCalls = 4}};
+  CHECK(halvingAfter(f, scheduler, wide) ==
+        std::tuple(true, 0u, u64(4), std::vector<std::string>{"512:15:512:101", "1K:8:1K:202"}));
+
+  for (u32 c = 0; c < 4; ++c) {
+    read(entries[0], 150'000'001, {{"ZEROHACK_W", "0"}}, 3100, 1);
+    read(entries[1], 130'000'017, {{"ZEROHACK_W", "0"}}, 1800, 1);
+  }
+  CHECK(halvingAfter(f, scheduler, wide) == std::tuple(false, 0u, u64(8), std::vector<std::string>{"512:15:512:101"}));
+}
+
 TEST(the_first_halving_waits_for_the_defaults_sweep_at_the_probe) {
   // 101 and 102 are read, 110 is owed its reading at the defaults.  The halving does not begin without it.
   Fixture f;
@@ -2089,8 +2198,9 @@ TEST(a_workload_of_another_kind_is_halved_from_its_own_first_round_and_the_first
                            false,
                            Halving{.contenders = 2, .roundCalls = 4}};
 
+  // The two read alike in LL, and production runs 102 there, so it is ahead.
   CHECK(halvingAfter(f, switched, ll) ==
-        std::tuple(true, 0u, u64(4), std::vector<std::string>{"512:15:512:101", "512:15:512:102"}));
+        std::tuple(true, 0u, u64(4), std::vector<std::string>{"512:15:512:102", "512:15:512:101"}));
   CHECK_EQ(switched.lastHalving().halving, 1u);
   std::vector<Item> const items = switched.admissible(f.db, f.env, Objective{f.db, f.env, ll, Gating::Assumed});
   CHECK(!items.empty() && std::ranges::all_of(items, [](const Item& i) { return i.halving && byRule(i); }));

@@ -73,7 +73,8 @@ A run goes through these stages, though it interleaves them and you do not need 
    option groups. A random option set is tried to escape a local optimum: once no step is left, and after every 32
    option sets an FFT measures whether or not steps are left. Whenever the default options change, an FFT tries them
    again, both as they are and laid over the best options it has found itself. The search is first spread over the
-   contenders, the FFTs within 10% of the fastest, since which of them tunes best cannot be told from their defaults:
+   contenders, the FFTs within 10% of the fastest, or within 10% of the fastest when both are at their defaults, since
+   which of them tunes best cannot be told from their defaults:
    once the sweep has read them all at the probe exponent, each gets an equal share in rounds, the slower half
    dropping out after each round and the share doubling, until one is left (see `contenders=`). The search then goes
    wherever the next step is expected to gain most, until the FFT left has had as many measurements again as the
@@ -290,8 +291,10 @@ same way.
 each piece's best answers with the others'; `3`: everything is combined. Default `3`.
 
 **`contenders=<N>`**: how many FFTs the search is first spread over. The contenders are the FFTs within 10% of the
-fastest one somewhere in the workload, one variant of each shape before a second variant of any, so that the search
-looks at several shapes rather than the variants of one. Each is searched for `roundCalls` calls, then the slower half
+fastest one somewhere in the workload, as measured now or as measured at the built-in defaults: an FFT that is behind
+only because the fastest has been searched and it has not is still a contender. They are taken nearest first as they
+stand now, one variant of each shape before a second variant of any, so that the search looks at several shapes rather
+than the variants of one; of two equally near, the one that runs more of the workload goes first. Each is searched for `roundCalls` calls, then the slower half
 drops out, the rest get twice as many calls, and so on until one is left. An FFT stays in a round until it has had its
 calls, however far ahead another pulls meanwhile, and a round is recorded in the database, so an interrupted run picks
 it up where it stopped. The FFT left is then searched by expected gain for as many calls as the rounds gave out,
