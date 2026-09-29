@@ -210,9 +210,9 @@ struct ComboRow {
   u64 ts = 0;
 };
 
-// Which configuration a bootstrap family races on at one probe, chosen once and kept: after the defaults sweep the
-// cheapest reading of the type there, and for a bootstrap begun before that rule its smallest shape.  Recorded, since
-// the choice reads measurements that later calls keep adding to, and a race that moved would begin again.
+// Which configuration a bootstrap family is searched on at one probe, chosen once and kept: after the defaults sweep
+// the cheapest reading of the type there.  Recorded, since the choice reads measurements that later calls keep adding
+// to, and a search that moved would begin again.
 struct BootRow {
   u32 sess = 0;
   std::string fft;

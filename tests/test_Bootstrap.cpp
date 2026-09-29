@@ -1,8 +1,8 @@
 // Copyright (C) Jason Lynch
 
-// The bootstrap's pure half: what a configuration is called, which moves a race is between, when a race is decided and
-// for whom, which families are worth racing at all, and what the winners come to as lines -- each from fixed readings,
-// with no GPU.
+// The bootstrap's pure half: what a configuration is called, what one step within a group is, which configuration each
+// family is searched on and whether it is worth searching, and what the best entries come to as lines -- each from
+// fixed readings, with no GPU.
 
 #include "Bootstrap.h"
 
@@ -41,10 +41,6 @@ Measurement reading(double mean, double sd, u32 calls) {
           .ts = 1};
 }
 
-RaceEntry entry(UseConfig config, std::optional<Measurement> m, bool out = false) {
-  return {.config = std::move(config), .text = {}, .m = m, .out = out};
-}
-
 Family familyOf(const std::string& spec) {
   FFTConfig const fft{spec};
   return {.type = fft.shape.fft_type, .fft = fft};
@@ -62,12 +58,13 @@ struct Fixture {
     CHECK(env && sess);
   }
 
-  void add(const FFTConfig& fft, const UseConfig& options, const Measurement& m, TestKind kind = TestKind::PRP) {
+  void add(const FFTConfig& fft, const UseConfig& options, const Measurement& m, TestKind kind = TestKind::PRP,
+           u64 exponent = PROBE) {
     CHECK(db.add(RunRow{.sess = sess,
                         .fft = fft.spec(),
                         .kind = kind,
-                        .exponent = PROBE,
-                        .regime = regimeOf(fft, PROBE),
+                        .exponent = exponent,
+                        .regime = regimeOf(fft, exponent),
                         .cfg = db.internCfg(options),
                         .m = m}));
   }
@@ -163,76 +160,6 @@ TEST(memory_moves_one_access_class_at_a_time) {
   CHECK(texts == nontemporal);
 }
 
-TEST(every_candidate_is_called_before_any_is_compared) {
-  std::vector<RaceEntry> const entries{entry({}, reading(100, 0.1, 2)), entry({{"WMUL", "1"}}, reading(90, 0.1, 1)),
-                                       entry({{"LDSPAD_W", "0"}}, std::nullopt)};
-  RaceResult const r = decideRace(entries);
-  CHECK(r.how == RaceHow::Pending);
-  std::vector<size_t> const unsampledFirst{2, 1};
-  CHECK(r.next == unsampledFirst);
-}
-
-TEST(a_race_is_decided_by_separation) {
-  std::vector<RaceEntry> const entries{entry({}, reading(100, 0.1, 2)), entry({{"WMUL", "1"}}, reading(97, 0.1, 2)),
-                                       entry({{"LDSPAD_W", "0"}}, reading(104, 0.1, 2))};
-  RaceResult const r = decideRace(entries);
-  CHECK(r.how == RaceHow::Separated);
-  CHECK_EQ(*r.winner, size_t(1));
-  CHECK(r.next.empty());
-}
-
-TEST(a_tie_goes_to_the_candidate_nearest_the_defaults) {
-  // 0.1% apart and overlapping: within the margin, so the move buys nothing measurable and the incumbent keeps it, even
-  // though the move read lower.
-  std::vector<RaceEntry> const within{entry({}, reading(100.1, 1, 2)), entry({{"WMUL", "1"}}, reading(100, 1, 2))};
-  RaceResult const r = decideRace(within);
-  CHECK(r.how == RaceHow::Margin);
-  CHECK_EQ(*r.winner, size_t(0));
-
-  // 1% apart and still overlapping: not settled, so both are called again, fewest calls first.
-  std::vector<RaceEntry> const open{entry({}, reading(101, 4, 3)), entry({{"WMUL", "1"}}, reading(100, 4, 2))};
-  RaceResult const o = decideRace(open);
-  CHECK(o.how == RaceHow::Pending);
-  std::vector<size_t> const bothAgain{1, 0};
-  CHECK(o.next == bothAgain);
-
-  // The same after RACE_MAX_CALLS calls of the rival is a tie by exhaustion, which again goes to the defaults.
-  std::vector<RaceEntry> const spent{entry({}, reading(101, 4, RACE_MAX_CALLS)),
-                                     entry({{"WMUL", "1"}}, reading(100, 4, 3))};
-  RaceResult const e = decideRace(spent);
-  CHECK(e.how == RaceHow::Margin);
-  CHECK_EQ(*e.winner, size_t(0));
-
-  // But a leader that has had its calls does not settle a rival that has not: the rival is called on, with the leader
-  // offered after it so that the rival's calls are not taken back to back.
-  std::vector<RaceEntry> const fresh{entry({}, reading(100, 4, RACE_MAX_CALLS)),
-                                     entry({{"WMUL", "1"}}, reading(101, 4, 3))};
-  RaceResult const f = decideRace(fresh);
-  CHECK(f.how == RaceHow::Pending);
-  std::vector<size_t> const rivalThenLeader{1, 0};
-  CHECK(f.next == rivalThenLeader);
-}
-
-TEST(a_tie_between_equals_stays_with_the_better_supported) {
-  // Two one-key moves 0.05% apart, the incumbent well behind: a tie by margin, and the move with more calls keeps it
-  // though it reads dearer -- once decided, a race's winner is every later race's incumbent and gathers calls, and
-  // letting those move a verdict the margin already called a tie would re-race everything after it for nothing.
-  std::vector<RaceEntry> const entries{entry({}, reading(103, 0.1, 2)), entry({{"WMUL", "1"}}, reading(100.05, 1, 9)),
-                                       entry({{"LDSPAD_W", "0"}}, reading(100, 1, 2))};
-  RaceResult const r = decideRace(entries);
-  CHECK(r.how == RaceHow::Margin);
-  CHECK_EQ(*r.winner, size_t(1));
-}
-
-TEST(a_candidate_that_failed_takes_no_part) {
-  std::vector<RaceEntry> const entries{entry({}, reading(100, 0.1, 2)), entry({{"WMUL", "1"}}, std::nullopt, true)};
-  RaceResult const r = decideRace(entries);
-  CHECK(r.how == RaceHow::Alone);
-  CHECK_EQ(*r.winner, size_t(0));
-
-  CHECK(!decideRace({entry({}, std::nullopt, true)}).winner);
-}
-
 TEST(the_families_are_the_smallest_shape_of_each_type_the_workload_reaches) {
   std::vector<Family> const all =
     bootstrapFamilies(nvidia(), PROBE, {FFTConfig{"512:15:512:101"}, FFTConfig{"1:512:8:512:202"}});
@@ -245,192 +172,134 @@ TEST(the_families_are_the_smallest_shape_of_each_type_the_workload_reaches) {
   }
 }
 
-TEST(every_family_is_read_before_any_is_raced) {
+TEST(every_family_is_read_before_any_is_searched) {
   Fixture f;
   Bootstrap const b{nvidia(), PROBE, {familyOf("2:1K:8:256:212"), familyOf("1:1K:8:256:202")}};
 
-  BootstrapState const cold = b.state(f.db, f.env);
+  BootstrapState const cold = b.state(f.db, f.env, 64);
   CHECK(!cold.complete);
-  CHECK_EQ(cold.turns.size(), size_t(2));
-  for (const Turn& t : cold.turns) { CHECK(t.config.empty()); }
+  CHECK_EQ(cold.budget, u64(64));
+  for (const FamilyState& s : cold.families) { CHECK(s.phase == FamilyPhase::Unread); }
 
-  // One family read: the other is still wanted first, and nothing is raced.
-  f.add(FFTConfig{"2:1K:8:256:212"}, {}, reading(1576, 1, 1));
-  BootstrapState const half = b.state(f.db, f.env);
-  CHECK_EQ(half.turns.size(), size_t(1));
-  CHECK_EQ(half.turns.front().family, size_t(1));
+  // A reading under other options, or not yet concluded, is not a reading of the defaults.
+  f.add(FFTConfig{"2:1K:8:256:212"}, {{"WMUL", "1"}}, reading(1500, 1, MIN_CALLS));
+  f.add(FFTConfig{"1:1K:8:256:202"}, {}, reading(1640, 1, 1));
+  CHECK(b.state(f.db, f.env, 64).families[0].phase == FamilyPhase::Unread);
+
+  f.add(FFTConfig{"2:1K:8:256:212"}, {}, reading(1576, 1, MIN_CALLS));
+  BootstrapState const half = b.state(f.db, f.env, 64);
+  CHECK(half.families[0].phase == FamilyPhase::Owed);
+  CHECK_EQ(half.families[0].reading, 1576.0);
+  CHECK_EQ(half.families[0].best, 1500.0);
+  CHECK(half.families[1].phase == FamilyPhase::Unread);
+  CHECK(!half.complete);
 }
 
-TEST(a_family_the_gain_prior_cannot_bring_level_is_not_raced) {
+TEST(a_family_the_gain_prior_cannot_bring_level_is_not_searched) {
   Fixture f;
   Bootstrap const b{
     nvidia(), PROBE, {familyOf("1K:13:256:212"), familyOf("2:1K:8:256:212"), familyOf("1:1K:8:256:202")}};
 
   // The A4000's anchor race: FP64 at five times FFT3261 is past any gain the prior allows; FFT3161 is not.
-  f.add(FFTConfig{"1K:13:256:212"}, {}, reading(8088, 1, 1));
-  f.add(FFTConfig{"2:1K:8:256:212"}, {}, reading(1576, 1, 1));
-  f.add(FFTConfig{"1:1K:8:256:202"}, {}, reading(1640, 1, 1));
+  f.add(FFTConfig{"1K:13:256:212"}, {}, reading(8088, 1, MIN_CALLS));
+  f.add(FFTConfig{"2:1K:8:256:212"}, {}, reading(1576, 1, MIN_CALLS));
+  f.add(FFTConfig{"1:1K:8:256:202"}, {}, reading(1640, 1, MIN_CALLS));
 
-  BootstrapState const s = b.state(f.db, f.env);
+  BootstrapState const s = b.state(f.db, f.env, 64);
   CHECK(s.families[0].phase == FamilyPhase::Skipped);
-  CHECK(s.families[1].phase == FamilyPhase::Racing);
-  CHECK(s.families[2].phase == FamilyPhase::Waiting);
-
-  // The cheaper family races first, and its first race is its first group's.
-  CHECK(!s.turns.empty());
-  for (const Turn& t : s.turns) { CHECK_EQ(t.family, size_t(1)); }
-  CHECK_EQ(s.families[1].stage, std::string{"Placement"});
+  CHECK(s.families[1].phase == FamilyPhase::Owed);
+  CHECK(s.families[2].phase == FamilyPhase::Owed);
   CHECK(!s.complete);
 }
 
-TEST(a_reading_counts_for_its_candidate_however_its_options_were_spelled) {
+TEST(a_reading_counts_for_its_family_however_its_options_were_spelled) {
   // The anchor race and a session under a user's own -use both record what the kernels were built with, which can name
   // keys at their defaults or keys the tuner never varies.  Still the defaults, so the family is read.
   Fixture f;
   Bootstrap const b{nvidia(), PROBE, {familyOf("2:1K:8:256:212")}};
-  f.add(FFTConfig{"2:1K:8:256:212"}, {{"WMUL", "2"}, {"INPLACE", "1"}, {"NO_ASM", "0"}}, reading(1576, 1, 1));
+  f.add(FFTConfig{"2:1K:8:256:212"}, {{"WMUL", "2"}, {"INPLACE", "1"}, {"NO_ASM", "0"}}, reading(1576, 1, MIN_CALLS));
 
-  BootstrapState const s = b.state(f.db, f.env);
+  BootstrapState const s = b.state(f.db, f.env, 64);
   CHECK_EQ(s.families[0].reading, 1576.0);
-  CHECK(s.families[0].phase == FamilyPhase::Racing);
+  CHECK_EQ(s.families[0].calls, u64(0));
+  CHECK(s.families[0].phase == FamilyPhase::Owed);
 }
 
 TEST(a_family_is_judged_against_the_cheapest_as_tuned) {
-  // The A4000's FFT61 at 2257 us/it is within RACE_GAIN of FFT3261's defaults at 1576, and out of it once FFT3261 is
-  // tuned past 1535 (2257 x 0.68): racing it then would be for a gain too rare to repay the race.
+  // The A4000's FFT61 at 2257 us/it is within BOOTSTRAP_GAIN of FFT3261's defaults at 1576, and out of it once FFT3261
+  // is tuned past 1535 (2257 x 0.68): searching it then would be for a gain too rare to repay the search.
   Fixture f;
   Family const fp32 = familyOf("2:1K:8:256:212");
   Family const gf61 = familyOf("3:1K:16:256:202");
   Bootstrap const b{nvidia(), PROBE, {fp32, gf61}};
-  f.add(fp32.fft, {}, reading(1576, 1, 1));
-  f.add(gf61.fft, {}, reading(2257, 1, 1));
+  f.add(fp32.fft, {}, reading(1576, 1, MIN_CALLS));
+  f.add(gf61.fft, {}, reading(2257, 1, MIN_CALLS));
+  CHECK(b.state(f.db, f.env, 64).families[1].phase == FamilyPhase::Owed);
 
-  BootstrapState const before = b.state(f.db, f.env);
-  CHECK(before.families[1].phase == FamilyPhase::Waiting);
-
-  // WMUL=1 takes 9% off; every other move costs 1%.
-  auto cost = [](const UseConfig& c) {
-    double us = 1576;
-    for (const auto& [key, value] : c) { us *= key == "WMUL" && value == "1" ? 0.91 : 1.01; }
-    return us;
-  };
-
-  u32 calls = 0;
-  for (BootstrapState s = b.state(f.db, f.env); !s.turns.empty(); s = b.state(f.db, f.env)) {
-    const Turn& t = s.turns.front();
-    CHECK_EQ(t.family, size_t(0));
-    f.add(fp32.fft, t.config, reading(cost(t.config), cost(t.config) * 0.0005, 1));
-    // A rule that never lets the races finish would otherwise loop for ever.
-    if (++calls >= 1000) {
-      CHECK(false);
-      break;
-    }
-  }
-
-  BootstrapState const after = b.state(f.db, f.env);
-  CHECK(after.complete);
-  CHECK(after.families[0].phase == FamilyPhase::Done);
+  f.add(fp32.fft, {{"WMUL", "1"}}, reading(1540, 1, MIN_CALLS));
+  CHECK(b.state(f.db, f.env, 64).families[1].phase == FamilyPhase::Owed);
+  f.add(fp32.fft, {{"WMUL", "1"}, {"TAIL_KERNELS", "3"}}, reading(1500, 1, MIN_CALLS));
+  BootstrapState const after = b.state(f.db, f.env, 64);
+  CHECK(after.families[0].phase == FamilyPhase::Owed);
   CHECK(after.families[1].phase == FamilyPhase::Skipped);
-  CHECK_EQ(configText(after.defaults.global), std::string{"WMUL=1"});
+}
+
+TEST(a_family_has_its_calls_of_search_and_is_served) {
+  Fixture f;
+  Family const fp32 = familyOf("2:1K:8:256:212");
+  Bootstrap const b{nvidia(), PROBE, {fp32}};
+
+  // Calls at the defaults are not calls of search; calls anywhere in the band are, a failure as one.
+  f.add(fp32.fft, {}, reading(1576, 1, 3));
+  f.add(fp32.fft, {{"WMUL", "1"}}, reading(1540, 1, 2));
+  u64 const elsewhere = PROBE + 20'000;
+  CHECK(regimeOf(fp32.fft, elsewhere).label() == regimeOf(fp32.fft, PROBE).label());
+  f.add(fp32.fft, {{"TAIL_KERNELS", "3"}}, reading(1560, 1, 1), TestKind::PRP, elsewhere);
+  BootstrapState const three = b.state(f.db, f.env, 4);
+  CHECK_EQ(three.families[0].calls, u64(3));
+  CHECK(three.families[0].phase == FamilyPhase::Owed);
+
+  f.add(fp32.fft, {{"ZEROHACK_W", "0"}}, Measurement{.status = Status::Err, .ts = 1});
+  BootstrapState const served = b.state(f.db, f.env, 4);
+  CHECK_EQ(served.families[0].calls, u64(4));
+  CHECK(served.families[0].phase == FamilyPhase::Served);
+  CHECK(served.complete);
+}
+
+TEST(a_family_is_read_and_searched_in_the_kind_the_bootstrap_is_in) {
+  Fixture f;
+  Family const fp32 = familyOf("2:1K:8:256:212");
+  f.add(fp32.fft, {}, reading(1576, 1, MIN_CALLS));
+  f.add(fp32.fft, {{"WMUL", "1"}}, reading(1540, 1, 64));
+
+  Bootstrap const prp{nvidia(), PROBE, {fp32}, true, TestKind::PRP};
+  CHECK(prp.state(f.db, f.env, 64).families[0].phase == FamilyPhase::Served);
+
+  Bootstrap const ll{nvidia(), PROBE, {fp32}, true, TestKind::LL};
+  BootstrapState const s = ll.state(f.db, f.env, 64);
+  CHECK(s.kind == TestKind::LL);
+  CHECK(s.families[0].phase == FamilyPhase::Unread);
+  f.add(fp32.fft, {}, reading(1570, 1, MIN_CALLS), TestKind::LL);
+  CHECK(ll.state(f.db, f.env, 64).families[0].phase == FamilyPhase::Owed);
 }
 
 TEST(a_family_that_cannot_run_at_its_defaults_is_held) {
   Fixture f;
   Bootstrap const b{nvidia(), PROBE, {familyOf("2:1K:8:256:212"), familyOf("1:1K:8:256:202")}};
-  f.add(FFTConfig{"2:1K:8:256:212"}, {}, reading(1576, 1, 1));
+  f.add(FFTConfig{"2:1K:8:256:212"}, {}, reading(1576, 1, MIN_CALLS));
   f.add(FFTConfig{"1:1K:8:256:202"}, {}, Measurement{.status = Status::NoCompile, .ts = 1});
 
-  BootstrapState const s = b.state(f.db, f.env);
+  BootstrapState const s = b.state(f.db, f.env, 64);
   CHECK(s.families[1].phase == FamilyPhase::Held);
-  CHECK(s.families[0].phase == FamilyPhase::Racing);
+  CHECK(s.families[0].phase == FamilyPhase::Owed);
 }
 
-TEST(turned_off_it_decides_nothing) {
+TEST(turned_off_it_searches_nothing) {
   Fixture f;
   Bootstrap const b{nvidia(), PROBE, {familyOf("2:1K:8:256:212")}, false};
-  BootstrapState const s = b.state(f.db, f.env);
+  BootstrapState const s = b.state(f.db, f.env, 64);
   CHECK(s.complete);
-  CHECK(s.turns.empty());
   CHECK(s.families[0].phase == FamilyPhase::Skipped);
-  CHECK(s.defaults.global.empty() && s.defaults.family.empty());
-}
-
-TEST(a_family_raced_to_the_end_is_a_transcript_of_its_races) {
-  // Every call answered at once from a fixed rule: WMUL=1 and TAIL_KERNELS=3 each save 2%, every other move costs 1%,
-  // and anything else is the defaults.  Replaying the turns until none is left is what a run does.  The groups alone.
-  Fixture f;
-  Family const family = familyOf("2:1K:8:256:212");
-  Bootstrap const b{nvidia(), PROBE, {family}, true, 1};
-
-  auto cost = [](const UseConfig& c) {
-    double us = 1576;
-    for (const auto& [key, value] : c) {
-      us *= (key == "WMUL" && value == "1") || (key == "TAIL_KERNELS" && value == "3") ? 0.98 : 1.01;
-    }
-    return us;
-  };
-
-  u32 calls = 0;
-  for (BootstrapState s = b.state(f.db, f.env); !s.turns.empty(); s = b.state(f.db, f.env)) {
-    const Turn& t = s.turns.front();
-    f.add(family.fft, t.config, reading(cost(t.config), cost(t.config) * 0.0005, 1));
-    // A rule that never lets the races finish would otherwise loop for ever.
-    if (++calls >= 1000) {
-      CHECK(false);
-      break;
-    }
-  }
-
-  BootstrapState const done = b.state(f.db, f.env);
-  CHECK(done.complete);
-  CHECK(done.families[0].phase == FamilyPhase::Done);
-  CHECK_EQ(configText(done.families[0].decided), std::string{"TAIL_KERNELS=3,WMUL=1"});
-
-  // One decision per group the family has a move in, and a second round of each group a move won -- Tail and Width --
-  // which the incumbent then holds.
-  CHECK_EQ(done.families[0].decisions.size(), size_t(10));
-  for (const Decision& d : done.families[0].decisions) { CHECK(d.how == RaceHow::Separated); }
-
-  // One family agrees with itself, so everything it decided is the global line.
-  CHECK_EQ(configText(done.defaults.global), std::string{"TAIL_KERNELS=3,WMUL=1"});
-  CHECK(done.defaults.family.empty());
-
-  // Two calls for each of the 48 moves of its eight first rounds, and two for the defaults: each later race's incumbent
-  // is the previous one's winner, whose calls it already has.  The 53 moves there are less the five that change the
-  // rounding -- TAIL_KERNELS to 0 or 1, TAIL_TRIGS32 to 0 or 1, TABMUL_CHAIN32 to 1 -- which no line carries;
-  // TAIL_KERNELS=3 rounds as the default does, and is raced.  Then the second rounds: Tail's from TAIL_KERNELS=3 offers
-  // three moves it may race, of which the one back to TAIL_KERNELS=2 was measured in the first; Width's from WMUL=1
-  // offers seven, of which WMUL=2 was.
-  CHECK_EQ(calls, 2u * 48 + 2 + 2 * 2 + 2 * 6);
-}
-
-TEST(no_line_carries_a_key_that_changes_the_rounding) {
-  // TAIL_TRIGS32=0 and TABMUL_CHAIN32=1 would each save 10%; every other move costs 1%.  Production applies the lines
-  // where no gate ever read them, so neither is raced, in the groups or in the combinations.
-  Fixture f;
-  Family const family = familyOf("2:1K:8:256:212");
-  Bootstrap const b{nvidia(), PROBE, {family}, true};
-
-  auto cost = [](const UseConfig& c) {
-    double us = 1576;
-    for (const auto& [key, value] : c) {
-      us *= (key == "TAIL_TRIGS32" && value == "0") || (key == "TABMUL_CHAIN32" && value == "1") ? 0.9 : 1.01;
-    }
-    return us;
-  };
-
-  u32 calls = 0;
-  for (BootstrapState s = b.state(f.db, f.env); !s.turns.empty() && calls < 2000; s = b.state(f.db, f.env)) {
-    const Turn& t = s.turns.front();
-    CHECK(!movesAccuracy(nvidia(), family.fft, t.config));
-    f.add(family.fft, t.config, reading(cost(t.config), cost(t.config) * 0.0005, 1));
-    ++calls;
-  }
-
-  BootstrapState const done = b.state(f.db, f.env);
-  CHECK(done.complete);
-  CHECK(done.defaults.global.empty());
-  CHECK(done.defaults.family.empty());
 }
 
 TEST(what_the_families_agree_on_is_global_and_the_rest_is_theirs) {
@@ -453,12 +322,12 @@ TEST(what_the_families_agree_on_is_global_and_the_rest_is_theirs) {
     CHECK(d.family[0].uses == wmul);
   }
 
-  // And what each family runs at under the lines is exactly what it decided.
+  // And what each family runs at under the lines is exactly its own set.
   CHECK_EQ(configText(underDefaults(nvidia(), fp32.fft, TestKind::PRP, d)),
            std::string{"TAIL_KERNELS=3,TAIL_TRIGS32=1,WMUL=1"});
   CHECK_EQ(configText(underDefaults(nvidia(), gf31.fft, TestKind::PRP, d)), std::string{"MODM31=2,TAIL_KERNELS=3"});
 
-  // A family nobody raced runs at the global line, less what does not reach it.
+  // A family with no set of its own runs at the global line, less what does not reach it.
   CHECK_EQ(configText(underDefaults(nvidia(), FFTConfig{"512:15:512:212"}, TestKind::PRP, d)),
            std::string{"TAIL_KERNELS=3"});
 }
@@ -486,35 +355,30 @@ SelectionEntry publishedAt(const std::string& spec, u64 E, double cost, UseConfi
 
 TEST(the_lines_follow_the_best_set_published_for_each_type) {
   u64 const probe = 118'063'003;
-  Family const fp64 = familyOf("512:15:512:212");
   Family const fp32 = familyOf("2:1K:8:256:212");
 
-  // Both families raced, and both moved WMUL to 1.
-  BootstrapState bootstrap;
-  bootstrap.families = {{.family = fp64, .phase = FamilyPhase::Done, .decided = {{"WMUL", "1"}}},
-                        {.family = fp32, .phase = FamilyPhase::Done, .decided = {{"WMUL", "1"}}}};
-  bootstrap.defaults = defaultLines(nvidia(), {{fp64, {{"WMUL", "1"}}}, {fp32, {{"WMUL", "1"}}}});
-  CHECK_EQ(linesText(publishedLines(nvidia(), probe, TestKind::PRP, {}, bootstrap)), std::string{"WMUL=1"});
+  // Nothing published, no lines.
+  CHECK_EQ(linesText(publishedLines(nvidia(), probe, TestKind::PRP, {})), std::string{"-"});
 
-  // FP64's evidence is now what production runs at the probe: the cheapest entry there, not a dearer one there, a
-  // cheaper one of another size that does not reach it, or one of the other kind.  Its TABMUL_CHAIN=1 changes the
-  // rounding, which nothing reads for what the lines reach, so it is left out.  The hybrid has nothing published, so
-  // its race still speaks for it.
+  // FP64's evidence is what production runs at the probe: the cheapest entry there, not a dearer one there, a cheaper
+  // one of another size that does not reach it, or one of the other kind.  Its TABMUL_CHAIN=1 changes the rounding,
+  // which nothing reads for what the lines reach, so it is left out.  The hybrid has nothing published, so it has no
+  // line.
   std::vector<SelectionEntry> const published{
     publishedAt("512:15:512:101", probe, 1700, {{"TABMUL_CHAIN", "1"}, {"TAIL_KERNELS", "3"}}),
     publishedAt("512:15:512:212", probe, 1800, {{"WMUL", "1"}}),
     publishedAt("256:13:512:101", 60'000'000, 900, {{"WMUL", "1"}}),
     publishedAt("512:15:512:102", probe, 1500, {{"WMUL", "1"}}, TestKind::LL)};
-  Defaults const d = publishedLines(nvidia(), probe, TestKind::PRP, published, bootstrap);
+  Defaults const d = publishedLines(nvidia(), probe, TestKind::PRP, published);
   CHECK_EQ(configText(underDefaults(nvidia(), FFTConfig{"512:15:512:101"}, TestKind::PRP, d)),
            std::string{"TAIL_KERNELS=3"});
-  CHECK_EQ(configText(underDefaults(nvidia(), fp32.fft, TestKind::PRP, d)), std::string{"WMUL=1"});
+  CHECK_EQ(configText(underDefaults(nvidia(), fp32.fft, TestKind::PRP, d)), std::string{"TAIL_KERNELS=3"});
 
   // Where nothing of a type covers the probe, the entry nearest it speaks for the type, however much it costs.
   CHECK(maxExp(FFTConfig{"256:14:512:101"}) < probe);
   std::vector<SelectionEntry> const below{publishedAt("256:13:512:101", 60'000'000, 900, {{"WMUL", "1"}}),
                                           publishedAt("256:14:512:101", 64'000'000, 950, {{"TAIL_KERNELS", "3"}})};
-  Defaults const nearest = publishedLines(nvidia(), probe, TestKind::PRP, below, bootstrap);
+  Defaults const nearest = publishedLines(nvidia(), probe, TestKind::PRP, below);
   CHECK_EQ(configText(underDefaults(nvidia(), FFTConfig{"512:15:512:212"}, TestKind::PRP, nearest)),
            std::string{"TAIL_KERNELS=3"});
 }
@@ -522,24 +386,24 @@ TEST(the_lines_follow_the_best_set_published_for_each_type) {
 TEST(an_entry_still_at_the_built_in_defaults_is_no_evidence_for_the_lines) {
   u64 const probe = 118'063'003;
   Family const fp64 = familyOf("512:15:512:212");
-  BootstrapState bootstrap;
-  bootstrap.families = {{.family = fp64, .phase = FamilyPhase::Done, .decided = {{"WMUL", "1"}}}};
-  bootstrap.defaults = defaultLines(nvidia(), {{fp64, {{"WMUL", "1"}}}});
+  std::vector<SelectionEntry> const searchedOnce{publishedAt("512:15:512:212", probe, 1680, {{"WMUL", "1"}})};
+  CHECK_EQ(linesText(publishedLines(nvidia(), probe, TestKind::PRP, searchedOnce)), std::string{"WMUL=1"});
 
-  // The cheapest entry at the probe has not been searched: its defaults say nothing the race did not say better.  Nor
-  // does the unsearched FFT61 entry beside it, which would otherwise pull WMUL off the global line.
-  std::vector<SelectionEntry> const unsearched{publishedAt("512:15:512:112", probe, 1650, {}),
-                                               publishedAt("3:1K:8:512:202", probe, 2200, {})};
-  CHECK_EQ(linesText(publishedLines(nvidia(), probe, TestKind::PRP, unsearched, bootstrap)), std::string{"WMUL=1"});
+  // The cheapest entry at the probe has not been searched: its defaults say nothing.  Nor does the unsearched FFT61
+  // entry beside it, which would otherwise pull WMUL off the global line.
+  std::vector<SelectionEntry> unsearched = searchedOnce;
+  unsearched.push_back(publishedAt("512:15:512:112", probe, 1650, {}));
+  unsearched.push_back(publishedAt("3:1K:8:512:202", probe, 2200, {}));
+  CHECK_EQ(linesText(publishedLines(nvidia(), probe, TestKind::PRP, unsearched)), std::string{"WMUL=1"});
 
   // Once it has been searched, what it found is the evidence.
   std::vector<SelectionEntry> searched = unsearched;
   searched.push_back(publishedAt("512:15:512:112", probe, 1600, {{"TAIL_KERNELS", "3"}}));
-  Defaults const d = publishedLines(nvidia(), probe, TestKind::PRP, searched, bootstrap);
+  Defaults const d = publishedLines(nvidia(), probe, TestKind::PRP, searched);
   CHECK_EQ(configText(underDefaults(nvidia(), fp64.fft, TestKind::PRP, d)), std::string{"TAIL_KERNELS=3"});
 }
 
-TEST(a_family_races_on_its_types_cheapest_reading_at_the_defaults_and_stays_there) {
+TEST(a_family_is_searched_on_its_types_cheapest_reading_at_the_defaults_and_stays_there) {
   // Two readings of FP64 at the probe at the built-in defaults, the cheaper not the smallest shape's default variant.
   Fixture f;
   Family const smallest = familyOf("512:15:512:212");
@@ -566,80 +430,7 @@ TEST(a_family_races_on_its_types_cheapest_reading_at_the_defaults_and_stays_ther
   CHECK(!other.chosen(f.db, f.env));
 }
 
-TEST(a_family_that_began_racing_before_the_choice_was_recorded_goes_on_where_it_raced) {
-  // A database from before the choice was recorded: the family raced on its smallest shape and decided a group.
-  Fixture f;
-  Family const smallest = familyOf("512:15:512:212");
-  Bootstrap const b{nvidia(), PROBE, {smallest}};
-  auto cost = [](const UseConfig& c) { return c.contains("WMUL") ? 1650.0 : 1700.0; };
-  for (BootstrapState s = b.state(f.db, f.env); s.families[0].decisions.empty() && !s.turns.empty();
-       s = b.state(f.db, f.env)) {
-    const Turn& t = s.turns.front();
-    f.add(smallest.fft, t.config, reading(cost(t.config), 0.5, 1));
-  }
-  CHECK(!b.state(f.db, f.env).families[0].decisions.empty());
-
-  // A cheaper FFT read at the defaults afterwards does not move the races, nor what they have decided.
-  f.add(FFTConfig{"512:15:512:112"}, {}, reading(1600, 1, MIN_CALLS));
-  CHECK_EQ(b.familiesIn(f.db, f.env).front().fft.spec(), smallest.fft.spec());
-  CHECK_EQ(b.unrecorded(f.db, f.env).front().fft.spec(), smallest.fft.spec());
-}
-
-TEST(a_bootstrap_is_raced_in_the_kind_the_run_tunes_and_taken_whole_by_a_run_of_the_other) {
-  // Groups alone, one family; WMUL=1 saves 2%, every other move costs 1%.
-  auto cost = [](const UseConfig& c) {
-    double us = 1576;
-    for (const auto& [key, value] : c) { us *= key == "WMUL" && value == "1" ? 0.98 : 1.01; }
-    return us;
-  };
-  auto raceToTheEnd = [&](Fixture& f, const Bootstrap& b) {
-    u32 calls = 0;
-    for (BootstrapState s = b.state(f.db, f.env); !s.turns.empty() && calls < 2000; s = b.state(f.db, f.env), ++calls) {
-      const Turn& t = s.turns.front();
-      f.add(s.families[t.family].family.fft, t.config, reading(cost(t.config), cost(t.config) * 0.0005, 1), s.kind);
-    }
-    CHECK(calls < 2000);
-  };
-  auto rowsOf = [](const TuneDB& db, TestKind kind) {
-    return std::ranges::count_if(db.mergedRuns(), [&](const RunRow& r) { return r.kind == kind; });
-  };
-  Family const family = familyOf("2:1K:8:256:212");
-
-  // An LL-only run races in LL, and records nothing in PRP.
-  Fixture ll;
-  Bootstrap const byLl{nvidia(), PROBE, {family}, true, 1, TestKind::LL};
-  CHECK(byLl.state(ll.db, ll.env).kind == TestKind::LL);
-  raceToTheEnd(ll, byLl);
-  BootstrapState const done = byLl.state(ll.db, ll.env);
-  CHECK(done.complete && done.kind == TestKind::LL);
-  CHECK_EQ(configText(done.defaults.global), std::string{"WMUL=1"});
-  CHECK(rowsOf(ll.db, TestKind::PRP) == 0 && rowsOf(ll.db, TestKind::LL) > 0);
-
-  // A PRP run on that database takes the LL bootstrap as it stands rather than racing it again.
-  Bootstrap const byPrp{nvidia(), PROBE, {family}, true, 1, TestKind::PRP};
-  BootstrapState const taken = byPrp.state(ll.db, ll.env);
-  CHECK(taken.complete && taken.turns.empty() && taken.kind == TestKind::LL);
-  CHECK_EQ(configText(taken.defaults.global), std::string{"WMUL=1"});
-
-  // And the other way about: a PRP bootstrap, finished, serves an LL-only run.
-  Fixture prp;
-  raceToTheEnd(prp, byPrp);
-  BootstrapState const served = byLl.state(prp.db, prp.env);
-  CHECK(served.complete && served.turns.empty() && served.kind == TestKind::PRP);
-
-  // Begun in one kind and not finished, it goes on in that kind whichever the run prefers.
-  Fixture half;
-  for (u32 n = 0; n < 60; ++n) {
-    BootstrapState const s = byPrp.state(half.db, half.env);
-    if (s.turns.empty()) { break; }
-    const Turn& t = s.turns.front();
-    half.add(s.families[t.family].family.fft, t.config, reading(cost(t.config), cost(t.config) * 0.0005, 1), s.kind);
-  }
-  BootstrapState const begun = byLl.state(half.db, half.env);
-  CHECK(!begun.complete && begun.kind == TestKind::PRP);
-}
-
-TEST(a_key_only_amd_and_nvidia_can_choose_is_not_raced_elsewhere) {
+TEST(a_key_only_amd_and_nvidia_can_choose_is_not_a_move_elsewhere) {
   // Elsewhere the host builds OLD_FENCE=1 whatever is asked for.
   FFTConfig const fft{"2:1K:8:256:212"};
   auto offersFence = [&](const Env& e) {
@@ -657,151 +448,4 @@ TEST(a_line_reaches_only_the_shapes_that_can_take_it) {
   CHECK_EQ(configText(underDefaults(nvidia(), FFTConfig{"2:1K:8:256:212"}, TestKind::PRP, d)),
            std::string{"SHUFL_BYTES_W=16,WMUL=1"});
   CHECK_EQ(configText(underDefaults(nvidia(), FFTConfig{"2:4K:8:256:212"}, TestKind::PRP, d)), std::string{"-"});
-}
-
-namespace {
-
-// Replays the turns of `b` until none is left, answering each call from `cost` at once.  The turns taken, in order.
-std::vector<Turn> raceToTheEnd(Fixture& f, const Bootstrap& b, const std::function<double(const UseConfig&)>& cost) {
-  std::vector<Turn> out;
-  for (BootstrapState s = b.state(f.db, f.env); !s.turns.empty(); s = b.state(f.db, f.env)) {
-    const Turn& t = s.turns.front();
-    f.add(b.families()[t.family].fft, t.config, reading(cost(t.config), cost(t.config) * 0.0005, 1));
-    out.push_back(t);
-    // A rule that never lets the races finish would otherwise loop for ever.
-    if (out.size() >= 2000) {
-      CHECK(false);
-      break;
-    }
-  }
-  return out;
-}
-
-TEST(a_turn_names_the_padding_the_lds_budget_turns_off) {
-  // At width 1K, SHUFL_BYTES_W=16 beside the default WMUL=2 fills the budget, so it is built without padding too.
-  Fixture f;
-  Family const family = familyOf("1K:13:256:212");
-  Bootstrap const b{nvidia(), PROBE, {family}, true, 1};
-  std::vector<Turn> const turns = raceToTheEnd(f, b, [](const UseConfig& c) { return c.empty() ? 1000.0 : 1010.0; });
-
-  auto count = [&](const std::string& text) { return std::ranges::count(turns, text, &Turn::text); };
-  CHECK(count("Width SHUFL_BYTES_W=16 (LDSPAD_W=0: LDS budget)") > 0);
-  CHECK_EQ(count("Width SHUFL_BYTES_W=16"), 0);
-  CHECK(count("Width SHUFL_BYTES_W=4") > 0);
-  CHECK(count("Width LDSPAD_W=0") > 0);
-}
-
-// TAIL_KERNELS=3 and ZEROHACK_H=0, in two groups that share the tail kernels, each cost a little alone -- less than
-// any other move, each of which costs 1% -- and save 3% together.
-double crossGroupPair(const UseConfig& c) {
-  bool const tail = useValue(c, "TAIL_KERNELS", 2) == 3;
-  bool const height = useValue(c, "ZEROHACK_H", 1) == 0;
-  double us = 1700 * (tail && height ? 0.97 : tail ? 1.004 : height ? 1.002 : 1);
-  for (const auto& [key, value] : c) {
-    if (!(key == "TAIL_KERNELS" && value == "3") && !(key == "ZEROHACK_H" && value == "0")) { us *= 1.01; }
-  }
-  return us;
-}
-
-}  // namespace
-
-TEST(a_cross_group_pair_is_found_by_the_combinations_and_not_by_the_groups) {
-  // FP64 at variant 212 away from 1024: Tail and Height share the tail kernels, so they are combined at tier 2.
-  Family const family = familyOf("512:15:512:212");
-
-  Fixture groupsOnly;
-  Bootstrap const groups{nvidia(), PROBE, {family}, true, 1};
-  std::vector<Turn> const plain = raceToTheEnd(groupsOnly, groups, crossGroupPair);
-  BootstrapState const g = groups.state(groupsOnly.db, groupsOnly.env);
-  CHECK(g.complete);
-  CHECK_EQ(configText(g.families[0].decided), std::string{"-"});
-  CHECK(std::ranges::all_of(plain, [](const Turn& t) { return t.tier == 1; }));
-
-  Fixture whole;
-  Bootstrap const tree{nvidia(), PROBE, {family}};
-  std::vector<Turn> const turns = raceToTheEnd(whole, tree, crossGroupPair);
-  BootstrapState const t = tree.state(whole.db, whole.env);
-  CHECK(t.complete);
-  CHECK_EQ(configText(t.families[0].decided), std::string{"TAIL_KERNELS=3,ZEROHACK_H=0"});
-  CHECK_EQ(configText(t.defaults.global), std::string{"TAIL_KERNELS=3,ZEROHACK_H=0"});
-
-  // The groups raced exactly as before, and the combinations after them.
-  CHECK(turns.size() > plain.size());
-  for (size_t i = 0; i < plain.size() && i < turns.size(); ++i) { CHECK(turns[i].config == plain[i].config); }
-  CHECK(std::all_of(turns.begin() + ptrdiff_t(std::min(plain.size(), turns.size())), turns.end(), [](const Turn& turn) {
-    return turn.tier > 1 || turn.text.find("the incumbent") != std::string::npos;
-  }));
-
-  // Found at tier 2, by combining the two groups' best answers, and held at tier 3.
-  auto const pair =
-    std::ranges::find_if(t.families[0].decisions, [](const Decision& d) { return d.stage == "Tail+Height"; });
-  CHECK(pair != t.families[0].decisions.end());
-  if (pair != t.families[0].decisions.end()) {
-    CHECK_EQ(pair->winner, std::string{"TAIL_KERNELS=3,ZEROHACK_H=0"});
-    CHECK(pair->how == RaceHow::Separated);
-  }
-  CHECK(t.families[0].decisions.back().stage == "all");
-  CHECK_EQ(t.families[0].decisions.back().winner, std::string{"the incumbent"});
-}
-
-TEST(each_combination_stage_is_raced_once_from_the_background_as_it_stands) {
-  // No combination pays: every stage holds its incumbent, and the lines are what the groups decided.
-  Fixture f;
-  Family const family = familyOf("2:1K:8:256:212");
-  Bootstrap const b{nvidia(), PROBE, {family}};
-  auto cost = [](const UseConfig& c) {
-    double us = 1576;
-    for (const auto& [key, value] : c) {
-      us *= (key == "WMUL" && value == "1") || (key == "TAIL_KERNELS" && value == "3") ? 0.98 : 1.01;
-    }
-    return us;
-  };
-  std::vector<Turn> const turns = raceToTheEnd(f, b, cost);
-
-  BootstrapState const done = b.state(f.db, f.env);
-  CHECK(done.complete);
-  CHECK_EQ(configText(done.families[0].decided), std::string{"TAIL_KERNELS=3,WMUL=1"});
-
-  // The ten group races, then one race per stage, each once.
-  const std::vector<Decision>& decisions = done.families[0].decisions;
-  CHECK(decisions.size() > 10);
-  std::set<std::string> stages;
-  for (size_t i = 10; i < decisions.size(); ++i) {
-    CHECK(stages.insert(decisions[i].stage).second);
-    CHECK_EQ(decisions[i].winner, std::string{"the incumbent"});
-  }
-  CHECK(stages.contains("all"));
-  CHECK(std::ranges::any_of(stages, [](const std::string& s) { return s != "all"; }));
-
-  // Every combination point is a set the groups' races never measured, called as a tier-2 or tier-3 turn.
-  std::set<std::string> raced;
-  for (const Turn& t : turns) {
-    if (t.tier == 1) { raced.insert(configText(t.config)); }
-  }
-  for (const Turn& t : turns) {
-    if (t.tier > 1 && t.text.find("the incumbent") == std::string::npos) {
-      CHECK(!raced.contains(configText(t.config)));
-      CHECK(t.tier == 2 || t.tier == 3);
-    }
-  }
-}
-
-TEST(what_the_entry_later_measures_does_not_reopen_the_combinations) {
-  // Once the bootstrap is done, its configuration is searched as an entry like any other, and those rows are at the
-  // same spec and exponent.  They are not answers of the bootstrap's races, so its stages keep their candidates.
-  Fixture f;
-  Family const family = familyOf("512:15:512:212");
-  Bootstrap const b{nvidia(), PROBE, {family}};
-  (void)raceToTheEnd(f, b, crossGroupPair);
-  BootstrapState const before = b.state(f.db, f.env);
-  CHECK(before.complete);
-
-  // Cheap readings of two-key moves within one group, which a combination would take as its best answers.
-  f.add(family.fft, {{"TAIL_KERNELS", "3"}, {"ZEROHACK_H", "0"}, {"TAIL_TRIGS", "1"}}, reading(1640, 0.5, 2));
-  f.add(family.fft, {{"TAIL_KERNELS", "3"}, {"ZEROHACK_H", "0"}, {"LOADS", "2"}, {"STORES", "2"}},
-        reading(1641, 0.5, 2));
-  BootstrapState const after = b.state(f.db, f.env);
-  CHECK(after.complete);
-  CHECK(after.turns.empty());
-  CHECK(after.families[0].decided == before.families[0].decided);
 }

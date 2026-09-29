@@ -51,7 +51,7 @@ namespace {
 }  // namespace
 
 std::string itemLabel(const Scheduler& scheduler, const Item& item) {
-  if (item.kind == ItemKind::Bootstrap || item.kind == ItemKind::Reach) { return item.what; }
+  if (item.kind == ItemKind::Reach) { return item.what; }
   std::string const entry = scheduler.baselines()[item.index].label();
   return item.what.empty() ? entry : entry + " " + item.what;
 }
@@ -135,8 +135,7 @@ RunSummary summarize(const Scheduler& scheduler, const TuneDB& db, u32 env, u32 
     ++families[b.fft.shape.fft_type].waiting;
   }
   if (!waiting.empty()) {
-    bool const bootstrapping =
-      std::ranges::any_of(report.left, [](const Item& i) { return i.kind == ItemKind::Bootstrap; });
+    bool const bootstrapping = std::ranges::any_of(report.left, &Item::bootstrap);
     bool const covering = std::ranges::any_of(report.left, [](const Item& i) { return i.cover; });
     bool const sweeping = std::ranges::any_of(report.left, [](const Item& i) { return i.sweep; });
     out.heldBy = bootstrapping ? "the bootstrap"

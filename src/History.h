@@ -5,7 +5,7 @@
 //
 // Every measurement row carries its timestamp, so the database as it stood at any moment is the file with the later
 // rows left out; the objective over that is what production would have run then.  And at the probe, where the anchor
-// race and the bootstrap always time configurations at the built-in defaults, what production runs now can be set
+// race and the defaults sweep always time configurations at the built-in defaults, what production runs now can be set
 // against what an untuned run could have had there.
 
 #pragma once

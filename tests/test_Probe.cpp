@@ -245,11 +245,6 @@ TEST(a_register_cap_is_searched_a_key_at_a_time) {
   auto const memory = std::ranges::find(list.unlisted, std::string{"Memory"}, &ProbeList::Unlisted::stage);
   CHECK(memory != list.unlisted.end());
   if (memory != list.unlisted.end()) { CHECK(memory->most >= 4499 - PROBE_WINDOW); }
-
-  // The bootstrap's tree keeps the caps in their group's bins, as it always has.
-  Strategy const tree{.kind = Strategy::Kind::Hybrid, .bootstrapTree = true};
-  std::map<std::string, size_t> const bins = stagesOf(probesOf(p100, fft, {}, tree));
-  CHECK(bins.contains("Cuda 1") && bins.contains("Cuda 3"));
 }
 
 TEST(a_search_size_counts_what_the_strategy_offers_without_listing_it) {

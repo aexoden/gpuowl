@@ -310,8 +310,7 @@ private:
                                      bool enabled) {
   std::vector<FFTConfig> inScope;
   for (const Baseline& b : entries) { inScope.push_back(b.fft); }
-  return Bootstrap{device,  scope.probe, bootstrapFamilies(device, scope.probe, inScope),
-                   enabled, COMBO_TIERS, probeKind(scope)};
+  return Bootstrap{device, scope.probe, bootstrapFamilies(device, scope.probe, inScope), enabled, probeKind(scope)};
 }
 
 // The lines what `env` has measured supports, for a command that has no run of its own to take them from.
@@ -322,7 +321,7 @@ private:
   std::vector<Baseline> entries = baselines(device, scope);
   Bootstrap bootstrap = bootstrapFor(device, scope, entries, true);
   Scheduler const scheduler{scope, std::move(entries), 1000, std::move(bootstrap)};
-  return scheduler.lines(db, env, scheduler.bootstrapState(db, env));
+  return scheduler.lines(db, env);
 }
 
 // The queue a run with `command`'s settings works through on `device`.
@@ -1194,11 +1193,12 @@ MeasureOutcome runTune(const GpuCommon& shared, const TuneCommand& command) {
     for (const Family& f : scheduler.bootstrap().familiesIn(db, envId)) {
       names += (names.empty() ? "" : ", ") + std::string{typeName(f.type)} + " " + f.fft.spec();
     }
-    log("tune: bootstrap at %" PRIu64 " over %s\n", scope.probe, names.c_str());
+    log("tune: bootstrap at %" PRIu64 " over %s, each searched first for %u calls\n", scope.probe, names.c_str(),
+        BOOTSTRAP_ROUNDS * command.halving.roundCalls);
   } else if (command.bootstrap) {
     log("tune: bootstrap at %" PRIu64 " once the workload is covered and every FFT within %.0f%% of the fastest has "
-        "been read at the built-in defaults, on each type's fastest there\n",
-        scope.probe, 100 * CONTEND_MARGIN);
+        "been read at the built-in defaults: each type's fastest there is searched first, for %u calls\n",
+        scope.probe, 100 * CONTEND_MARGIN, BOOTSTRAP_ROUNDS * command.halving.roundCalls);
   }
   reportSearch(env, scope, command.strategy, false);
 

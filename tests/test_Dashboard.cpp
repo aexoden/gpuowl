@@ -197,13 +197,15 @@ TEST(production_is_grouped_into_stretches_of_one_entry_and_set_against_a_referen
 }
 
 TEST(the_phase_is_what_runs_ahead_by_rule) {
-  auto items = [](ItemKind kind, bool cover = false) {
+  auto items = [](ItemKind kind, bool cover = false, bool bootstrap = false) {
     Item i;
     i.kind = kind;
     i.cover = cover;
+    i.bootstrap = bootstrap;
     return std::vector<Item>{i};
   };
-  CHECK_EQ(phaseOf(items(ItemKind::Bootstrap), true), std::string{"bootstrap: racing each FFT type's options"});
+  CHECK_EQ(phaseOf(items(ItemKind::Probe, false, true), true),
+           std::string{"bootstrap: searching each FFT type's fastest FFT"});
   CHECK_EQ(phaseOf(items(ItemKind::Gate), true), std::string{"accuracy gate: reading what the table owes"});
   CHECK_EQ(phaseOf(items(ItemKind::Baseline, true), true), std::string{"covering the workload"});
   CHECK_EQ(phaseOf(items(ItemKind::Probe), true), std::string{"searching"});
