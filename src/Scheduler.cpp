@@ -671,7 +671,7 @@ std::vector<RoundRow> Scheduler::adoption(const std::vector<std::optional<double
 HalvingState Scheduler::halvingState(const TuneDB& db, u32 env,
                                      const std::map<EntryKey, std::vector<Reading>>& readings,
                                      const Objective& objective, const std::set<size_t>& offering,
-                                     const std::set<size_t>& resuming) const {
+                                     const std::set<size_t>& resuming, bool sweeping) const {
   HalvingState out;
   if (!halving_.on() || !strategy_) { return out; }
 
@@ -699,78 +699,90 @@ HalvingState Scheduler::halvingState(const TuneDB& db, u32 env,
     return std::tuple{!gaps[a], gaps[a].value_or(0), a} < std::tuple{!gaps[b], gaps[b].value_or(0), b};
   };
 
-  // Each pass either finds the round under way, or records one that has just ended or begun, so that a round whose
-  // entries have nothing to take is passed over at once.  A halving can begin only for entries never in a round, and
-  // each round of one is smaller than the last.
+  // The first round of the halving `last` is a round of, and what that halving's rounds gave out up to `last`.
+  using Rows = std::vector<RoundRow>::reverse_iterator;
+  auto const firstOf = [&](Rows last) {
+    return std::find_if(last, rounds.rend(), [](const RoundRow& r) { return r.round == 1 && r.members.size() > 1; });
+  };
+  auto const spent = [&](Rows last) {
+    u64 out = 0;
+    for (Rows r = last; r != rounds.rend(); ++r) {
+      if (r->members.size() > 1) { out += r->members.size() * r->calls; }
+      if (r->round == 1 && r->members.size() > 1) { break; }
+    }
+    return out;
+  };
+  auto const halvings = [&](Rows first) {
+    return u32(
+      std::count_if(first, rounds.rend(), [](const RoundRow& r) { return r.round == 1 && r.members.size() > 1; }));
+  };
+  auto const all = [](size_t) { return true; };
+
+  // Each pass either finds where the halving stands, or records a round that has just ended or begun, so that a round
+  // whose entries have nothing to take is passed over at once.
   for (u32 pass = 0; pass < 2 * baselines_.size() + 64; ++pass) {
     auto const last =
       std::ranges::find_if(rounds.rbegin(), rounds.rend(), [](const RoundRow& r) { return !r.members.empty(); });
-    std::optional<size_t> left;
 
-    if (last != rounds.rend()) {
-      // The round's entries this workload weighs, and the calls each has had in it.
-      std::vector<size_t> pool;
-      std::vector<u64> had;
-      bool owed = false;
-      for (const RoundMember& m : last->members) {
-        auto const at = indexOf.find({m.fft, m.kind, m.regime.label()});
-        if (at == indexOf.end()) { continue; }
-        size_t const i = at->second;
-        pool.push_back(i);
-        had.push_back(calls[i] > m.from ? calls[i] - m.from : 0);
-        owed = owed || (had.back() < last->calls && offering.contains(i)) || resuming.contains(i);
-      }
-
-      if (last->members.size() > 1) {
-        // How many the halving's first round took.
-        auto const first = std::find_if(last, rounds.rend(), [](const RoundRow& r) { return r.round == 1; });
-        out.contenders = u32(first == rounds.rend() ? last->members.size() : first->members.size());
-
-        if (owed) {
-          out.active = true;
-          out.round = last->round - 1;
-          out.n = last->n;
-          out.budget = last->calls;
-          out.pool = std::move(pool);
-          out.calls = std::move(had);
-          return out;
-        }
-
-        // Over: its better half go on.
-        std::ranges::sort(pool, byGap);
-        pool.resize((pool.size() + 1) / 2);
-        if (pool.size() > 1) {
-          begin(last->round + 1, 2 * last->calls, pool);
-          continue;
-        }
-        if (!pool.empty()) {
-          begin(last->round + 1, 0, pool);
-          left = pool.front();
-        }
-      } else if (!pool.empty()) {
-        left = pool.front();
-      }
-    }
-
-    // Those within the margin never in a round, beside the one the last halving left.
-    std::set<EntryKey> took;
-    for (const RoundRow& r : rounds) {
-      for (const RoundMember& m : r.members) { took.insert({m.fft, m.kind, m.regime.label()}); }
-    }
-    auto const newcomer = [&](size_t i) {
-      const Baseline& b = baselines_[i];
-      return !took.contains({b.fft.spec(), b.kind, b.band.regime.label()});
-    };
-    std::vector<size_t> pool = poolOf(gaps, newcomer, halving_.contenders - (left ? 1 : 0));
-    if (!pool.empty() && left) { pool.push_back(*left); }
-    if (pool.size() > 1) {
-      std::ranges::sort(pool, byGap);
+    if (last == rounds.rend()) {
+      // The first waits for the sweep at the probe, so that it takes every contender at once.
+      if (sweeping) { return out; }
+      std::vector<size_t> const pool = poolOf(gaps, all, halving_.contenders);
+      if (pool.size() < 2) { return out; }
       begin(1, halving_.roundCalls, pool);
       continue;
     }
 
-    if (left) { out.pool = {*left}; }
-    return out;
+    // The round's entries this workload weighs, and the calls each has had in it.
+    std::vector<size_t> pool;
+    std::vector<u64> had;
+    bool owed = false;
+    for (const RoundMember& m : last->members) {
+      auto const at = indexOf.find({m.fft, m.kind, m.regime.label()});
+      if (at == indexOf.end()) { continue; }
+      size_t const i = at->second;
+      pool.push_back(i);
+      had.push_back(calls[i] > m.from ? calls[i] - m.from : 0);
+      owed = owed || (had.back() < last->calls && offering.contains(i)) || resuming.contains(i);
+    }
+    auto const first = firstOf(last);
+    out.halving = first == rounds.rend() ? 0 : halvings(first);
+    out.contenders = u32(first == rounds.rend() ? last->members.size() : first->members.size());
+
+    if (last->members.size() > 1) {
+      if (owed) {
+        out.active = true;
+        out.round = last->round - 1;
+        out.n = last->n;
+        out.budget = last->calls;
+        out.pool = std::move(pool);
+        out.calls = std::move(had);
+        return out;
+      }
+
+      // Over: its better half go on, and where one is left, it leads until the next halving.
+      std::ranges::sort(pool, byGap);
+      pool.resize((pool.size() + 1) / 2);
+      if (!pool.empty()) {
+        begin(last->round + 1, pool.size() > 1 ? 2 * last->calls : spent(last), pool);
+        continue;
+      }
+    } else if (!pool.empty() && had.front() < spent(last) &&
+               (offering.contains(pool.front()) || resuming.contains(pool.front()))) {
+      out.leading = true;
+      out.budget = spent(last);
+      out.pool = std::move(pool);
+      out.calls = std::move(had);
+      return out;
+    }
+
+    // The next halving, over every contender as they stand now, its first round twice the last one's.
+    std::vector<size_t> const next = poolOf(gaps, all, halving_.contenders);
+    if (next.size() < 2) {
+      out.pool = std::move(pool);
+      return out;
+    }
+    begin(1, 2 * (first == rounds.rend() ? u64{halving_.roundCalls} : first->calls), next);
   }
   return out;
 }
@@ -951,20 +963,31 @@ std::vector<Item> Scheduler::admissible(const TuneDB& db, u32 env, const Objecti
       if (item.calls) { resuming.insert(item.index); }
     }
   }
-  lastHalving_ = halvingState(db, env, readings, objective, offering, resuming);
+  bool const sweeping =
+    std::ranges::any_of(swept, [&](const Item& item) { return baselines_[item.index].band.contains(scope_.probe); });
+  lastHalving_ = halvingState(db, env, readings, objective, offering, resuming, sweeping);
   if (lastHalving_.active) {
     // An entry that has had its calls still finishes a step it began, so that the calls it made count for something.
     std::map<size_t, u64> owed;
     for (size_t k = 0; k < lastHalving_.pool.size(); ++k) { owed.emplace(lastHalving_.pool[k], lastHalving_.calls[k]); }
+    bool const again = lastHalving_.halving > 1;
     std::vector<Item> round;
+    std::vector<Item> rest;
     for (Item& item : out) {
       auto const at = owed.find(item.index);
-      if (!search(item) || at == owed.end() || (at->second >= lastHalving_.budget && !item.calls)) { continue; }
+      if (!search(item) || at == owed.end() || (at->second >= lastHalving_.budget && !item.calls)) {
+        if (again) { rest.push_back(std::move(item)); }
+        continue;
+      }
       item.halving = true;
+      item.again = again;
       round.push_back(std::move(item));
     }
-    // The contender furthest from its calls first, so that a round is spread across its contenders as it goes.
+    // The contender furthest from its calls first, so that a round is spread across its contenders as it goes.  A
+    // later halving's round is held to the stop fraction, so what is valued follows it, for when none of it is worth
+    // a call.
     std::ranges::stable_sort(round, [&](const Item& a, const Item& b) { return owed.at(a.index) < owed.at(b.index); });
+    std::ranges::move(rest, std::back_inserter(round));
     out = std::move(round);
   }
   return inTurn({std::move(swept), std::move(bootstrap), std::move(out)});
@@ -1037,13 +1060,22 @@ Phase Scheduler::phase(const BootstrapState& state, const std::vector<Item>& ran
     for (size_t n = h.pool.size(); n > 1; n = (n + 1) / 2) { ++rounds; }
     u64 done = 0;
     for (u64 const calls : h.calls) { done += std::min(h.budget, calls); }
-    snprintf(buf, sizeof(buf), "halving: round %u of %u, %zu contenders, %" PRIu64 " of %" PRIu64 " calls", h.round + 1,
-             std::max(rounds, h.round + 1), h.pool.size(), done, h.budget * h.pool.size());
+    std::string const which = h.halving > 1 ? "halving " + std::to_string(h.halving) : "halving";
+    snprintf(buf, sizeof(buf), "%s: round %u of %u, %zu contenders, %" PRIu64 " of %" PRIu64 " calls", which.c_str(),
+             h.round + 1, std::max(rounds, h.round + 1), h.pool.size(), done, h.budget * h.pool.size());
     std::string const text = buf;
     snprintf(buf, sizeof(buf), "halving %u/%u", h.round + 1, std::max(rounds, h.round + 1));
     parts.push_back({text, buf});
   } else if (any([floor](const Item& i) { return !i.sweep && !i.bootstrap && worthRunning(i, floor); })) {
-    parts.push_back({"searching by expected gain", "search"});
+    const HalvingState& h = lastHalving_;
+    if (h.leading && !h.calls.empty()) {
+      snprintf(buf, sizeof(buf),
+               "searching by expected gain, %" PRIu64 " of %s's %" PRIu64 " calls before the next halving",
+               std::min(h.calls.front(), h.budget), baselines_[h.pool.front()].label().c_str(), h.budget);
+      parts.push_back({buf, "search"});
+    } else {
+      parts.push_back({"searching by expected gain", "search"});
+    }
   }
 
   if (parts.empty()) { return {"nothing left worth running", "done"}; }
@@ -1056,7 +1088,7 @@ Phase Scheduler::phase(const BootstrapState& state, const std::vector<Item>& ran
 }
 
 bool byRule(const Item& item) {
-  return item.bootstrap || item.kind == ItemKind::Gate || item.cover || item.sweep || item.halving;
+  return item.bootstrap || item.kind == ItemKind::Gate || item.cover || item.sweep || (item.halving && !item.again);
 }
 
 bool worthRunning(const Item& item, double floor) {
@@ -1279,12 +1311,19 @@ QueueReport runQueue(Scheduler& scheduler, TuneDB& db, u32 env, Bench& bench, co
     if (h.active && saidRound != h.n) {
       std::string names;
       for (size_t const i : h.pool) { names += (names.empty() ? "" : ", ") + scheduler.baselines()[i].fft.spec(); }
-      log("tune: halving: round %u, %zu of the %u contenders, %" PRIu64 " calls of search each in this round: %s\n",
-          h.round + 1, h.pool.size(), h.contenders, h.budget, names.c_str());
+      std::string const which = h.halving > 1 ? "halving " + std::to_string(h.halving) : "halving";
+      log("tune: %s: round %u, %zu of the %u contenders, %" PRIu64 " calls of search each in this round: %s\n",
+          which.c_str(), h.round + 1, h.pool.size(), h.contenders, h.budget, names.c_str());
       saidRound = h.n;
     } else if (!h.active && saidRound) {
-      log("tune: halving done; %s is left, and the search is ranked by what it is expected to gain from here\n",
-          h.pool.empty() ? "nothing" : scheduler.baselines()[h.pool.front()].label().c_str());
+      if (h.leading) {
+        log("tune: halving done; %s is left, and the search is ranked by what it is expected to gain until it has had "
+            "%" PRIu64 " more calls, when the next halving begins\n",
+            scheduler.baselines()[h.pool.front()].label().c_str(), h.budget);
+      } else {
+        log("tune: halving done; %s is left, and the search is ranked by what it is expected to gain from here\n",
+            h.pool.empty() ? "nothing" : scheduler.baselines()[h.pool.front()].label().c_str());
+      }
       saidRound.reset();
     }
     // From the ranking the pick is made from, so that the figures are the ones the stopping rule is about to use.

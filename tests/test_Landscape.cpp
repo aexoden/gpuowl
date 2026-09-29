@@ -251,3 +251,37 @@ TEST(landscape_report) {
     }
   }
 }
+
+namespace {
+
+// The scenarios at a scale the suite can afford: one key at a time, and rounds of 4 calls.
+Policy small() {
+  return {.strategy = {.kind = Strategy::Kind::Single}, .halving = {.contenders = CONTENDERS, .roundCalls = 4}};
+}
+
+}  // namespace
+
+TEST(landscape_a_gain_last_in_a_trailing_ffts_search_is_found) {
+  Scenario s = lateGroup();
+  s.budget = 2 * 3600;
+  Outcome o = simulate(s, small());
+  CHECK(o.settled().has_value());
+  CHECK_EQ(o.published[std::string{B} + " prp short32"], std::string{"ZEROHACK_H=0"});
+}
+
+TEST(landscape_an_fft_that_builds_nothing_holds_nothing_back) {
+  Scenario s = failedPrior();
+  s.budget = 3600;
+  Outcome o = simulate(s, small());
+  CHECK(o.settled().has_value());
+  CHECK_EQ(o.calls[std::string{A} + " prp short32"], 1u);
+}
+
+TEST(landscape_each_band_has_its_own_fft_tuned) {
+  Scenario s = disjointBands();
+  s.budget = 2 * 3600;
+  Outcome o = simulate(s, small());
+  CHECK(o.settled().has_value());
+  CHECK_EQ(o.published[std::string{B} + " prp short32"], std::string{"MM_CHAIN=1"});
+  CHECK_EQ(o.published["1K:8:1K:202 prp long32"], std::string{"TAIL_KERNELS=3"});
+}

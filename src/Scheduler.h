@@ -1,7 +1,10 @@
 // Copyright (C) Jason Lynch
 
-// The tuning queue: one priority queue of work items, re-scored from the database after every item, with no passes and
-// no phases.  Each item is ranked by how much of the objective T it is expected to remove per second it costs.
+// The tuning queue: every item that may run, re-scored from the database after every item.  The readings the accuracy
+// gate owes, and baselines where the workload has nothing measured, go first, by rule.  Then the defaults sweep, the
+// bootstrap and the search take turns a call at a time.  The search is spread over the contenders by successive
+// halving, which is begun again, for longer, each time the one it left has had its share; otherwise, and between
+// halvings, each item is ranked by how much of the objective T it is expected to remove per second it costs.
 //
 // The value model is only as good as its gain distribution, and a bad one misallocates time without ever making a wrong
 // decision: what is published is chosen by ranking measured rows, never by these scores.  That asymmetry is what lets
@@ -64,9 +67,16 @@ struct Phase {
 };
 
 // Where the halving stands, as the rows say: which round, which entries are in it, and how many calls of search each
-// is to have in it.
+// is to have in it.  Between two halvings, the one the last left, and the calls it has before the next begins.
 struct HalvingState {
   bool active = false;
+
+  // Which of the env's halvings, from 1.  The first runs by rule; a later one first, but held to the stop fraction.
+  u32 halving = 0;
+
+  // Between two halvings: `pool` is the one the last left, `budget` the calls of search it has before the next
+  // begins, and `calls` how many of them it has had.
+  bool leading = false;
 
   // The round's place in its halving, from 0, and among the env's rounds (RoundRow::n).
   u32 round = 0;
@@ -179,8 +189,10 @@ struct Item {
   // production runs somewhere the workload weighs.
   bool sweep = false;
 
-  // A probe's, a combo's or a restart's: run by rule, as a round of the halving.
+  // A probe's, a combo's or a restart's: a step of a halving's round, run ahead of anything else, and by rule unless
+  // `again`, a step of a halving after the first, which is valued like any step and so held to the stop fraction.
   bool halving = false;
+  bool again = false;
 
   // A baseline's, a probe's, a combo's or a restart's: run by rule, as a step of a family's bootstrap, whose worth is
   // the lines it gives every entry of its type rather than what it saves on its own.
@@ -194,7 +206,7 @@ struct Item {
 };
 
 // Whether `item` runs by rule rather than by value: a step of the bootstrap, a gate reading, a baseline covering the
-// workload or taken in the defaults sweep, or a step of a halving round.
+// workload or taken in the defaults sweep, or a step of a round of the first halving.
 [[nodiscard]] bool byRule(const Item& item);
 
 // Whether `item` is worth a call where anything expected to lower T by less than `floor` is not: one that runs by rule
@@ -269,13 +281,17 @@ public:
   // `contenders` of them taken one variant of each shape before a second of any, since what the search is spread over
   // is which shape tunes best.  A round's entries are recorded as it begins, and stay in it until each has had its
   // calls of search, counted from then, or has no step left to take in `offering`, and has finished any step begun, in
-  // `resuming`; the better half by gap then go on to a round of twice the calls.  It is over once one is left.  An
-  // entry that comes within the margin later, and has never been in a round, begins a halving of its own with the
-  // others like it and the one the last halving left.
+  // `resuming`; the better half by gap then go on to a round of twice the calls.  It is over once one is left, which
+  // then has as many calls of search as the halving's rounds gave out, under the ranking by value, before the next
+  // halving begins: over every contender as they stand then, those an earlier halving left behind among them, its first
+  // round twice as long as the last halving's.  So an entry whose gains lie further down its search than one round
+  // reaches is searched again, for longer each time, and the one ahead keeps at least half of the calls.  The first
+  // halving does not begin while `sweeping`, the defaults sweep still owing readings at the probe, so that it takes
+  // every contender at once.
   [[nodiscard]] HalvingState halvingState(const TuneDB& db, u32 env,
                                           const std::map<EntryKey, std::vector<Reading>>& readings,
                                           const Objective& objective, const std::set<size_t>& offering,
-                                          const std::set<size_t>& resuming) const;
+                                          const std::set<size_t>& resuming, bool sweeping) const;
 
   // The first measurements admissible() offers once nothing runs ahead of them by rule, whether or not a bootstrap
   // call or a gate reading is holding them back now.
