@@ -85,7 +85,6 @@ bool EntrySearch::runnable(const SearchContext& context, const UseConfig& option
 
   // Held back as a measurement would hold it back, which is by what was asked for rather than by what ran.
   const std::string& spec = std::get<0>(key_);
-  if (context.db.isNogo(context.env, spec, options)) { return false; }
   u32 const cfg = context.db.findCfgId(options);
   return !(cfg && context.db.diedOn(context.env, cfg, entry_.kind, spec, exponent));
 }
@@ -115,15 +114,23 @@ EntrySearch::ListMemo& EntrySearch::probeList(const SearchContext& context, cons
     return out;
   };
   std::set<std::string> answered;
+  std::set<std::string> seen;
   for (size_t p = 0; p < memo.list.probes.size(); ++p) {
     if (memo.answered[p]) { answered.insert(identity(memo.list.probes[p])); }
+    if (memo.seen[p]) { seen.insert(identity(memo.list.probes[p])); }
   }
 
   memo.from = std::move(from);
   memo.list = probesOf(context.device, entry_.fft, canonical, context.strategy, readings, structuralSteps, memo.listed);
-  memo.answered.assign(memo.list.probes.size(), false);
-  for (size_t p = 0; p < memo.list.probes.size(); ++p) {
-    memo.answered[p] = answered.contains(identity(memo.list.probes[p]));
+  size_t const n = memo.list.probes.size();
+  memo.texts.resize(n);
+  memo.answered.assign(n, false);
+  memo.seen.assign(n, false);
+  for (size_t p = 0; p < n; ++p) {
+    const Probe& probe = memo.list.probes[p];
+    memo.texts[p] = configText(probe.config);
+    memo.answered[p] = answered.contains(identity(probe));
+    memo.seen[p] = seen.contains(identity(probe));
   }
   memo.checked.clear();
   return memo;
@@ -218,8 +225,7 @@ std::vector<Candidate> EntrySearch::offers(const SearchContext& context, std::sp
   std::vector<std::string> texts;
   for (const UseConfig& row : concluded) { texts.push_back(configText(row)); }
 
-  // A restart draw is a sample of the space, not a step from the best set: it answers only the point it is, and says
-  // nothing of what one of its keys does there.
+  // A restart draw is a sample of the space, not a step from a best set: it says nothing of what one of its keys does.
   std::set<std::string> draws;
   for (const JumpRow& row : context.db.jumps()) {
     if (context.db.envOf(row.sess) != context.env || row.fft != std::get<0>(key_) || row.kind != entry_.kind ||
@@ -245,6 +251,10 @@ std::vector<Candidate> EntrySearch::offers(const SearchContext& context, std::sp
 
   std::vector<Candidate> out;
   std::set<std::string> offered;
+
+  auto const pinned = [&](const UseConfig& options) {
+    return context.db.failedWith(context.env, std::get<0>(key_), options);
+  };
 
   bool restarted = false;
   if (context.restarts && restartDue(context)) {
@@ -288,56 +298,67 @@ std::vector<Candidate> EntrySearch::offers(const SearchContext& context, std::sp
     double const comboValue = worth(Offer::Combo, cost);
     if (value <= 0 && comboValue <= 0) { continue; }
 
+    // A step taken from another best set is priced as a jump is, by what the entry's jumps have found: that it did
+    // nothing there is evidence against it here, though not a verdict.
+    std::optional<double> againValue;
+    auto const again = [&] { return againValue ? *againValue : *(againValue = worth(Offer::Restart, cost)); };
+
     // Offers what the listing in `memo` has not answered.  Unless it is the `last` listing, false where a stage listed
     // in part offered nothing, having then offered nothing at all.
     auto offerListed = [&](ListMemo& memo, bool last) {
       const ProbeList& list = memo.list;
       for (size_t r = 0; r < concluded.size(); ++r) {
         if (!memo.checked.insert(texts[r]).second) { continue; }
+        bool const drawn = draws.contains(texts[r]);
         for (size_t p = 0; p < list.probes.size(); ++p) {
-          if (!memo.answered[p]) {
-            memo.answered[p] = draws.contains(texts[r])
-              ? configText(list.probes[p].config) == texts[r]
-              : answeredBy(device, entry_.fft, list, list.probes[p], concluded[r]);
+          if (memo.answered[p]) { continue; }
+          memo.answered[p] = memo.texts[p] == texts[r];
+          if (!memo.answered[p] && !memo.seen[p] && !drawn) {
+            memo.seen[p] = sameStep(device, entry_.fft, list, list.probes[p], concluded[r]);
           }
         }
       }
 
       // The list is in tier order, and a combination waits for the tiers below it to be answered, the points of a stage
-      // not listed yet among them.
+      // not listed yet among them.  A step taken from another best set is no answer here, but it waits for the steps
+      // that were never taken, a combination included: what it did there is some evidence of what it will do here.  A
+      // step that sets a value a build failed with waits for both.
       std::optional<u32> lowest;
       for (const ProbeList::Unlisted& u : list.unlisted) { lowest = std::min(lowest.value_or(u.tier), u.tier); }
       size_t const first = out.size();
       std::vector<std::string> taken;
       std::set<u32> fed;
-      for (size_t p = 0; p < list.probes.size(); ++p) {
-        if (memo.answered[p]) { continue; }
-        const Probe& probe = list.probes[p];
-        if (lowest && probe.tier > *lowest) { break; }
-        double const probeWorth = probe.tier > 1 ? comboValue : value;
-        if (probeWorth <= 0) { continue; }
-        std::string const text = configText(probe.config);
-        if (progress.failed.contains({key_, text})) { continue; }
+      auto const rank = [&](size_t p) { return pinned(list.probes[p].config) ? 2 : memo.seen[p] ? 1 : 0; };
+      for (int const pass : {0, 1, 2}) {
+        for (size_t p = 0; p < list.probes.size(); ++p) {
+          if (memo.answered[p] || rank(p) != pass) { continue; }
+          const Probe& probe = list.probes[p];
+          if (lowest && probe.tier > *lowest) { break; }
+          double const probeWorth = pass == 1 ? again() : probe.tier > 1 ? comboValue : value;
+          if (probeWorth <= 0) { continue; }
+          const std::string& text = memo.texts[p];
+          if (progress.failed.contains({key_, text})) { continue; }
 
-        Candidate c{.kind = probe.tier > 1 ? Offer::Combo : Offer::Probe,
-                    .options = probe.config,
-                    .moved = probe.key,
-                    .what = probe.stage + " " + probe.text,
-                    .exponent = entry_.exponent,
-                    .tier = probe.tier,
-                    .cost = cost,
-                    .value = probeWorth};
-        resume(context, text, c);
-        if (!runnable(context, c.options, c.exponent)) { continue; }
-        if (!offered.insert(text).second) { continue; }
-        taken.push_back(text);
-        lowest = std::min(lowest.value_or(probe.tier), probe.tier);
+          Candidate c{.kind = probe.tier > 1 ? Offer::Combo : Offer::Probe,
+                      .options = probe.config,
+                      .moved = probe.key,
+                      .what = probe.stage + " " + probe.text,
+                      .exponent = entry_.exponent,
+                      .tier = probe.tier,
+                      .cost = cost,
+                      .value = probeWorth};
+          resume(context, text, c);
+          if (!runnable(context, c.options, c.exponent)) { continue; }
+          if (!offered.insert(text).second) { continue; }
+          taken.push_back(text);
+          lowest = std::min(lowest.value_or(probe.tier), probe.tier);
 
-        if (fed.insert(probe.part).second) {
-          auto const u = std::ranges::find(list.unlisted, probe.part, &ProbeList::Unlisted::part);
-          if (u != list.unlisted.end()) { c.unlisted = u->most; }
+          if (fed.insert(probe.part).second) {
+            auto const u = std::ranges::find(list.unlisted, probe.part, &ProbeList::Unlisted::part);
+            if (u != list.unlisted.end()) { c.unlisted = u->most; }
+          }
+          out.push_back(std::move(c));
         }
-        out.push_back(std::move(c));
       }
 
       // A part of a tier above the one offered is waiting for it, not starved.
@@ -367,6 +388,8 @@ std::vector<Candidate> EntrySearch::offers(const SearchContext& context, std::sp
       }
     }
   }
+
+  (void)std::ranges::stable_partition(out, [&](const Candidate& c) { return !pinned(c.options); });
   return out;
 }
 

@@ -71,7 +71,8 @@ struct Progress {
   // By the canonical option set as well: calls under other options do not pool with the ones a measurement will make.
   std::map<EntrySet, Partial> partial;
 
-  // Every option set a row has concluded, canonical: what a probe asks may already be answered by one.
+  // Every option set a row has concluded, canonical: a probe of that very set is answered by one, and a probe of the
+  // same step from another best set is taken later for one.
   std::map<EntryKey, std::vector<UseConfig>> concluded;
 
   // The option sets a row has concluded or failed, and every option set each entry has rows of at all, with when the
@@ -183,10 +184,13 @@ public:
   // defaults, that set with the lines laid over it.  Each is offered while no row has measured it, so as the lines move
   // each entry tries them again.  Then the steps of each structural branch the strategy searches, each from that
   // branch's best set -- only the entry's best set steps into other branches -- in the order probesOf() lists them, and
-  // a combination only once its branch has nothing of a lower tier left, since it combines what those found.  The next
-  // draw of the restart sequence at a local optimum of the declared moves, and ahead of everything else once the entry
-  // has measured RESTART_PERIOD option sets since the last draw was declared, or until a draw begun is finished, priced
-  // then as a step is.  Nothing a row answers or recorded a failure of, nothing a hold or an earlier generation's death
+  // a combination only once its branch has nothing of a lower tier left, since it combines what those found; and after
+  // all of those, the steps the entry's rows took from another best set, which may do otherwise from this one, priced
+  // as a jump is (Offer::Restart), since what they did there is some evidence against them here.  The next draw of the
+  // restart sequence at a local optimum of the declared moves, and ahead of everything else once the entry has measured
+  // RESTART_PERIOD option sets since the last draw was declared, or until a draw begun is finished, priced then as a
+  // step is.  Whatever sets a value a build of the FFT failed with (TuneDB::failedWith()) after everything else.
+  // Nothing a row of that very configuration concluded or recorded a failure of, nothing an earlier generation's death
   // keeps out, and nothing tried MAX_ATTEMPTS times in this process.
   [[nodiscard]] std::vector<Candidate> offers(const SearchContext& context, std::span<const Reading> readings,
                                               const Worth& worth);
@@ -196,13 +200,16 @@ public:
 
 private:
   // probesOf(), which is pure, for one best set and whether it steps into other branches, listing at most `listed`
-  // points of each stage, and which of its probes the entry's rows checked against it so far answer.  A row that
-  // answers a probe always will, so each is checked once.
+  // points of each stage; each probe's configuration as text, and of the entry's rows checked against it so far,
+  // whether one is of that configuration and whether one took the same step against another background (sameStep()).
+  // A row that says either of a probe always will, so each is checked once.
   struct ListMemo {
     std::string from;
     u32 listed = PROBE_WINDOW;
     ProbeList list;
+    std::vector<std::string> texts;
     std::vector<bool> answered;
+    std::vector<bool> seen;
     std::set<std::string> checked;
   };
 
@@ -223,8 +230,8 @@ private:
   // measured where none has been; or has begun its last draw and not finished it.
   [[nodiscard]] bool restartDue(const SearchContext& context) const;
 
-  // Whether `options` is still worth asking for at `exponent`: not tried MAX_ATTEMPTS times in this process, not held,
-  // and not what an earlier generation died on there.
+  // Whether `options` is still worth asking for at `exponent`: not tried MAX_ATTEMPTS times in this process, and not
+  // what an earlier generation died on there.
   [[nodiscard]] bool runnable(const SearchContext& context, const UseConfig& options, u64 exponent) const;
 
   // Where `canonical` is measured, and the calls a row started there has.

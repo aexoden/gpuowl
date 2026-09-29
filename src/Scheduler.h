@@ -256,8 +256,8 @@ public:
   // call on each side of every contest production decides that the race rule leaves undecided (refineValues()); and
   // with the gate, the next reading of each passed set whose reach may be raised above the table, worth what that set
   // would save over the exponents between its reach and that reading, at what it costs.  A baseline is left out once a
-  // row has concluded it or recorded a failure of it, while an earlier generation's death or an unbuildable key holds
-  // it, and once this process has tried it more often than any entry needs.
+  // row has concluded it or recorded a failure of it, while an earlier generation's death holds it, and once this
+  // process has tried it more often than any entry needs.
   [[nodiscard]] std::vector<Item> admissible(const TuneDB& db, u32 env, const Objective& objective) const;
 
   // Whether nothing is left of the workload's coverage or, with a strategy, of the defaults sweep at the probe: what

@@ -139,7 +139,7 @@ struct DoneRow {
   u64 ts = 0;
 };
 
-// One key=value that will not build on one FFT.
+// One key=value a build of one FFT failed with when it alone had moved.
 struct NogoRow {
   u32 sess = 0;
   std::string fft;
@@ -386,8 +386,10 @@ public:
   // Whether this configuration was what a previous generation was holding when it died.
   [[nodiscard]] bool diedOn(u32 env, u32 cfg, TestKind kind, const std::string& fft, u64 exponent) const;
 
-  // Whether `config` sets a key to a value recorded as unbuildable on `fft` for this env.
-  [[nodiscard]] bool isNogo(u32 env, const std::string& fft, const UseConfig& config) const;
+  // Whether `config` sets a key to a value a build of `fft` failed with in this env when that key alone had moved: a
+  // hint that it may fail again, which orders what is tried.  The failure itself is a verdict on the configuration that
+  // failed, and on nothing else.
+  [[nodiscard]] bool failedWith(u32 env, const std::string& fft, const UseConfig& config) const;
 
 private:
   // Whether the database may be rewritten in place, saying why not when it may not.

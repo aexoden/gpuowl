@@ -981,26 +981,27 @@ TEST(a_measured_entry_is_probed_until_no_step_improves_it) {
   ProbeRun const run = runProbed(f);
   CHECK(!run.report.stopped);
 
-  // WMUL=1 wins the first round of one-step probes, which re-offers LDSPAD_W=0 (it depends on WMUL) and nothing
-  // else; that wins too, and opens LDSSWIZ_W, which does not.
+  // WMUL=1 wins a one-step probe, which opens LDSPAD_W=0 (a step never taken at WMUL=1, since it depends on WMUL);
+  // that wins too, and opens LDSSWIZ_W.
   CHECK_EQ(run.best, std::string{"LDSPAD_W=0,WMUL=1"});
 
   std::string const at = std::string{PROBED} + "@118063003";
   std::map<std::string, u32> const calls = tally(run.order);
   CHECK_EQ(calls.at(at), MIN_CALLS);
   CHECK_EQ(calls.at(at + " WMUL=1"), MIN_CALLS);
-  CHECK_EQ(calls.at(at + " LDSPAD_W=0"), MIN_CALLS);
   CHECK_EQ(calls.at(at + " LDSPAD_W=0,WMUL=1"), MIN_CALLS);
   CHECK_EQ(calls.at(at + " LDSPAD_W=0,LDSSWIZ_W=1,WMUL=1"), MIN_CALLS);
 
-  // ZEROHACK_W depends on nothing that moved, so its first reading stands.
-  CHECK_EQ(calls.at(at + " ZEROHACK_W=0"), MIN_CALLS);
-  CHECK(!calls.contains(at + " WMUL=1,ZEROHACK_W=0"));
+  // Every step of the set it ends at is measured there, ZEROHACK_W's among them, although nothing it depends on
+  // moved: a step is answered by a row of the very configuration it is, and by nothing else.  The steps never taken
+  // before go first.
+  ProbeList const last =
+    probesOf(nvidia(), FFTConfig{PROBED}, {{"LDSPAD_W", "0"}, {"WMUL", "1"}}, {.kind = Strategy::Kind::Single});
+  for (const Probe& p : last.probes) { CHECK(calls.contains(p.config.empty() ? at : at + " " + configText(p.config))); }
+  auto const firstOf = [&](const std::string& call) { return std::ranges::find(run.order, call) - run.order.begin(); };
+  CHECK(firstOf(at + " LDSPAD_W=0,LDSSWIZ_W=1,WMUL=1") < firstOf(at + " LDSPAD_W=0,WMUL=1,ZEROHACK_W=0"));
 
-  // Every configuration is measured exactly as often as a row needs: the baseline, the first round's one-step moves,
-  // and one probe in each of the two rounds after it.
-  ProbeList const first = probesOf(nvidia(), FFTConfig{PROBED}, {}, {.kind = Strategy::Kind::Single});
-  CHECK_EQ(calls.size(), 1 + first.probes.size() + 2);
+  // Every configuration is measured exactly as often as a row needs.
   for (const auto& [call, n] : calls) { CHECK_EQ(n, MIN_CALLS); }
 }
 
@@ -1961,11 +1962,19 @@ TEST(a_restart_is_offered_once_no_probe_is_left_and_once_each_period_of_sets_bef
     for (u32 c = 0; c < MIN_CALLS; ++c) { CHECK_EQ(run.order[jumps[k * MIN_CALLS + c]], drawn); }
   }
 
-  // The first while probes were still left, once the entry had measured a period of sets; the rest at the end.
-  std::set<std::string> const before(run.order.begin(), run.order.begin() + ptrdiff_t(jumps.front()));
-  CHECK_EQ(before.size(), size_t(RESTART_PERIOD));
-  CHECK(jumps.front() < descent.order.size());
-  CHECK_EQ(jumps[MIN_CALLS], descent.order.size() + MIN_CALLS);
+  // Each while probes were still left, once the entry had measured a period of sets since the last draw began, the
+  // draw's own among them; the rest at the end.
+  size_t from = 0;
+  u32 during = 0;
+  for (u32 k = 0; k < 4; ++k) {
+    size_t const start = jumps[k * MIN_CALLS];
+    std::set<std::string> const since(run.order.begin() + ptrdiff_t(from), run.order.begin() + ptrdiff_t(start));
+    bool const spent = start - k * MIN_CALLS >= descent.order.size();
+    CHECK(spent || since.size() == RESTART_PERIOD);
+    during += !spent;
+    from = start;
+  }
+  CHECK(during > 0 && during < 4);
 
   // Each jump taught the entry that its search is spent, and the device nothing.
   EntryKey const entry{PROBED, TestKind::PRP, "short32"};
@@ -2111,21 +2120,25 @@ TEST(a_restart_is_found_past_a_long_stretch_of_draws_that_cannot_run) {
   FFTConfig const fft{PROBED};
   std::string const entry = std::string{PROBED} + " prp short32";
 
-  // Every value but the default of these keys will not build, which rules out nearly every draw.
-  for (const char* key : {"TAIL_KERNELS", "TAIL_TRIGS", "SHUFL_BYTES_W", "SHUFL_BYTES_H", "WMUL", "INPLACE"}) {
-    const Option* const option = findOption(key);
-    int const fallback = option->defaultFor(nvidia(), fft, {});
-    for (int const value : option->valuesFor(nvidia(), fft, {})) {
-      if (value == fallback) { continue; }
-      CHECK(f.db.add(NogoRow{.sess = f.sess, .fft = PROBED, .key = key, .val = std::to_string(value), .ts = 2}));
-    }
+  // An earlier generation died holding each of the first 300 draws, which rules each out and measures none of them.
+  u64 const probe = 118'063'003;
+  for (u32 k = 0; k < 300; ++k) {
+    u32 const dead = f.db.beginSession(f.env, "512:15:512:212@118063003", 1, 1'753'471'300 + k);
+    CHECK(f.db.add(TryRow{.sess = dead,
+                          .fft = PROBED,
+                          .kind = TestKind::PRP,
+                          .exponent = probe,
+                          .cfg = f.db.internCfg(restartOf(nvidia(), fft, entry, k)),
+                          .ts = 1'753'471'300 + k}));
+    f.db.sealSession(dead);
   }
-  u32 first = 0;
-  while (f.db.isNogo(f.env, PROBED, restartOf(nvidia(), fft, entry, first))) { ++first; }
-
-  // Far past the entry's measured sets and a stage's worth of draws beyond them, which is where a bounded walk from
-  // the start of the sequence gave up.
-  CHECK(first > 256);
+  Progress const progress = progressOf(f.db, f.env, nvidia());
+  EntryKey const key{PROBED, TestKind::PRP, regimeOf(fft, probe).label()};
+  u32 first = 300;
+  while (progress.answered.contains(
+    {key, configText(canonicalConfig(nvidia(), fft, restartOf(nvidia(), fft, entry, first)))})) {
+    ++first;
+  }
 
   std::vector<Item> const items = probedScheduler(true).admissible(f.db, f.env, Objective{f.db, f.env, scope()});
   auto const restart = std::ranges::find_if(items, [](const Item& i) { return i.kind == ItemKind::Restart; });
@@ -2276,17 +2289,18 @@ TEST(a_structural_value_that_loses_its_step_is_searched_in_its_own_branch) {
   CHECK_EQ(single.best, std::string{"-"});
   CHECK_EQ(groups.best, std::string{"SHUFL_BYTES_W=16,WMUL=1"});
 
-  // A key that depends on nothing structural is answered in every branch by its one reading in the first, so no
-  // configuration of another branch sets one.  Nothing is measured more than a row needs.
+  // A key that depends on nothing structural is not answered in one branch by its reading in another: each branch
+  // measures its own steps.  Nothing is measured more than a row needs.
   auto const structural = {"INPLACE", "SHUFL_BYTES_W", "LDSPAD_W", "SHUFL_BYTES_H", "LDSPAD_H"};
   auto const free = {"TAIL_KERNELS", "TAIL_TRIGS", "LOADS",          "STORES",
                      "FAST_BARRIER", "OLD_FENCE",  "ENABLE_BARSYNC", "L2_STRIPING"};
   auto const has = [](const std::string& call, auto keys) {
     return std::ranges::any_of(keys, [&](const char* key) { return call.find(std::string{key} + "=") != call.npos; });
   };
+  bool crossed = false;
   for (const auto& [call, n] : tally(groups.order)) {
     CHECK(n <= MIN_CALLS);
-    CHECK(!(has(call, structural) && has(call, free)));
+    crossed = crossed || (has(call, structural) && has(call, free));
 
     // Only the best set steps into another branch, so every branch searched is one structural step from a best set:
     // the defaults, or SHUFL_BYTES_W=16 once it has won.  A step out of any other branch would be a second.
@@ -2294,6 +2308,7 @@ TEST(a_structural_value_that_loses_its_step_is_searched_in_its_own_branch) {
       structural, [&](const char* key) { return call.find(std::string{key} + "=") != call.npos; });
     CHECK(moved <= (call.find("SHUFL_BYTES_W=16") != call.npos ? 2 : 1));
   }
+  CHECK(crossed);
 }
 
 TEST(only_the_best_set_steps_into_another_branch) {

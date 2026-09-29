@@ -309,7 +309,6 @@ std::vector<Item> Scheduler::gateItems(const TuneDB& db, u32 env) const {
     std::string const key = keyOf(item);
     if (!offered.insert(key).second) { continue; }
     if (auto const n = gateAttempts_.find(key); n != gateAttempts_.end() && n->second >= MAX_ATTEMPTS) { continue; }
-    if (db.isNogo(env, e.fft, item.options)) { continue; }
     if (u32 const cfg = db.findCfgId(item.options); cfg && db.diedOn(env, cfg, TestKind::PRP, e.fft, item.exponent)) {
       continue;
     }
@@ -390,7 +389,6 @@ std::vector<Item> Scheduler::reachItems(const TuneDB& db, u32 env, std::span<con
       continue;
     }
     if (auto const n = gateAttempts_.find(key); n != gateAttempts_.end() && n->second >= MAX_ATTEMPTS) { continue; }
-    if (db.isNogo(env, e.fft, item.options)) { continue; }
     if (u32 const cfg = db.findCfgId(item.options); cfg && db.diedOn(env, cfg, TestKind::PRP, e.fft, item.exponent)) {
       continue;
     }
@@ -439,7 +437,6 @@ std::vector<Item> Scheduler::baselineItems(const TuneDB& db, u32 env, const Prog
     u64 const exponent = p.calls && b.band.contains(p.exponent) ? p.exponent : b.exponent;
 
     // Held back as a measurement would hold it back, which is by what was asked for rather than by what ran.
-    if (db.isNogo(env, spec, options)) { continue; }
     if (u32 const cfg = db.findCfgId(options); cfg && db.diedOn(env, cfg, b.kind, spec, exponent)) { continue; }
 
     double const estimate = objective.priorModel().cost(b.fft.shape);
@@ -502,7 +499,7 @@ std::vector<Item> Scheduler::sweepItems(const TuneDB& db, u32 env, const Progres
     // Held back as a measurement would hold it back.
     auto const tried = attempts_.find(i);
     u32 const cfg = db.findCfgId({});
-    o.runnable = !o.read && (tried == attempts_.end() || tried->second < MAX_ATTEMPTS) && !db.isNogo(env, spec, {}) &&
+    o.runnable = !o.read && (tried == attempts_.end() || tried->second < MAX_ATTEMPTS) &&
       !(cfg && db.diedOn(env, cfg, b.kind, spec, o.exponent));
   }
 
@@ -928,7 +925,6 @@ std::vector<Item> Scheduler::admissible(const TuneDB& db, u32 env, const Objecti
           n != unrecordedRefines_.end() && n->second >= MAX_ATTEMPTS) {
         continue;
       }
-      if (db.isNogo(env, e.fft, item.options)) { continue; }
       if (u32 const cfg = db.findCfgId(item.options); cfg && db.diedOn(env, cfg, e.kind, e.fft, item.exponent)) {
         continue;
       }
