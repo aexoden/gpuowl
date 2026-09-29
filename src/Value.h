@@ -171,6 +171,16 @@ struct Contest {
   double weight = 0;
 };
 
+// Two readings are told apart when their intervals, this many standard errors wide on each side, do not overlap.
+inline constexpr double RACE_CONFIDENCE = 2.0;
+
+// Or are close enough to call a tie when within this fraction of each other: closer than that, which of the two is
+// cheaper is not worth the calls it would take to say.
+inline constexpr double RACE_MARGIN = 0.0025;
+
+// A reading that has had this many calls without separating from its rival is tied with it.
+inline constexpr u32 RACE_MAX_CALLS = 16;
+
 // Every pair of `sets` that is the cheapest two eligible at some point of `points`, ranked as production ranks them.
 // A pair no point weighs is not a contest at all, whatever their readings: no decision between them changes T.
 [[nodiscard]] std::vector<Contest> contests(std::span<const OptionSet> sets, std::span<const ObjectivePoint> points);
@@ -178,8 +188,8 @@ struct Contest {
 // What one more call on `sets[side]`, one of the contest's two, is worth.
 [[nodiscard]] double refineValue(const Contest& contest, std::span<const OptionSet> sets, size_t side);
 
-// Whether the contest still needs calls, by the rule a bootstrap race is decided by: not while the two intervals,
-// RACE_CONFIDENCE standard errors either side, are apart, nor while the two are within RACE_MARGIN of each other.
+// Whether the contest still needs calls: not while the two intervals, RACE_CONFIDENCE standard errors either side, are
+// apart, nor while the two are within RACE_MARGIN of each other.
 [[nodiscard]] bool undecided(const Contest& contest, std::span<const OptionSet> sets);
 
 // What one more call on each of `sets` is worth, summed over every undecided contest it is one side of; 0 for a set in

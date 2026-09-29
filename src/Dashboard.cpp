@@ -835,9 +835,7 @@ std::vector<Stretch> stretchesOf(const std::vector<ObjectivePoint>& now, const s
 }
 
 std::string phaseOf(const std::vector<Item>& ranked, bool anythingWorthRunning) {
-  if (std::ranges::any_of(ranked, [](const Item& i) { return i.kind == ItemKind::Bootstrap; })) {
-    return "bootstrap: racing each FFT type's options";
-  }
+  if (std::ranges::any_of(ranked, &Item::bootstrap)) { return "bootstrap: searching each FFT type's fastest FFT"; }
   if (std::ranges::any_of(ranked, [](const Item& i) { return i.kind == ItemKind::Gate; })) {
     return "accuracy gate: reading what the table owes";
   }

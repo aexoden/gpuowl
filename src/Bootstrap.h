@@ -1,17 +1,12 @@
 // Copyright (C) Jason Lynch
 
-// The global bootstrap: for each FFT type worth tuning, the option set every configuration of that type runs at until
-// it has been tuned itself, found by racing the option groups on one configuration at the exponent that matters most,
-// and then combinations of the groups' best answers.  The whole combination tree, whatever the run searches its
-// entries with: every entry not yet tuned inherits this answer, so an interaction missed here is missed everywhere.
+// The bootstrap: for each FFT type worth tuning, its fastest configuration at the probe is searched first, for a
+// bounded number of calls, by the same search every entry has.  What it finds is published like any entry's, and so
+// reaches the default lines, which carry it to every configuration of the type nothing has been published for yet, and
+// which every entry tries as a step of its own.  The bootstrap only says which entries are searched first, and how far.
 //
-// Nothing here is remembered between items.  Where every family stands -- which race it is in, what each candidate has
-// read, which races are decided and what they decided -- is recomputed from the database each time it is asked for, so
-// a race interrupted by a stop loses nothing and a later process carries it on from the rows.
-//
-// The winners are the selection file's first default lines: keys every tuned family agrees on make the global line,
-// keys they disagree on a line per family.  Both are transcripts of races that actually ran.  Once entries are
-// published, publishedLines() draws the lines from them instead, the same way.
+// Nothing here is remembered between items: where every family stands is recomputed from the database each time it
+// is asked for, so a stop loses nothing and a later process carries on from the rows.
 
 #pragma once
 
@@ -23,34 +18,20 @@
 #include "Stats.h"
 #include "TuneDB.h"
 
-#include <map>
 #include <optional>
 #include <set>
 #include <string>
-#include <tuple>
 #include <vector>
 
 namespace tune {
 
-// A race is decided when the leader's interval, this many standard errors wide on each side, clears every rival's.
-inline constexpr double RACE_CONFIDENCE = 2.0;
+// The largest gain a family is searched in the hope of.  Short of the gain prior's own tail: a family that far off the
+// pace would take a gain too rare to repay the search to come level with the cheapest.  A family beyond it still has
+// its entries measured, and searched as any entry is.
+inline constexpr double BOOTSTRAP_GAIN = 0.32;
 
-// Or when every rival still overlapping the leader is within this fraction of it: closer than that, which of the two
-// wins is not worth the calls it would take to say.
-inline constexpr double RACE_MARGIN = 0.0025;
-
-// A candidate that has had this many calls without separating from the leader is tied with it.
-inline constexpr u32 RACE_MAX_CALLS = 16;
-
-// A group is raced again from its winner until the incumbent holds, and at most this many times.  A later round reads
-// the same rows as the one before, so it cannot undo a separation and the rounds end on their own; the bound is a
-// backstop.
-inline constexpr u32 GROUP_ROUNDS = 8;
-
-// The largest gain a family is raced in the hope of.  Short of the gain prior's own tail: a race costs tens of minutes,
-// and the rare gain past this would not repay it for every family that far off the pace.  A family beyond it still has
-// its baselines measured, at the lines the others decide.
-inline constexpr double RACE_GAIN = 0.32;
+// How many rounds of the halving's calls each family's search is given.
+inline constexpr u32 BOOTSTRAP_ROUNDS = 4;
 
 [[nodiscard]] const char* typeName(enum FFT_TYPES type);
 
@@ -78,45 +59,8 @@ struct Move {
 [[nodiscard]] std::vector<Move> movesWithin(const Env& env, const FFTConfig& fft, const UseConfig& background,
                                             Group group);
 
-// One candidate of a race, as the database stands.
-struct RaceEntry {
-  UseConfig config;
-  std::string text;
-
-  // Nothing until it has been measured.
-  std::optional<Measurement> m;
-
-  // A failure, a hold, or attempts that recorded nothing: it takes no further part.
-  bool out = false;
-};
-
-enum class RaceHow : u8 { Pending, Separated, Margin, Alone };
-
-[[nodiscard]] const char* toString(RaceHow how);
-
-struct RaceResult {
-  RaceHow how = RaceHow::Pending;
-
-  // Into the entries; decided races only.  Nothing where every candidate is out.
-  std::optional<size_t> winner;
-
-  // Where the race is pending: the candidates to call next, the first most in need of a call.  Where only one needs a
-  // call, the rest of the race follows it, as what to call in between.
-  std::vector<size_t> next;
-};
-
-// Pure.  Every candidate is called MIN_CALLS times first.  After that the leader is the lowest cost, and a rival is
-// settled once it has separated from the leader, is within RACE_MARGIN of it, or has had RACE_MAX_CALLS calls; the race
-// is decided when every rival is settled.  A tie goes to the candidate nearest the built-in defaults, since a key moved
-// for no measurable gain is a key moved for nothing; then to the one with the most calls, which once a race is decided
-// is its winner -- the incumbent of every later race, and so the one whose calls keep pooling -- so that evidence
-// accumulating inside the margin cannot flip a decision the margin already called a tie; then to the lower cost.  Until
-// then the unsettled candidates and the leader are called, fewest calls first, and never one of them twice running
-// while the race holds another.
-[[nodiscard]] RaceResult decideRace(const std::vector<RaceEntry>& entries);
-
-// One family's bootstrap configuration: the smallest shape of the type whose default variant holds the probe, at that
-// variant and the automatic carry.
+// One FFT type, and the configuration its bootstrap searches: as built, the smallest shape of the type whose default
+// variant holds the probe, at that variant and the automatic carry.
 struct Family {
   enum FFT_TYPES type = FFT64;
   FFTConfig fft;
@@ -125,101 +69,54 @@ struct Family {
 enum class FamilyPhase : u8 {
   Unread,   // no reading at the built-in defaults yet, so nothing can be said about it
   Held,     // it cannot be measured at the defaults at all
-  Skipped,  // not worth tuning, or bootstrapping was turned off
-  Waiting,  // worth tuning, behind a cheaper family
-  Racing,
-  Done,
+  Skipped,  // not worth searching, or bootstrapping was turned off
+  Owed,     // worth searching, and short of its calls
+  Served,   // it has had its calls
 };
 
 [[nodiscard]] const char* toString(FamilyPhase phase);
-
-// One decided race, for the log.
-struct Decision {
-  // A group, or the groups a combination combined ("Tail+Height", "all").
-  std::string stage;
-  u32 round = 0;
-  RaceHow how = RaceHow::Pending;
-  std::string winner;  // the move that won, or "the incumbent"
-  double cost = 0;
-  double se = 0;
-  u32 candidates = 0;
-};
 
 struct FamilyState {
   Family family;
   FamilyPhase phase = FamilyPhase::Unread;
 
-  // At the built-in defaults, anchor corrected; zero until read.
+  // At the probe, anchor corrected: at the built-in defaults, and the cheapest under any options; zero until read.
   double reading = 0;
+  double best = 0;
 
-  // What its decided races add up to, canonical.
-  UseConfig decided{};
-
-  std::vector<Decision> decisions{};
-
-  // While racing: the group or the combination.
-  std::string stage{};
-  std::vector<RaceEntry> entries{};
-  RaceResult race{};
-};
-
-// One call the bootstrap wants made.
-struct Turn {
-  size_t family = 0;
-  UseConfig config;
-  std::string key;   // what moved, for a build failure to be pinned on; empty for the incumbent
-  std::string text;  // "Width WMUL=1", or "defaults"
-  u32 calls = 0;
-
-  // 2 or 3 for a point of a combination, 1 otherwise.
-  u32 tier = 1;
+  // Its calls of search: every call at the probe at an option set other than the built-in defaults.
+  u64 calls = 0;
 };
 
 struct BootstrapState {
   std::vector<FamilyState> families;
 
-  // What to call next, most wanted first; empty once every family is done or skipped.
-  std::vector<Turn> turns;
-
-  // The lines the families decided so far make, and whether any family has a race still to run.
-  Defaults defaults;
-  bool complete = false;
-
-  // The test kind the races are called in.
+  // The test kind the families are read and searched in.
   TestKind kind = TestKind::PRP;
+
+  // How many calls of search each family worth searching is given.
+  u64 budget = 0;
+
+  // Whether no family is still to be read or searched.
+  bool complete = false;
 };
 
 class Bootstrap {
 public:
   Bootstrap() = default;
-  // `comboTiers` is how many tiers of the combination tree are raced after the groups: 1 races the groups alone.
-  // `prefer` is the test kind the races are called in unless the database holds a bootstrap of the other kind already.
-  Bootstrap(Env env, u64 probe, std::vector<Family> families, bool enabled = true, u32 comboTiers = COMBO_TIERS,
-            TestKind prefer = TestKind::PRP);
+  // `kind` is the test kind the families are read and searched in.
+  Bootstrap(Env env, u64 probe, std::vector<Family> families, bool enabled = true, TestKind kind = TestKind::PRP);
 
-  // Where every family stands against what `env` has measured.  `excluded` names the candidates this process has tried
-  // too often without recording anything, by configText().  In the preferred test kind, unless the other kind's
-  // bootstrap is complete, or it alone has decided anything: the lines serve both kinds, so what was raced in one is
-  // not raced again in the other.
-  [[nodiscard]] BootstrapState state(const TuneDB& db, u32 env, const std::set<std::string>& excluded = {}) const;
+  // Where every family stands against what `env` has measured, each given `budget` calls of search.  A family is read
+  // at the built-in defaults first; then, cheapest first, searched while it has had fewer than `budget` calls and is
+  // within BOOTSTRAP_GAIN of the cheapest family, each as it is tuned so far.
+  [[nodiscard]] BootstrapState state(const TuneDB& db, u32 env, u64 budget) const;
 
-  // As state(), in `kind`, with each family on the configuration named rather than the one the database records.
-  [[nodiscard]] BootstrapState stateOf(const std::vector<Family>& families, const TuneDB& db, u32 env,
-                                       const std::set<std::string>& excluded = {}, TestKind kind = TestKind::PRP) const;
-
-  // The families, as state() races them: each on the configuration `env` recorded for it at this probe (a `boot` row).
-  // Where none is
-  // recorded: on the one it was built with if its races began there, which is how a bootstrap begun before the choice
-  // was recorded goes on; else on the type's cheapest concluded reading at the built-in defaults at the probe, which
-  // after the defaults sweep is the FFT the search would tune first; else on the one it was built with.  A run records
-  // the choice once the sweep is done, so that it does not move under the races as readings are added.
+  // The families, each on the configuration `env` recorded for it at this probe (a `boot` row).  Where none is
+  // recorded: on the type's cheapest concluded reading at the built-in defaults at the probe, which after the defaults
+  // sweep is the FFT the search would tune first; else on the one it was built with.  A run records the choice once
+  // the sweep is done, so that it does not move under the search as readings are added.
   [[nodiscard]] std::vector<Family> familiesIn(const TuneDB& db, u32 env) const;
-
-  // As familiesIn(), reading the races and the defaults readings of `kind`.
-  [[nodiscard]] std::vector<Family> familiesFor(const TuneDB& db, u32 env, TestKind kind) const;
-
-  // The groups a race is owed in on `fft` from `background`: those with a move the lines could carry.
-  [[nodiscard]] std::vector<Group> groupsOf(const FFTConfig& fft, const UseConfig& background) const;
 
   // Whether `env` has recorded a configuration for every family at this probe.
   [[nodiscard]] bool chosen(const TuneDB& db, u32 env) const;
@@ -229,6 +126,7 @@ public:
 
   [[nodiscard]] const Env& env() const { return env_; }
   [[nodiscard]] u64 probe() const { return probe_; }
+  [[nodiscard]] TestKind kind() const { return kind_; }
   // As built: each type's smallest shape whose default variant holds the probe, before any choice is recorded.
   [[nodiscard]] const std::vector<Family>& families() const { return families_; }
   [[nodiscard]] bool enabled() const { return enabled_; }
@@ -238,21 +136,16 @@ private:
   u64 probe_ = 0;
   std::vector<Family> families_;
   bool enabled_ = false;
-  u32 comboTiers_ = COMBO_TIERS;
-  TestKind prefer_ = TestKind::PRP;
-
-  // The last probesOf() for each family's combination tier, which is pure, and what it was asked: a decided family's
-  // stages are asked for again on every re-score.
-  mutable std::map<std::tuple<size_t, u32, TestKind>, std::pair<std::string, ProbeList>> stageLists_;
+  TestKind kind_ = TestKind::PRP;
 };
 
 // The families a run over `baselines` bootstraps: for each type some baseline belongs to, its smallest shape whose
 // default variant holds `probe` and that `env` can compile.  In type order.
 [[nodiscard]] std::vector<Family> bootstrapFamilies(const Env& env, u64 probe, const std::vector<FFTConfig>& inScope);
 
-// The lines the decided families make: a key every family it applies to agrees on goes on the global line, and a key
-// they disagree on goes on the line of each family that moved it.  A family that kept the built-in value of a disputed
-// key needs no line for it, since the global line does not set it.
+// The lines the families' option sets make: a key every family it applies to agrees on goes on the global line, and a
+// key they disagree on goes on the line of each family that moved it.  A family that kept the built-in value of a
+// disputed key needs no line for it, since the global line does not set it.
 [[nodiscard]] Defaults defaultLines(const Env& env, const std::vector<std::pair<Family, UseConfig>>& decided);
 
 // What a configuration with no option set of its own runs at under `defaults`, canonical.  With `over`, that set with
@@ -261,15 +154,13 @@ private:
 [[nodiscard]] UseConfig underDefaults(const Env& env, const FFTConfig& fft, TestKind kind, const Defaults& defaults,
                                       const UseConfig& over = {});
 
-// The lines published beside `published`, and the one jump the search tries first on an entry still at the built-in
-// defaults: the best evidence there is for each FFT type, split as defaultLines() splits the bootstrap's.  A type's
-// evidence is its `kind` entry that production would run at `probe`, or where none covers it the entry nearest it,
-// and failing both the set its bootstrap decided.  An entry published at the built-in defaults is none: it has not been
-// searched.
-// So the lines start as the bootstrap's and, as entries are tuned further, carry what they found to every FFT nothing
-// has been published for.  A key held at a value that changes the rounding is left at its default, since nothing reads
-// the accuracy of what the lines are applied to.
+// The lines published beside `published`, and what every entry tries as a step of its own: the best evidence there is
+// for each FFT type, split as defaultLines() splits them.  A type's evidence is its `kind` entry that production would
+// run at `probe`, or where none covers it the entry nearest it.  An entry published at the built-in defaults is none:
+// it has not been searched.  So the lines carry what the best entries found to every FFT nothing has been published
+// for.  A key held at a value that changes the rounding is left at its default, since nothing reads the accuracy of
+// what the lines are applied to.
 [[nodiscard]] Defaults publishedLines(const Env& env, u64 probe, TestKind kind,
-                                      const std::vector<SelectionEntry>& published, const BootstrapState& bootstrap);
+                                      const std::vector<SelectionEntry>& published);
 
 }  // namespace tune

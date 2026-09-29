@@ -272,7 +272,7 @@ selection.txt, which a normal run in the same directory (or its -pool) reads.  T
                          kinds=prp|ll|prp+ll test kinds to tune [prp]
                          stop=<P>%%|0         stop once nothing left is worth <P>%% of the time per iteration;
                                              0 runs until Ctrl-C [0.1%%]
-                         bootstrap=0|1       first race each FFT type's options for the defaults FFTs start from [1]
+                         bootstrap=0|1       first search each FFT type's fastest FFT, for 4 x roundCalls calls [1]
                          strategy=<S>        what one step of the per-FFT search is: hybrid, groups, single, or
                                              permute:<KEY>+<KEY>... [hybrid]
                          maxPermute=<N>|all  hybrid, groups: how many options of a group are permuted together [4]

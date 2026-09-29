@@ -61,10 +61,16 @@ TEST(what_is_worth_running_is_the_stopping_rules_own_view_of_the_ranking) {
   sofar.startT = 210;
   sofar.spent[ItemKind::Probe] = {.items = 7, .seconds = 70};
 
-  // A bootstrap call and a gate reading run by rule whatever they are valued at, so neither says how near the stop is.
-  std::vector<Item> const ranked{item(ItemKind::Bootstrap, 90, 5),  item(ItemKind::Gate, 50, 3),
-                                 item(ItemKind::Probe, 0.5, 20),    item(ItemKind::Restart, 0.3, 10),
-                                 item(ItemKind::Baseline, 0.1, 30), item(ItemKind::Refine, 0, 4)};
+  // A step of the bootstrap and a gate reading run by rule whatever they are valued at, so neither says how near the
+  // stop is.
+  Item step = item(ItemKind::Probe, 90, 5);
+  step.bootstrap = true;
+  std::vector<Item> const ranked{step,
+                                 item(ItemKind::Gate, 50, 3),
+                                 item(ItemKind::Probe, 0.5, 20),
+                                 item(ItemKind::Restart, 0.3, 10),
+                                 item(ItemKind::Baseline, 0.1, 30),
+                                 item(ItemKind::Refine, 0, 4)};
   RunProgress const p = progressOf(sofar, 200, 0.75, ranked, 0.001, 0.2, true);
 
   CHECK_EQ(p.items, 7u);

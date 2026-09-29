@@ -275,7 +275,6 @@ TEST(the_bins_of_one_group_are_combined_at_the_second_tier) {
     });
   };
   CHECK(combines({}));
-  CHECK(!combines({.kind = Strategy::Kind::Hybrid, .bootstrapTree = true}));
 
   // Likewise two register caps under CUDA, each a bin of its own.
   Env const cuda{.isNvidia = true, .cudaBackend = true, .computeCapability = 600, .pdlLaunch = true};

@@ -70,11 +70,6 @@ struct Strategy {
   u32 comboTop = COMBO_TOP;
   u32 comboTiers = COMBO_TIERS;
 
-  // The bootstrap's combination tree as it has always been built, so that a database whose bootstrap it completed stays
-  // complete: a key searched alone is binned with the rest of its group, and a group is one dimension of every
-  // combination.  Otherwise each bin is a dimension of its own at tier 2.
-  bool bootstrapTree = false;
-
   // Whether each structural value is searched as a branch of its own: the strategies that search by group.
   [[nodiscard]] bool branches() const { return kind == Kind::Hybrid || kind == Kind::Groups; }
 
@@ -228,11 +223,10 @@ struct Branch {
 // Hybrid: what groups offers, then the combo tiers over the readings in `best`'s branch.  The seeds of a bin are its
 // best `comboTop` distinct projections of those readings, the background's own first; tier 2 combines the seeds of the
 // bins of each cluster of more than one group (clusterGraph()), and of each other group of more than one bin ("Memory
-// combined"); tier 3 the seeds of each top-tier group and of each cluster, each taken whole.  Under `bootstrapTree` a
-// group is one dimension at tier 2 as well, and a group alone has no tier-2 stage.  A stage is its cross product
-// without the background, most promising first -- the highest summed gain of its seeds, a seed's gain being 1 - cost /
-// the cost of `best`, and no more than 0 -- and cut at `maxPoints`.  `best` must be the first of the readings in its
-// branch, and the rest must follow cheapest first.
+// combined"); tier 3 the seeds of each top-tier group and of each cluster, each taken whole.  A stage is its cross
+// product without the background, most promising first -- the highest summed gain of its seeds, a seed's gain being
+// 1 - cost / the cost of `best`, and no more than 0 -- and cut at `maxPoints`.  `best` must be the first of the
+// readings in its branch, and the rest must follow cheapest first.
 //
 // A point is dropped where some key it sets is at a value the table would not offer it alongside the rest.
 //

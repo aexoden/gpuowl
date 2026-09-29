@@ -357,7 +357,7 @@ std::vector<Bin> binsOf(const std::vector<Axis>& axes, Group group, const Strate
     if (option.structural) {
       if (structuralSteps) { out.push_back({.group = group, .stage = name, .axes = {i}, .structural = true}); }
     } else {
-      (option.alone && !strategy.bootstrapTree ? alone : rest).push_back(i);
+      (option.alone ? alone : rest).push_back(i);
     }
   }
 
@@ -502,10 +502,6 @@ void combos(const Env& env, const FFTConfig& fft, const UseConfig& best, const S
   // A group's dimensions at tier 2: one per bin, so that what two bins of one group found is tried together.
   auto dimsOf = [&](Group group) {
     std::vector<std::vector<Seed>> dims;
-    if (strategy.bootstrapTree) {
-      dims.push_back(seedsIn({group}));
-      return dims;
-    }
     for (const Bin& bin : binsOf(out.axes, group, strategy, false)) { dims.push_back(seedsOn(bin.axes)); }
     return dims;
   };
@@ -530,15 +526,11 @@ void combos(const Env& env, const FFTConfig& fft, const UseConfig& best, const S
     }
     if (cluster.size() >= 2) {
       combine(dims, stage, 2, 1);
-    } else if (!strategy.bootstrapTree) {
+    } else {
       combine(dims, stage + " combined", 2, 2);
     }
   }
-  if (!strategy.bootstrapTree) {
-    for (Group const group : graph.topTier) {
-      combine(dimsOf(group), std::string{toString(group)} + " combined", 2, 2);
-    }
-  }
+  for (Group const group : graph.topTier) { combine(dimsOf(group), std::string{toString(group)} + " combined", 2, 2); }
 
   if (strategy.comboTiers < 3) { return; }
   std::vector<std::vector<Seed>> dims;
@@ -587,7 +579,7 @@ ProbeList probesOf(const Env& env, const FFTConfig& fft, const UseConfig& best, 
     }
     std::ranges::stable_partition(bins, &Bin::structural);
     for (const Bin& bin : bins) {
-      bool const whole = bin.structural || (out.axes[bin.axes.front()].option->alone && !strategy.bootstrapTree);
+      bool const whole = bin.structural || out.axes[bin.axes.front()].option->alone;
       enumerator.enumerate(bin.axes, bin.stage, whole ? ~0u : strategy.maxPoints);
     }
     for (size_t const i : axesWhere([](const Axis& a) { return a.option->group == Group::None; })) {
@@ -641,7 +633,7 @@ SearchSize searchSize(const Env& env, const FFTConfig& fft, const UseConfig& bes
       }
       g.options += bin.axes.size();
       g.points.push_back(points);
-      bool const alone = axes[bin.axes.front()].option->alone && !strategy.bootstrapTree;
+      bool const alone = axes[bin.axes.front()].option->alone;
       g.offered.push_back(alone ? points : std::min<u64>(points, strategy.maxPoints));
     }
     for (const Bin& bin : binsOf(axes, group, lifted, false)) { g.whole += bin.points(axes); }

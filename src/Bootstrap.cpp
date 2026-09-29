@@ -18,65 +18,6 @@
 
 namespace tune {
 
-namespace {
-
-// What the rows of one family's bootstrap configuration at the probe say about each option set measured there.
-struct Readings {
-  std::map<std::string, Measurement> ok;
-  std::set<std::string> failed;
-};
-
-[[nodiscard]] Readings readingsOf(const Env& env, const Family& family, u64 probe, TestKind kind,
-                                  const std::vector<RunRow>& runs, const TuneDB& db, u32 envId) {
-  Readings out;
-  std::string const spec = family.fft.spec();
-
-  for (const RunRow& row : runs) {
-    if (row.fft != spec || row.kind != kind || row.exponent != probe || row.m.status == Status::Lost ||
-        db.envOf(row.sess) != envId) {
-      continue;
-    }
-    const UseConfig* const opts = db.findCfg(row.cfg);
-    if (!opts) { continue; }
-
-    // By what the kernels saw rather than by how the set was spelled, so that a candidate finds its readings whatever
-    // wrote them.
-    std::string const key = configText(canonicalConfig(env, family.fft, *opts));
-    if (row.m.status != Status::Ok) {
-      out.failed.insert(key);
-    } else if (row.m.ok()) {
-      auto const [at, fresh] = out.ok.try_emplace(key, row.m);
-      if (!fresh && row.m.calls > at->second.calls) { at->second = row.m; }
-    }
-  }
-  return out;
-}
-
-[[nodiscard]] double seOf(const RaceEntry& e) { return e.m ? standardError(*e.m) : 0; }
-
-[[nodiscard]] u32 callsOf(const RaceEntry& e) { return e.m ? e.m->calls : 0; }
-
-// Fewest calls first, then the order the candidates were offered in, so that a race is called turn about.  Where one
-// candidate is all that needs a call, the others still in the race follow it, so that its calls are taken between
-// theirs rather than back to back: two calls in a row of one configuration compare two moments as much as two
-// configurations.
-[[nodiscard]] std::vector<size_t> byCalls(const std::vector<RaceEntry>& entries, std::vector<size_t> which,
-                                          const std::vector<size_t>& live) {
-  auto fewest = [&](size_t a, size_t b) { return callsOf(entries[a]) < callsOf(entries[b]); };
-  std::ranges::stable_sort(which, fewest);
-  if (which.size() == 1) {
-    std::vector<size_t> others;
-    for (size_t const i : live) {
-      if (i != which.front()) { others.push_back(i); }
-    }
-    std::ranges::stable_sort(others, fewest);
-    which.insert(which.end(), others.begin(), others.end());
-  }
-  return which;
-}
-
-}  // namespace
-
 const char* typeName(enum FFT_TYPES type) {
   switch (type) {
   case FFT64: return "FFT64";
@@ -92,24 +33,13 @@ const char* typeName(enum FFT_TYPES type) {
   return "?";
 }
 
-const char* toString(RaceHow how) {
-  switch (how) {
-  case RaceHow::Pending: return "pending";
-  case RaceHow::Separated: return "by separation";
-  case RaceHow::Margin: return "by margin";
-  case RaceHow::Alone: return "unopposed";
-  }
-  return "?";
-}
-
 const char* toString(FamilyPhase phase) {
   switch (phase) {
   case FamilyPhase::Unread: return "unread";
   case FamilyPhase::Held: return "held";
   case FamilyPhase::Skipped: return "skipped";
-  case FamilyPhase::Waiting: return "waiting";
-  case FamilyPhase::Racing: return "racing";
-  case FamilyPhase::Done: return "done";
+  case FamilyPhase::Owed: return "owed";
+  case FamilyPhase::Served: return "served";
   }
   return "?";
 }
@@ -175,70 +105,10 @@ std::vector<Move> movesWithin(const Env& env, const FFTConfig& fft, const UseCon
   return out;
 }
 
-RaceResult decideRace(const std::vector<RaceEntry>& entries) {
-  std::vector<size_t> live;
-  for (size_t i = 0; i < entries.size(); ++i) {
-    if (!entries[i].out) { live.push_back(i); }
-  }
-
-  if (live.empty()) { return {.how = RaceHow::Alone, .winner = {}, .next = {}}; }
-  if (live.size() == 1) { return {.how = RaceHow::Alone, .winner = live.front(), .next = {}}; }
-
-  std::vector<size_t> unsampled;
-  for (size_t const i : live) {
-    if (callsOf(entries[i]) < MIN_CALLS) { unsampled.push_back(i); }
-  }
-  if (!unsampled.empty()) { return {.how = RaceHow::Pending, .winner = {}, .next = byCalls(entries, unsampled, live)}; }
-
-  size_t leader = live.front();
-  for (size_t const i : live) {
-    if (entries[i].m->cost() < entries[leader].m->cost()) { leader = i; }
-  }
-  const RaceEntry& lead = entries[leader];
-  double const leadCost = lead.m->cost();
-
-  std::vector<size_t> tied{leader};
-  std::vector<size_t> unsettled;
-  for (size_t const i : live) {
-    if (i == leader) { continue; }
-    const RaceEntry& rival = entries[i];
-    double const cost = rival.m->cost();
-
-    bool const separated = leadCost + RACE_CONFIDENCE * seOf(lead) < cost - RACE_CONFIDENCE * seOf(rival);
-    if (separated) { continue; }
-
-    if (cost - leadCost <= RACE_MARGIN * leadCost || rival.m->calls >= RACE_MAX_CALLS) {
-      tied.push_back(i);
-    } else {
-      unsettled.push_back(i);
-    }
-  }
-
-  if (!unsettled.empty()) {
-    if (lead.m->calls < RACE_MAX_CALLS) { unsettled.push_back(leader); }
-    return {.how = RaceHow::Pending, .winner = {}, .next = byCalls(entries, unsettled, live)};
-  }
-
-  size_t const winner = *std::ranges::min_element(tied, [&](size_t a, size_t b) {
-    return std::tuple{entries[a].config.size(), -i64(callsOf(entries[a])), entries[a].m->cost(), a} <
-      std::tuple{entries[b].config.size(), -i64(callsOf(entries[b])), entries[b].m->cost(), b};
-  });
-  return {.how = tied.size() > 1 ? RaceHow::Margin : RaceHow::Separated, .winner = winner, .next = {}};
-}
-
-Bootstrap::Bootstrap(Env env, u64 probe, std::vector<Family> families, bool enabled, u32 comboTiers, TestKind prefer) :
-  env_{std::move(env)},
-  probe_{probe},
-  families_{std::move(families)},
-  enabled_{enabled},
-  comboTiers_{comboTiers},
-  prefer_{prefer} {}
+Bootstrap::Bootstrap(Env env, u64 probe, std::vector<Family> families, bool enabled, TestKind kind) :
+  env_{std::move(env)}, probe_{probe}, families_{std::move(families)}, enabled_{enabled}, kind_{kind} {}
 
 std::vector<Family> Bootstrap::familiesIn(const TuneDB& db, u32 env) const {
-  return familiesFor(db, env, state(db, env).kind);
-}
-
-std::vector<Family> Bootstrap::familiesFor(const TuneDB& db, u32 env, TestKind kind) const {
   std::vector<Family> out = families_;
   std::set<enum FFT_TYPES> recorded;
   for (const BootRow& row : db.boots()) {
@@ -250,14 +120,11 @@ std::vector<Family> Bootstrap::familiesFor(const TuneDB& db, u32 env, TestKind k
   }
   if (!enabled_ || recorded.size() == out.size()) { return out; }
 
-  // A family that raced before the choice was recorded goes on where it raced.
-  BootstrapState const begun = stateOf(families_, db, env, {}, kind);
-
-  // Otherwise the cheapest reading of the type at the built-in defaults at the probe: what the defaults sweep found
-  // fastest there, and so what the search would tune first.
+  // The cheapest reading of the type at the built-in defaults at the probe: what the defaults sweep found fastest
+  // there, and so what the search would tune first.
   std::map<enum FFT_TYPES, std::pair<double, FFTConfig>> cheapest;
   for (const RunRow& row : db.mergedRuns()) {
-    if (row.kind != kind || row.exponent != probe_ || !row.m.ok() || !concluded(row.m) || db.envOf(row.sess) != env) {
+    if (row.kind != kind_ || row.exponent != probe_ || !row.m.ok() || !concluded(row.m) || db.envOf(row.sess) != env) {
       continue;
     }
     auto const fft = parseFft(row.fft);
@@ -269,9 +136,9 @@ std::vector<Family> Bootstrap::familiesFor(const TuneDB& db, u32 env, TestKind k
     if (!fresh && row.m.cost() < at->second.first) { at->second = {row.m.cost(), *fft}; }
   }
 
-  for (size_t f = 0; f < out.size(); ++f) {
-    if (recorded.contains(out[f].type) || !begun.families[f].decisions.empty()) { continue; }
-    if (auto const at = cheapest.find(out[f].type); at != cheapest.end()) { out[f].fft = at->second.second; }
+  for (Family& f : out) {
+    if (recorded.contains(f.type)) { continue; }
+    if (auto const at = cheapest.find(f.type); at != cheapest.end()) { f.fft = at->second.second; }
   }
   return out;
 }
@@ -289,17 +156,6 @@ namespace {
 
 }  // namespace
 
-std::vector<Group> Bootstrap::groupsOf(const FFTConfig& fft, const UseConfig& background) const {
-  std::vector<Group> out;
-  for (Group const group : allGroups()) {
-    std::vector<Move> const moves = movesWithin(env_, fft, background, group);
-    if (std::ranges::any_of(moves, [&](const Move& m) { return !movesAccuracy(env_, fft, m.config); })) {
-      out.push_back(group);
-    }
-  }
-  return out;
-}
-
 bool Bootstrap::chosen(const TuneDB& db, u32 env) const {
   std::set<enum FFT_TYPES> const types = recordedTypes(db, env, probe_);
   return std::ranges::all_of(families_, [&](const Family& f) { return types.contains(f.type); });
@@ -312,223 +168,66 @@ std::vector<Family> Bootstrap::unrecorded(const TuneDB& db, u32 env) const {
   return out;
 }
 
-BootstrapState Bootstrap::state(const TuneDB& db, u32 env, const std::set<std::string>& excluded) const {
-  BootstrapState preferred = stateOf(familiesFor(db, env, prefer_), db, env, excluded, prefer_);
-  if (!enabled_) { return preferred; }
-  auto const decided = [](const BootstrapState& s) {
-    return std::ranges::any_of(s.families, [](const FamilyState& f) { return !f.decisions.empty(); });
-  };
-  if (preferred.complete && decided(preferred)) { return preferred; }
-
-  // A bootstrap the other kind has finished, or failing that begun, is taken rather than raced again in this one: the
-  // lines it decides serve both kinds, and a run changing kinds should not repeat hours of races.
-  TestKind const other = prefer_ == TestKind::PRP ? TestKind::LL : TestKind::PRP;
-  BootstrapState alternative = stateOf(familiesFor(db, env, other), db, env, excluded, other);
-  if (alternative.complete && decided(alternative)) { return alternative; }
-  if (!decided(preferred) && decided(alternative)) { return alternative; }
-  return preferred;
-}
-
-BootstrapState Bootstrap::stateOf(const std::vector<Family>& families, const TuneDB& db, u32 env,
-                                  const std::set<std::string>& excluded, TestKind kind) const {
-  BootstrapState out;
-  out.kind = kind;
-  for (const Family& family : families) { out.families.push_back({.family = family}); }
-
+BootstrapState Bootstrap::state(const TuneDB& db, u32 env, u64 budget) const {
+  BootstrapState out{.families = {}, .kind = kind_, .budget = budget, .complete = true};
+  for (const Family& family : familiesIn(db, env)) { out.families.push_back({.family = family}); }
   if (!enabled_) {
     for (FamilyState& f : out.families) { f.phase = FamilyPhase::Skipped; }
-    out.complete = true;
     return out;
   }
 
-  std::vector<RunRow> const runs = db.mergedRuns();
-  std::vector<Readings> readings;
-  for (const Family& family : families) { readings.push_back(readingsOf(env_, family, probe_, kind, runs, db, env)); }
-
-  auto entryOf = [&](size_t f, const UseConfig& config, std::string text) {
-    std::string const key = configText(config);
-    std::string const spec = families[f].fft.spec();
-    RaceEntry e{.config = config, .text = std::move(text), .m = {}, .out = false};
-    if (auto const at = readings[f].ok.find(key); at != readings[f].ok.end()) { e.m = at->second; }
-
-    u32 const cfg = db.findCfgId(config);
-    e.out = readings[f].failed.contains(key) || excluded.contains(spec + " " + key) || db.isNogo(env, spec, config) ||
-      (cfg && db.diedOn(env, cfg, kind, spec, probe_));
-    return e;
-  };
-
-  // A reading of every family at the defaults comes first: which of them are worth tuning is a comparison between them.
-  bool anyUnread = false;
-  for (size_t f = 0; f < families.size(); ++f) {
-    FamilyState& s = out.families[f];
-    RaceEntry const defaults = entryOf(f, {}, "defaults");
-    if (defaults.out) {
-      s.phase = FamilyPhase::Held;
-    } else if (!defaults.m) {
-      anyUnread = true;
-      out.turns.push_back({.family = f, .config = {}, .key = {}, .text = "defaults", .calls = 0});
-    } else {
-      s.reading = defaults.m->cost();
-    }
-  }
-  if (anyUnread) { return out; }
-
-  // Worth tuning while a gain of RACE_GAIN would let it overtake the cheapest family -- at its defaults
-  // until that family has been tuned, and then as tuned, so that a family which only came close to the defaults is not
-  // raced once the cheapest has pulled away.
-  double best = 0;
-  for (const FamilyState& s : out.families) {
-    if (s.reading > 0 && (!best || s.reading < best)) { best = s.reading; }
+  // Each family's entry: its configuration, in the kind the bootstrap is in, in the regime band that holds the probe.
+  std::map<EntryKey, size_t> entries;
+  for (size_t f = 0; f < out.families.size(); ++f) {
+    const FFTConfig& fft = out.families[f].family.fft;
+    entries.emplace(EntryKey{fft.spec(), kind_, regimeOf(fft, probe_).label()}, f);
   }
 
-  std::vector<size_t> order;
-  for (size_t f = 0; f < families.size(); ++f) {
-    if (out.families[f].phase != FamilyPhase::Held) { order.push_back(f); }
-  }
-  std::ranges::stable_sort(order,
-                           [&](size_t a, size_t b) { return out.families[a].reading < out.families[b].reading; });
+  std::vector<bool> failed(out.families.size(), false);
+  for (const RunRow& row : db.mergedRuns()) {
+    if (row.m.status == Status::Lost || db.envOf(row.sess) != env) { continue; }
+    auto const at = entries.find({row.fft, row.kind, row.regime.label()});
+    const UseConfig* const opts = db.findCfg(row.cfg);
+    if (at == entries.end() || !opts) { continue; }
+    FamilyState& s = out.families[at->second];
 
-  bool racing = false;
-  for (size_t const f : order) {
-    FamilyState& s = out.families[f];
-    if (s.reading * (1 - RACE_GAIN) >= best) {
-      s.phase = FamilyPhase::Skipped;
+    // By what the kernels saw rather than by how the set was spelled, so that a reading counts whatever wrote it.
+    bool const defaults = canonicalConfig(env_, s.family.fft, *opts).empty();
+    if (!defaults) { s.calls += std::max<u32>(row.m.calls, 1); }
+    if (row.exponent != probe_) { continue; }
+    if (row.m.status != Status::Ok) {
+      failed[at->second] = failed[at->second] || defaults;
       continue;
     }
-    s.phase = FamilyPhase::Done;
-
-    // What the decided races read, which the combinations are built from.  Only these: a later search of the same
-    // configuration as an entry measures other option sets, which must not reopen what the bootstrap decided.
-    std::vector<Reading> answers;
-    std::set<std::string> answered;
-    auto keep = [&](const std::vector<RaceEntry>& entries) {
-      for (const RaceEntry& e : entries) {
-        if (e.m && !e.out && answered.insert(configText(e.config)).second) {
-          answers.push_back({.config = e.config, .cost = e.m->cost()});
-        }
-      }
-    };
-
-    // Races `entries`, the incumbent first, as `stage`: the winner's place among them, 0 where every candidate is out,
-    // and nothing while the race is still being called, having said what to call.
-    bool pending = false;
-    auto race = [&](std::vector<RaceEntry> entries, const std::vector<std::string>& keys, const std::string& stage,
-                    u32 tier, u32 round) -> std::optional<size_t> {
-      RaceResult const result = decideRace(entries);
-      if (result.how == RaceHow::Pending) {
-        pending = true;
-        s.phase = racing ? FamilyPhase::Waiting : FamilyPhase::Racing;
-        s.stage = stage;
-        if (!racing) {
-          for (size_t const i : result.next) {
-            out.turns.push_back({.family = f,
-                                 .config = entries[i].config,
-                                 .key = keys[i],
-                                 .text = stage + " " + entries[i].text,
-                                 .calls = callsOf(entries[i]),
-                                 .tier = tier});
-          }
-        }
-        s.entries = std::move(entries);
-        s.race = result;
-        return {};
-      }
-
-      keep(entries);
-      if (!result.winner) { return 0; }
-      const RaceEntry& won = entries[*result.winner];
-      s.decisions.push_back({.stage = stage,
-                             .round = round,
-                             .how = result.how,
-                             .winner = won.text,
-                             .cost = won.m ? won.m->cost() : 0,
-                             .se = seOf(won),
-                             .candidates = u32(entries.size())});
-      s.decided = won.config;
-      return *result.winner;
-    };
-
-    for (Group const group : allGroups()) {
-      // Again from each winner that moved: a structural key's dependents are offered only against the background as it
-      // stands, so the keys INPLACE=0 opens are raced in the round after it wins.
-      for (u32 round = 0; round < GROUP_ROUNDS && !pending; ++round) {
-        // The lines hold every key that changes the rounding at its default.  Production applies them to every shape
-        // nothing was published for, where no gate ever read them.
-        std::vector<Move> moves = movesWithin(env_, families[f].fft, s.decided, group);
-        std::erase_if(moves, [&](const Move& m) { return movesAccuracy(env_, families[f].fft, m.config); });
-        if (moves.empty()) { break; }
-
-        std::vector<RaceEntry> entries{entryOf(f, s.decided, "the incumbent")};
-        std::vector<std::string> keys{""};
-        for (const Move& move : moves) {
-          std::string const aside = ldsAsideNote(families[f].fft, s.decided, move.config, {move.key});
-          entries.push_back(entryOf(f, move.config, move.text + aside));
-          keys.push_back(move.key);
-        }
-        if (race(std::move(entries), keys, toString(group), 1, round).value_or(0) == 0) { break; }
-      }
-      if (pending) { break; }
-    }
-
-    // Then each stage of the combination tree once, from the background as it stands: the groups that share kernels
-    // combined, then everything.  A stage combines what the tiers below it read, so the answers of a tier join the
-    // seeds only once the tier is done, and a stage's candidates do not move while it is being raced.
-    std::set<std::string> combined;
-    for (u32 tier = 2; tier <= comboTiers_ && !pending; ++tier) {
-      std::vector<Reading> fromTier;
-      while (!pending) {
-        RaceEntry const incumbent = entryOf(f, s.decided, "the incumbent");
-        if (!incumbent.m) { break; }
-
-        std::vector<Reading> readings{{.config = s.decided, .cost = incumbent.m->cost()}};
-        for (const Reading& r : answers) {
-          if (r.config != s.decided) { readings.push_back(r); }
-        }
-        std::ranges::stable_sort(readings.begin() + 1, readings.end(), {}, &Reading::cost);
-
-        std::string asked = families[f].fft.spec() + " ";
-        for (const Reading& r : readings) { asked += configText(r.config) + "@" + std::to_string(r.cost) + " "; }
-        auto& [was, list] = stageLists_[{f, tier, kind}];
-        if (was != asked) {
-          Strategy const tree{
-            .kind = Strategy::Kind::Hybrid, .comboTop = COMBO_TOP, .comboTiers = tier, .bootstrapTree = true};
-          list = probesOf(env_, families[f].fft, s.decided, tree, readings);
-          was = std::move(asked);
-        }
-        auto const next = std::ranges::find_if(
-          list.probes, [&](const Probe& p) { return p.tier == tier && !combined.contains(p.stage); });
-        if (next == list.probes.end()) { break; }
-        std::string const stage = next->stage;
-        combined.insert(stage);
-
-        std::vector<RaceEntry> entries{incumbent};
-        std::vector<std::string> keys{""};
-        for (const Probe& p : list.probes) {
-          if (p.stage != stage || movesAccuracy(env_, families[f].fft, p.config)) { continue; }
-          entries.push_back(entryOf(f, p.config, p.text));
-          keys.push_back(p.key);
-        }
-        size_t const before = answers.size();
-        (void)race(std::move(entries), keys, stage, tier, 0);
-        fromTier.insert(fromTier.end(), answers.begin() + ptrdiff_t(before), answers.end());
-        answers.resize(before);
-      }
-      answers.insert(answers.end(), fromTier.begin(), fromTier.end());
-    }
-    racing = racing || pending;
-
-    if (!pending) {
-      RaceEntry const tuned = entryOf(f, s.decided, "");
-      if (tuned.m && tuned.m->cost() < best) { best = tuned.m->cost(); }
-    }
+    if (!row.m.ok() || !concluded(row.m)) { continue; }
+    if (defaults) { s.reading = s.reading ? std::min(s.reading, row.m.cost()) : row.m.cost(); }
+    s.best = s.best ? std::min(s.best, row.m.cost()) : row.m.cost();
   }
 
-  std::vector<std::pair<Family, UseConfig>> decided;
+  double cheapest = 0;
   for (const FamilyState& s : out.families) {
-    if (s.phase == FamilyPhase::Done) { decided.emplace_back(s.family, s.decided); }
+    if (s.reading && (!cheapest || s.best < cheapest)) { cheapest = s.best; }
   }
-  out.defaults = defaultLines(env_, decided);
-  out.complete = !racing;
+
+  for (size_t f = 0; f < out.families.size(); ++f) {
+    FamilyState& s = out.families[f];
+    std::string const spec = s.family.fft.spec();
+    u32 const cfg = db.findCfgId({});
+    if (failed[f] || db.isNogo(env, spec, {}) || (cfg && db.diedOn(env, cfg, kind_, spec, probe_))) {
+      s.phase = FamilyPhase::Held;
+    } else if (!s.reading) {
+      s.phase = FamilyPhase::Unread;
+    } else if (s.calls >= budget) {
+      s.phase = FamilyPhase::Served;
+    } else if (s.best * (1 - BOOTSTRAP_GAIN) >= cheapest) {
+      // Against the cheapest family as tuned so far, so that a family which only came close to the defaults is not
+      // searched once the cheapest has pulled away.
+      s.phase = FamilyPhase::Skipped;
+    } else {
+      s.phase = FamilyPhase::Owed;
+    }
+    out.complete = out.complete && s.phase != FamilyPhase::Unread && s.phase != FamilyPhase::Owed;
+  }
   return out;
 }
 
@@ -601,8 +300,7 @@ UseConfig underDefaults(const Env& env, const FFTConfig& fft, TestKind kind, con
   return canonicalConfig(env, fft, resolveConfig(Args{true}, fft, kind, fittedTo(stacked, env, fft, kind)));
 }
 
-Defaults publishedLines(const Env& env, u64 probe, TestKind kind, const std::vector<SelectionEntry>& published,
-                        const BootstrapState& bootstrap) {
+Defaults publishedLines(const Env& env, u64 probe, TestKind kind, const std::vector<SelectionEntry>& published) {
   struct Evidence {
     std::tuple<u64, double, std::string> rank;
     Family family;
@@ -622,14 +320,6 @@ Defaults publishedLines(const Env& env, u64 probe, TestKind kind, const std::vec
     Evidence candidate{.rank = {distance, e.cost, e.id}, .family = {fft->shape.fft_type, *fft}, .config = e.opts};
     auto const [at, fresh] = best.try_emplace(candidate.family.type, candidate);
     if (!fresh && candidate.rank < at->second.rank) { at->second = std::move(candidate); }
-  }
-
-  if (best.empty()) { return bootstrap.defaults; }
-
-  for (const FamilyState& f : bootstrap.families) {
-    if (f.phase == FamilyPhase::Done) {
-      best.try_emplace(f.family.type, Evidence{.rank = {}, .family = f.family, .config = f.decided});
-    }
   }
 
   std::vector<std::pair<Family, UseConfig>> sets;

@@ -61,10 +61,11 @@ A run goes through these stages, though it interleaves them and you do not need 
 4. **Defaults sweep.** Time every FFT within 10% of the fastest one somewhere in the workload at PRPLL's built-in
    defaults. This is the untuned map: what each of them costs before any option is changed, which is what every later
    gain is a gain over, and what the dashboard compares against.
-5. **Bootstrap.** For each FFT type (FP64, the NTTs, the hybrids), race the `-use` options on the type's fastest FFT
-   at the probe exponent, as the sweep found it. The winners are the first default options, written as the `use`
-   lines at the top of `selection.txt`: what an FFT with nothing published of its own runs at. A type that is so much
-   slower than the fastest one at its defaults that no plausible option gain could close the gap is not raced.
+5. **Bootstrap.** For each FFT type (FP64, the NTTs, the hybrids), search the type's fastest FFT at the probe
+   exponent, as the sweep found it, before any other: `4 × roundCalls` measurements each (64 by default), by the same
+   search every FFT gets. What it finds is published like any other result, and so becomes the type's default options
+   straight away. A type that is so much slower than the fastest one that no plausible option gain could close the gap
+   is not searched first.
 6. **Search.** For the FFTs that are competitive, first try the default options as they stand, then other option
    sets one step at a time (how big a step is depends on `strategy=`), and combine the best answers of different
    option groups. A random option set is tried to escape a local optimum: once no step is left, and after every 32
@@ -79,7 +80,7 @@ A run goes through these stages, though it interleaves them and you do not need 
 
 **The default options follow the search.** Once FFTs are published, each FFT type's default options are those of its
 best published FFT: the one a normal run would use at the probe exponent, or where none of that type reaches it, the
-one nearest it. A type with nothing published keeps what its bootstrap decided. Options that change the rounding
+one nearest it. A type with nothing searched published has no line of its own. Options that change the rounding
 error stay at their defaults on these lines, since nothing reads the rounding error of an FFT that merely runs under
 them. Every FFT is first timed at the built-in defaults, and the lines are the first step of its search; every
 published FFT names the options it was measured with, so it runs as measured whatever the lines come to say.
@@ -103,7 +104,7 @@ What to expect:
 
 - **Duration.** Each measurement builds the FFT's kernels and times about 5000 iterations: from several seconds to a
   minute or more, depending on the FFT and the GPU. Choosing the drift anchor takes a few minutes, the bootstrap
-  roughly half an hour to an hour or more per FFT type it races, and a run that goes until it stops by itself usually
+  64 measurements (by default) per FFT type it searches first, and a run that goes until it stops by itself usually
   takes many hours. The workload is covered first and the defaults sweep follows, which on a wide workload can take
   an hour or more before any option is tuned (`-tune status` shows how far it is); after that the most valuable
   measurements come first, and you can stop whenever you need the GPU and resume later.
@@ -135,17 +136,15 @@ tune:   118063003  75.0%    870.302 us/it  prior, from 1K:13:256  (probe)
 tune:   136279841  25.0%   1013.328 us/it  prior, from 1K:15:256
 tune: T = 906.059 us/it against env 1, 0.0% of the weight on measured entries
 tune: 945 entries could serve the workload; each measured one is searched by strategy=hybrid (maxPermute=4, maxPoints=64, comboTop=3, comboTiers=3), then by random restarts; the run goes on until nothing is expected to lower T by 0.1% of it
-tune: bootstrap at 118063003 once the workload is covered and every FFT within 10% of the fastest has been read at the built-in defaults, on each type's fastest there
+tune: bootstrap at 118063003 once the workload is covered and every FFT within 10% of the fastest has been read at the built-in defaults: each type's fastest there is searched first, for 64 calls
 ```
 
 The costs marked `prior` are estimates, used only to decide what to measure first. They are replaced by measurements
-as the run goes on. Once the sweep is done, the run names the FFT each type is raced on:
+as the run goes on. Once the sweep is done, the run names the FFT each type is searched on first:
 
 ```text
 tune: bootstrap at 118063003 over FFT64 1K:13:256:101, FFT3161 1:1K:8:256:202, FFT3261 2:1K:8:256:212, FFT61 3:1K:16:256:202, FFT323161 4:1K:8:256:212, FFT6431 51:1K:8:256:212
 ```
-
-A database from before this rule keeps racing where its bootstrap began.
 
 
 ## Settings
@@ -171,8 +170,8 @@ months of work a tune is used for.
   `worktodo.txt` when `-pool` is given, and a `worktodo.txt` in the run directory. Exponents that are not prime, and
   lines for anything other than Mersenne numbers, are skipped. `Cert` lines count as PRP work.
 
-**`probe=<E>`**: the exponent that matters most. The bootstrap races options at this exponent, and it carries extra
-weight in `T`.
+**`probe=<E>`**: the exponent that matters most. The bootstrap searches each FFT type at this exponent first, and it
+carries extra weight in `T`.
 
 - Default: the most common exponent in your worktodo files (the most populated 2%-wide band, represented by its
   average). With no pending work, the geometric middle of the workload.
@@ -187,9 +186,8 @@ tunes for the probe exponent and nothing else.
 **`kinds=prp|ll|prp+ll`**: which tests to tune for. Default `prp`. LL work is only worth tuning for if you actually
 run LL tests; with `prp+ll` each kind gets its own measurements and its own share of `T`. An LL measurement's residue is
 checked against the residue two different FFTs agree on at their built-in defaults, since there is no known LL residue
-to compare with. The bootstrap races in PRP when PRP is among the kinds and in LL otherwise, so an LL-only tune takes
-no PRP measurements; a bootstrap a database already holds, finished in either kind, is used as it is by a run of the
-other, since the default options it decides serve both.
+to compare with. The bootstrap searches in PRP when PRP is among the kinds and in LL otherwise, so an LL-only tune takes
+no PRP measurements.
 
 Examples:
 
@@ -222,9 +220,10 @@ A value without `%` is refused, except `0`: `0.1` could mean either 0.1% or 10%.
 
 These change how the options of each FFT are searched. The defaults are the recommended ones.
 
-**`bootstrap=0|1`**: whether to race each FFT type's options on its fastest FFT once the defaults sweep is done (default
-`1`). With `bootstrap=0` the search starts with no default lines to try first, and `selection.txt` has no default `use`
-lines until searched FFTs are published and the lines follow them. This is mainly useful to compare against.
+**`bootstrap=0|1`**: whether to search each FFT type's fastest FFT first, for `4 × roundCalls` measurements, once the
+defaults sweep is done (default `1`). With `bootstrap=0` the search goes wherever it is expected to gain most from the
+start, and a type's default options wait until one of its FFTs is searched that way. This is mainly useful to compare
+against.
 
 **`strategy=<S>`**: what one step of the per-FFT search is.
 
@@ -274,8 +273,8 @@ On NVIDIA the one piece the defaults cut is `Memory`'s first, at 64 of its 149 c
 every piece whole; `maxPermute=all` makes `Memory` one piece of 4499. On an AMD Radeon Pro VII nothing is cut, and the
 largest piece with `maxPermute=all` is `Placement`'s, about 400. A run lists a large piece 64 combinations at a time,
 in the same order, and more as those are measured, so it keeps moving however large the pieces are; the progress line,
-`-tune status` and the summary add `and up to <N> more not listed yet` for what lies beyond. Neither setting changes
-the bootstrap, which always races single options and then combines their best answers.
+`-tune status` and the summary add `and up to <N> more not listed yet` for what lies beyond. The bootstrap searches the
+same way.
 
 **`comboTop=<N>`** (`hybrid` only): how many of each group's best answers are carried into the combinations. Default
 `3`.
@@ -566,7 +565,7 @@ prpll -tune emit
 prpll -tune emit,tunetxt=1
 ```
 
-The default `use` lines are chosen at the probe exponent (the bootstrap's races, then the best FFT published there), so
+The default `use` lines are chosen at the probe exponent (the best searched FFT published there, for each type), so
 `emit` has to use the same probe as the run did. It derives it from the worktodo, as the run did; if your worktodo has changed since, give the
 run's `probe=` (and `workload=`), which `-tune status` shows. Takes `workload=`, `probe=`, `probeWeight=`, `kinds=`,
 `tunetxt=` and `env=`.
@@ -742,12 +741,13 @@ Giving one of the old tuner's options to `-tune` is refused with a message namin
 ## Questions
 
 **How long should I let it run?** Until it stops by itself if you can; otherwise as long as you can spare. Progress is
-front-loaded: the bootstrap and the baselines of the FFTs that matter come first, and each later measurement is chosen
+front-loaded: the baselines of the FFTs that matter and the bootstrap come first, and each later measurement is chosen
 because it is expected to help the most. `-tune status` shows how much is still worth measuring.
 
 **My worktodo moved to a different exponent range. Do I start again?** No. Run `-tune` again: the new range is taken
 from the worktodo, the measurements that still apply are kept, and only what is new is measured. If the probe
-exponent changed, the bootstrap is raced again there, since the default options it decides are chosen at the probe.
+exponent changed, the bootstrap searches each type's fastest FFT there first, since the default options are chosen at
+the probe.
 
 **Can I keep running tests while tuning?** Not on the same GPU: anything else running on it distorts the
 measurements. Other GPUs are unaffected.

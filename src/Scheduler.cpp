@@ -11,6 +11,7 @@
 #include <algorithm>
 #include <cinttypes>
 #include <iterator>
+#include <limits>
 #include <tuple>
 #include <utility>
 
@@ -117,7 +118,6 @@ std::vector<Baseline> baselines(const Env& env, const RunScope& scope, const std
 const char* toString(ItemKind kind) {
   switch (kind) {
   case ItemKind::Anchor: return "anchor";
-  case ItemKind::Bootstrap: return "bootstrap";
   case ItemKind::Baseline: return "baseline";
   case ItemKind::Probe: return "probe";
   case ItemKind::Combo: return "combo";
@@ -177,7 +177,6 @@ Item Scheduler::itemOf(size_t index, Candidate candidate) const {
 std::string Scheduler::keyOf(const Item& item) const {
   switch (item.kind) {
   case ItemKind::Anchor: return "anchor";
-  case ItemKind::Bootstrap: return item.fft->spec() + " " + configText(item.options);
   case ItemKind::Probe:
   case ItemKind::Combo:
   case ItemKind::Refine:
@@ -196,50 +195,71 @@ std::string Scheduler::keyOf(const Item& item) const {
   return baselines_[item.index].label() + "@" + std::to_string(item.exponent);
 }
 
+std::optional<size_t> Scheduler::entryOf(const Family& family, TestKind kind) const {
+  std::string const spec = family.fft.spec();
+  for (size_t i = 0; i < baselines_.size(); ++i) {
+    const Baseline& b = baselines_[i];
+    if (b.kind == kind && b.band.contains(bootstrap_.probe()) && b.fft.spec() == spec) { return i; }
+  }
+  return {};
+}
+
 BootstrapState Scheduler::bootstrapState(const TuneDB& db, u32 env) const {
-  std::set<std::string> excluded;
-  for (const auto& [key, n] : unrecorded_) {
-    if (n >= MAX_ATTEMPTS) { excluded.insert(key); }
+  BootstrapState out = bootstrap_.state(db, env, u64(BOOTSTRAP_ROUNDS) * halving_.roundCalls);
+  out.complete = true;
+  for (FamilyState& f : out.families) {
+    bool const owed = f.phase == FamilyPhase::Unread || f.phase == FamilyPhase::Owed;
+    std::optional<size_t> const entry = entryOf(f.family, out.kind);
+    if (owed && (!strategy_ || !entry)) {
+      f.phase = FamilyPhase::Skipped;
+    } else if (f.phase == FamilyPhase::Unread) {
+      auto const tried = attempts_.find(*entry);
+      if (tried != attempts_.end() && tried->second >= MAX_ATTEMPTS) { f.phase = FamilyPhase::Held; }
+    }
+    out.complete = out.complete && f.phase != FamilyPhase::Unread && f.phase != FamilyPhase::Owed;
   }
-  return bootstrap_.state(db, env, excluded);
+  return out;
 }
 
-Defaults Scheduler::lines(const TuneDB& db, u32 env, const BootstrapState& state) const {
+Defaults Scheduler::lines(const TuneDB& db, u32 env) const {
   TestKind const kind = scope_.grid(TestKind::PRP) || !scope_.grid(TestKind::LL) ? TestKind::PRP : TestKind::LL;
-  return publishedLines(bootstrap_.env(), scope_.probe, kind, candidatesFor(db, env), state);
+  return publishedLines(bootstrap_.env(), scope_.probe, kind, candidatesFor(db, env));
 }
 
-std::vector<Item> Scheduler::bootstrapItems(const BootstrapState& state, const Objective& objective) const {
+std::vector<Item> Scheduler::bootstrapReads(const BootstrapState& state, const TuneDB& db, u32 env,
+                                            const Progress& progress, const Objective& objective) const {
   std::vector<Item> out;
-  for (const Turn& turn : state.turns) {
-    const Family& family = state.families[turn.family].family;
-    double const estimate = objective.priorModel().cost(family.fft.shape);
-    Item item{.kind = ItemKind::Bootstrap,
-              .index = turn.family,
-              .fft = family.fft,
-              .options = turn.config,
-              .moved = turn.key,
-              .what = std::string{typeName(family.type)} + " " + family.fft.spec() + " " +
-                (state.kind == TestKind::PRP ? "" : std::string{toString(state.kind)} + " ") + turn.text,
-              .exponent = bootstrap_.probe(),
-              .value = 1,
-              .seconds = 0,
-              .fresh = true,
-              .calls = turn.calls,
-              .draw = 0,
-              .tier = turn.tier};
-    item.fresh = !built_.contains(keyOf(item));
-    item.seconds = clock_.seconds(estimate / PRIOR_OPTIMISM, item.fresh);
-    out.push_back(std::move(item));
+  for (const FamilyState& f : state.families) {
+    if (f.phase != FamilyPhase::Unread) { continue; }
+    size_t const i = *entryOf(f.family, state.kind);
+    const Baseline& b = baselines_[i];
+
+    Partial p{};
+    if (auto const at = progress.partial.find({b.key(), configText({})}); at != progress.partial.end()) {
+      p = at->second;
+    }
+    u64 const exponent = p.calls && b.band.contains(p.exponent) ? p.exponent : b.exponent;
+    if (u32 const cfg = db.findCfgId({}); cfg && db.diedOn(env, cfg, b.kind, b.fft.spec(), exponent)) { continue; }
+
+    double const estimate = objective.priorModel().cost(b.fft.shape);
+    bool const fresh = !built_.contains(builtKey(b.fft, {}));
+    out.push_back({.kind = ItemKind::Baseline,
+                   .index = i,
+                   .options = {},
+                   .moved = {},
+                   .what = "at the built-in defaults",
+                   .exponent = exponent,
+                   .value = 0,
+                   .cost = estimate,
+                   .seconds = clock_.seconds(estimate / PRIOR_OPTIMISM, fresh),
+                   .fresh = fresh,
+                   .calls = p.calls,
+                   .bootstrap = true});
   }
 
-  // Before any family has been read, the cheapest first: which families are worth tuning waits on all of them.
-  bool const reading = std::ranges::none_of(state.families, [](const FamilyState& f) {
-    return f.phase == FamilyPhase::Racing || f.phase == FamilyPhase::Done;
-  });
-  if (reading) {
-    std::ranges::stable_sort(out, [](const Item& a, const Item& b) { return a.seconds < b.seconds; });
-  }
+  // Which families are worth searching is a comparison between them, so every one is read before any is searched,
+  // the cheapest first.
+  std::ranges::stable_sort(out, {}, &Item::seconds);
   return out;
 }
 
@@ -808,17 +828,17 @@ std::vector<Item> Scheduler::admissible(const TuneDB& db, u32 env, const Objecti
     lastHalving_.unrecorded = adoption(gapsOf(readings, objective), searchCalls(db, env));
   }
 
-  // The bootstrap races once every contender has been read at the built-in defaults, since which configuration each
-  // family races on is the fastest of those readings at the probe.
-  if (cover.empty() && sweep.empty() && !state.turns.empty()) { return bootstrapItems(state, objective); }
   if (std::vector<Item> gates = gateItems(db, env); !gates.empty()) { return gates; }
   if (!cover.empty()) { return cover; }
   if (!sweep.empty()) { return sweep; }
 
+  // Every family is read before any is searched, since which ones are worth searching is a comparison between them.
+  std::vector<Item> bootstrap = bootstrapReads(state, db, env, progress, objective);
+
   std::ranges::move(reachItems(db, env, sets, objective), std::back_inserter(out));
 
   if (strategy_) {
-    Defaults const defaults = lines(db, env, state);
+    Defaults const defaults = lines(db, env);
 
     SearchContext const context{.device = device,
                                 .strategy = *strategy_,
@@ -827,11 +847,11 @@ std::vector<Item> Scheduler::admissible(const TuneDB& db, u32 env, const Objecti
                                 .progress = progress,
                                 .lines = defaults,
                                 .restarts = restarts_};
-    for (size_t i = 0; i < baselines_.size(); ++i) {
+    auto const offer = [&](size_t i, bool rule) {
       const Baseline& b = baselines_[i];
       EntryKey const key = b.key();
       auto const at = readings.find(key);
-      if (at == readings.end()) { continue; }
+      if (at == readings.end()) { return std::vector<Item>{}; }
 
       GainDist const moves = gains.forEntry(key);
       GainDist const combinations = gains.comboForEntry(key);
@@ -840,9 +860,38 @@ std::vector<Item> Scheduler::admissible(const TuneDB& db, u32 env, const Objecti
         const GainDist* dist = &moves;
         if (offer == Offer::Combo) { dist = &combinations; }
         if (offer == Offer::Restart) { dist = &(jumps ? *jumps : jumps.emplace(gains.restartForEntry(key))); }
-        return expectedSaving(objective.points(), b.kind, b.band, cost, *dist);
+        double const value = expectedSaving(objective.points(), b.kind, b.band, cost, *dist);
+        // By rule, nothing is priced out.
+        return rule ? std::max(value, std::numeric_limits<double>::min()) : value;
       };
-      for (Candidate& c : searches_[i].offers(context, at->second, price)) { out.push_back(itemOf(i, std::move(c))); }
+      std::vector<Item> items;
+      for (Candidate& c : searches_[i].offers(context, at->second, price)) {
+        items.push_back(itemOf(i, std::move(c)));
+        items.back().bootstrap = rule;
+      }
+      return items;
+    };
+
+    // The cheapest family still owed its calls, whose search has something to offer.
+    std::optional<size_t> searched;
+    if (bootstrap.empty()) {
+      std::vector<const FamilyState*> owed;
+      for (const FamilyState& f : state.families) {
+        if (f.phase == FamilyPhase::Owed) { owed.push_back(&f); }
+      }
+      std::ranges::stable_sort(owed, {}, &FamilyState::best);
+      for (const FamilyState* f : owed) {
+        size_t const i = *entryOf(f->family, state.kind);
+        bootstrap = offer(i, true);
+        if (!bootstrap.empty()) {
+          searched = i;
+          break;
+        }
+      }
+    }
+
+    for (size_t i = 0; i < baselines_.size(); ++i) {
+      if (i != searched) { std::ranges::move(offer(i, false), std::back_inserter(out)); }
     }
 
     std::map<EntryKey, size_t> const indexOf = entryIndex();
@@ -882,6 +931,8 @@ std::vector<Item> Scheduler::admissible(const TuneDB& db, u32 env, const Objecti
     }
   }
 
+  if (!bootstrap.empty()) { return bootstrap; }
+
   std::ranges::stable_sort(out, [](const Item& a, const Item& b) { return a.rate() > b.rate(); });
 
   // While the halving is on, its round is all there is: the steps of the contenders still short of their calls.
@@ -919,39 +970,27 @@ Phase Scheduler::phase(const BootstrapState& state, const std::vector<Item>& ran
   auto const any = [&](auto&& pred) { return std::ranges::any_of(ranked, pred); };
   char buf[256];
 
-  if (any([](const Item& i) { return i.kind == ItemKind::Bootstrap; })) {
+  auto const first = std::ranges::find_if(ranked, &Item::bootstrap);
+  if (first != ranked.end()) {
+    if (first->kind == ItemKind::Baseline) { return {"bootstrap: reading each FFT type at its defaults", "bootstrap"}; }
+
     u32 types = 0;
     u32 typesDone = 0;
-    const FamilyState* racing = nullptr;
+    const FamilyState* searched = nullptr;
     for (const FamilyState& f : state.families) {
-      if (f.phase == FamilyPhase::Skipped || f.phase == FamilyPhase::Held || f.phase == FamilyPhase::Unread) {
-        continue;
-      }
+      if (f.phase != FamilyPhase::Owed && f.phase != FamilyPhase::Served) { continue; }
       ++types;
-      typesDone += f.phase == FamilyPhase::Done;
-      if (f.phase == FamilyPhase::Racing && !racing) { racing = &f; }
+      typesDone += f.phase == FamilyPhase::Served;
+      if (entryOf(f.family, state.kind) == first->index) { searched = &f; }
     }
-    if (!racing) { return {"bootstrap: reading each FFT type at its defaults", "bootstrap"}; }
+    if (!searched) { return {"bootstrap", "bootstrap"}; }
 
-    std::string const name = std::string{typeName(racing->family.type)} + " " + racing->family.fft.spec();
-    std::set<std::string> groups;
-    for (Group const g : bootstrap_.groupsOf(racing->family.fft, racing->decided)) { groups.insert(toString(g)); }
-    std::set<std::string> raced;
-    for (const Decision& d : racing->decisions) {
-      if (std::ranges::find_if(allGroups(), [&](Group g) { return d.stage == toString(g); }) != allGroups().end()) {
-        raced.insert(d.stage);
-      }
-    }
-    groups.insert(raced.begin(), raced.end());
-    bool const inGroup = groups.contains(racing->stage);
-    u32 const at = u32(raced.size()) + (inGroup && !raced.contains(racing->stage));
-    std::string const where = inGroup ? "group " + std::to_string(at) + " of " + std::to_string(groups.size()) + " (" +
-        racing->stage + "), then its combinations"
-                                      : "the combinations (" + racing->stage + ")";
-    snprintf(buf, sizeof(buf), "bootstrap: %s, %s; type %u of %u", name.c_str(), where.c_str(), typesDone + 1, types);
-    std::string const brief = inGroup ? "bootstrap " + std::to_string(at) + "/" + std::to_string(groups.size())
-                                      : std::string{"bootstrap combinations"};
-    return {buf, brief};
+    std::string const name = std::string{typeName(searched->family.type)} + " " + baselines_[first->index].label();
+    snprintf(buf, sizeof(buf), "bootstrap: %s, %" PRIu64 " of %" PRIu64 " calls of search; type %u of %u", name.c_str(),
+             std::min(searched->calls, state.budget), state.budget, typesDone + 1, types);
+    std::string const text = buf;
+    snprintf(buf, sizeof(buf), "bootstrap %" PRIu64 "/%" PRIu64, std::min(searched->calls, state.budget), state.budget);
+    return {text, buf};
   }
 
   if (any([](const Item& i) { return i.kind == ItemKind::Gate; })) {
@@ -993,7 +1032,7 @@ Phase Scheduler::phase(const BootstrapState& state, const std::vector<Item>& ran
 }
 
 bool byRule(const Item& item) {
-  return item.kind == ItemKind::Bootstrap || item.kind == ItemKind::Gate || item.cover || item.sweep || item.halving;
+  return item.bootstrap || item.kind == ItemKind::Gate || item.cover || item.sweep || item.halving;
 }
 
 bool worthRunning(const Item& item, double floor) {
@@ -1007,11 +1046,6 @@ std::optional<Item> Scheduler::pick(const std::vector<Item>& ranked, double floo
   if (top == ranked.end()) { return {}; }
   if (keyOf(*top) != last_) { return *top; }
 
-  if (top->kind == ItemKind::Bootstrap) {
-    auto const other = std::ranges::find_if(ranked, [&](const Item& i) { return keyOf(i) != last_; });
-    return other != ranked.end() ? *other : *top;
-  }
-
   for (auto it = std::next(top); it != ranked.end(); ++it) {
     if (worth(*it) && it->rate() >= (1 - INTERLEAVE_EPS) * top->rate()) { return *it; }
   }
@@ -1023,12 +1057,6 @@ void Scheduler::ran(const Item& item, double seconds, double usPerIt, bool recor
   if (item.kind == ItemKind::Anchor) { return; }
 
   if (usPerIt > 0) { clock_.observe(seconds, usPerIt, item.fresh); }
-
-  if (item.kind == ItemKind::Bootstrap) {
-    built_.insert(last_);
-    if (!recorded || usPerIt <= 0) { ++unrecorded_[last_]; }
-    return;
-  }
 
   if (item.kind == ItemKind::Gate || item.kind == ItemKind::Reach) {
     ++gateAttempts_[last_];
@@ -1045,7 +1073,6 @@ void Scheduler::ran(const Item& item, double seconds, double usPerIt, bool recor
     return;
   case ItemKind::Baseline: ++attempts_[item.index]; return;
   case ItemKind::Anchor:
-  case ItemKind::Bootstrap:
   case ItemKind::Gate:
   case ItemKind::Reach: return;
   }
@@ -1062,38 +1089,45 @@ std::string linesText(const Defaults& lines) {
 
 namespace {
 
-// Says once what the bootstrap has come to: each family it will not tune and why, each race as it is decided, and the
-// lines once every family is settled.
+// Says once what the bootstrap has come to: each family it will not search and why, each family as its search begins
+// and as it has had its calls, and the lines once every family is settled.
 class BootstrapLog {
 public:
-  void report(const BootstrapState& state, bool enabled) {
+  void report(const BootstrapState& state, bool enabled, const std::string& lines) {
     for (const FamilyState& f : state.families) {
-      std::string const name = std::string{typeName(f.family.type)} + " " + f.family.fft.spec();
+      std::string const name = std::string{typeName(f.family.type)} + " " + f.family.fft.spec() +
+        (state.kind == TestKind::PRP ? "" : std::string{" "} + toString(state.kind));
+      if (!said_.insert(name + " " + toString(f.phase)).second) { continue; }
 
-      if ((f.phase == FamilyPhase::Skipped || f.phase == FamilyPhase::Held) && said_.insert(name).second) {
+      switch (f.phase) {
+      case FamilyPhase::Skipped:
         if (!enabled) {
-          log("tune: bootstrap: %s is not tuned, bootstrapping being turned off\n", name.c_str());
-        } else if (f.phase == FamilyPhase::Held) {
-          log("tune: bootstrap: %s cannot be measured at the built-in defaults, so it is not tuned\n", name.c_str());
-        } else {
-          log("tune: bootstrap: %s is not tuned: at %.3f us/it it would take more than a %.0f%% gain to bring it level"
-              " with the cheapest family\n",
-              name.c_str(), f.reading, 100 * RACE_GAIN);
+          log("tune: bootstrap: %s is not searched first, bootstrapping being turned off\n", name.c_str());
+        } else if (f.reading) {
+          log("tune: bootstrap: %s is not searched first: at %.3f us/it it would take more than a %.0f%% gain to bring "
+              "it level with the cheapest type\n",
+              name.c_str(), f.best, 100 * BOOTSTRAP_GAIN);
         }
-      }
-
-      for (const Decision& d : f.decisions) {
-        std::string const key = name + " " + d.stage + " " + std::to_string(d.round);
-        if (!said_.insert(key).second) { continue; }
-        std::string const round = d.round ? " (round " + std::to_string(d.round + 1) + ")" : "";
-        log("tune: bootstrap: %s %s%s decided %s among %u: %s, %.3f +- %.3f us/it\n", name.c_str(), d.stage.c_str(),
-            round.c_str(), toString(d.how), d.candidates, d.winner.c_str(), d.cost, d.se);
+        break;
+      case FamilyPhase::Held:
+        log("tune: bootstrap: %s cannot be measured at the built-in defaults, so it is not searched first\n",
+            name.c_str());
+        break;
+      case FamilyPhase::Owed:
+        log("tune: bootstrap: %s is searched first, for %" PRIu64 " calls, from %.3f us/it at the built-in defaults\n",
+            name.c_str(), state.budget, f.reading);
+        break;
+      case FamilyPhase::Served:
+        log("tune: bootstrap: %s has had its %" PRIu64 " calls of search, and is at %.3f us/it\n", name.c_str(),
+            state.budget, f.best);
+        break;
+      case FamilyPhase::Unread: break;
       }
     }
 
     if (enabled && state.complete && !complete_) {
       complete_ = true;
-      log("tune: bootstrap complete; the defaults are %s\n", linesText(state.defaults).c_str());
+      log("tune: bootstrap complete; the default lines are %s\n", lines.c_str());
     }
   }
 
@@ -1172,7 +1206,7 @@ QueueReport runQueue(Scheduler& scheduler, TuneDB& db, u32 env, Bench& bench, co
   BootstrapState state = scheduler.bootstrapState(db, env);
   Objective objective{db, env, scheduler.scope()};
   Objective valuing{db, env, scheduler.scope(), Gating::Assumed};
-  Defaults lines = scheduler.lines(db, env, state);
+  Defaults lines = scheduler.lines(db, env);
   std::string said = linesText(lines);
   out.startT = objective.T();
   publish(objective, lines);
@@ -1184,21 +1218,16 @@ QueueReport runQueue(Scheduler& scheduler, TuneDB& db, u32 env, Bench& bench, co
     state = scheduler.bootstrapState(db, env);
     objective = Objective{db, env, scheduler.scope()};
     valuing = Objective{db, env, scheduler.scope(), Gating::Assumed};
-    lines = scheduler.lines(db, env, state);
-    bootstrapLog.report(state, bootstrapping);
-
-    // The bootstrap's own lines are said as it completes; after that they move only with what is published.
-    if (std::string text = linesText(lines); text != said) {
-      if (state.complete && text != linesText(state.defaults)) {
-        log("tune: the default lines are now %s, from the best sets published\n", text.c_str());
-      }
-      said = std::move(text);
-    }
+    lines = scheduler.lines(db, env);
+    std::string text = linesText(lines);
+    if (text != said) { log("tune: the default lines are now %s, from the best sets published\n", text.c_str()); }
+    bootstrapLog.report(state, bootstrapping, text);
+    said = std::move(text);
   };
 
   while (!bench.stopped()) {
-    // Once the defaults sweep is done, which configuration each family races on is recorded, so that it stays put as
-    // the races add readings.
+    // Once the defaults sweep is done, which configuration each family is searched on is recorded, so that it stays put
+    // as its search adds readings.
     if (bootstrapping && !bench.anchorDue() && !scheduler.bootstrap().chosen(db, env) &&
         scheduler.swept(db, env, valuing)) {
       std::string names;
@@ -1257,13 +1286,9 @@ QueueReport runQueue(Scheduler& scheduler, TuneDB& db, u32 env, Bench& bench, co
       continue;
     }
 
-    const Baseline* const baseline = item->kind != ItemKind::Bootstrap && item->kind != ItemKind::Reach
-      ? &scheduler.baselines()[item->index]
-      : nullptr;
-    const FFTConfig& fft = item->fft ? *item->fft
-      : baseline                     ? baseline->fft
-                                     : scheduler.bootstrap().families()[item->index].fft;
-    TestKind const kind = baseline ? baseline->kind : item->kind == ItemKind::Bootstrap ? state.kind : TestKind::PRP;
+    const Baseline* const baseline = item->kind != ItemKind::Reach ? &scheduler.baselines()[item->index] : nullptr;
+    const FFTConfig& fft = item->fft ? *item->fft : baseline->fft;
+    TestKind const kind = baseline ? baseline->kind : TestKind::PRP;
     bool const reads = item->kind == ItemKind::Gate || item->kind == ItemKind::Reach;
     bool const probing = baseline && item->kind != ItemKind::Baseline && !reads;
     std::string const label = !baseline ? item->what
@@ -1281,7 +1306,7 @@ QueueReport runQueue(Scheduler& scheduler, TuneDB& db, u32 env, Bench& bench, co
       bench.declareCombo(fft, kind, item->exponent, item->options, item->tier);
     }
     // A refine is the next call of a row that is already concluded, not a resumption of one that was interrupted.
-    bool const counted = item->kind == ItemKind::Bootstrap || item->kind == ItemKind::Refine;
+    bool const counted = item->kind == ItemKind::Refine;
     std::string const call = counted ? " (call " + std::to_string(item->calls + 1) + ")"
       : item->calls                  ? " (resumed at call " + std::to_string(item->calls + 1) + ")"
                                      : "";
@@ -1356,6 +1381,7 @@ QueueReport runQueue(Scheduler& scheduler, TuneDB& db, u32 env, Bench& bench, co
       watch->finished({.n = out.items,
                        .kind = item->kind,
                        .label = label,
+                       .bootstrap = item->bootstrap,
                        .exponent = item->exponent,
                        .call = reads ? "" : call,
                        .completed = result.completed,

@@ -119,7 +119,7 @@ TuneStatus statusOf(const Scheduler& scheduler, TuneDB& db, u32 env, double stop
 
   TuneStatus::Accuracy& a = out.accuracy;
   if (std::optional<SelectionFile> const file =
-        emit(db, scheduler.lines(db, env, state), Provenance{.ts = 0, .db = {}, .env = env})) {
+        emit(db, scheduler.lines(db, env), Provenance{.ts = 0, .db = {}, .env = env})) {
     for (const SelectionEntry& e : file->entries) {
       ++a.entries;
       a.exact += e.evidence == Evidence::NotApplicable;

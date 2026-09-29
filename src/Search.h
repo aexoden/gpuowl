@@ -95,8 +95,8 @@ inline constexpr u32 RESTART_REPEATS = 256;
 inline constexpr u32 RESTART_PERIOD = 32;
 
 // How far one entry's restart sequence has been read.  Only what can never become runnable again is passed -- a draw a
-// row answers, a hold, a draw given up on, one the lines shadow, which once the bootstrap is complete they keep doing
-// -- so the cursor never goes back, and a long stretch of such draws is read once rather than on every re-score.
+// row answers, a hold, a draw given up on -- so the cursor never goes back, and a long stretch of such draws is read
+// once rather than on every re-score.
 struct RestartScan {
   u32 next = 0;
   u32 repeats = 0;

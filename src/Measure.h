@@ -155,7 +155,7 @@ public:
   // Records that the next call is a point of a combination of tier `tier`.
   void declareCombo(const FFTConfig& fft, TestKind kind, u64 exponent, const UseConfig& options, u32 tier);
 
-  // Records that the bootstrap family of `fft`'s type races on `fft` at `probe` (a `boot` row).
+  // Records that the bootstrap family of `fft`'s type is searched on `fft` at `probe` (a `boot` row).
   void declareBootstrap(const FFTConfig& fft, u64 probe);
 
   // Records a round of the halving as `round` has it, in this session and at this time (a `round` row).

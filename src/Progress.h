@@ -105,6 +105,9 @@ struct Finished {
   u32 n = 0;
   ItemKind kind = ItemKind::Baseline;
   std::string label;
+
+  // Whether it was a step of the bootstrap.
+  bool bootstrap = false;
   u64 exponent = 0;
 
   // " (call <n>)" or " (resumed at call <n>)", as the log writes it after the exponent; empty for a reading.

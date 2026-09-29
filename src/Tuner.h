@@ -106,10 +106,10 @@ struct TuneCommand {
   // `accuracy` only: the groups whose keys are read; empty for every group.
   std::vector<Group> groups;
 
-  // `scope`, `run` and `emit`: the scope the bootstrap's races were run at the probe of.
+  // `scope`, `run` and `emit`: the scope whose probe the default lines are chosen at.
   ScopeArgs scope;
 
-  // `run` only: false to leave every family at the built-in defaults rather than racing its options first.
+  // `run` only: false to search no family's fastest FFT ahead of the rest.
   bool bootstrap = true;
 
   // `run` only: what counts as one step from an entry's best option set.
