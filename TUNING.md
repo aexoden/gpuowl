@@ -72,11 +72,13 @@ A run goes through these stages, though it interleaves them and you do not need 
    option sets an FFT measures whether or not steps are left. Whenever the default options change, an FFT tries them
    again, both as they are and laid over the best options it has found itself. The search is first spread over the
    contenders, the FFTs within 10% of the fastest, since which of them tunes best cannot be told from their defaults:
-   each gets an equal share in rounds, the slower half dropping out after each round and the share doubling, until
-   one is left (see `contenders=`). An FFT that comes within 10% later is given rounds of its own against the one
-   left. After that it goes wherever the next step is expected to gain most. FFTs further off the pace are timed at
-   their defaults as they become worth it. The sweep, the bootstrap and the search take turns, a measurement at a
-   time, so none of them waits for the others to finish.
+   once the sweep has read them all at the probe exponent, each gets an equal share in rounds, the slower half
+   dropping out after each round and the share doubling, until one is left (see `contenders=`). The search then goes
+   wherever the next step is expected to gain most, until the FFT left has had as many measurements again as the
+   rounds gave out; then the contenders as they stand are halved again, those dropped earlier among them, with every
+   share twice as long as last time. So an FFT whose gain lies deep in its search is come back to, for longer each
+   time. FFTs further off the pace are timed at their defaults as they become worth it. The sweep, the bootstrap and
+   the search take turns, a measurement at a time, so none of them waits for the others to finish.
 7. **Accuracy checks.** Read the rounding error of any published configuration whose options change it.
 
 **The default options follow the search.** Once FFTs are published, each FFT type's default options are those of its
@@ -289,13 +291,16 @@ fastest one somewhere in the workload, one variant of each shape before a second
 looks at several shapes rather than the variants of one. Each is searched for `roundCalls` calls, then the slower half
 drops out, the rest get twice as many calls, and so on until one is left. An FFT stays in a round until it has had its
 calls, however far ahead another pulls meanwhile, and a round is recorded in the database, so an interrupted run picks
-it up where it stopped. FFTs that come within 10% later, as the workload changes or tuning improves them, and that
-were never in a round, are halved the same way together with the FFT the last rounds left. These rounds run by rule,
-whatever `stop=` says, so a short run still looks at more than one shape. `0` ranks the search by expected gain from the start, which
-tends to spend everything on whichever FFT was fastest before tuning. Default `16`.
+it up where it stopped. The FFT left is then searched by expected gain for as many calls as the rounds gave out,
+after which the contenders as they stand then, including those that dropped out and those that have come within 10%
+since, are halved again, each round twice as long as the matching round of the last halving. The first halving runs
+by rule, whatever `stop=` says, so a short run still looks at more than one shape; the later ones go first but are
+held to `stop=`. `0` ranks the search by expected gain from the start, which tends to spend everything on whichever
+FFT was fastest before tuning. Default `16`.
 
-**`roundCalls=<N>`**: how many calls each contender is searched for in the first round; each later round doubles it.
-Only calls made during a round count towards it. Default `16`, so 16 contenders take about 1000 calls in all.
+**`roundCalls=<N>`**: how many calls each contender is searched for in the first round of the first halving; each
+later round doubles it, and so does each later halving. Only calls made during a round count towards it. Default
+`16`, so 16 contenders take about 1000 calls in the first halving.
 
 ### Output
 

@@ -1722,7 +1722,7 @@ TEST(a_database_with_no_rounds_takes_up_the_halving_where_the_calls_left_it) {
   CHECK(std::get<3>(halvingAfter(f, scheduler)) == std::vector<std::string>{"512:15:512:101"});
 }
 
-TEST(an_entry_that_comes_within_the_margin_later_is_halved_with_the_one_left) {
+TEST(the_one_left_leads_for_what_its_halving_gave_out_then_every_contender_is_halved_again_for_longer) {
   // 110 is 17% behind at its defaults, and the first halving is over before a step of its search is found to put it
   // within the margin.
   Fixture f;
@@ -1740,12 +1740,45 @@ TEST(an_entry_that_comes_within_the_margin_later_is_halved_with_the_one_left) {
   (void)halvingAfter(f, scheduler);
   searched(f, "512:15:512:101", 4);
   searched(f, "512:15:512:102", 4);
-  CHECK(!std::get<0>(halvingAfter(f, scheduler)));
 
-  // Tuned to within the margin, it and the one left are halved.
+  // 101 is left, and leads for the 8 calls the round gave out, the search ranked by value meanwhile.
+  CHECK(halvingAfter(f, scheduler) == std::tuple(false, 0u, u64(8), std::vector<std::string>{"512:15:512:101"}));
+  CHECK(scheduler.lastHalving().leading);
   concludedAt(f, "512:15:512:110", {{"INPLACE", "1"}}, 1470);
+  searched(f, "512:15:512:101", 7);
+  CHECK(halvingAfter(f, scheduler) == std::tuple(false, 0u, u64(8), std::vector<std::string>{"512:15:512:101"}));
+
+  // Then every contender is halved again, 102 which the first left behind and 110 which has come within the margin
+  // among them, for twice as long; and the steps of this halving are valued, though they go first.
+  searched(f, "512:15:512:101", 1);
   CHECK(halvingAfter(f, scheduler) ==
-        std::tuple(true, 0u, u64(4), std::vector<std::string>{"512:15:512:101", "512:15:512:110"}));
+        std::tuple(true, 0u, u64(8), std::vector<std::string>{"512:15:512:101", "512:15:512:102", "512:15:512:110"}));
+  CHECK_EQ(scheduler.lastHalving().halving, 2u);
+  std::vector<Item> const items = scheduler.admissible(f.db, f.env, Objective{f.db, f.env, scope(), Gating::Assumed});
+  CHECK(!items.empty() && items.front().halving && items.front().again && !byRule(items.front()));
+}
+
+TEST(the_first_halving_waits_for_the_defaults_sweep_at_the_probe) {
+  // 101 and 102 are read, 110 is owed its reading at the defaults.  The halving does not begin without it.
+  Fixture f;
+  concludedAt(f, "512:15:512:101", {}, 1450);
+  concludedAt(f, "512:15:512:102", {}, 1460);
+  Scheduler const scheduler{scope(),
+                            only({"512:15:512:101", "512:15:512:102", "512:15:512:110"}),
+                            1000,
+                            {},
+                            Strategy{.kind = Strategy::Kind::Single},
+                            false,
+                            false,
+                            Halving{.contenders = 4, .roundCalls = 4}};
+  CHECK(!std::get<0>(halvingAfter(f, scheduler)));
+  CHECK(f.db.rounds().empty() ||
+        std::ranges::all_of(f.db.rounds(), [](const RoundRow& r) { return r.members.empty(); }));
+
+  concludedAt(f, "512:15:512:110", {}, 1465);
+  CHECK(halvingAfter(f, scheduler) ==
+        std::tuple(true, 0u, u64(4), std::vector<std::string>{"512:15:512:101", "512:15:512:102", "512:15:512:110"}));
+  CHECK_EQ(scheduler.lastHalving().halving, 1u);
 }
 
 TEST(the_search_is_spread_over_the_contenders_before_it_settles_on_one) {
