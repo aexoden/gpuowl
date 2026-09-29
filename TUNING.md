@@ -60,7 +60,9 @@ A run goes through these stages, though it interleaves them and you do not need 
    anything else, so a short run still covers the whole workload.
 4. **Defaults sweep.** Time every FFT within 10% of the fastest one somewhere in the workload at PRPLL's built-in
    defaults, those at the probe exponent first. This is the untuned map: what each of them costs before any option is
-   changed, which is what every later gain is a gain over, and what the dashboard compares against.
+   changed, which is what every later gain is a gain over, and what the dashboard compares against. An FFT not timed
+   yet that is expected to be faster than anything measured is timed first, and the FFTs it may put out of reach wait
+   on it: if it is as fast as expected they are never timed, and if not they join the sweep, whose count then grows.
 5. **Bootstrap.** Once the sweep has read the FFTs at the probe exponent, for each FFT type (FP64, the NTTs, the
    hybrids), search the type's fastest FFT there ahead of the rest of its type: `4 × roundCalls` measurements each (64
    by default), by the same search every FFT gets. What it finds is published like any other result, and so becomes

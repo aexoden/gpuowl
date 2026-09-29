@@ -505,7 +505,9 @@ std::vector<Item> Scheduler::sweepItems(const TuneDB& db, u32 env, const Progres
 
   // What each point is held to: what production is measured to run there, or the prior of an entry not read yet that
   // serves it, if cheaper -- the cheapest are read first, and each reading replaces its prior.  Not the prior of one
-  // that cannot be read, which nothing would ever replace, nor a reading production does not run there.
+  // that cannot be read, which nothing would ever replace, nor a reading production does not run there.  What a prior
+  // holds back waits on an entry the sweep still owes, and would be ranked after it anyway: the sweep never reads more,
+  // or finishes later, than against measured costs alone, and a prior that proves right saves what it held back.
   std::vector<std::optional<double>> fastest = measuredAt(objective);
   for (size_t p = 0; p < objective.points().size(); ++p) {
     const ObjectivePoint& point = objective.points()[p];
