@@ -641,7 +641,7 @@ SearchSize searchSize(const Env& env, const FFTConfig& fft, const UseConfig& bes
   return out;
 }
 
-bool answeredBy(const Env& env, const FFTConfig& fft, const ProbeList& list, const Probe& probe, const UseConfig& row) {
+bool sameStep(const Env& env, const FFTConfig& fft, const ProbeList& list, const Probe& probe, const UseConfig& row) {
   for (auto const& [index, position] : probe.moves) {
     const Axis& axis = list.axes[index];
     if (positionOf(env, fft, row, axis) != axis.values[position]) { return false; }

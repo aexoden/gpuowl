@@ -181,8 +181,6 @@ void Session::end() {
 
 std::string Session::held(const FFTConfig& fft, TestKind kind, u64 exponent, const UseConfig& options) const {
   std::string const spec = fft.spec();
-  if (db_.isNogo(envId_, spec, options)) { return "one of its options is recorded as unbuildable on this FFT"; }
-
   u32 const cfg = db_.findCfgId(options);
   if (cfg && db_.diedOn(envId_, cfg, kind, spec, exponent)) {
     return "an earlier generation was holding it when the device went away";
@@ -222,15 +220,15 @@ void Session::lost(const FFTConfig& fft, TestKind kind, u64 exponent, const UseC
 }
 
 void Session::noteNogo(const FFTConfig& fft, const UseConfig& options) {
-  // Sound only when one thing moved. Two keys changed together and the failure is a failure of the pair; blaming
-  // either would exclude configurations that build perfectly well.
+  // Only when one thing moved: two keys changed together and the failure is a failure of the pair, which says nothing
+  // of either.
   if (varying_.size() != 1) { return; }
   auto const it = options.find(varying_.front());
   if (it == options.end()) { return; }
 
   (void)db_.add(NogoRow{.sess = session_, .fft = fft.spec(), .key = it->first, .val = it->second, .ts = now()});
-  log("measure: %s: %s=%s will not build here; it is excluded on this FFT whatever else is set\n", fft.spec().c_str(),
-      it->first.c_str(), it->second.c_str());
+  log("measure: %s: %s=%s did not build here; what else sets it on this FFT is tried after the rest\n",
+      fft.spec().c_str(), it->first.c_str(), it->second.c_str());
 }
 
 Status Session::failed(const FFTConfig& fft, TestKind kind, u64 exponent, const UseConfig& options,

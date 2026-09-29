@@ -673,16 +673,16 @@ TEST(this_processs_own_attempt_is_in_flight_rather_than_fatal) {
   CHECK(a.db.diedOn(1, cfg, TestKind::PRP, "512:15:512:212", 143'400'073));
 }
 
-TEST(a_key_that_will_not_build_is_excluded_whatever_else_is_set) {
+TEST(a_value_a_build_failed_with_is_remembered_for_its_fft_whatever_else_is_set) {
   Attached a{"prpll-test-nogo.txt"};
   CHECK(a.db.add(
     NogoRow{.sess = a.sess, .fft = "512:15:512:212", .key = "SHUFL_BYTES_W", .val = "16", .ts = 1'753'471'260}));
 
   TuneDB const next = a.reread();
-  CHECK(next.isNogo(1, "512:15:512:212", UseConfig{{"PAD", "256"}, {"SHUFL_BYTES_W", "16"}}));
-  CHECK(!next.isNogo(1, "512:15:512:212", UseConfig{{"SHUFL_BYTES_W", "8"}}));
+  CHECK(next.failedWith(1, "512:15:512:212", UseConfig{{"PAD", "256"}, {"SHUFL_BYTES_W", "16"}}));
+  CHECK(!next.failedWith(1, "512:15:512:212", UseConfig{{"SHUFL_BYTES_W", "8"}}));
   // One FFT only: the budget that will not fit here may fit at another shape.
-  CHECK(!next.isNogo(1, "256:2:256:212", UseConfig{{"SHUFL_BYTES_W", "16"}}));
+  CHECK(!next.failedWith(1, "256:2:256:212", UseConfig{{"SHUFL_BYTES_W", "16"}}));
 }
 
 TEST(ids_are_allocated_from_what_was_read) {

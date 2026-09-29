@@ -247,7 +247,7 @@ TEST(what_a_row_answers_or_failed_is_not_offered_and_a_started_step_is_resumed_w
   CHECK_EQ(after.size(), before.size() - 2);
 }
 
-TEST(a_step_answered_from_an_earlier_best_set_is_offered_again_only_where_it_depends_on_what_moved) {
+TEST(a_step_taken_from_an_earlier_best_set_is_offered_again_after_every_step_never_taken) {
   Rows rows;
   rows.add({}, 1700);
   Asking const ask{.strategy = {.kind = Strategy::Kind::Single}};
@@ -259,16 +259,92 @@ TEST(a_step_answered_from_an_earlier_best_set_is_offered_again_only_where_it_dep
   rows.add({{"ZEROHACK_W", "0"}}, 1720);
   rows.add({{"WMUL", "1"}}, 1600);
 
-  // LDSPAD_W depends on WMUL, ZEROHACK_W on nothing that moved.
+  // LDSPAD_W depends on WMUL, so at WMUL=1 it is a step never taken; ZEROHACK_W depends on nothing that moved, so its
+  // step was taken, but from the defaults, which says what it did there and nothing certain of what it does here.
   std::vector<Candidate> const next = ask(search, rows,
                                           {{.config = {{"WMUL", "1"}}, .cost = 1600},
                                            {.config = {}, .cost = 1700},
                                            {.config = {{"LDSPAD_W", "0"}}, .cost = 1720},
                                            {.config = {{"ZEROHACK_W", "0"}}, .cost = 1720}},
                                           flat);
-  CHECK(find(next, "LDSPAD_W=0,WMUL=1"));
-  CHECK(!find(next, "WMUL=1,ZEROHACK_W=0"));
+  const Candidate* const fresh = find(next, "LDSPAD_W=0,WMUL=1");
+  const Candidate* const again = find(next, "WMUL=1,ZEROHACK_W=0");
+  CHECK(fresh && again);
   CHECK(std::ranges::all_of(next, [](const Candidate& c) { return c.cost == 1600; }));
+  if (!again) { return; }
+  CHECK_EQ(again, &next.back());
+
+  // Priced as a jump is, the steps never taken as steps are.
+  auto const byKind = [](Offer kind, double) { return kind == Offer::Restart ? 0.25 : 1.0; };
+  std::vector<Candidate> const priced = ask(search, rows,
+                                            {{.config = {{"WMUL", "1"}}, .cost = 1600},
+                                             {.config = {}, .cost = 1700},
+                                             {.config = {{"LDSPAD_W", "0"}}, .cost = 1720},
+                                             {.config = {{"ZEROHACK_W", "0"}}, .cost = 1720}},
+                                            byKind);
+  const Candidate* const cheap = find(priced, "WMUL=1,ZEROHACK_W=0");
+  const Candidate* const full = find(priced, "LDSPAD_W=0,WMUL=1");
+  CHECK(cheap && cheap->value == 0.25 && cheap->kind == Offer::Probe);
+  CHECK(full && full->value == 1.0);
+
+  // Only a row of that very configuration answers it.
+  rows.add({{"WMUL", "1"}, {"ZEROHACK_W", "0"}}, 1610);
+  CHECK(!find(ask(search, rows,
+                  {{.config = {{"WMUL", "1"}}, .cost = 1600},
+                   {.config = {}, .cost = 1700},
+                   {.config = {{"LDSPAD_W", "0"}}, .cost = 1720},
+                   {.config = {{"ZEROHACK_W", "0"}}, .cost = 1720},
+                   {.config = {{"WMUL", "1"}, {"ZEROHACK_W", "0"}}, .cost = 1610}},
+                  flat),
+              "WMUL=1,ZEROHACK_W=0"));
+}
+
+TEST(a_value_a_build_failed_with_is_offered_after_everything_else_and_holds_back_no_combination) {
+  Rows rows;
+  rows.add({}, 1700);
+  Asking const ask{.strategy = {.kind = Strategy::Kind::Single}};
+  EntrySearch search{entry()};
+  std::vector<Reading> const readings{{.config = {}, .cost = 1700}};
+
+  std::vector<Candidate> const before = ask(search, rows, readings, flat);
+  CHECK(find(before, "WMUL=1") && find(before, "ZEROHACK_W=0"));
+  CHECK(rows.db.add(NogoRow{.sess = rows.sess, .fft = SPEC, .key = "WMUL", .val = "1", .ts = 1}));
+
+  // Still offered, since a build that failed beside other settings is no verdict on this one: last.
+  std::vector<Candidate> const after = ask(search, rows, readings, flat);
+  CHECK_EQ(after.size(), before.size());
+  CHECK(!after.empty() && configText(after.back().options) == "WMUL=1");
+
+  // The configuration that failed is answered by its own row, whatever the pin says.
+  rows.add({{"WMUL", "1"}}, 0, 1, Status::NoCompile);
+  CHECK(!find(ask(search, rows, readings, flat), "WMUL=1"));
+
+  // Under hybrid, a step that sets it does not keep the combinations of its branch waiting.
+  Rows hybrid;
+  hybrid.add({}, 1700);
+  hybrid.add({{"TAIL_KERNELS", "3"}}, 1710);
+  hybrid.add({{"ZEROHACK_H", "0"}}, 1720);
+  std::vector<Reading> const seeds{{.config = {}, .cost = 1700},
+                                   {.config = {{"TAIL_KERNELS", "3"}}, .cost = 1710},
+                                   {.config = {{"ZEROHACK_H", "0"}}, .cost = 1720}};
+  std::vector<Probe> const steps = probesOf(nvidia(), FFTConfig{SPEC}, {}, Strategy{}).probes;
+  const Probe* pin = nullptr;
+  for (const Probe& p : steps) {
+    if (p.tier != 1 || p.config.empty()) { continue; }
+    if (!pin && !p.key.empty() && p.config.size() == 1) {
+      pin = &p;
+      continue;
+    }
+    hybrid.add(p.config, 1800);
+  }
+  CHECK(pin != nullptr);
+  if (!pin) { return; }
+  CHECK(hybrid.db.add(
+    NogoRow{.sess = hybrid.sess, .fft = SPEC, .key = pin->key, .val = pin->config.begin()->second, .ts = 1}));
+  EntrySearch combined{entry()};
+  std::vector<Candidate> const offers = Asking{.strategy = Strategy{}}(combined, hybrid, seeds, flat);
+  CHECK(countOf(offers, Offer::Combo) > 0);
+  CHECK(!offers.empty() && offers.back().options == pin->config);
 }
 
 TEST(a_configuration_tried_too_often_is_no_longer_offered_by_that_search) {
@@ -391,20 +467,21 @@ TEST(a_restart_is_due_ahead_of_every_step_each_time_the_entry_has_measured_anoth
   CHECK(!next.empty() && next.front().kind == Offer::Restart && next.front().draw == 1);
 }
 
-TEST(a_restart_draw_answers_only_itself) {
+TEST(a_restart_draw_answers_only_itself_and_says_nothing_of_its_steps) {
   Rows rows;
   rows.add({}, 1700);
   Baseline const b = entry();
   Asking const ask{.strategy = {.kind = Strategy::Kind::Single}};
   std::vector<Reading> const readings{{.config = {}, .cost = 1700}};
 
-  // A draw that moves WMUL among much else, measured and dear.
+  // A row that moves WMUL among much else, measured and dear: the step WMUL=1 taken elsewhere, so offered last.
   UseConfig const drawn = canonicalConfig(nvidia(), b.fft, {{"WMUL", "1"}, {"ZEROHACK_W", "0"}, {"TAIL_KERNELS", "3"}});
   rows.add(drawn, 1900);
   EntrySearch undeclared{b};
-  CHECK(!find(ask(undeclared, rows, readings, flat), "WMUL=1"));
+  std::vector<Candidate> const elsewhere = ask(undeclared, rows, readings, flat);
+  CHECK(!elsewhere.empty() && configText(elsewhere.back().options) == "WMUL=1");
 
-  // Declared as a draw, it says nothing of what WMUL=1 alone does, and the step is offered; the point it is stays
+  // Declared as a draw, it says nothing of what WMUL=1 alone does, and the step keeps its place; the point it is stays
   // answered.
   CHECK(rows.db.add(JumpRow{.sess = rows.sess,
                             .fft = SPEC,
@@ -415,6 +492,6 @@ TEST(a_restart_draw_answers_only_itself) {
                             .ts = 0}));
   EntrySearch declared{b};
   std::vector<Candidate> const offers = ask(declared, rows, readings, flat);
-  CHECK(find(offers, "WMUL=1"));
+  CHECK(find(offers, "WMUL=1") && configText(offers.back().options) != "WMUL=1");
   CHECK(!find(offers, configText(drawn)));
 }

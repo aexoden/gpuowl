@@ -1,15 +1,15 @@
 // Copyright (C) Jason Lynch
 
 // The per-entry option search: the configurations one step from an entry's best known option set, under the search
-// strategy the user chose, and which of them the database already answers.
+// strategy the user chose, and which of them the database has measured the same step of elsewhere.
 //
 // A step moves one or more axes.  An axis is one key, or for LOADS and STORES one access class -- one digit of one of
 // them, or of both where the class chooses its load and store together -- so a probe never moves the packed integer
 // as a whole, and never offers a mode the compiler would quietly build as another.
 //
 // Pure: the probe list is a function of the option table, the best set and, for the combo tiers, the entry's readings;
-// whether a probe is answered is a function of the rows.  Nothing is remembered between items, so a resumed run offers
-// exactly what an uninterrupted one would.
+// whether a step was measured elsewhere is a function of the rows.  Nothing is remembered between items, so a resumed
+// run offers exactly what an uninterrupted one would.
 
 #pragma once
 
@@ -264,12 +264,12 @@ struct SearchSize {
 [[nodiscard]] SearchSize searchSize(const Env& env, const FFTConfig& fft, const UseConfig& best,
                                     const Strategy& strategy);
 
-// Whether a row measured under `row` already answers `probe`: it has every axis the probe moves where the probe puts
-// it, and agrees with the probe on every key those axes' keys depend on.  What else the row ran with does not matter,
-// so a probe is offered again only once something it depends on has moved -- which is what lets the search re-offer a
-// dependent key without re-measuring every key whenever any one of them wins.
-[[nodiscard]] bool answeredBy(const Env& env, const FFTConfig& fft, const ProbeList& list, const Probe& probe,
-                              const UseConfig& row);
+// Whether a row measured under `row` took the step `probe` takes, against another background: it has every axis the
+// probe moves where the probe puts it, and agrees with the probe on every key those axes' keys depend on.  Evidence of
+// how the step fares, which the search orders by, and never an answer to it: what else the row ran with can change
+// what the step does.
+[[nodiscard]] bool sameStep(const Env& env, const FFTConfig& fft, const ProbeList& list, const Probe& probe,
+                            const UseConfig& row);
 
 // The `k`th draw of the restart sequence of the entry named `entry`: a joint assignment of every axis, each drawn
 // uniformly over its positions, canonical.  Structural axes are drawn first and every other axis after the keys it

@@ -845,7 +845,8 @@ bool TuneDB::diedOn(u32 env, u32 cfg, TestKind kind, const std::string& fft, u64
   return false;
 }
 
-bool TuneDB::isNogo(u32 env, const std::string& fft, const UseConfig& config) const {
+bool TuneDB::failedWith(u32 env, const std::string& fft, const UseConfig& config) const {
+  if (nogos_.empty()) { return false; }
   auto const spec = canonicalFft(fft);
   if (!spec) { return false; }
   for (const NogoRow& row : nogos_) {

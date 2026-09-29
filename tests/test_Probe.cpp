@@ -1,7 +1,7 @@
 // Copyright (C) Jason Lynch
 
 // The per-entry search's pure half: what a strategy offers as one step from a best option set, and which of those
-// steps the rows already answer -- from the option table and fixed option sets, with no GPU.
+// steps the rows took elsewhere -- from the option table and fixed option sets, with no GPU.
 
 #include "Probe.h"
 
@@ -395,36 +395,36 @@ TEST(a_step_the_table_would_not_offer_takes_its_dependents_with_it) {
   }
 }
 
-TEST(a_probe_is_answered_by_a_row_that_agrees_on_what_it_depends_on) {
+TEST(a_row_takes_the_same_step_as_a_probe_where_it_agrees_on_what_the_step_depends_on) {
   FFTConfig const fft{"512:15:512:212"};
   UseConfig const best{{"WMUL", "1"}};
   ProbeList const list = probesOf(nvidia(), fft, best, {.kind = Strategy::Kind::Single});
 
-  // ZEROHACK_W depends on nothing, so its reading from before WMUL moved still answers it.
+  // ZEROHACK_W depends on nothing, so its reading from before WMUL moved took the same step.
   const Probe* const zerohack = findProbe(list, "ZEROHACK_W=0");
   CHECK(zerohack != nullptr);
   if (zerohack) {
-    CHECK(answeredBy(nvidia(), fft, list, *zerohack, {{"ZEROHACK_W", "0"}}));
-    CHECK(answeredBy(nvidia(), fft, list, *zerohack, {{"ZEROHACK_W", "0"}, {"TAIL_KERNELS", "3"}}));
-    CHECK(!answeredBy(nvidia(), fft, list, *zerohack, {{"TAIL_KERNELS", "3"}}));
+    CHECK(sameStep(nvidia(), fft, list, *zerohack, {{"ZEROHACK_W", "0"}}));
+    CHECK(sameStep(nvidia(), fft, list, *zerohack, {{"ZEROHACK_W", "0"}, {"TAIL_KERNELS", "3"}}));
+    CHECK(!sameStep(nvidia(), fft, list, *zerohack, {{"TAIL_KERNELS", "3"}}));
   }
 
-  // LDSPAD_W depends on WMUL: a reading at the old WMUL does not answer it, one at the new WMUL does, whatever else
-  // it ran with.
+  // LDSPAD_W depends on WMUL: a reading at the old WMUL took another step, one at the new WMUL the same one, whatever
+  // else it ran with.
   const Probe* const ldspad = findProbe(list, "LDSPAD_W=0");
   CHECK(ldspad != nullptr);
   if (ldspad) {
-    CHECK(!answeredBy(nvidia(), fft, list, *ldspad, {{"LDSPAD_W", "0"}}));
-    CHECK(answeredBy(nvidia(), fft, list, *ldspad, {{"LDSPAD_W", "0"}, {"WMUL", "1"}}));
-    CHECK(answeredBy(nvidia(), fft, list, *ldspad, {{"LDSPAD_W", "0"}, {"WMUL", "1"}, {"TAIL_KERNELS", "3"}}));
+    CHECK(!sameStep(nvidia(), fft, list, *ldspad, {{"LDSPAD_W", "0"}}));
+    CHECK(sameStep(nvidia(), fft, list, *ldspad, {{"LDSPAD_W", "0"}, {"WMUL", "1"}}));
+    CHECK(sameStep(nvidia(), fft, list, *ldspad, {{"LDSPAD_W", "0"}, {"WMUL", "1"}, {"TAIL_KERNELS", "3"}}));
   }
 
-  // An access class is answered by its own digit, whatever the other digits of the key were.
+  // An access class is the same step at its own digit, whatever the other digits of the key were.
   const Probe* const trig = findProbe(list, "LOADS=50000");
   CHECK(trig != nullptr);
   if (trig) {
-    CHECK(answeredBy(nvidia(), fft, list, *trig, {{"LOADS", "50003"}}));
-    CHECK(!answeredBy(nvidia(), fft, list, *trig, {{"LOADS", "40000"}}));
+    CHECK(sameStep(nvidia(), fft, list, *trig, {{"LOADS", "50003"}}));
+    CHECK(!sameStep(nvidia(), fft, list, *trig, {{"LOADS", "40000"}}));
   }
 }
 

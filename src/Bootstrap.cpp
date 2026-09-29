@@ -213,7 +213,7 @@ BootstrapState Bootstrap::state(const TuneDB& db, u32 env, u64 budget) const {
     FamilyState& s = out.families[f];
     std::string const spec = s.family.fft.spec();
     u32 const cfg = db.findCfgId({});
-    if (failed[f] || db.isNogo(env, spec, {}) || (cfg && db.diedOn(env, cfg, kind_, spec, probe_))) {
+    if (failed[f] || (cfg && db.diedOn(env, cfg, kind_, spec, probe_))) {
       s.phase = FamilyPhase::Held;
     } else if (!s.reading) {
       s.phase = FamilyPhase::Unread;
