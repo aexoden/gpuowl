@@ -59,13 +59,13 @@ A run goes through these stages, though it interleaves them and you do not need 
    FFT most likely to be cheapest there (its default variant first) and read its rounding error. This runs before
    anything else, so a short run still covers the whole workload.
 4. **Defaults sweep.** Time every FFT within 10% of the fastest one somewhere in the workload at PRPLL's built-in
-   defaults. This is the untuned map: what each of them costs before any option is changed, which is what every later
-   gain is a gain over, and what the dashboard compares against.
-5. **Bootstrap.** For each FFT type (FP64, the NTTs, the hybrids), search the type's fastest FFT at the probe
-   exponent, as the sweep found it, before any other: `4 × roundCalls` measurements each (64 by default), by the same
-   search every FFT gets. What it finds is published like any other result, and so becomes the type's default options
-   straight away. A type that is so much slower than the fastest one that no plausible option gain could close the gap
-   is not searched first.
+   defaults, those at the probe exponent first. This is the untuned map: what each of them costs before any option is
+   changed, which is what every later gain is a gain over, and what the dashboard compares against.
+5. **Bootstrap.** Once the sweep has read the FFTs at the probe exponent, for each FFT type (FP64, the NTTs, the
+   hybrids), search the type's fastest FFT there ahead of the rest of its type: `4 × roundCalls` measurements each (64
+   by default), by the same search every FFT gets. What it finds is published like any other result, and so becomes
+   the type's default options straight away. A type that is so much slower than the fastest one that no plausible
+   option gain could close the gap is not searched first.
 6. **Search.** For the FFTs that are competitive, first try the default options as they stand, then other option
    sets one step at a time (how big a step is depends on `strategy=`), and combine the best answers of different
    option groups. A random option set is tried to escape a local optimum: once no step is left, and after every 32
@@ -75,7 +75,8 @@ A run goes through these stages, though it interleaves them and you do not need 
    each gets an equal share in rounds, the slower half dropping out after each round and the share doubling, until
    one is left (see `contenders=`). An FFT that comes within 10% later is given rounds of its own against the one
    left. After that it goes wherever the next step is expected to gain most. FFTs further off the pace are timed at
-   their defaults as they become worth it.
+   their defaults as they become worth it. The sweep, the bootstrap and the search take turns, a measurement at a
+   time, so none of them waits for the others to finish.
 7. **Accuracy checks.** Read the rounding error of any published configuration whose options change it.
 
 **The default options follow the search.** Once FFTs are published, each FFT type's default options are those of its
@@ -105,9 +106,9 @@ What to expect:
 - **Duration.** Each measurement builds the FFT's kernels and times about 5000 iterations: from several seconds to a
   minute or more, depending on the FFT and the GPU. Choosing the drift anchor takes a few minutes, the bootstrap
   64 measurements (by default) per FFT type it searches first, and a run that goes until it stops by itself usually
-  takes many hours. The workload is covered first and the defaults sweep follows, which on a wide workload can take
-  an hour or more before any option is tuned (`-tune status` shows how far it is); after that the most valuable
-  measurements come first, and you can stop whenever you need the GPU and resume later.
+  takes many hours. The workload is covered first; the defaults sweep, which on a wide workload can take hours, then
+  takes turns with the search, so options are tuned from the start (`-tune status` shows how far each has got). The
+  most valuable measurements come first, and you can stop whenever you need the GPU and resume later.
 - **Resuming.** Run the same command again. Every measurement is saved in `tunedb.txt` as it is taken, so nothing but
   the measurement in progress is lost.
 - **Your settings are set aside.** While tuning, every `-use` option from `config.txt` (including `!` lines) and from
@@ -311,16 +312,20 @@ way, and the setting is not part of what the run records, so `-tune status` and 
 Each measurement ends with a line saying what was measured, what it cost, and what it did to `T`:
 
 ```text
-tune: 1. bootstrap FFT64 1K:13:256:212 Placement INPLACE=0 at 118063003 (call 1): 948.687 us/it, 7.8 s; T 906.008 -> 888.898 us/it
-tune: 2. bootstrap FFT64 1K:13:256:212 Placement L2_STRIPING=1 at 118063003 (call 1): 1371.539 us/it, 10.2 s; T 888.898 -> 888.898 us/it
-...
-tune: bootstrap: FFT64 1K:13:256:212 Placement decided by separation among 7: INPLACE=0, 948.853 +- 0.337 us/it
+tune: 7. baseline 256:3:256:002 prp short32 at the built-in defaults at 5999137: 55.897 us/it, 2.2 s; T 51.224 -> 51.224 us/it
+tune: 8. probe 256:3:256:212 prp short32 Placement INPLACE=0 at 5999137: 59.929 us/it, 2.0 s; T 51.224 -> 51.224 us/it
+tune: 9. baseline 256:3:256:002 prp short32 at the built-in defaults at 5999137 (resumed at call 2): 55.910 us/it, 1.9 s; T 51.224 -> 51.224 us/it
 ```
 
-The bootstrap also says which FFT types it will not race, and why:
+The defaults sweep, the bootstrap and the search take turns, a measurement at a time, so none of them holds the
+others up. The bootstrap says which FFT it searches first for each type, which types it does not, and why:
 
 ```text
-tune: bootstrap: FFT3161 1:1K:8:256:202 is not tuned: at 2917.815 us/it it would take more than a 32% gain to bring it level with the cheapest family
+tune: bootstrap: FFT64 256:3:256:202 is searched first, for 16 calls, from 50.412 us/it at the built-in defaults
+tune: bootstrap: FFT3161 1:256:2:256:202 is not searched first: at 172.119 us/it it would take more than a 32% gain to bring it level with the cheapest type
+...
+tune: bootstrap: FFT64 256:3:256:202 has had its 16 calls of search, and is at 47.925 us/it
+tune: bootstrap complete; the default lines are SHUFL_BYTES_H=16,SHUFL_BYTES_W=16
 ```
 
 Besides those lines:
@@ -330,13 +335,14 @@ Besides those lines:
   currently worth doing:
 
   ```text
-  tune: progress: 5:05 in, bootstrap: FFT64 1K:13:256:101, group 3 of 9 (Memory), then its combinations; type 1 of 2; 21 items and 1 anchor reading: 21 bootstrap (2.9 min); T 906.059 -> 889.053 us/it, 100.0% of the weight on measured entries; 12 items are worth running now, ~97 s by the queue's estimates
+  tune: progress: 4:21 in, halving: round 1 of 2, 4 contenders, 9 of 16 calls; 111 items and 1 anchor reading: 40 baseline (1.5 min), 65 probe (2.2 min), 6 gate (0.2 min); T 41.107 -> 47.985 us/it, 100.0% of the weight on measured entries; 1422 items are worth running now, ~51 min by the queue's estimates
   ```
 
-  The first part counts through the phase the run is in: `covering the workload: 62.0% of its weight measured`,
-  `defaults sweep: 23 of 70 FFTs read at the built-in defaults`, the bootstrap's races as above, `accuracy gate: 3
-  readings owed`, `halving: round 2 of 4, 8 contenders, 150 of 256 calls`, and then `searching by expected gain`.
-  "Items worth running now" is only what the queue can take next, which in the bootstrap is the race in hand.
+  The first part counts through what the run is doing: `covering the workload: 62.0% of its weight measured` or
+  `accuracy gate: 3 readings owed`, which go before anything else, or else whichever of `defaults sweep: 23 of 70 FFTs
+  read at the built-in defaults`, `bootstrap: FFT64 256:3:256:202 prp short32, 12 of 16 calls of search; type 1 of 1`
+  and `halving: round 2 of 4, 8 contenders, 150 of 256 calls` (or `searching by expected gain`) are taking turns,
+  joined by ` + `. "Items worth running now" is only what the queue can take next.
 
 - When the default options move to follow a newly published FFT, the run says what they are now:
 
@@ -363,22 +369,20 @@ tune:   -fft 1K:10:256:010 -use FAST_BARRIER=1,INPLACE=1,LOADS=10000,WMUL=1   (p
 
 When the run ends, whether by itself or by Ctrl-C, it prints a summary: what was measured, why it stopped, per FFT type
 what was measured and what was not (and how large a gain would have been needed to justify measuring it), what it has
-learnt about how much a change of options tends to gain, and the drift of the GPU over the session. Stopped ten
-minutes in, during the bootstrap:
+learnt about how much a change of options tends to gain, and the drift of the GPU over the session. Stopped fifteen
+minutes into a tune of a small workload:
 
 ```text
-tune: summary: 57 items and 2 anchor readings: 57 bootstrap (7.6 min)
-tune: summary: stopped before the queue was done; T 960.514 us/it, and an item is worth running at 0.9605 us/it (stop=0.1%)
-tune: summary: FFT64: 1 of 600 entries measured, 599 waiting on the bootstrap
-tune: summary: FFT3161: 0 of 27 entries measured, 27 waiting on the bootstrap
+tune: summary: 426 items and 3 anchor readings: 40 baseline (1.5 min), 276 probe (9.1 min), 82 combo (2.6 min), 6 restart (0.2 min), 22 gate (0.7 min)
+tune: summary: stopped before the queue was done; T 46.652 us/it, and an item is worth running at 0.0467 us/it (stop=0.1%)
+tune: summary: FFT64: 18 of 513 entries measured, 495 not; the closest, 256:4:256:000 prp short32, needed a gain of 18.5% to be worth stop=0.1% of T (the gains learnt give that a 0.0667% chance), and was worth 0.0072 us/it
+tune: summary: FFT3161: 1 of 10 entries measured, 9 not; the closest, 1:256:4:256:202 prp short32, needed a gain of 85.7% to be worth stop=0.1% of T (the gains learnt give that a 0% chance), and was worth 0.0000 us/it
 ...
-tune: summary: left: 18 bootstrap, which run by rule ahead of anything valued; next: FFT64 1K:13:256:212 Memory STORES=3
-tune: summary: 100% of the prp weight, over 118063003-136279841, has no entry and is priced by the prior
+tune: summary: left: 7029 probe, the best worth 0.0531 us/it (0.114% of T): 256:3:256:201 prp short32 the default lines ENABLE_RESTRICT=1,LOADS=23505,OLD_FENCE=0,SHUFL_BYTES_H=16,SHUFL_BYTES_W=16,STORES=3,ZEROHACK_H=0,ZEROHACK_W=0
 ...
-tune: summary: drift: 2 readings of 1K:13:256:212@118063003, ratio 1.0000 -> 1.0000 (1.0000 to 1.0000), within the warning
-tune: T 906.059 -> 888.306 us/it, stopped before the queue was done
-tune: benefit: at 118063003 nothing measured is published yet; env 1 has been measured for 10:02 over 1 session
-tune: published /home/me/prpll/gpu1/selection.txt
+tune: summary: drift: 3 readings of 256:3:256:212@5999137, ratio 1.0000 -> 1.0008 (1.0000 to 1.0017), within the warning
+tune: T 41.107 -> 46.652 us/it, stopped before the queue was done
+tune: benefit: at 5999137 production runs 256:3:256:202 at 46.652 us/it, 7.6% less per iteration than the best measured there at the built-in defaults (256:3:256:202, 50.488 us/it); env 1 has been measured for 15:01 over 1 session
 ```
 
 The `benefit` line is what all the tuning so far has bought at the probe exponent: what a normal run now spends per
@@ -532,20 +536,23 @@ prpll -tune status,stop=1%        # what would a run with stop=1% still do?
 ```
 
 ```text
-tune: status: env 1, Tesla P100-PCIE-16GB (nvidia,ocl,cc600); tunedb.txt last written 5 min ago
+tune: status: env 1, Tesla P100-PCIE-16GB (nvidia,cuda,cc600,pdl); tunedb.txt last written 101 min ago
 tune: status: nothing holds the database
-tune: status: the latest session on env 1 is session 1, a run started 2026-09-25 22:34
-tune: status: valued as session 1's run, over the 2 assignments pending when it started: workload=112159852-143093833,probe=118063003,probeWeight=0.5,kinds=prp,bootstrap=1,strategy=hybrid,maxPermute=4,maxPoints=64,comboTop=3,comboTiers=3,contenders=16,roundCalls=16,stop=0.1%
-tune: status: T 888.322 us/it, 0.0% of the weight on measured entries
-tune: status: a run started now would begin in bootstrap: FFT64 1K:13:256:212, group 2 of 9 (Memory), then its combinations; type 1 of 1
-tune: status: FFT64: 1 of 600 entries measured, 599 waiting on the bootstrap
+tune: status: the latest session on env 1 is session 2, a run started 2026-09-26 17:55
+tune: status: valued as session 2's run, over the 0 assignments pending when it started: workload=67000000-80000000,probe=67513549,probeWeight=0,kinds=prp+ll,bootstrap=1,strategy=hybrid,maxPermute=all,maxPoints=all,comboTop=3,comboTiers=3,contenders=16,roundCalls=16,stop=0
+tune: status: T 1103.939 us/it, 100.0% of the weight on measured entries
+tune: status: a run started now would begin in defaults sweep: 2 of 464 FFTs read at the built-in defaults + halving: round 1 of 4, 16 contenders, 0 of 256 calls
+tune: status: FFT64: 172 of 3394 entries measured, 462 not, 2760 waiting on the halving
 ...
-tune: status: accuracy: 0 entries published (0 exact arithmetic, 0 confirmed, 0 unvalidated); 0 held below the table's reach, 0 raised above it; 0 limits for options no entry runs; 1 set owed a reading, 0 rejected
+tune: status: accuracy: 19 entries published (0 exact arithmetic, 7 confirmed, 12 unvalidated); 0 held below the table's reach, 0 raised above it; 0 limits for options no entry runs; 0 sets owed a reading, 0 rejected
 tune: status: next, as a run started now would rank them:
-tune: status:   1. bootstrap FFT64 1K:13:256:212 Memory STORES=3: by rule, ~26 s
-tune: status:   2. bootstrap FFT64 1K:13:256:212 Memory ENABLE_RESTRICT=1: by rule, ~26 s
-...
-tune: status:   and 13 more worth running, 0 worth less than stop=0.1% of T (0.9605 us/it)
+tune: status:   1. baseline 256:15:512:002 ll short32 at the built-in defaults: by rule, ~23 s
+tune: status:   2. probe 1K:4:512:102 ll short32 Placement INPLACE=0: by rule, ~24 s
+tune: status:   3. baseline 256:15:512:102 ll short32 at the built-in defaults: by rule, ~23 s
+tune: status:   4. probe 1K:4:512:102 ll short32 Width SHUFL_BYTES_W=4: by rule, ~24 s
+tune: status:   5. baseline 256:15:512:200 ll short32 at the built-in defaults: by rule, ~23 s
+tune: status:   and 3574 more worth running, 0 worth nothing
+tune: status:   and up to 102345 more not listed yet
 ```
 
 It is safe to use while a run is in progress (whether a run holds the database can only be told on Linux). It
