@@ -679,18 +679,39 @@ HalvingState Scheduler::halvingState(const TuneDB& db, u32 env,
   std::vector<u64> const calls = searchCalls(db, env);
   std::map<EntryKey, size_t> const indexOf = entryIndex();
 
+  // Only the rounds of entries this workload weighs: a halving over other kinds or bands says nothing of how far these
+  // have been explored, and a workload that returns to those takes their halving up where it stood.
   std::vector<RoundRow> rounds;
+  u32 n = 0;
+  bool recorded = false;
   for (const RoundRow& r : db.rounds()) {
-    if (db.envOf(r.sess) == env) { rounds.push_back(r); }
+    if (db.envOf(r.sess) != env) { continue; }
+    recorded = true;
+    n = std::max(n, r.n);
+    if (r.members.empty() || std::ranges::any_of(r.members, [&](const RoundMember& m) {
+          return indexOf.contains({m.fft, m.kind, m.regime.label()});
+        })) {
+      rounds.push_back(r);
+    }
   }
   std::ranges::stable_sort(rounds, {}, &RoundRow::n);
-  if (rounds.empty()) {
+  if (!recorded) {
     out.unrecorded = adoption(gaps, calls);
     rounds = out.unrecorded;
+    for (const RoundRow& r : rounds) { n = std::max(n, r.n); }
   }
 
+  // A round is begun only where one of its entries has a step to take: one that none has would be over as soon as it
+  // began, and the next begun after it, each with twice the calls.  For the same reason a round is never of no calls.
+  auto const due = [&](const std::vector<size_t>& members) {
+    return std::ranges::any_of(members, [&](size_t i) { return offering.contains(i) || resuming.contains(i); });
+  };
+  auto const twice = [&](u64 calls) {
+    u64 constexpr most = std::numeric_limits<u64>::max();
+    return std::max<u64>(calls > most / 2 ? most : 2 * calls, halving_.roundCalls);
+  };
   auto begin = [&](u32 round, u64 budget, const std::vector<size_t>& members) {
-    RoundRow row{.sess = 0, .n = rounds.back().n + 1, .round = round, .calls = budget, .ts = 0, .members = {}};
+    RoundRow row{.sess = 0, .n = ++n, .round = round, .calls = budget, .ts = 0, .members = {}};
     for (size_t const i : members) { row.members.push_back(memberOf(i, calls[i])); }
     out.unrecorded.push_back(row);
     rounds.push_back(std::move(row));
@@ -728,7 +749,7 @@ HalvingState Scheduler::halvingState(const TuneDB& db, u32 env,
       // The first waits for the sweep at the probe, so that it takes every contender at once.
       if (sweeping) { return out; }
       std::vector<size_t> const pool = poolOf(gaps, all, halving_.contenders);
-      if (pool.size() < 2) { return out; }
+      if (pool.size() < 2 || !due(pool)) { return out; }
       begin(1, halving_.roundCalls, pool);
       continue;
     }
@@ -760,11 +781,12 @@ HalvingState Scheduler::halvingState(const TuneDB& db, u32 env,
         return out;
       }
 
-      // Over: its better half go on, and where one is left, it leads until the next halving.
+      // Over: its better half go on, and where one is left, it leads until the next halving.  A half with nothing left
+      // to take has nothing left to show, and the next halving begins instead.
       std::ranges::sort(pool, byGap);
       pool.resize((pool.size() + 1) / 2);
-      if (!pool.empty()) {
-        begin(last->round + 1, pool.size() > 1 ? 2 * last->calls : spent(last), pool);
+      if (pool.size() == 1 || (pool.size() > 1 && due(pool))) {
+        begin(last->round + 1, pool.size() > 1 ? twice(last->calls) : spent(last), pool);
         continue;
       }
     } else if (!pool.empty() && had.front() < spent(last) &&
@@ -778,11 +800,11 @@ HalvingState Scheduler::halvingState(const TuneDB& db, u32 env,
 
     // The next halving, over every contender as they stand now, its first round twice the last one's.
     std::vector<size_t> const next = poolOf(gaps, all, halving_.contenders);
-    if (next.size() < 2) {
+    if (next.size() < 2 || !due(next)) {
       out.pool = std::move(pool);
       return out;
     }
-    begin(1, 2 * (first == rounds.rend() ? u64{halving_.roundCalls} : first->calls), next);
+    begin(1, twice(first == rounds.rend() ? u64{halving_.roundCalls} : first->calls), next);
   }
   return out;
 }

@@ -1528,8 +1528,9 @@ void searched(Fixture& f, const char* spec, u32 calls, double mean = 1600) {
 
 // Ranks the queue, and records the rounds that begins, as a run does before its next call; then where the halving
 // stands, its pool by spec.
-std::tuple<bool, u32, u64, std::vector<std::string>> halvingAfter(Fixture& f, const Scheduler& scheduler) {
-  (void)scheduler.admissible(f.db, f.env, Objective{f.db, f.env, scope(), Gating::Assumed});
+std::tuple<bool, u32, u64, std::vector<std::string>> halvingAfter(Fixture& f, const Scheduler& scheduler,
+                                                                  const RunScope& in = scope()) {
+  (void)scheduler.admissible(f.db, f.env, Objective{f.db, f.env, in, Gating::Assumed});
   const HalvingState& h = scheduler.lastHalving();
   for (RoundRow row : h.unrecorded) {
     row.sess = f.sess;
@@ -1691,6 +1692,30 @@ TEST(an_entry_that_has_had_its_calls_finishes_the_step_it_began) {
   CHECK(!std::get<0>(halvingAfter(f, scheduler)));
 }
 
+TEST(a_step_begun_is_still_offered_after_another_step_becomes_the_best_set) {
+  // ZEROHACK_W=0 has one call, at 1300, when TAIL_KERNELS=3 concludes at 1400: the steps are now taken from there, and
+  // none of them is ZEROHACK_W=0 alone.
+  Fixture f;
+  const char* const spec = "512:15:512:101";
+  concludedAt(f, spec, {}, 1450);
+  Scheduler const scheduler{scope(), only({spec}), 1000, {}, Strategy{.kind = Strategy::Kind::Single}};
+  CHECK(f.db.add(
+    RunRow{.sess = f.sess,
+           .fft = spec,
+           .kind = TestKind::PRP,
+           .exponent = 118'063'003,
+           .regime = regimeOf(FFTConfig{spec}, 118'063'003),
+           .cfg = f.db.internCfg({{"ZEROHACK_W", "0"}}),
+           .m = {.mean = 1300, .stddev = 0.1, .blocks = 4, .calls = 1, .drift = 1, .status = Status::Ok, .ts = 0}}));
+  auto const begun = [](const Item& i) { return i.calls == 1 && configText(i.options) == "ZEROHACK_W=0"; };
+  CHECK(
+    std::ranges::any_of(scheduler.admissible(f.db, f.env, Objective{f.db, f.env, scope(), Gating::Assumed}), begun));
+
+  concludedAt(f, spec, {{"TAIL_KERNELS", "3"}}, 1400);
+  CHECK(
+    std::ranges::any_of(scheduler.admissible(f.db, f.env, Objective{f.db, f.env, scope(), Gating::Assumed}), begun));
+}
+
 TEST(a_database_with_no_rounds_takes_up_the_halving_where_the_calls_left_it) {
   // Four contenders under the rule before rounds were recorded: all past round 1's 4 calls, and 101 past round 2's
   // 4 + 8.  The halving goes on in round 2, 102 owed the rest of its 8, not begun again.
@@ -1779,6 +1804,118 @@ TEST(the_first_halving_waits_for_the_defaults_sweep_at_the_probe) {
   CHECK(halvingAfter(f, scheduler) ==
         std::tuple(true, 0u, u64(4), std::vector<std::string>{"512:15:512:101", "512:15:512:102", "512:15:512:110"}));
   CHECK_EQ(scheduler.lastHalving().halving, 1u);
+}
+
+TEST(a_halving_whose_contenders_have_nothing_left_to_take_begins_no_more_rounds) {
+  // Each contender's search is one key, and each has measured it in the first round.  The one left is recorded, and
+  // nothing after it: a round begun now would be over at once, and the next begun after it with twice the calls.
+  Fixture f;
+  concludedAt(f, "512:15:512:101", {}, 1450);
+  concludedAt(f, "512:15:512:102", {}, 1460);
+  Scheduler const scheduler{scope(),
+                            only({"512:15:512:101", "512:15:512:102"}),
+                            1000,
+                            {},
+                            Strategy{.kind = Strategy::Kind::Permute, .keys = {"ZEROHACK_W"}},
+                            false,
+                            false,
+                            Halving{.contenders = 2, .roundCalls = 4}};
+  CHECK(std::get<0>(halvingAfter(f, scheduler)));
+  concludedAt(f, "512:15:512:101", {{"ZEROHACK_W", "0"}}, 1600);
+  concludedAt(f, "512:15:512:102", {{"ZEROHACK_W", "0"}}, 1600);
+
+  CHECK(halvingAfter(f, scheduler) == std::tuple(false, 0u, u64(0), std::vector<std::string>{"512:15:512:101"}));
+  size_t const rows = f.db.rounds().size();
+  CHECK(rows > 0 && f.db.rounds().back().members.size() == 1 && f.db.rounds().back().calls == 8);
+  for (int again = 0; again < 3; ++again) {
+    CHECK(scheduler.admissible(f.db, f.env, Objective{f.db, f.env, scope(), Gating::Assumed}).empty());
+    CHECK(scheduler.lastHalving().unrecorded.empty());
+  }
+  CHECK_EQ(f.db.rounds().size(), rows);
+}
+
+TEST(a_recorded_round_of_no_calls_is_followed_by_one_of_the_first_rounds_calls) {
+  // A round of 0 calls, as a budget doubled past 64 bits once recorded, is over as soon as it is read.  The next
+  // halving is given the first round's calls rather than twice nothing, and is under way.
+  Fixture f;
+  concludedAt(f, "512:15:512:101", {}, 1450);
+  concludedAt(f, "512:15:512:102", {}, 1460);
+  std::vector<Baseline> const entries = only({"512:15:512:101", "512:15:512:102"});
+  RoundRow wrapped{.sess = f.sess, .n = 1, .round = 1, .calls = 0, .ts = 0, .members = {}};
+  for (const Baseline& b : entries) {
+    wrapped.members.push_back({.fft = b.fft.spec(), .kind = b.kind, .regime = b.band.regime, .from = 0});
+  }
+  CHECK(f.db.add(wrapped));
+  Scheduler const scheduler{scope(),
+                            entries,
+                            1000,
+                            {},
+                            Strategy{.kind = Strategy::Kind::Single},
+                            false,
+                            false,
+                            Halving{.contenders = 2, .roundCalls = 4}};
+
+  CHECK(halvingAfter(f, scheduler) ==
+        std::tuple(true, 0u, u64(4), std::vector<std::string>{"512:15:512:101", "512:15:512:102"}));
+  CHECK_EQ(scheduler.lastHalving().halving, 2u);
+  CHECK(std::ranges::all_of(f.db.rounds(),
+                            [](const RoundRow& r) { return r.n == 1 || r.members.size() < 2 || r.calls > 0; }));
+}
+
+TEST(a_workload_of_another_kind_is_halved_from_its_own_first_round_and_the_first_kind_keeps_its_own) {
+  // A PRP halving has begun over 101 and 102.  An LL-only workload over the same shapes has explored nothing yet, so
+  // its first halving is a first halving, by rule, whatever the PRP one has done.  Back in PRP, that one is where it
+  // was left.
+  Fixture f;
+  concludedAt(f, "512:15:512:101", {}, 1450);
+  concludedAt(f, "512:15:512:102", {}, 1495);
+  Scheduler const prp{scope(), only({"512:15:512:101", "512:15:512:102"}), 1000,
+                      {},      Strategy{.kind = Strategy::Kind::Single},   false,
+                      false,   Halving{.contenders = 2, .roundCalls = 4}};
+  CHECK(halvingAfter(f, prp) ==
+        std::tuple(true, 0u, u64(4), std::vector<std::string>{"512:15:512:101", "512:15:512:102"}));
+  searched(f, "512:15:512:101", 4, 1230);
+  CHECK(std::get<0>(halvingAfter(f, prp)));
+
+  RunScope const ll =
+    makeScope(ScopeArgs{.lo = 110'000'000, .hi = 135'000'000, .probe = 118'063'003, .kinds = {TestKind::LL}}, {});
+  std::vector<Baseline> entries;
+  for (const Baseline& b : baselines(nvidia(), ll, shapes())) {
+    if (b.band.contains(118'063'003) && (b.fft.spec() == "512:15:512:101" || b.fft.spec() == "512:15:512:102")) {
+      entries.push_back(b);
+      CHECK(f.db.add(RunRow{
+        .sess = f.sess,
+        .fft = b.fft.spec(),
+        .kind = TestKind::LL,
+        .exponent = 118'063'003,
+        .regime = b.band.regime,
+        .cfg = f.db.internCfg({}),
+        .m = {.mean = 1450, .stddev = 0.1, .blocks = 8, .calls = 2, .drift = 1, .status = Status::Ok, .ts = 0}}));
+    }
+  }
+  CHECK_EQ(entries.size(), size_t{2});
+  Scheduler const switched{ll,
+                           entries,
+                           1000,
+                           {},
+                           Strategy{.kind = Strategy::Kind::Single},
+                           false,
+                           false,
+                           Halving{.contenders = 2, .roundCalls = 4}};
+
+  CHECK(halvingAfter(f, switched, ll) ==
+        std::tuple(true, 0u, u64(4), std::vector<std::string>{"512:15:512:101", "512:15:512:102"}));
+  CHECK_EQ(switched.lastHalving().halving, 1u);
+  std::vector<Item> const items = switched.admissible(f.db, f.env, Objective{f.db, f.env, ll, Gating::Assumed});
+  CHECK(!items.empty() && std::ranges::all_of(items, [](const Item& i) { return i.halving && byRule(i); }));
+
+  CHECK(halvingAfter(f, prp) ==
+        std::tuple(true, 0u, u64(4), std::vector<std::string>{"512:15:512:101", "512:15:512:102"}));
+  CHECK_EQ(prp.lastHalving().halving, 1u);
+  CHECK(prp.lastHalving().calls == (std::vector<u64>{4, 0}));
+
+  std::set<u32> numbers;
+  for (const RoundRow& r : f.db.rounds()) { CHECK(numbers.insert(r.n).second); }
 }
 
 TEST(the_search_is_spread_over_the_contenders_before_it_settles_on_one) {

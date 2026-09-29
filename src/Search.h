@@ -52,10 +52,11 @@ struct Baseline {
   [[nodiscard]] EntryKey key() const;
 };
 
-// The row a measurement resumes from: the exponent it was started at, and the calls it has.
+// The row a measurement resumes from: the exponent it was started at, the calls it has, and what it ran, canonical.
 struct Partial {
   u64 exponent = 0;
   u32 calls = 0;
+  UseConfig options{};
 };
 
 // Where each entry stands, from the rows of an env.
@@ -186,12 +187,13 @@ public:
   // branch's best set -- only the entry's best set steps into other branches -- in the order probesOf() lists them, and
   // a combination only once its branch has nothing of a lower tier left, since it combines what those found; and after
   // all of those, the steps the entry's rows took from another best set, which may do otherwise from this one, priced
-  // as a jump is (Offer::Restart), since what they did there is some evidence against them here.  The next draw of the
-  // restart sequence at a local optimum of the declared moves, and ahead of everything else once the entry has measured
-  // RESTART_PERIOD option sets since the last draw was declared, or until a draw begun is finished, priced then as a
-  // step is.  Whatever sets a value a build of the FFT failed with (TuneDB::failedWith()) after everything else.
-  // Nothing a row of that very configuration concluded or recorded a failure of, nothing an earlier generation's death
-  // keeps out, and nothing tried MAX_ATTEMPTS times in this process.
+  // as a jump is (Offer::Restart), since what they did there is some evidence against them here.  Then every other
+  // measurement a row began and none concluded, at the exponent it began at and priced as a step, whatever has moved
+  // since.  The next draw of the restart sequence at a local optimum of the declared moves, and ahead of everything
+  // else once the entry has measured RESTART_PERIOD option sets since the last draw was declared, or until a draw begun
+  // is finished, priced then as a step is.  Whatever sets a value a build of the FFT failed with (TuneDB::failedWith())
+  // after everything else.  Nothing a row of that very configuration concluded or recorded a failure of, nothing an
+  // earlier generation's death keeps out, and nothing tried MAX_ATTEMPTS times in this process.
   [[nodiscard]] std::vector<Candidate> offers(const SearchContext& context, std::span<const Reading> readings,
                                               const Worth& worth);
 

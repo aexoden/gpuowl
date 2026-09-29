@@ -54,6 +54,7 @@ Progress progressOf(const TuneDB& db, u32 env, const Env& device) {
     if (row.m.calls > p.calls || (row.m.calls == p.calls && row.exponent < p.exponent)) {
       p.exponent = row.exponent;
       p.calls = row.m.calls;
+      p.options = canonical;
     }
   }
 
@@ -226,14 +227,14 @@ std::vector<Candidate> EntrySearch::offers(const SearchContext& context, std::sp
   for (const UseConfig& row : concluded) { texts.push_back(configText(row)); }
 
   // A restart draw is a sample of the space, not a step from a best set: it says nothing of what one of its keys does.
-  std::set<std::string> draws;
+  std::map<std::string, u32> draws;
   for (const JumpRow& row : context.db.jumps()) {
     if (context.db.envOf(row.sess) != context.env || row.fft != std::get<0>(key_) || row.kind != entry_.kind ||
         row.regime.label() != std::get<2>(key_)) {
       continue;
     }
     if (const UseConfig* const drawn = context.db.findCfg(row.cfg)) {
-      draws.insert(configText(canonicalConfig(device, entry_.fft, *drawn)));
+      draws.emplace(configText(canonicalConfig(device, entry_.fft, *drawn)), row.k);
     }
   }
 
@@ -376,6 +377,32 @@ std::vector<Candidate> EntrySearch::offers(const SearchContext& context, std::sp
     for (u32 widened = 0; !offerListed(*memo, widened == MAX_WIDENINGS); ++widened) {
       memo = &probeList(context, branches[branch].best, readings, branch == 0, memo->from, true);
     }
+  }
+
+  // A measurement begun is finished, even where nothing above lists it any more: the best set it was a step from, the
+  // lines it was laid under or the stage it was listed in have moved on since, and its call counts for nothing until it
+  // concludes.  The built-in defaults are the sweep's.
+  for (auto p = progress.partial.lower_bound({key_, {}}); p != progress.partial.end() && p->first.first == key_; ++p) {
+    const std::string& text = p->first.second;
+    const Partial& partial = p->second;
+    if (partial.options.empty() || offered.contains(text) || progress.answered.contains(p->first) ||
+        !entry_.band.contains(partial.exponent) || !runnable(context, partial.options, partial.exponent)) {
+      continue;
+    }
+    double const value = worth(Offer::Probe, best.cost);
+    if (value <= 0) { break; }
+
+    auto const drawn = draws.find(text);
+    Candidate c{.kind = drawn != draws.end() ? Offer::Restart : Offer::Probe,
+                .options = partial.options,
+                .what = (drawn != draws.end() ? "#" + std::to_string(drawn->second + 1) + " " : "unfinished ") + text,
+                .exponent = partial.exponent,
+                .calls = partial.calls,
+                .draw = drawn != draws.end() ? drawn->second : 0,
+                .cost = best.cost,
+                .value = value};
+    offered.insert(text);
+    out.push_back(std::move(c));
   }
 
   // Otherwise a jump is offered only once no step is left, rather than left to a price to rank below them.
