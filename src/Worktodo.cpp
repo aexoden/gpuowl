@@ -115,7 +115,7 @@ std::optional<Task> parse(const std::string& line) {
 // and the Gpu constructor throws "FFT size too large" when E gives fewer bits/word than the chosen FFT's minimum.
 static bool fftFits(const Args& args, u64 E) {
   try {
-    FFTConfig const fft = FFTConfig::bestFit(args, E, args.fftSpec);
+    FFTConfig const fft = FFTConfig::bestFit(args, E, args.fftSpec, {}, true);
     float const bitsPerWord = E / float(fft.size());
     return !(bitsPerWord < fft.minBpw());
   } catch (const char* mes) {

@@ -298,7 +298,7 @@ TEST(a_selection_file_is_optional_and_its_own_lines_survive_a_fallback) {
   fs::remove_all(dir);
 }
 
-TEST(a_file_that_covers_nothing_here_says_so_and_no_file_says_nothing) {
+TEST(a_file_that_covers_nothing_here_says_so_and_no_file_says_nothing_of_one) {
   fs::path const dir = fs::temp_directory_path() / "prpll-test-production-uncovered";
   fs::remove_all(dir);
   fs::create_directories(dir);
@@ -310,15 +310,25 @@ TEST(a_file_that_covers_nothing_here_says_so_and_no_file_says_nothing) {
   std::vector<std::string> said;
   setStdoutSink([&](std::string_view s) { said.emplace_back(s); });
 
+  auto const saysTuneTxt = [&] {
+    return std::ranges::any_of(said, [](const std::string& s) { return s.find("in tune.txt") != std::string::npos; });
+  };
+
   (void)choose(args, Env{}, E, TestKind::PRP);
   bool const quiet =
     std::ranges::none_of(said, [](const std::string& s) { return s.find("selection.txt") != std::string::npos; });
+  bool const pointedAtTuneTxt = saysTuneTxt();
 
+  // Once there is a file, its own note says why the shape scan answers; tune.txt, which it has replaced, goes
+  // unmentioned.
+  said.clear();
   writeSelection("selection.txt", twoEntries());
   (void)choose(args, Env{}, E, TestKind::PRP);
   setStdoutSink(nullptr);
 
   CHECK(quiet);
+  CHECK(pointedAtTuneTxt);
+  CHECK(!saysTuneTxt());
   std::string const reach = to_string(std::max(table() + 30'000, u64{160'000'000}));
   CHECK(std::ranges::any_of(said, [&](const std::string& s) {
     return s.find("Note: no entry in selection.txt covers 41000011 (its prp entries cover 100000000-" + reach +

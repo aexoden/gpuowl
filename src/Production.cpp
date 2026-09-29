@@ -236,13 +236,14 @@ Choice choose(const Args& args, const Env& env, u64 E, TestKind kind) {
     }
   }
 
-  if (file && fs::exists(selectionPath(args))) { logOnce(uncoveredNote(*file, args, E, kind)); }
+  bool const noted = file && fs::exists(selectionPath(args));
+  if (noted) { logOnce(uncoveredNote(*file, args, E, kind)); }
 
   SelectionLayers layers;
   if (file) { layers = SelectionLayers{.global = file->global, .family = file->family, .entry = {}}; }
 
   auto const scan = [&](u64 ask) {
-    FFTConfig const fft = FFTConfig::bestFit(args, ask, args.fftSpec, env.hasFP64);
+    FFTConfig const fft = FFTConfig::bestFit(args, ask, args.fftSpec, env.hasFP64, noted);
     UseConfig options = resolveConfig(args, fft, kind, fittedTo(layers, env, fft, kind));
     u64 const limit = file ? publishedReach(*file, env, fft, kind, options, E) : maxExp(fft);
 
