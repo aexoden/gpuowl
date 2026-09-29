@@ -66,9 +66,10 @@ A run goes through these stages, though it interleaves them and you do not need 
    lines at the top of `selection.txt`: what an FFT with nothing published of its own runs at. A type that is so much
    slower than the fastest one at its defaults that no plausible option gain could close the gap is not raced.
 6. **Search.** For the FFTs that are competitive, first try the default options as they stand, then other option
-   sets one step at a time (how big a step is depends on `strategy=`), combine the best answers of different option
-   groups, and occasionally try a random option set to escape a local optimum. Whenever the default options change, an
-   FFT tries them again, both as they are and laid over the best options it has found itself. The search is first spread over the
+   sets one step at a time (how big a step is depends on `strategy=`), and combine the best answers of different
+   option groups. A random option set is tried to escape a local optimum: once no step is left, and after every 32
+   option sets an FFT measures whether or not steps are left. Whenever the default options change, an FFT tries them
+   again, both as they are and laid over the best options it has found itself. The search is first spread over the
    contenders, the FFTs within 10% of the fastest, since which of them tunes best cannot be told from their defaults:
    each gets an equal share in rounds, the slower half dropping out after each round and the share doubling, until
    one is left (see `contenders=`). An FFT that comes within 10% later is given rounds of its own against the one

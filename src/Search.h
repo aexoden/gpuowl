@@ -74,9 +74,10 @@ struct Progress {
   // Every option set a row has concluded, canonical: what a probe asks may already be answered by one.
   std::map<EntryKey, std::vector<UseConfig>> concluded;
 
-  // The option sets a row has concluded or failed, and every option set each entry has rows of at all.
+  // The option sets a row has concluded or failed, and every option set each entry has rows of at all, with when the
+  // last of them was written.
   std::set<EntrySet> answered;
-  std::map<EntryKey, std::set<std::string>> sets;
+  std::map<EntryKey, std::map<std::string, u64>> sets;
 };
 
 // Where each entry stands, from the rows `env` has.  A row the device lost under is not recorded, so it says nothing
@@ -87,6 +88,11 @@ struct Progress {
 // with one point left unseen among n survives this many draws with probability (1 - 1/n)^256: for n = 64, under 2%,
 // and the next process starts the count again.
 inline constexpr u32 RESTART_REPEATS = 256;
+
+// How many option sets an entry measures between one restart draw and the next, whether or not it is at a local
+// optimum: a descent can settle in a basin long before its steps run out, and the steps of a large stage would keep a
+// restart waiting for as long as they last.
+inline constexpr u32 RESTART_PERIOD = 32;
 
 // How far one entry's restart sequence has been read.  Only what can never become runnable again is passed -- a draw a
 // row answers, a hold, a draw given up on, one the lines shadow, which once the bootstrap is complete they keep doing
@@ -109,7 +115,7 @@ struct RestartScan {
 
 // What a search offers.
 enum class Offer : u8 {
-  Lines,    // the default lines, all at once, from the built-in defaults
+  Lines,    // the default lines, all at once, alone or laid over the best set
   Probe,    // a step within a group, or of one key
   Combo,    // a point of a combination of the tier below's answers
   Restart,  // the next draw of the entry's restart sequence
@@ -156,7 +162,7 @@ struct SearchContext {
   // The lines as they stand, which every entry tries first.
   const Defaults& lines;
 
-  // Whether an entry with no step left jumps.
+  // Whether an entry jumps: once it has no step left, and once each RESTART_PERIOD option sets.
   bool restarts = false;
 };
 
@@ -172,14 +178,16 @@ public:
   // What the entry offers now, in the order the search would take it.  `readings` are its publishable option sets,
   // canonical and cheapest first, so the first is its best set; there must be at least one.
   //
-  // Offered first: the lines, which carry what the best entries found, all at once, the one jump most likely to pay
-  // before any single step; and where the entry's best set is not the built-in defaults, that set with the lines laid
-  // over it.  Each is offered while no row has measured it, so as the lines move each entry tries them again.  Then
-  // the steps of each structural branch the strategy searches, each from that branch's best set -- only the entry's
-  // best set steps into other branches -- in the order probesOf() lists them, and a combination only once its branch
-  // has nothing of a lower tier left, since it combines what those found.  At a local optimum of the declared moves,
-  // and only there, the next draw of the restart sequence.  Nothing a row answers or recorded a failure of, nothing a
-  // hold or an earlier generation's death keeps out, and nothing tried MAX_ATTEMPTS times in this process.
+  // Offered first, but for a restart draw that is due: the lines, which carry what the best entries found, all at once,
+  // the one jump most likely to pay before any single step; and where the entry's best set is not the built-in
+  // defaults, that set with the lines laid over it.  Each is offered while no row has measured it, so as the lines move
+  // each entry tries them again.  Then the steps of each structural branch the strategy searches, each from that
+  // branch's best set -- only the entry's best set steps into other branches -- in the order probesOf() lists them, and
+  // a combination only once its branch has nothing of a lower tier left, since it combines what those found.  The next
+  // draw of the restart sequence at a local optimum of the declared moves, and ahead of everything else once the entry
+  // has measured RESTART_PERIOD option sets since the last draw was declared, or until a draw begun is finished, priced
+  // then as a step is.  Nothing a row answers or recorded a failure of, nothing a hold or an earlier generation's death
+  // keeps out, and nothing tried MAX_ATTEMPTS times in this process.
   [[nodiscard]] std::vector<Candidate> offers(const SearchContext& context, std::span<const Reading> readings,
                                               const Worth& worth);
 
@@ -210,6 +218,10 @@ private:
 
   // The next draw worth making, if the space has anything left to offer.
   [[nodiscard]] std::optional<Candidate> nextRestart(const SearchContext& context);
+
+  // Whether the entry has measured RESTART_PERIOD option sets since its last draw was declared, or since it was first
+  // measured where none has been; or has begun its last draw and not finished it.
+  [[nodiscard]] bool restartDue(const SearchContext& context) const;
 
   // Whether `options` is still worth asking for at `exponent`: not tried MAX_ATTEMPTS times in this process, not held,
   // and not what an earlier generation died on there.

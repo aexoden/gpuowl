@@ -36,7 +36,8 @@ Progress progressOf(const TuneDB& db, u32 env, const Env& device) {
     EntryKey const key{row.fft, row.kind, row.regime.label()};
     UseConfig const canonical = canonicalConfig(device, *fft, *opts);
     std::string const text = configText(canonical);
-    out.sets[key].insert(text);
+    u64& last = out.sets[key][text];
+    last = std::max(last, row.m.ts);
     if (row.m.status != Status::Ok) {
       out.failed.insert({key, text});
       out.answered.insert({key, text});
@@ -146,7 +147,7 @@ std::optional<Candidate> EntrySearch::nextRestart(const SearchContext& context) 
     }
   }
   if (auto const sets = context.progress.sets.find(key_); sets != context.progress.sets.end()) {
-    scan_.seen.insert(sets->second.begin(), sets->second.end());
+    for (const auto& [text, ts] : sets->second) { scan_.seen.insert(text); }
   }
 
   auto candidateOf = [&](u32 k) {
@@ -172,6 +173,31 @@ std::optional<Candidate> EntrySearch::nextRestart(const SearchContext& context) 
   return candidateOf(*k);
 }
 
+bool EntrySearch::restartDue(const SearchContext& context) const {
+  auto const sets = context.progress.sets.find(key_);
+  if (sets == context.progress.sets.end()) { return false; }
+
+  const JumpRow* declared = nullptr;
+  for (const JumpRow& row : context.db.jumps()) {
+    if (context.db.envOf(row.sess) == context.env && row.fft == std::get<0>(key_) && row.kind == entry_.kind &&
+        row.regime.label() == std::get<2>(key_) && (!declared || row.ts >= declared->ts)) {
+      declared = &row;
+    }
+  }
+
+  // A draw begun is finished first: until it concludes, its calls count for nothing.
+  if (declared) {
+    const UseConfig* const drawn = context.db.findCfg(declared->cfg);
+    if (drawn &&
+        context.progress.partial.contains({key_, configText(canonicalConfig(context.device, entry_.fft, *drawn))})) {
+      return true;
+    }
+  }
+  auto const since =
+    std::ranges::count_if(sets->second, [&](const auto& set) { return !declared || set.second > declared->ts; });
+  return u64(since) >= RESTART_PERIOD;
+}
+
 std::vector<Candidate> EntrySearch::offers(const SearchContext& context, std::span<const Reading> readings,
                                            const Worth& worth) {
   assert(!readings.empty());
@@ -192,6 +218,19 @@ std::vector<Candidate> EntrySearch::offers(const SearchContext& context, std::sp
   std::vector<std::string> texts;
   for (const UseConfig& row : concluded) { texts.push_back(configText(row)); }
 
+  // A restart draw is a sample of the space, not a step from the best set: it answers only the point it is, and says
+  // nothing of what one of its keys does there.
+  std::set<std::string> draws;
+  for (const JumpRow& row : context.db.jumps()) {
+    if (context.db.envOf(row.sess) != context.env || row.fft != std::get<0>(key_) || row.kind != entry_.kind ||
+        row.regime.label() != std::get<2>(key_)) {
+      continue;
+    }
+    if (const UseConfig* const drawn = context.db.findCfg(row.cfg)) {
+      draws.insert(configText(canonicalConfig(device, entry_.fft, *drawn)));
+    }
+  }
+
   // What each branch's readings say, which is all its combo tiers read.
   std::vector<std::string> from(branches.size());
   if (context.strategy.combines()) {
@@ -206,6 +245,19 @@ std::vector<Candidate> EntrySearch::offers(const SearchContext& context, std::sp
 
   std::vector<Candidate> out;
   std::set<std::string> offered;
+
+  bool restarted = false;
+  if (context.restarts && restartDue(context)) {
+    if (double const value = worth(Offer::Probe, best.cost); value > 0) {
+      if (std::optional<Candidate> next = nextRestart(context)) {
+        next->cost = best.cost;
+        next->value = value;
+        offered.insert(configText(next->options));
+        out.push_back(std::move(*next));
+        restarted = true;
+      }
+    }
+  }
 
   // The lines move as other entries are searched, so an entry is offered them as they stand whatever it has found
   // itself, and where it has found something, what it found with the lines laid over it.
@@ -244,7 +296,9 @@ std::vector<Candidate> EntrySearch::offers(const SearchContext& context, std::sp
         if (!memo.checked.insert(texts[r]).second) { continue; }
         for (size_t p = 0; p < list.probes.size(); ++p) {
           if (!memo.answered[p]) {
-            memo.answered[p] = answeredBy(device, entry_.fft, list, list.probes[p], concluded[r]);
+            memo.answered[p] = draws.contains(texts[r])
+              ? configText(list.probes[p].config) == texts[r]
+              : answeredBy(device, entry_.fft, list, list.probes[p], concluded[r]);
           }
         }
       }
@@ -303,8 +357,8 @@ std::vector<Candidate> EntrySearch::offers(const SearchContext& context, std::sp
     }
   }
 
-  // A jump is offered only once no step is left, rather than left to a price to rank below them.
-  if (context.restarts && out.empty()) {
+  // Otherwise a jump is offered only once no step is left, rather than left to a price to rank below them.
+  if (context.restarts && !restarted && out.empty()) {
     if (double const value = worth(Offer::Restart, best.cost); value > 0) {
       if (std::optional<Candidate> next = nextRestart(context)) {
         next->cost = best.cost;

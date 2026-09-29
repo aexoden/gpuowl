@@ -1832,28 +1832,47 @@ TEST(an_unmeasured_entry_is_valued_under_the_gains_the_device_has_shown) {
   CHECK(checked > 0);
 }
 
-TEST(a_restart_is_offered_only_once_no_probe_is_left) {
+TEST(a_restart_is_offered_once_no_probe_is_left_and_once_each_period_of_sets_before) {
   Fixture plain;
   ProbeRun const descent = runProbed(plain);
+  std::set<std::string> const stepped(descent.order.begin(), descent.order.end());
+  CHECK(stepped.size() > RESTART_PERIOD);
 
-  // Restarts never run dry, so the run is stopped four restarts past the end of the descent.
+  // Restarts never run dry, so the run is stopped four draws in.
   Fixture f;
   u32 const calls = u32(descent.order.size()) + 4 * MIN_CALLS;
   ProbeRun const run = runProbed(f, calls, {}, true);
   CHECK(run.report.stopped);
   CHECK_EQ(run.order.size(), size_t(calls));
 
-  // Call for call the same descent, and only then jumps: the next draw of the entry's own sequence, each measured as
-  // a row needs, none of them cheaper than where the descent ended, so the best set stays put.
-  CHECK(std::equal(descent.order.begin(), descent.order.end(), run.order.begin()));
+  // Call for call the same descent around the jumps, which are the entry's own sequence in order, each measured as a
+  // row needs, none of them cheaper than where the descent ended, so the best set stays put.
+  std::vector<std::string> steps;
+  std::vector<size_t> jumps;
+  for (size_t i = 0; i < run.order.size(); ++i) {
+    if (stepped.contains(run.order[i])) {
+      steps.push_back(run.order[i]);
+    } else {
+      jumps.push_back(i);
+    }
+  }
+  CHECK(steps == descent.order);
   CHECK_EQ(run.best, descent.best);
+  CHECK_EQ(jumps.size(), size_t(4 * MIN_CALLS));
+  if (jumps.size() != 4 * MIN_CALLS) { return; }
 
   FFTConfig const fft{PROBED};
   std::string const at = std::string{PROBED} + "@118063003 ";
   for (u32 k = 0; k < 4; ++k) {
     std::string const drawn = at + configText(restartOf(nvidia(), fft, std::string{PROBED} + " prp short32", k));
-    for (u32 c = 0; c < MIN_CALLS; ++c) { CHECK_EQ(run.order[descent.order.size() + k * MIN_CALLS + c], drawn); }
+    for (u32 c = 0; c < MIN_CALLS; ++c) { CHECK_EQ(run.order[jumps[k * MIN_CALLS + c]], drawn); }
   }
+
+  // The first while probes were still left, once the entry had measured a period of sets; the rest at the end.
+  std::set<std::string> const before(run.order.begin(), run.order.begin() + ptrdiff_t(jumps.front()));
+  CHECK_EQ(before.size(), size_t(RESTART_PERIOD));
+  CHECK(jumps.front() < descent.order.size());
+  CHECK_EQ(jumps[MIN_CALLS], descent.order.size() + MIN_CALLS);
 
   // Each jump taught the entry that its search is spent, and the device nothing.
   EntryKey const entry{PROBED, TestKind::PRP, "short32"};
@@ -1861,31 +1880,40 @@ TEST(a_restart_is_offered_only_once_no_probe_is_left) {
   CHECK(run.gains.forEntry(entry).mean() < descent.gains.forEntry(entry).mean());
 }
 
-TEST(no_restart_is_offered_while_a_probe_is_left) {
+TEST(a_restart_waits_while_a_probe_is_left_until_a_period_of_sets_has_been_measured) {
   Fixture plain;
   u32 const descent = u32(runProbed(plain).order.size());
 
   auto offered = [](Fixture& f) {
-    std::map<ItemKind, u32> out;
+    std::vector<ItemKind> out;
     for (const Item& item : probedScheduler(true).admissible(f.db, f.env, Objective{f.db, f.env, scope()})) {
-      ++out[item.kind];
+      out.push_back(item.kind);
     }
     return out;
   };
+  auto count = [](const std::vector<ItemKind>& kinds, ItemKind kind) { return std::ranges::count(kinds, kind); };
 
-  // Partway through the first round, the entry has probes left and so no jump; once the last is answered, one jump
-  // and nothing else.
+  // A few sets in, probes and no jump.
   Fixture f;
-  (void)runProbed(f, 10, {}, true);
-  std::map<ItemKind, u32> const midway = offered(f);
-  CHECK(midway.contains(ItemKind::Probe));
-  CHECK(!midway.contains(ItemKind::Restart));
+  (void)runProbed(f, 10);
+  std::vector<ItemKind> const midway = offered(f);
+  CHECK(count(midway, ItemKind::Probe) > 0);
+  CHECK_EQ(count(midway, ItemKind::Restart), 0);
 
+  // A period of sets in, the jump is due, and goes before the probes still left.
   f.newSession();
-  (void)runProbed(f, descent - 10, {}, true);
-  std::map<ItemKind, u32> const spent = offered(f);
-  CHECK(!spent.contains(ItemKind::Probe));
-  CHECK_EQ(spent.at(ItemKind::Restart), 1u);
+  (void)runProbed(f, 2 * RESTART_PERIOD - 10);
+  std::vector<ItemKind> const due = offered(f);
+  CHECK(count(due, ItemKind::Probe) > 0);
+  CHECK_EQ(count(due, ItemKind::Restart), 1);
+  CHECK(!due.empty() && due.front() == ItemKind::Restart);
+
+  // The descent over, one jump and nothing else.
+  f.newSession();
+  (void)runProbed(f, descent - 2 * RESTART_PERIOD);
+  std::vector<ItemKind> const spent = offered(f);
+  CHECK_EQ(count(spent, ItemKind::Probe), 0);
+  CHECK_EQ(count(spent, ItemKind::Restart), 1);
 }
 
 TEST(restarting_interrupted_draws_the_same_sequence) {
@@ -3026,7 +3054,10 @@ TEST(a_run_that_restarts_stops_once_nothing_is_worth_the_stop_fraction) {
   ProbeRun const run = runProbed(f, ~0u, {}, true, STOP);
   CHECK(!run.report.stopped);
   CHECK(run.report.end == QueueEnd::BelowStop);
-  CHECK(std::equal(descent.order.begin(), descent.order.end(), run.order.begin()));
+  std::set<std::string> const stepped(descent.order.begin(), descent.order.end());
+  std::vector<std::string> steps;
+  std::ranges::copy_if(run.order, std::back_inserter(steps), [&](const std::string& s) { return stepped.contains(s); });
+  CHECK(steps == descent.order);
   CHECK(run.report.spent.contains(ItemKind::Restart));
   CHECK(run.order.size() < unstopped.order.size());
 
