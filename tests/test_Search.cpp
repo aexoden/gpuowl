@@ -247,6 +247,38 @@ TEST(what_a_row_answers_or_failed_is_not_offered_and_a_started_step_is_resumed_w
   CHECK_EQ(after.size(), before.size() - 2);
 }
 
+TEST(a_measurement_begun_is_finished_where_it_began_after_the_best_set_has_moved_on) {
+  // ZEROHACK_W=0 has one call, at 1300, when WMUL=1 concludes at 1600 and becomes the best set.  The steps are now
+  // taken from WMUL=1, which lists ZEROHACK_W=0 only with WMUL=1 beside it.
+  Rows rows;
+  rows.add({}, 1700);
+  u64 const elsewhere = PROBE + 20'000;
+  CHECK(entry().band.contains(elsewhere));
+  rows.add({{"ZEROHACK_W", "0"}}, 1300, 1, Status::Ok, elsewhere);
+  rows.add({{"WMUL", "1"}}, 1600);
+  Asking const ask{.strategy = {.kind = Strategy::Kind::Single}};
+  EntrySearch search{entry()};
+  std::vector<Reading> const readings{{.config = {{"WMUL", "1"}}, .cost = 1600}, {.config = {}, .cost = 1700}};
+  auto const byKind = [](Offer kind, double) { return kind == Offer::Probe ? 1.0 : 0.25; };
+
+  std::vector<Candidate> const offers = ask(search, rows, readings, byKind);
+  CHECK(find(offers, "WMUL=1,ZEROHACK_W=0"));
+  const Candidate* const begun = find(offers, "ZEROHACK_W=0");
+  CHECK(begun && begun->kind == Offer::Probe && begun->exponent == elsewhere && begun->calls == 1);
+  CHECK(begun && begun->cost == 1600 && begun->value == 1.0);
+  CHECK(begun && begun->what == "unfinished ZEROHACK_W=0");
+  CHECK_EQ(std::ranges::count_if(offers, [](const Candidate& c) { return configText(c.options) == "ZEROHACK_W=0"; }),
+           1);
+
+  // Priced as the steps are, so where they are worth nothing it is not offered either.
+  auto const noSteps = [](Offer kind, double) { return kind == Offer::Probe ? 0.0 : 1.0; };
+  CHECK(!find(ask(search, rows, readings, noSteps), "ZEROHACK_W=0"));
+
+  // Once it concludes it is answered.
+  rows.add({{"ZEROHACK_W", "0"}}, 1310, MIN_CALLS, Status::Ok, elsewhere);
+  CHECK(!find(ask(search, rows, readings, byKind), "ZEROHACK_W=0"));
+}
+
 TEST(a_step_taken_from_an_earlier_best_set_is_offered_again_after_every_step_never_taken) {
   Rows rows;
   rows.add({}, 1700);
