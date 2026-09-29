@@ -286,3 +286,15 @@ TEST(landscape_each_band_has_its_own_fft_tuned) {
   CHECK_EQ(o.published[std::string{B} + " prp short32"], std::string{"MM_CHAIN=1"});
   CHECK_EQ(o.published["1K:8:1K:202 prp long32"], std::string{"TAIL_KERNELS=3"});
 }
+
+TEST(landscape_each_band_has_its_own_fft_tuned_at_the_default_stop) {
+  // The halving's rounds are what reach 1K:8:1K's step, since by then no step of it is worth the stop fraction on its
+  // own.
+  Scenario s = disjointBands();
+  s.budget = 2 * 3600;
+  Policy p = small();
+  p.stop = STOP;
+  Outcome o = simulate(s, p);
+  CHECK(o.settled().has_value());
+  CHECK_EQ(o.published["1K:8:1K:202 prp long32"], std::string{"TAIL_KERNELS=3"});
+}

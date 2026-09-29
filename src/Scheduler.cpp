@@ -672,8 +672,7 @@ std::vector<RoundRow> Scheduler::adoption(const std::vector<std::optional<double
 
 HalvingState Scheduler::halvingState(const TuneDB& db, u32 env,
                                      const std::map<EntryKey, std::vector<Reading>>& readings,
-                                     const Objective& objective, const std::set<size_t>& offering,
-                                     const std::set<size_t>& resuming, bool sweeping) const {
+                                     const Objective& objective, const Explored& explored, bool sweeping) const {
   HalvingState out;
   if (!halving_.on() || !strategy_) { return out; }
 
@@ -705,9 +704,7 @@ HalvingState Scheduler::halvingState(const TuneDB& db, u32 env,
 
   // A round is begun only where one of its entries has a step to take: one that none has would be over as soon as it
   // began, and the next begun after it, each with twice the calls.  For the same reason a round is never of no calls.
-  auto const due = [&](const std::vector<size_t>& members) {
-    return std::ranges::any_of(members, [&](size_t i) { return offering.contains(i) || resuming.contains(i); });
-  };
+  auto const due = [&](const std::vector<size_t>& members) { return std::ranges::any_of(members, explored.offers); };
   auto const twice = [&](u64 calls) {
     u64 constexpr most = std::numeric_limits<u64>::max();
     return std::max<u64>(calls > most / 2 ? most : 2 * calls, halving_.roundCalls);
@@ -766,7 +763,7 @@ HalvingState Scheduler::halvingState(const TuneDB& db, u32 env,
       size_t const i = at->second;
       pool.push_back(i);
       had.push_back(calls[i] > m.from ? calls[i] - m.from : 0);
-      owed = owed || (had.back() < last->calls && offering.contains(i)) || resuming.contains(i);
+      owed = owed || (had.back() < last->calls && explored.offers(i)) || explored.resumes(i);
     }
     auto const first = firstOf(last);
     out.halving = first == rounds.rend() ? 0 : halvings(first);
@@ -791,8 +788,7 @@ HalvingState Scheduler::halvingState(const TuneDB& db, u32 env,
         begin(last->round + 1, pool.size() > 1 ? twice(last->calls) : spent(last), pool);
         continue;
       }
-    } else if (!pool.empty() && had.front() < spent(last) &&
-               (offering.contains(pool.front()) || resuming.contains(pool.front()))) {
+    } else if (!pool.empty() && had.front() < spent(last) && explored.worth(pool.front())) {
       out.leading = true;
       out.budget = spent(last);
       out.pool = std::move(pool);
@@ -802,7 +798,7 @@ HalvingState Scheduler::halvingState(const TuneDB& db, u32 env,
 
     // The next halving, over every contender as they stand now, its first round twice the last one's.
     std::vector<size_t> const next = poolOf(gaps, all, halving_.contenders);
-    if (next.size() < 2 || !due(next)) {
+    if (next.size() < 2 || !due(next) || std::ranges::none_of(next, explored.worth)) {
       out.pool = std::move(pool);
       return out;
     }
@@ -839,7 +835,7 @@ bool Scheduler::swept(const TuneDB& db, u32 env, const Objective& objective) con
     [&](const Item& item) { return baselines_[item.index].band.contains(scope_.probe); });
 }
 
-std::vector<Item> Scheduler::admissible(const TuneDB& db, u32 env, const Objective& objective) const {
+std::vector<Item> Scheduler::admissible(const TuneDB& db, u32 env, const Objective& objective, double floor) const {
   BootstrapState const state = bootstrapState(db, env);
   const Env& device = bootstrap_.env();
   Progress const progress = progressOf(db, env, device);
@@ -878,17 +874,23 @@ std::vector<Item> Scheduler::admissible(const TuneDB& db, u32 env, const Objecti
 
   std::ranges::move(reachItems(db, env, sets, objective), std::back_inserter(out));
 
+  // What each entry's search offers priced by rule, which a round of the halving serves whatever the value model makes
+  // of it; asked of an entry only once the halving needs to know.
+  std::function<std::vector<Item>(size_t)> byRuleOf;
+  std::optional<size_t> searched;
+  std::optional<Defaults> defaults;
+
   if (strategy_) {
-    Defaults const defaults = lines(db, env);
+    defaults = lines(db, env);
 
     SearchContext const context{.device = device,
                                 .strategy = *strategy_,
                                 .db = db,
                                 .env = env,
                                 .progress = progress,
-                                .lines = defaults,
+                                .lines = *defaults,
                                 .restarts = restarts_};
-    auto const offer = [&](size_t i, bool rule) {
+    auto const offer = [&, context](size_t i, bool rule) {
       const Baseline& b = baselines_[i];
       EntryKey const key = b.key();
       auto const at = readings.find(key);
@@ -906,15 +908,12 @@ std::vector<Item> Scheduler::admissible(const TuneDB& db, u32 env, const Objecti
         return rule ? std::max(value, std::numeric_limits<double>::min()) : value;
       };
       std::vector<Item> items;
-      for (Candidate& c : searches_[i].offers(context, at->second, price)) {
-        items.push_back(itemOf(i, std::move(c)));
-        items.back().bootstrap = rule;
-      }
+      for (Candidate& c : searches_[i].offers(context, at->second, price)) { items.push_back(itemOf(i, std::move(c))); }
       return items;
     };
+    byRuleOf = [offer](size_t i) { return offer(i, true); };
 
     // The cheapest family still owed its calls, whose search has something to offer.
-    std::optional<size_t> searched;
     if (chosen && bootstrap.empty()) {
       std::vector<const FamilyState*> owed;
       for (const FamilyState& f : state.families) {
@@ -925,6 +924,7 @@ std::vector<Item> Scheduler::admissible(const TuneDB& db, u32 env, const Objecti
         size_t const i = *entryOf(f->family, state.kind);
         bootstrap = offer(i, true);
         if (!bootstrap.empty()) {
+          for (Item& item : bootstrap) { item.bootstrap = true; }
           searched = i;
           break;
         }
@@ -974,44 +974,56 @@ std::vector<Item> Scheduler::admissible(const TuneDB& db, u32 env, const Objecti
   std::ranges::stable_sort(out, [](const Item& a, const Item& b) { return a.rate() > b.rate(); });
 
   // While the halving is on, its round is all the search there is: the steps of the contenders still short of their
-  // calls.  A contender whose search the bootstrap has is served there, and its calls count for both.
+  // calls, priced by rule, since a round is there to find what the value model cannot see coming.  A contender whose
+  // search the bootstrap has is served there, and its calls count for both.
   auto const search = [](const Item& i) {
     return i.kind == ItemKind::Probe || i.kind == ItemKind::Combo || i.kind == ItemKind::Restart;
   };
-  std::set<size_t> offering;
-  std::set<size_t> resuming;
+  std::set<size_t> worth;
   for (const std::vector<Item>* items : {&out, &bootstrap}) {
     for (const Item& item : *items) {
-      if (!search(item)) { continue; }
-      offering.insert(item.index);
-      if (item.calls) { resuming.insert(item.index); }
+      if (search(item) && item.value > 0 && item.value >= floor) { worth.insert(item.index); }
     }
   }
+  std::map<size_t, std::vector<Item>> explored;
+  auto const exploring = [&](size_t i) -> const std::vector<Item>& {
+    auto const [at, fresh] = explored.try_emplace(i);
+    if (fresh) {
+      if (i == searched) {
+        at->second = bootstrap;
+      } else if (byRuleOf) {
+        at->second = byRuleOf(i);
+        std::erase_if(at->second, [&](const Item& item) { return !search(item); });
+      }
+    }
+    return at->second;
+  };
+  Explored const asked{
+    .offers = [&](size_t i) { return !exploring(i).empty(); },
+    .resumes =
+      [&](size_t i) { return std::ranges::any_of(exploring(i), [](const Item& item) { return item.calls > 0; }); },
+    .worth = [&](size_t i) { return worth.contains(i); }};
   bool const sweeping =
     std::ranges::any_of(swept, [&](const Item& item) { return baselines_[item.index].band.contains(scope_.probe); });
-  lastHalving_ = halvingState(db, env, readings, objective, offering, resuming, sweeping);
+  lastHalving_ = halvingState(db, env, readings, objective, asked, sweeping);
   if (lastHalving_.active) {
-    // An entry that has had its calls still finishes a step it began, so that the calls it made count for something.
     std::map<size_t, u64> owed;
-    for (size_t k = 0; k < lastHalving_.pool.size(); ++k) { owed.emplace(lastHalving_.pool[k], lastHalving_.calls[k]); }
-    bool const again = lastHalving_.halving > 1;
     std::vector<Item> round;
-    std::vector<Item> rest;
-    for (Item& item : out) {
-      auto const at = owed.find(item.index);
-      if (!search(item) || at == owed.end() || (at->second >= lastHalving_.budget && !item.calls)) {
-        if (again) { rest.push_back(std::move(item)); }
-        continue;
+    for (size_t k = 0; k < lastHalving_.pool.size(); ++k) {
+      size_t const i = lastHalving_.pool[k];
+      owed.emplace(i, lastHalving_.calls[k]);
+      if (i == searched) { continue; }
+      // An entry that has had its calls still finishes a step it began, so that the calls it made count for something.
+      for (const Item& item : exploring(i)) {
+        if (lastHalving_.calls[k] >= lastHalving_.budget && !item.calls) { continue; }
+        round.push_back(item);
+        round.back().halving = true;
       }
-      item.halving = true;
-      item.again = again;
-      round.push_back(std::move(item));
     }
-    // The contender furthest from its calls first, so that a round is spread across its contenders as it goes.  A
-    // later halving's round is held to the stop fraction, so what is valued follows it, for when none of it is worth
-    // a call.
+    // The contender furthest from its calls first, so that a round is spread across its contenders as it goes; each
+    // contender's steps best rate first, which is the search's own order where the value model makes nothing of them.
+    std::ranges::stable_sort(round, [](const Item& a, const Item& b) { return a.rate() > b.rate(); });
     std::ranges::stable_sort(round, [&](const Item& a, const Item& b) { return owed.at(a.index) < owed.at(b.index); });
-    std::ranges::move(rest, std::back_inserter(round));
     out = std::move(round);
   }
   return inTurn({std::move(swept), std::move(bootstrap), std::move(out)});
@@ -1112,7 +1124,7 @@ Phase Scheduler::phase(const BootstrapState& state, const std::vector<Item>& ran
 }
 
 bool byRule(const Item& item) {
-  return item.bootstrap || item.kind == ItemKind::Gate || item.cover || item.sweep || (item.halving && !item.again);
+  return item.bootstrap || item.kind == ItemKind::Gate || item.cover || item.sweep || item.halving;
 }
 
 bool worthRunning(const Item& item, double floor) {
@@ -1329,7 +1341,7 @@ QueueReport runQueue(Scheduler& scheduler, TuneDB& db, u32 env, Bench& bench, co
       rescore();
     }
 
-    std::vector<Item> const ranked = scheduler.admissible(db, env, valuing);
+    std::vector<Item> const ranked = scheduler.admissible(db, env, valuing, stop * valuing.T());
     const HalvingState& h = scheduler.lastHalving();
     for (const RoundRow& round : h.unrecorded) { bench.declareRound(round); }
     if (h.active && saidRound != h.n) {
@@ -1498,7 +1510,7 @@ QueueReport runQueue(Scheduler& scheduler, TuneDB& db, u32 env, Bench& bench, co
   if (out.stopped) { out.end = QueueEnd::Stopped; }
   out.endT = objective.T();
 
-  out.left = scheduler.admissible(db, env, valuing);
+  out.left = scheduler.admissible(db, env, valuing, stop * valuing.T());
   out.valuedT = valuing.T();
   out.floor = stop * valuing.T();
   return out;

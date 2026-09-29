@@ -23,6 +23,7 @@
 #include <cmath>
 #include <cstdio>
 #include <functional>
+#include <limits>
 #include <map>
 #include <set>
 #include <string>
@@ -1655,8 +1656,8 @@ void searched(Fixture& f, const char* spec, u32 calls, double mean = 1600) {
 // Ranks the queue, and records the rounds that begins, as a run does before its next call; then where the halving
 // stands, its pool by spec.
 std::tuple<bool, u32, u64, std::vector<std::string>> halvingAfter(Fixture& f, const Scheduler& scheduler,
-                                                                  const RunScope& in = scope()) {
-  (void)scheduler.admissible(f.db, f.env, Objective{f.db, f.env, in, Gating::Assumed});
+                                                                  const RunScope& in = scope(), double floor = 0) {
+  (void)scheduler.admissible(f.db, f.env, Objective{f.db, f.env, in, Gating::Assumed}, floor);
   const HalvingState& h = scheduler.lastHalving();
   for (RoundRow row : h.unrecorded) {
     row.sess = f.sess;
@@ -1741,6 +1742,33 @@ TEST(a_round_keeps_its_entries_until_each_has_had_its_calls) {
   auto const [over, last, calls, left] = halvingAfter(f, again);
   CHECK(!over);
   CHECK(left == std::vector<std::string>{"512:15:512:101"});
+}
+
+TEST(a_contender_whose_steps_the_value_model_prices_at_nothing_still_has_its_calls_in_the_round) {
+  // 101 finds 72% in its four calls; no step of 102's could be worth anything now, since the gains the value model
+  // allows stop at 64%.  The round began with 102, so it is still owed its four calls, taken in its search's order.
+  Fixture f;
+  concludedAt(f, "512:15:512:101", {}, 1450);
+  concludedAt(f, "512:15:512:102", {}, 1495);
+  Scheduler const scheduler{scope(), only({"512:15:512:101", "512:15:512:102"}), 1000,
+                            {},      Strategy{.kind = Strategy::Kind::Single},   false,
+                            false,   Halving{.contenders = 2, .roundCalls = 4}};
+  (void)halvingAfter(f, scheduler);
+  searched(f, "512:15:512:101", 4, 400);
+
+  auto const [active, round, budget, pool] = halvingAfter(f, scheduler);
+  CHECK(active && round == 0 && budget == 4);
+  CHECK(pool == (std::vector<std::string>{"512:15:512:101", "512:15:512:102"}));
+  std::vector<Item> const items = scheduler.admissible(f.db, f.env, Objective{f.db, f.env, scope(), Gating::Assumed});
+  CHECK(!items.empty());
+  for (const Item& item : items) {
+    CHECK(item.halving && byRule(item));
+    CHECK_EQ(scheduler.baselines()[item.index].fft.spec(), std::string{"512:15:512:102"});
+  }
+
+  // Once it has had them, the round is over.
+  searched(f, "512:15:512:102", 4);
+  CHECK(!std::get<0>(halvingAfter(f, scheduler)));
 }
 
 TEST(a_round_waiting_on_readings_taken_by_rule_is_still_under_way) {
@@ -1900,13 +1928,45 @@ TEST(the_one_left_leads_for_what_its_halving_gave_out_then_every_contender_is_ha
   CHECK(halvingAfter(f, scheduler) == std::tuple(false, 0u, u64(8), std::vector<std::string>{"512:15:512:101"}));
 
   // Then every contender is halved again, 102 which the first left behind and 110 which has come within the margin
-  // among them, for twice as long; and the steps of this halving are valued, though they go first.
+  // among them, for twice as long.  Once begun, it runs by rule, whatever a step of it is worth.
   searched(f, "512:15:512:101", 1);
   CHECK(halvingAfter(f, scheduler) ==
         std::tuple(true, 0u, u64(8), std::vector<std::string>{"512:15:512:101", "512:15:512:102", "512:15:512:110"}));
   CHECK_EQ(scheduler.lastHalving().halving, 2u);
-  std::vector<Item> const items = scheduler.admissible(f.db, f.env, Objective{f.db, f.env, scope(), Gating::Assumed});
-  CHECK(!items.empty() && items.front().halving && items.front().again && !byRule(items.front()));
+  double const floor = std::numeric_limits<double>::max();
+  std::vector<Item> const items =
+    scheduler.admissible(f.db, f.env, Objective{f.db, f.env, scope(), Gating::Assumed}, floor);
+  CHECK(scheduler.lastHalving().active);
+  CHECK(!items.empty() && std::ranges::all_of(items, [](const Item& i) { return i.halving && byRule(i); }));
+  CHECK(scheduler.pick(items, floor).has_value());
+}
+
+TEST(a_later_halving_begins_only_while_one_of_its_contenders_has_a_step_worth_the_stop_fraction) {
+  // The first halving is over and 101 leads.  Where no step of any contender is worth the stop fraction, the leader's
+  // turn ends and no halving begins after it, so the run can end; where one is, the turn goes on.
+  Fixture f;
+  concludedAt(f, "512:15:512:101", {}, 1450);
+  concludedAt(f, "512:15:512:102", {}, 1460);
+  Scheduler const scheduler{scope(), only({"512:15:512:101", "512:15:512:102"}), 1000,
+                            {},      Strategy{.kind = Strategy::Kind::Single},   false,
+                            false,   Halving{.contenders = 2, .roundCalls = 4}};
+  (void)halvingAfter(f, scheduler);
+  searched(f, "512:15:512:101", 4);
+  searched(f, "512:15:512:102", 4);
+  CHECK(halvingAfter(f, scheduler) == std::tuple(false, 0u, u64(8), std::vector<std::string>{"512:15:512:101"}));
+  CHECK(scheduler.lastHalving().leading);
+  size_t const rows = f.db.rounds().size();
+
+  double const floor = std::numeric_limits<double>::max();
+  std::vector<Item> const items =
+    scheduler.admissible(f.db, f.env, Objective{f.db, f.env, scope(), Gating::Assumed}, floor);
+  CHECK(!scheduler.lastHalving().active && !scheduler.lastHalving().leading);
+  CHECK(scheduler.lastHalving().unrecorded.empty());
+  CHECK(!scheduler.pick(items, floor).has_value());
+  CHECK_EQ(f.db.rounds().size(), rows);
+
+  (void)halvingAfter(f, scheduler);
+  CHECK(scheduler.lastHalving().leading);
 }
 
 TEST(the_first_halving_waits_for_the_defaults_sweep_at_the_probe) {
