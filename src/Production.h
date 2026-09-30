@@ -87,6 +87,11 @@ struct Choice {
 // a matter of course.
 [[nodiscard]] std::string uncoveredNote(const SelectionFile& file, const Args& args, u64 E, TestKind kind);
 
+// What choose() says where `choice` came from an entry and more than one worker shares the device: the tuner times one
+// worker at a time, so its entries were measured with the L2 cache to themselves, and a key that decides how the cache
+// is used was chosen for that. Names the ones `choice` runs away from their defaults. Empty for a single worker.
+[[nodiscard]] std::string workersNote(const Args& args, const Env& env, const Choice& choice);
+
 // What to run, warning once about anything a published entry lost to the user's own settings. Falls back to the shape
 // scan where there is no file, no entry for the exponent, or an -fft spec nothing was published for -- and asks it
 // again for something larger where its answer is a configuration published as reaching less far than this exponent, or
