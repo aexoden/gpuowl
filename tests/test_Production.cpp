@@ -844,3 +844,41 @@ TEST(an_excluded_configuration_with_nothing_past_it_is_not_run) {
 
   fs::remove_all(dir);
 }
+
+TEST(more_than_one_worker_is_told_the_entries_were_timed_alone_and_which_cache_keys_that_chose) {
+  Env const ampere{.isNvidia = true, .cudaBackend = true, .computeCapability = 860};
+  FFTConfig const fft{"1K:8:1K:202"};
+  SelectionEntry const entry{.id = "e1",
+                             .cost = 1900,
+                             .fft = fft.spec(),
+                             .kind = TestKind::PRP,
+                             .emin = 100'000'000,
+                             .reach = 160'000'000,
+                             .regime = {},
+                             .evidence = Evidence::Confirmed,
+                             .opts = {}};
+
+  auto const choice = [&](UseConfig options) {
+    return Choice{.fft = fft, .options = std::move(options), .entry = entry, .shadowed = {}, .reach = entry.reach};
+  };
+
+  Choice const persisting = choice({{"L2PERSIST", "1"}, {"L2PERSISTPCT", "50"}, {"TAIL_KERNELS", "3"}});
+
+  CHECK(workersNote(configured({}), ampere, persisting).empty());
+
+  CHECK_EQ(workersNote(configured({}, {"-workers 2"}), ampere, persisting),
+           std::string{"Note: selection.txt was measured one worker at a time, and 2 workers now share the device's "
+                       "L2 cache; entry e1 (1K:8:1K:202) runs L2PERSIST=1, L2PERSISTPCT=50, chosen for one worker's "
+                       "data alone\n"});
+
+  // A key at its default, or one that does not apply on this device, decides nothing about the cache.
+  CHECK_EQ(workersNote(configured({}, {"-workers 2"}), ampere, choice({{"L2PERSIST", "0"}, {"TAIL_KERNELS", "3"}})),
+           std::string{"Note: selection.txt was measured one worker at a time, and 2 workers now share the device's "
+                       "L2 cache, so its costs may not hold\n"});
+  CHECK(workersNote(configured({}, {"-workers 2"}), Env{}, persisting).ends_with(", so its costs may not hold\n"));
+
+  // The shape scan's answer says it was not tuned already.
+  Choice untuned = persisting;
+  untuned.entry.reset();
+  CHECK(workersNote(configured({}, {"-workers 2"}), ampere, untuned).empty());
+}

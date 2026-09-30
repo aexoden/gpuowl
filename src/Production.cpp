@@ -10,6 +10,7 @@
 #include "TuneDB.h"
 
 #include <algorithm>
+#include <array>
 #include <mutex>
 #include <set>
 #include <utility>
@@ -214,6 +215,26 @@ fs::path selectionPath(const Args& args) {
   return path;
 }
 
+std::string workersNote(const Args& args, const Env& env, const Choice& choice) {
+  if (args.workers <= 1 || !choice.entry) { return {}; }
+
+  // Whether each pays depends on how much of the cache the FFT's data finds free, which the other workers' data now
+  // takes a share of: L2PERSIST's window and L2PERSISTPCT's set-aside, which all workers draw on, most of all.
+  static constexpr std::array<std::string_view, 4> cacheKeys{"L2PERSIST", "L2PERSISTPCT", "L2_STRIPING", "MULTI_Q"};
+
+  std::string set;
+  for (const auto& [key, value] : canonicalConfig(env, choice.fft, choice.options)) {
+    if (std::ranges::find(cacheKeys, key) != cacheKeys.end()) { set += (set.empty() ? "" : ", ") + key + "=" + value; }
+  }
+
+  std::string const said = "Note: " + selectionPath(args).string() + " was measured one worker at a time, and " +
+    std::to_string(args.workers) + " workers now share the device's L2 cache";
+  if (set.empty()) { return said + ", so its costs may not hold\n"; }
+
+  return said + "; entry " + choice.entry->id + " (" + choice.fft.spec() + ") runs " + set +
+    ", chosen for one worker's data alone\n";
+}
+
 Choice choose(const Args& args, const Env& env, u64 E, TestKind kind) {
   // Read afresh for each task rather than cached: the file is small, a task is not, and a tuning run publishing beside
   // a production run is then answered with what it has published rather than with what it had at startup.
@@ -226,6 +247,8 @@ Choice choose(const Args& args, const Env& env, u64 E, TestKind kind) {
                 joined(chosen->shadowed) + " set otherwise, so it runs only to " + to_string(chosen->reach) +
                 " rather than to the " + to_string(chosen->entry->reach) + " it measured\n");
       }
+
+      if (std::string const note = workersNote(args, env, *chosen); !note.empty()) { logOnce(note); }
 
       if (double(E) > double(chosen->reach)) {
         logOnce("Warning: " + chosen->fft.spec() + " runs " + to_string(E) + " past its validated reach " +
