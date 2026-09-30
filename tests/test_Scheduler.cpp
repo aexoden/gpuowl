@@ -2749,9 +2749,10 @@ TEST(a_cross_group_pair_is_found_by_hybrid_and_not_by_groups) {
 TEST(a_structural_value_that_loses_its_step_is_searched_in_its_own_branch) {
   // Single steps from the best set alone, as before branches: SHUFL_BYTES_W=16 loses, so WMUL is never tried beside
   // it.  Groups searches that branch too, and WMUL depends on SHUFL_BYTES_W, so the readings at the default width
-  // shuffle do not answer for it there.
+  // shuffle do not answer for it there.  Long enough for the steps the new best branch retakes from the other, which
+  // wait for every branch's steps never taken.
   SearchRun const single = runSearched({.kind = Strategy::Kind::Single}, structuralPair);
-  SearchRun const groups = runSearched({.kind = Strategy::Kind::Groups}, structuralPair, SEARCH_CALLS);
+  SearchRun const groups = runSearched({.kind = Strategy::Kind::Groups}, structuralPair, 2 * SEARCH_CALLS);
   CHECK_EQ(single.best, std::string{"-"});
   CHECK_EQ(groups.best, std::string{"SHUFL_BYTES_W=16,WMUL=1"});
 
@@ -2981,13 +2982,58 @@ TEST(a_stage_listed_in_part_offers_its_next_points_once_its_first_are_answered) 
   CHECK(head != first.end());
   if (head != first.end()) { CHECK(head->unlisted >= whole.size() - PROBE_WINDOW); }
 
-  // Every probe offered answered: the part's next points follow, and the combinations of what was read wait for them.
+  // Every probe offered answered: the part's next points follow, and the combinations of its group wait for them --
+  // "all" among them, which combines every group -- while those of groups read through are offered.
   for (const Item& item : first) {
     if (item.kind == ItemKind::Probe) { measure(item.options); }
   }
   std::vector<Item> const second = scheduler.admissible(f.db, f.env, Objective{f.db, f.env, scope(), Gating::Assumed});
   CHECK(offered(second) == std::vector<std::string>(whole.begin() + PROBE_WINDOW, whole.begin() + 2 * PROBE_WINDOW));
-  CHECK_EQ(combos(second), 0);
+  CHECK(!big.groups.empty());
+  if (big.groups.empty()) { return; }
+  std::string const group{toString(big.groups.front())};
+  CHECK(combos(second) > 0);
+  CHECK(std::ranges::none_of(second, [&](const Item& i) {
+    return i.kind == ItemKind::Combo && (i.what.starts_with("all ") || i.what.find(group) != std::string::npos);
+  }));
+}
+
+TEST(an_entry_takes_the_places_the_ranking_gives_it_in_the_order_its_search_takes_them) {
+  // Tail and Height read through, a little dearer than the defaults, so that their combination is offered beside the
+  // other groups' steps, and priced by what combinations gain rather than what steps do.
+  Fixture f;
+  FakeBench bench{f.db, f.sess, false};
+  bench.optionFactor = [](const FFTConfig&, const UseConfig& options) { return 1 + 0.01 * double(options.size()); };
+  FFTConfig const fft{PROBED};
+  auto measure = [&](const UseConfig& options) {
+    for (u32 call = 0; call < MIN_CALLS; ++call) { (void)bench.run(fft, TestKind::PRP, 118'063'003, options, {}); }
+  };
+  measure({});
+  for (const Probe& p : probesOf(nvidia(), fft, {}, Strategy{}).probes) {
+    bool const read = std::ranges::all_of(p.groups, [](Group g) { return g == Group::Tail || g == Group::Height; });
+    if (p.tier == 1 && read) { measure(p.config); }
+  }
+
+  std::vector<Baseline> one;
+  for (const Baseline& b : baselines(nvidia(), scope(), {FFTShape{"512:15:512"}})) {
+    if (b.fft.spec() == PROBED) { one.push_back(b); }
+  }
+  CHECK_EQ(one.size(), size_t(1));
+  if (one.size() != 1) { return; }
+  Scheduler const scheduler{scope(), one, 1000, Bootstrap{nvidia(), 118'063'003, {}, false}, Strategy{}};
+
+  std::vector<Item> steps;
+  for (const Item& i : scheduler.admissible(f.db, f.env, Objective{f.db, f.env, scope(), Gating::Assumed})) {
+    if (i.kind == ItemKind::Probe || i.kind == ItemKind::Combo) { steps.push_back(i); }
+  }
+  auto const combo = std::ranges::find(steps, ItemKind::Combo, &Item::kind);
+  CHECK(combo != steps.end());
+  if (combo == steps.end()) { return; }
+
+  // The combination is not where its price would put it, but in the search's order among the steps.
+  CHECK(std::ranges::is_sorted(steps, {}, &Item::order));
+  CHECK(!std::ranges::is_sorted(steps, std::greater{}, &Item::rate));
+  CHECK(std::any_of(std::next(combo), steps.end(), [](const Item& i) { return i.kind == ItemKind::Probe; }));
 }
 
 TEST(choosing_the_next_item_with_both_limits_lifted_costs_what_is_listed) {

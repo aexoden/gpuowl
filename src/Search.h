@@ -180,20 +180,24 @@ public:
   // What the entry offers now, in the order the search would take it.  `readings` are its publishable option sets,
   // canonical and cheapest first, so the first is its best set; there must be at least one.
   //
-  // Offered first, but for a restart draw that is due: the lines, which carry what the best entries found, all at once,
-  // the one jump most likely to pay before any single step; and where the entry's best set is not the built-in
-  // defaults, that set with the lines laid over it.  Each is offered while no row has measured it, so as the lines move
-  // each entry tries them again.  Then the steps of each structural branch the strategy searches, each from that
-  // branch's best set -- only the entry's best set steps into other branches -- in the order probesOf() lists them, and
-  // a combination only once its branch has nothing of a lower tier left, since it combines what those found; and after
-  // all of those, the steps the entry's rows took from another best set, which may do otherwise from this one, priced
-  // as a jump is (Offer::Restart), since what they did there is some evidence against them here.  Then every other
-  // measurement a row began and none concluded, at the exponent it began at and priced as a step, whatever has moved
-  // since.  The next draw of the restart sequence at a local optimum of the declared moves, and ahead of everything
-  // else once the entry has measured RESTART_PERIOD option sets since the last draw was declared, or until a draw begun
-  // is finished, priced then as a step is.  Whatever sets a value a build of the FFT failed with (TuneDB::failedWith())
-  // after everything else.  Nothing a row of that very configuration concluded or recorded a failure of, nothing an
-  // earlier generation's death keeps out, and nothing tried MAX_ATTEMPTS times in this process.
+  // First a measurement begun and not concluded, since its calls count for nothing until it is.  Then, but for a
+  // restart draw that is due: the lines, which carry what the best entries found, all at once, the one jump most likely
+  // to pay before any single step; and where the entry's best set is not the built-in defaults, that set with the lines
+  // laid over it.  Each is offered while no row has measured it, so as the lines move each entry tries them again.
+  // Then the steps of each structural branch the strategy searches, each from that branch's best set -- only the
+  // entry's best set steps into other branches.  Structural steps go first.  Then, where the strategy searches by
+  // group, the stages probesOf() lists take turns a step at a time, each step after as many steps of every other stage
+  // as its own stage's rows and earlier steps come to, and each stage of the best branch takes as many turns as the
+  // same stage in all the other branches together; otherwise the steps are taken in the order probesOf() lists them.  A
+  // combination is offered once the groups it combines have no step of a lower tier left, since it combines what those
+  // found.  After all of those, the steps the entry's rows took from another best set, which may do otherwise from this
+  // one, priced as a jump is (Offer::Restart), since what they did there is some evidence against them here.  Then
+  // every other measurement a row began and none concluded, at the exponent it began at and priced as a step, whatever
+  // has moved since.  The next draw of the restart sequence at a local optimum of the declared moves, and ahead of
+  // everything else once the entry has measured RESTART_PERIOD option sets since the last draw was declared, or until a
+  // draw begun is finished, priced then as a step is.  Whatever sets a value a build of the FFT failed with
+  // (TuneDB::failedWith()) after everything else.  Nothing a row of that very configuration concluded or recorded a
+  // failure of, nothing an earlier generation's death keeps out, and nothing tried MAX_ATTEMPTS times in this process.
   [[nodiscard]] std::vector<Candidate> offers(const SearchContext& context, std::span<const Reading> readings,
                                               const Worth& worth);
 

@@ -185,7 +185,7 @@ TEST(each_offer_is_priced_by_its_kind_from_the_best_set_it_steps_from_and_nothin
   CHECK(ask(search, rows, {{.config = {}, .cost = 1700}}, [](Offer, double) { return 0.0; }).empty());
 }
 
-TEST(a_combination_is_offered_once_its_branch_has_nothing_of_a_lower_tier_left) {
+TEST(a_combination_is_offered_once_the_groups_it_combines_have_nothing_of_a_lower_tier_left) {
   // Tail and Height each have an answer to combine.
   Rows rows;
   rows.add({}, 1700);
@@ -208,8 +208,25 @@ TEST(a_combination_is_offered_once_its_branch_has_nothing_of_a_lower_tier_left) 
   CHECK(!opened.empty());
   CHECK_EQ(countOf(opened, Offer::Combo), opened.size());
 
+  // Every step of Tail and Height answered: their combination, beside the other groups' steps, which it does not wait
+  // for; nothing combining a group with steps left.
+  std::vector<Probe> const all = probesOf(nvidia(), FFTConfig{SPEC}, {}, Strategy{}).probes;
+  auto const within = [](const Probe& p, std::initializer_list<Group> groups) {
+    return std::ranges::all_of(p.groups, [&](Group g) { return std::ranges::find(groups, g) != groups.end(); });
+  };
+  for (const Probe& p : all) {
+    if (p.tier == 1 && !p.config.empty() && within(p, {Group::Tail, Group::Height})) { rows.add(p.config, 1800); }
+  }
+  EntrySearch pair{entry()};
+  std::vector<Candidate> const paired = ask(pair, rows, readings, flat);
+  CHECK(countOf(paired, Offer::Probe) > 0);
+  CHECK(countOf(paired, Offer::Combo) > 0);
+  for (const Candidate& c : paired) {
+    if (c.kind == Offer::Combo) { CHECK(c.what.starts_with("Tail+Height ")); }
+  }
+
   // Every step answered, none better than the defaults: the combinations, and only those of the lowest tier left.
-  for (const Probe& p : probesOf(nvidia(), FFTConfig{SPEC}, {}, Strategy{}).probes) {
+  for (const Probe& p : all) {
     if (p.tier == 1 && !p.config.empty()) { rows.add(p.config, 1800); }
   }
   EntrySearch late{entry()};
@@ -219,6 +236,102 @@ TEST(a_combination_is_offered_once_its_branch_has_nothing_of_a_lower_tier_left) 
   u32 const tier = combined.front().tier;
   CHECK(tier == 2 || tier == 3);
   CHECK(std::ranges::all_of(combined, [&](const Candidate& c) { return c.tier == tier; }));
+}
+
+TEST(the_stages_of_a_search_by_group_take_turns_a_step_at_a_time_counting_what_the_rows_took) {
+  Rows rows;
+  rows.add({}, 1700);
+  std::vector<Reading> const readings{{.config = {}, .cost = 1700}};
+  Asking const ask{.strategy = Strategy{}};
+  ProbeList const list = probesOf(nvidia(), FFTConfig{SPEC}, {}, Strategy{});
+  std::map<std::string, const Probe*> byText;
+  for (const Probe& p : list.probes) { byText[configText(p.config)] = &p; }
+
+  // Each step offered, whether it is structural and which turn of its stage it is, given what each stage has had.
+  struct Turn {
+    bool structural = false;
+    u32 part = 0;
+    size_t turn = 0;
+  };
+  auto const turnsOf = [&](const std::vector<Candidate>& offers, std::map<u32, size_t> had) {
+    std::vector<Turn> out;
+    for (const Candidate& c : offers) {
+      auto const at = byText.find(configText(c.options));
+      CHECK(at != byText.end());
+      if (at == byText.end()) { continue; }
+      out.push_back({.structural = at->second->structural, .part = at->second->part, .turn = had[at->second->part]++});
+    }
+    return out;
+  };
+  auto const inTurn = [](const std::vector<Turn>& turns) {
+    auto const steps = std::ranges::find_if(turns, [](const Turn& t) { return !t.structural; });
+    return std::all_of(steps, turns.end(), [](const Turn& t) { return !t.structural; }) &&
+      std::is_sorted(steps, turns.end(), [](const Turn& a, const Turn& b) { return a.turn < b.turn; });
+  };
+
+  // Structural steps first, then every stage's first step before any stage's second.
+  EntrySearch search{entry()};
+  std::vector<Turn> const first = turnsOf(ask(search, rows, readings, flat), {});
+  CHECK(!first.empty() && first.front().structural);
+  CHECK(inTurn(first));
+  CHECK(!first.empty() && first.back().turn > 0);
+
+  // The largest stage's first three steps taken by the rows: it has had three turns, and goes behind the others'.
+  std::map<u32, size_t> sizes;
+  for (const Probe& p : list.probes) { ++sizes[p.part]; }
+  u32 const big = std::ranges::max_element(sizes, {}, [](const auto& s) { return s.second; })->first;
+  CHECK(sizes[big] > 4);
+  u32 measured = 0;
+  for (const Probe& p : list.probes) {
+    if (p.part == big && measured < 3) {
+      rows.add(p.config, 1800);
+      ++measured;
+    }
+  }
+  EntrySearch later{entry()};
+  std::vector<Turn> const next = turnsOf(ask(later, rows, readings, flat), {{big, 3}});
+  CHECK(inTurn(next));
+  auto const own = std::ranges::find(next, big, &Turn::part);
+  CHECK(own != next.end() && own->turn == 3);
+  CHECK(std::none_of(own, next.end(), [&](const Turn& t) { return t.part != big && t.turn < 3; }));
+}
+
+TEST(other_branches_take_turns_beside_the_best_one_whose_stages_take_as_many_as_theirs_together) {
+  Rows rows;
+  rows.add({}, 1700);
+  rows.add({{"SHUFL_BYTES_W", "16"}}, 1720);
+  rows.add({{"INPLACE", "0"}}, 1730);
+  std::vector<Reading> const readings{{.config = {}, .cost = 1700},
+                                      {.config = {{"SHUFL_BYTES_W", "16"}}, .cost = 1720},
+                                      {.config = {{"INPLACE", "0"}}, .cost = 1730}};
+  Asking const ask{.strategy = Strategy{}};
+  EntrySearch search{entry()};
+
+  // The other branches' steps priced below the best branch's, by what the set they step from costs.
+  std::vector<Candidate> const offers = ask(search, rows, readings, [](Offer, double cost) { return 1700 / cost; });
+  std::vector<bool> other;
+  for (const Candidate& c : offers) {
+    if (c.kind == Offer::Probe) { other.push_back(c.cost > 1700); }
+  }
+  auto const first = std::ranges::find(other, true);
+  CHECK(first != other.end());
+  CHECK(std::find(first, other.end(), false) != other.end());
+
+  // One stage every branch has: of two other branches, each takes a turn of it for every two the best branch takes.
+  std::map<double, std::vector<size_t>> memory;
+  for (size_t k = 0; k < offers.size(); ++k) {
+    if (offers[k].kind == Offer::Probe && offers[k].what.starts_with("Memory 1 ")) {
+      memory[offers[k].cost].push_back(k);
+    }
+  }
+  CHECK_EQ(memory.size(), size_t(3));
+  CHECK(std::ranges::all_of(memory, [](const auto& m) { return m.second.size() > 4; }));
+  if (memory.size() != 3 || memory[1700].size() < 5) { return; }
+  for (double const cost : {1720.0, 1730.0}) {
+    if (memory[cost].size() < 3) { continue; }
+    CHECK(memory[1700][2] < memory[cost][1] && memory[cost][1] < memory[1700][3]);
+    CHECK(memory[1700][4] < memory[cost][2]);
+  }
 }
 
 TEST(what_a_row_answers_or_failed_is_not_offered_and_a_started_step_is_resumed_where_it_began) {
@@ -245,6 +358,9 @@ TEST(what_a_row_answers_or_failed_is_not_offered_and_a_started_step_is_resumed_w
   const Candidate* const resumed = find(after, configText(before[2].options));
   CHECK(resumed && resumed->exponent == elsewhere && resumed->calls == 1);
   CHECK_EQ(after.size(), before.size() - 2);
+
+  // Ahead of every step not begun.
+  CHECK(resumed && resumed == &after.front());
 }
 
 TEST(a_measurement_begun_is_finished_where_it_began_after_the_best_set_has_moved_on) {
@@ -267,6 +383,7 @@ TEST(a_measurement_begun_is_finished_where_it_began_after_the_best_set_has_moved
   CHECK(begun && begun->kind == Offer::Probe && begun->exponent == elsewhere && begun->calls == 1);
   CHECK(begun && begun->cost == 1600 && begun->value == 1.0);
   CHECK(begun && begun->what == "unfinished ZEROHACK_W=0");
+  CHECK(begun && begun == &offers.front());
   CHECK_EQ(std::ranges::count_if(offers, [](const Candidate& c) { return configText(c.options) == "ZEROHACK_W=0"; }),
            1);
 

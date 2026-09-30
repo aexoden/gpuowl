@@ -244,11 +244,19 @@ against.
 
 Every step starts from the best option set the FFT has shown so far (for an option that changes which other options
 exist, such as `INPLACE`, from the best set of each of its values), and moves only the options of that step; every
-other option stays where the best set has it. When the best set changes, the steps are taken again from the new one,
-but a step whose options were already measured at the same values is not repeated unless an option they depend on
-has moved. So two changes in different pieces of a group, neither of which helps alone, are tried together only by
-the combinations (below) or by chance. The steps that switch an option of the `INPLACE` kind come before any other
-step of the FFT, so the search learns early which side of each is the faster one and spends its time there.
+other option stays where the best set has it. When the best set changes, the steps are taken from the new one; a
+step already measured from an earlier best set is taken again only after every step never measured, since what it did
+there says something, though not everything, about what it does here. So two changes in different pieces of a group,
+neither of which helps alone, are tried together only by the combinations (below) or by chance. The steps that switch
+an option of the `INPLACE` kind come before any other step of the FFT, so the search learns early which side of each
+is the faster one and spends its time there.
+
+Under `hybrid` and `groups` the pieces then take turns: each piece of each group gets a step before any gets another,
+counting the steps it has already had, so a large piece such as `Memory`'s does not keep the rest of the groups
+waiting until it is done. Where both sides of an option of the `INPLACE` kind have been measured, each piece is
+searched on every side, the faster side's taking as many turns as all the other sides' together. The combinations of two groups start once those two
+groups have no step left, while the other groups are still being searched. A measurement that was begun is finished
+before anything else of its FFT. Under `single` each option's values are tried one after another, in turn.
 
 Whatever the strategy, an FFT whose search has run out of steps is occasionally tried with a random option set, which
 is what lets the search find combinations no step would reach.
