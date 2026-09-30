@@ -218,8 +218,9 @@ To see what a set of settings would tune for without opening a GPU, put `scope` 
 
 **`stop=<P>%|0`**: the run ends once nothing left is expected to lower `T` by `P` percent. Default `0.1%`. A larger
 value gives a shorter run (`stop=1%`); `stop=0` runs until you stop it with Ctrl-C. The bootstrap, the accuracy
-checks, the coverage of the workload, a halving of the search once begun (see `contenders=`) and a measurement once
-begun, which one more call finishes, are always completed, whatever `stop=` says.
+checks, the coverage of the workload, the first two halvings of the search and any later one once begun (see
+`contenders=` and `halvings=`) and a measurement once begun, which one more call finishes, are always completed,
+whatever `stop=` says.
 
 A value without `%` is refused, except `0`: `0.1` could mean either 0.1% or 10%.
 
@@ -315,13 +316,21 @@ then searched by expected gain for as many calls as the rounds gave out, after w
 including those that dropped out and those that have come within 10% since, are halved again, each round twice as long
 as the matching round of the last halving. A round gives each FFT in it its calls whatever the search expects them to
 gain, since what it is for is a gain several steps away that no single step shows. A halving, once begun, runs to its
-end whatever `stop=` says, so a short run still looks at more than one shape; `stop=` decides whether the next one
-begins, which it does only while a step of one of its FFTs is worth `stop=` on its own. `0` ranks the search by expected
-gain from the start, which tends to spend everything on whichever FFT was fastest before tuning. Default `16`.
+end whatever `stop=` says, so a short run still looks at more than one shape. The first two halvings begin whatever
+`stop=` says too (see `halvings=`); `stop=` decides whether a later one begins, which it does only while a step of one
+of its FFTs is worth `stop=` on its own. `0` ranks the search by expected gain from the start, which tends to spend
+everything on whichever FFT was fastest before tuning. Default `16`.
 
 **`roundCalls=<N>`**: how many calls each contender is searched for in the first round of the first halving; each
 later round doubles it, and so does each later halving. Only calls made during a round count towards it. Default
 `16`, so 16 contenders take about 1000 calls in the first halving.
+
+**`halvings=<N>`**: how many halvings of the search begin whatever `stop=` says. How much a step is expected to gain is
+judged one step at a time, so a gain that only shows after several steps (an option that helps only beside another, or
+two options that each cost a little alone) is invisible to `stop=`; the second halving's longer rounds are what find
+most of those. Later halvings begin only while a step of one of their FFTs is worth `stop=` on its own. `1` gives a
+shorter run that may miss such gains. Default `2`, so with 16 contenders about 3000 calls are made in the first two
+halvings before `stop=` can end a run.
 
 ### Output
 

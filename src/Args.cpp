@@ -282,6 +282,8 @@ selection.txt, which a normal run in the same directory (or its -pool) reads.  T
                          contenders=<N>      how many FFTs the search is first spread over, halving them each round
                                              to the faster half; 0 ranks the search by expected gain alone [16]
                          roundCalls=<N>      calls each contender is searched for in the first round, doubling [16]
+                         halvings=<N>        halvings run whatever stop= says; later ones only while a step is
+                                             worth it [2]
                          tunetxt=0|1         also write tune.txt, for binaries that do not read selection.txt [0]
                          dashboard=0|1       a full-screen view of the run on a terminal; the log file is unchanged [0]
                      Subcommands that open no device (env=<id> picks a database env where there is more than one):

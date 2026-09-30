@@ -707,6 +707,10 @@ TuneCommand parseTuneCommand(std::string_view text) {
       std::optional<u32> const n = parseInt<u32>(val);
       if (!n || *n < 1) { throw std::string{"-tune: roundCalls= takes a count of 1 or more"}; }
       out.halving.roundCalls = *n;
+    } else if (key == "halvings" && queues) {
+      std::optional<u32> const n = parseInt<u32>(val);
+      if (!n || *n < 1) { throw std::string{"-tune: halvings= takes a count of 1 or more"}; }
+      out.halving.halvings = *n;
     } else if (key == "tunetxt" && (isRun || out.verb == TuneVerb::Emit)) {
       if (val != "0" && val != "1") { throw who + ": tunetxt= takes 0 or 1"; }
       out.tuneTxt = val == "1";
@@ -742,13 +746,13 @@ TuneCommand parseTuneCommand(std::string_view text) {
       case TuneVerb::Run:
         accepted = "workload=<lo>-<hi>, probe=<E>, probeWeight=<0..1>, kinds=prp|ll|prp+ll, bootstrap=0|1,"
                    " strategy=hybrid|single|groups|permute:<KEY>+<KEY>..., maxPermute=<N>|all, maxPoints=<N>|all,"
-                   " comboTop=<N>, comboTiers=1|2|3, contenders=<N>, roundCalls=<N>, stop=<P>%|0, tunetxt=0|1,"
-                   " dashboard=0|1, or a subcommand: emit, reset, adopt, compact, scope, status, accuracy";
+                   " comboTop=<N>, comboTiers=1|2|3, contenders=<N>, roundCalls=<N>, halvings=<N>, stop=<P>%|0,"
+                   " tunetxt=0|1, dashboard=0|1, or a subcommand: emit, reset, adopt, compact, scope, status, accuracy";
         break;
       case TuneVerb::Status:
         accepted = "env=<id>, and a run's workload=<lo>-<hi>, probe=<E>, probeWeight=<0..1>, kinds=prp|ll|prp+ll,"
                    " bootstrap=0|1, strategy=<S>, maxPermute=<N>|all, maxPoints=<N>|all, comboTop=<N>,"
-                   " comboTiers=1|2|3, contenders=<N>, roundCalls=<N>, stop=<P>%|0";
+                   " comboTiers=1|2|3, contenders=<N>, roundCalls=<N>, halvings=<N>, stop=<P>%|0";
         break;
       case TuneVerb::Accuracy: accepted = "workload=<lo>-<hi>, probe=<E>, fft=<spec>, groups=<Group>+<Group>..."; break;
       }
@@ -817,7 +821,8 @@ std::string runSettings(const RunScope& scope, const TuneCommand& command) {
     ",bootstrap=" + (command.bootstrap ? "1" : "0") + ",strategy=" + command.strategy.text();
   for (const std::string& setting : strategySettings(command.strategy)) { out += "," + setting; }
   out += ",contenders=" + std::to_string(command.halving.contenders) +
-    ",roundCalls=" + std::to_string(command.halving.roundCalls);
+    ",roundCalls=" + std::to_string(command.halving.roundCalls) +
+    ",halvings=" + std::to_string(command.halving.halvings);
   return out + ",stop=" + (command.stop > 0 ? shortest(command.stop * 100) + "%" : "0");
 }
 

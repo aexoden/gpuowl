@@ -85,10 +85,18 @@ struct Strategy {
 inline constexpr u32 CONTENDERS = 16;
 inline constexpr u32 ROUND_CALLS = 16;
 
+// How many halvings begin whatever the value model makes of their steps.  One is not enough: the value model looks a
+// single step ahead, and once the first halving has shown it nothing it prices every step below the stop fraction,
+// while gains a structural branch or two groups together make are only reached by the second halving's longer rounds.
+inline constexpr u32 HALVINGS = 2;
+
 struct Halving {
   // 0 or 1: no halving, and the search is ranked by value alone from the start.
   u32 contenders = 0;
   u32 roundCalls = ROUND_CALLS;
+
+  // Later halvings begin only while a step of one of their contenders is worth the stop fraction on its own.
+  u32 halvings = HALVINGS;
 
   [[nodiscard]] bool on() const { return contenders > 1; }
 };

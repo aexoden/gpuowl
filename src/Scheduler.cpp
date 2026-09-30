@@ -866,7 +866,8 @@ HalvingState Scheduler::halvingState(const TuneDB& db, u32 env,
 
     // The next halving, over every contender as they stand now, its first round twice the last one's.
     std::vector<size_t> const next = poolOf(standing, contends, halving_.contenders);
-    if (next.size() < 2 || !due(next) || std::ranges::none_of(next, explored.worth)) {
+    bool const byRule = (first == rounds.rend() ? 0 : halvings(first)) < halving_.halvings;
+    if (next.size() < 2 || !due(next) || (!byRule && std::ranges::none_of(next, explored.worth))) {
       out.pool = std::move(pool);
       return out;
     }
