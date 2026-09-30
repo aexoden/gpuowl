@@ -219,7 +219,8 @@ struct Item {
 };
 
 // Whether `item` runs by rule rather than by value: a step of the bootstrap, a gate reading, a baseline covering the
-// workload or taken in the defaults sweep, or a step of a halving's round.
+// workload or taken in the defaults sweep, a step of a halving's round, or a search's measurement begun, which one more
+// call concludes and whose call so far counts for nothing until it does.
 [[nodiscard]] bool byRule(const Item& item);
 
 // Whether `item` is worth a call where anything expected to lower T by less than `floor` is not: one that runs by rule

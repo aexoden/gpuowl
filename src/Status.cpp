@@ -10,6 +10,7 @@
 
 #include <cinttypes>
 #include <ctime>
+#include <limits>
 
 namespace tune {
 
@@ -187,12 +188,13 @@ void logStatus(const TuneStatus& s, const DbEnv& env, const std::string& valuedA
     log("tune: status: next, as a run started now would rank them:\n");
     for (size_t i = 0; i < s.next.size(); ++i) {
       const Item& item = s.next[i].item;
-      std::string worth = "by rule";
-      if (!byRule(item)) {
+      // What runs by rule is priced at the least a price can be where nothing else prices it.
+      std::string worth = byRule(item) ? "by rule" : "";
+      if (!byRule(item) || item.value > std::numeric_limits<double>::min()) {
         char buf[96];
         snprintf(buf, sizeof(buf), "worth %.4f us/it (%s of T)", item.value,
                  percent(s.valuedT > 0 ? item.value / s.valuedT : 0).c_str());
-        worth = buf;
+        worth += (worth.empty() ? "" : ", ") + std::string{buf};
       }
       log("tune: status:   %zu. %s %s: %s, ~%.0f s\n", i + 1, toString(item.kind), s.next[i].label.c_str(),
           worth.c_str(), item.seconds);

@@ -167,7 +167,7 @@ Item Scheduler::itemOf(size_t index, Candidate candidate) const {
           .exponent = candidate.exponent,
           .value = candidate.value,
           .cost = candidate.cost,
-          .seconds = clock_.seconds(candidate.cost, fresh),
+          .seconds = clock_.seconds(candidate.observed > 0 ? candidate.observed : candidate.cost, fresh),
           .fresh = fresh,
           .calls = candidate.calls,
           .draw = candidate.draw,
@@ -1001,6 +1001,11 @@ std::vector<Item> Scheduler::admissible(const TuneDB& db, u32 env, const Objecti
       };
       std::vector<Item> items;
       for (Candidate& c : searches_[i].offers(context, at->second, price)) {
+        // A measurement begun is a configuration a call has already read, not a step whose gain on the entry's best
+        // set is unknown: it is worth at least what it would save were that reading to hold.
+        if (c.calls > 0 && c.observed > 0) {
+          c.value = std::max(c.value, saving(objective.points(), b.kind, b.band, c.observed));
+        }
         items.push_back(itemOf(i, std::move(c)));
         items.back().order = u32(items.size() - 1);
       }
@@ -1217,7 +1222,8 @@ Phase Scheduler::phase(const BootstrapState& state, const std::vector<Item>& ran
 }
 
 bool byRule(const Item& item) {
-  return item.bootstrap || item.kind == ItemKind::Gate || item.cover || item.sweep || item.halving;
+  return item.bootstrap || item.kind == ItemKind::Gate || item.cover || item.sweep || item.halving ||
+    (isSearch(item) && item.calls > 0);
 }
 
 bool worthRunning(const Item& item, double floor) {
