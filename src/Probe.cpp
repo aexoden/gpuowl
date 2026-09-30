@@ -3,9 +3,11 @@
 #include "Probe.h"
 
 #include "Bootstrap.h"
+#include "Stats.h"
 #include "TuneDB.h"
 
 #include <algorithm>
+#include <cmath>
 #include <iterator>
 #include <limits>
 #include <numeric>
@@ -84,9 +86,16 @@ struct Seed {
   double gain = 0;
 };
 
-// The best `top` distinct projections of `readings` onto the axes `unit`, the background's own first.  `readings` are
-// the branch's, the background first and the rest cheapest first.  A projection this background cannot place -- a value
-// that a dependent's list, as the background has it, does not offer -- is passed over.
+// Whether the mean of `later` is within PESSIMISM_SIGMA combined standard errors of `earlier`'s, or below it.
+[[nodiscard]] bool indistinguishable(const Reading& earlier, const Reading& later) {
+  double const behind = (later.cost - PESSIMISM_SIGMA * later.error) - (earlier.cost - PESSIMISM_SIGMA * earlier.error);
+  return behind <= PESSIMISM_SIGMA * std::hypot(earlier.error, later.error);
+}
+
+// The best `top` distinct projections of `readings` onto the axes `unit`, the background's own first, then every later
+// one indistinguishable from the last of those.  `readings` are the branch's, the background first and the rest
+// cheapest first.  A projection this background cannot place -- a value that a dependent's list, as the background has
+// it, does not offer -- is passed over.
 [[nodiscard]] std::vector<Seed> seedsOf(const Env& env, const FFTConfig& fft, const std::vector<Axis>& axes,
                                         const std::vector<size_t>& unit, std::span<const Reading> readings, u32 top) {
   std::vector<Seed> out{Seed{}};
@@ -95,8 +104,9 @@ struct Seed {
   for (size_t const i : unit) { origin.push_back(axes[i].current); }
   seen.insert(std::move(origin));
 
+  const Reading* last = readings.empty() ? nullptr : &readings.front();
   for (const Reading& reading : readings) {
-    if (out.size() >= top) { break; }
+    if (out.size() >= top && !indistinguishable(*last, reading)) { continue; }
 
     std::vector<size_t> at;
     for (size_t const i : unit) {
@@ -113,6 +123,7 @@ struct Seed {
       if (at[j] != axes[unit[j]].current) { seed.moves.emplace_back(unit[j], at[j]); }
     }
     out.push_back(std::move(seed));
+    if (out.size() <= top) { last = &reading; }
   }
   return out;
 }

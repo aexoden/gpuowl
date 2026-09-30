@@ -177,6 +177,34 @@ TEST(a_group_answer_is_the_best_reading_of_each_distinct_projection) {
   CHECK(std::ranges::none_of(branch.probes, [](const Probe& p) { return p.tier > 1; }));
 }
 
+TEST(an_answer_the_readings_cannot_tell_from_the_last_one_carried_is_carried_too) {
+  // Tail's two answers past the background's are TAIL_TRIGS=1 and TAIL_KERNELS=1.  TAIL_KERNELS=3 reads exactly what
+  // TAIL_KERNELS=1 does, so which of the two comes first says nothing, and both are combined; TAIL_KERNELS=0, dearer
+  // and read as exactly, is not.
+  FFTConfig const fft{"512:15:512:212"};
+  Strategy const strategy{.kind = Strategy::Kind::Hybrid, .comboTiers = 2};
+  std::vector<Reading> readings{{{}, 100},
+                                {{{"ZEROHACK_H", "0"}}, 100.1},
+                                {{{"TAIL_TRIGS", "1"}}, 100.4},
+                                {{{"TAIL_KERNELS", "1"}}, 100.8},
+                                {{{"TAIL_KERNELS", "3"}}, 100.8},
+                                {{{"TAIL_KERNELS", "0"}}, 101.6}};
+  CHECK(textsOf(probesOf(nvidia(), fft, {}, strategy, readings), "Tail+Height") ==
+        (std::vector<std::string>{"TAIL_TRIGS=1,ZEROHACK_H=0", "TAIL_KERNELS=1,ZEROHACK_H=0",
+                                  "TAIL_KERNELS=3,ZEROHACK_H=0"}));
+
+  // Read less exactly, TAIL_KERNELS=0 is within the noise of TAIL_KERNELS=1 -- its mean, 100.8, is 0.2 behind that
+  // one's 100.6, well within twice their combined standard error -- while TAIL_TRIGS=0, as exact as TAIL_KERNELS=1 and
+  // 2.2 behind it, is not.
+  readings[3].error = 0.1;
+  readings[4].error = 0.1;
+  readings[5].error = 0.4;
+  readings.push_back({{{"TAIL_TRIGS", "0"}}, 103, 0.1});
+  CHECK(textsOf(probesOf(nvidia(), fft, {}, strategy, readings), "Tail+Height") ==
+        (std::vector<std::string>{"TAIL_TRIGS=1,ZEROHACK_H=0", "TAIL_KERNELS=1,ZEROHACK_H=0",
+                                  "TAIL_KERNELS=3,ZEROHACK_H=0", "TAIL_KERNELS=0,ZEROHACK_H=0"}));
+}
+
 TEST(an_answer_the_background_cannot_hold_is_passed_over) {
   // FFT3261 at width 1K offers L2_STRIPING up to 16 alone but only up to 8 beside MULTI_Q=1.  From MULTI_Q=1, the
   // cheapest other reading has L2_STRIPING=16, which that background cannot hold: Placement's answers are the next two
