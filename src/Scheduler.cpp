@@ -773,6 +773,34 @@ HalvingState Scheduler::halvingState(const TuneDB& db, u32 env,
   };
   auto const contends = [&](size_t i) { return standing.contends(i); };
 
+  // The latest round before `last` still owing calls to entries no round since has taken up: entries the workload did
+  // not weigh when the round was ended.  A round is ended wherever its entries in the workload have had theirs, or a
+  // workload that has narrowed for good would never halve again; those it could not see are served once a workload
+  // that weighs them runs, before anything else is decided.
+  struct Debt {
+    Rows row;
+    std::vector<size_t> owed;
+    std::vector<u64> had;
+  };
+  auto const debtBefore = [&](Rows last) -> std::optional<Debt> {
+    std::set<size_t> later;
+    for (Rows r = rounds.rbegin(); r != rounds.rend(); ++r) {
+      Debt debt{.row = r, .owed = {}, .had = {}};
+      for (const RoundMember& m : r->members) {
+        auto const at = indexOf.find({m.fft, m.kind, m.regime.label()});
+        if (at == indexOf.end() || !later.insert(at->second).second) { continue; }
+        size_t const i = at->second;
+        u64 const had = calls[i] > m.from ? calls[i] - m.from : 0;
+        if (r != last && r->members.size() > 1 && had < r->calls && explored.offers(i)) {
+          debt.owed.push_back(i);
+          debt.had.push_back(had);
+        }
+      }
+      if (!debt.owed.empty()) { return debt; }
+    }
+    return std::nullopt;
+  };
+
   // Each pass either finds where the halving stands, or records a round that has just ended or begun, so that a round
   // whose entries have nothing to take is passed over at once.
   for (u32 pass = 0; pass < 2 * baselines_.size() + 64; ++pass) {
@@ -804,17 +832,22 @@ HalvingState Scheduler::halvingState(const TuneDB& db, u32 env,
     out.halving = first == rounds.rend() ? 0 : halvings(first);
     out.contenders = u32(first == rounds.rend() ? last->members.size() : first->members.size());
 
-    if (last->members.size() > 1) {
-      if (owed) {
-        out.active = true;
-        out.round = last->round - 1;
-        out.n = last->n;
-        out.budget = last->calls;
-        out.pool = std::move(pool);
-        out.calls = std::move(had);
-        return out;
-      }
+    auto const serve = [&](Rows row, std::vector<size_t> members, std::vector<u64> served) {
+      auto const head = firstOf(row);
+      out.halving = head == rounds.rend() ? 0 : halvings(head);
+      out.contenders = u32(head == rounds.rend() ? row->members.size() : head->members.size());
+      out.active = true;
+      out.round = row->round - 1;
+      out.n = row->n;
+      out.budget = row->calls;
+      out.pool = std::move(members);
+      out.calls = std::move(served);
+      return out;
+    };
+    if (last->members.size() > 1 && owed) { return serve(last, std::move(pool), std::move(had)); }
+    if (auto debt = debtBefore(last)) { return serve(debt->row, std::move(debt->owed), std::move(debt->had)); }
 
+    if (last->members.size() > 1) {
       // Over: its better half go on, and where one is left, it leads until the next halving.  A half with nothing left
       // to take has nothing left to show, and the next halving begins instead.
       std::ranges::sort(pool, [&](size_t a, size_t b) { return standing.ahead(a, b); });

@@ -303,17 +303,19 @@ each piece's best answers with the others'; `3`: everything is combined. Default
 fastest one somewhere in the workload, as measured now or as measured at the built-in defaults: an FFT that is behind
 only because the fastest has been searched and it has not is still a contender. They are taken nearest first as they
 stand now, one variant of each shape before a second variant of any, so that the search looks at several shapes rather
-than the variants of one; of two equally near, the one that runs more of the workload goes first. Each is searched for `roundCalls` calls, then the slower half
-drops out, the rest get twice as many calls, and so on until one is left. An FFT stays in a round until it has had its
-calls, however far ahead another pulls meanwhile, and a round is recorded in the database, so an interrupted run picks
-it up where it stopped. The FFT left is then searched by expected gain for as many calls as the rounds gave out,
-after which the contenders as they stand then, including those that dropped out and those that have come within 10%
-since, are halved again, each round twice as long as the matching round of the last halving. A round gives each FFT
-in it its calls whatever the search expects them to gain, since what it is for is a gain several steps away that no
-single step shows. A halving, once begun, runs to its end whatever `stop=` says, so a short run still looks at more
-than one shape; `stop=` decides whether the next one begins, which it does only while a step of one of its FFTs is
-worth `stop=` on its own. `0` ranks the search by expected gain from the start, which tends to spend everything on
-whichever FFT was fastest before tuning. Default `16`.
+than the variants of one; of two equally near, the one that runs more of the workload goes first. Each is searched for
+`roundCalls` calls, then the slower half drops out, the rest get twice as many calls, and so on until one is left. An
+FFT stays in a round until it has had its calls, however far ahead another pulls meanwhile, and a round is recorded in
+the database, so an interrupted run picks it up where it stopped. When the workload changes (another range, or other
+`kinds=`), a round goes on with the FFTs in it that the new workload runs; one it no longer runs keeps the calls it is
+owed, and has them, before anything else is decided, as soon as a later tune's workload runs it again. The FFT left is
+then searched by expected gain for as many calls as the rounds gave out, after which the contenders as they stand then,
+including those that dropped out and those that have come within 10% since, are halved again, each round twice as long
+as the matching round of the last halving. A round gives each FFT in it its calls whatever the search expects them to
+gain, since what it is for is a gain several steps away that no single step shows. A halving, once begun, runs to its
+end whatever `stop=` says, so a short run still looks at more than one shape; `stop=` decides whether the next one
+begins, which it does only while a step of one of its FFTs is worth `stop=` on its own. `0` ranks the search by expected
+gain from the start, which tends to spend everything on whichever FFT was fastest before tuning. Default `16`.
 
 **`roundCalls=<N>`**: how many calls each contender is searched for in the first round of the first halving; each
 later round doubles it, and so does each later halving. Only calls made during a round count towards it. Default
