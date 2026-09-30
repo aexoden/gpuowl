@@ -165,6 +165,12 @@ struct Probe {
   // name but not a part.
   u32 part = 0;
 
+  // The groups its stage searches: its own, or for a combination each group it combines; Group::None for a key of no
+  // group, and none at all for a permutation.
+  std::vector<Group> groups{};
+
+  bool structural = false;
+
   // The axes it moves, into ProbeList::axes, and the position each moves to.
   std::vector<std::pair<size_t, size_t>> moves;
 
@@ -188,6 +194,9 @@ struct ProbeList {
     u32 part = 0;
     u32 tier = 1;
     u64 most = 0;
+
+    // As Probe::groups.
+    std::vector<Group> groups{};
   };
   std::vector<Unlisted> unlisted{};
 };

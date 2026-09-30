@@ -295,6 +295,15 @@ TEST(landscape_a_gain_last_in_a_trailing_ffts_search_is_found) {
   CHECK_EQ(o.published[std::string{B} + " prp short32"], std::string{"ZEROHACK_H=0"});
 }
 
+TEST(landscape_a_gain_in_the_last_group_is_reached_by_the_default_strategy_within_two_hours) {
+  // Every group's first steps before any group's later ones, so the Height step is not left behind all of Memory's.
+  Scenario s = lateGroup();
+  s.budget = 2 * 3600;
+  Outcome o = simulate(s);
+  CHECK(o.settled().has_value());
+  CHECK_EQ(o.published[std::string{B} + " prp short32"], std::string{"ZEROHACK_H=0"});
+}
+
 TEST(landscape_an_fft_that_builds_nothing_holds_nothing_back) {
   Scenario s = failedPrior();
   s.budget = 3600;

@@ -869,6 +869,30 @@ bool Scheduler::swept(const TuneDB& db, u32 env, const Objective& objective) con
     [&](const Item& item) { return baselines_[item.index].band.contains(scope_.probe); });
 }
 
+namespace {
+
+bool isSearch(const Item& item) {
+  return item.kind == ItemKind::Probe || item.kind == ItemKind::Combo || item.kind == ItemKind::Restart;
+}
+
+// Each entry's search items in the places the ranking gave them, but in the order its search takes them: the ranking
+// decides how often an entry is served, and its search what it is served with, which a price per kind of step would
+// otherwise decide -- a combination or another branch's step waiting on every step it is priced below.
+void inSearchOrder(std::vector<Item>& items) {
+  std::map<size_t, std::vector<size_t>> places;
+  for (size_t k = 0; k < items.size(); ++k) {
+    if (isSearch(items[k])) { places[items[k].index].push_back(k); }
+  }
+  for (const auto& [index, at] : places) {
+    std::vector<Item> mine;
+    for (size_t const k : at) { mine.push_back(std::move(items[k])); }
+    std::ranges::stable_sort(mine, {}, &Item::order);
+    for (size_t j = 0; j < at.size(); ++j) { items[at[j]] = std::move(mine[j]); }
+  }
+}
+
+}  // namespace
+
 std::vector<Item> Scheduler::admissible(const TuneDB& db, u32 env, const Objective& objective, double floor) const {
   BootstrapState const state = bootstrapState(db, env);
   const Env& device = bootstrap_.env();
@@ -942,7 +966,10 @@ std::vector<Item> Scheduler::admissible(const TuneDB& db, u32 env, const Objecti
         return rule ? std::max(value, std::numeric_limits<double>::min()) : value;
       };
       std::vector<Item> items;
-      for (Candidate& c : searches_[i].offers(context, at->second, price)) { items.push_back(itemOf(i, std::move(c))); }
+      for (Candidate& c : searches_[i].offers(context, at->second, price)) {
+        items.push_back(itemOf(i, std::move(c)));
+        items.back().order = u32(items.size() - 1);
+      }
       return items;
     };
     byRuleOf = [offer](size_t i) { return offer(i, true); };
@@ -1006,17 +1033,15 @@ std::vector<Item> Scheduler::admissible(const TuneDB& db, u32 env, const Objecti
   }
 
   std::ranges::stable_sort(out, [](const Item& a, const Item& b) { return a.rate() > b.rate(); });
+  inSearchOrder(out);
 
   // While the halving is on, its round is all the search there is: the steps of the contenders still short of their
   // calls, priced by rule, since a round is there to find what the value model cannot see coming.  A contender whose
   // search the bootstrap has is served there, and its calls count for both.
-  auto const search = [](const Item& i) {
-    return i.kind == ItemKind::Probe || i.kind == ItemKind::Combo || i.kind == ItemKind::Restart;
-  };
   std::set<size_t> worth;
   for (const std::vector<Item>* items : {&out, &bootstrap}) {
     for (const Item& item : *items) {
-      if (search(item) && item.value > 0 && item.value >= floor) { worth.insert(item.index); }
+      if (isSearch(item) && item.value > 0 && item.value >= floor) { worth.insert(item.index); }
     }
   }
   std::map<size_t, std::vector<Item>> explored;
@@ -1027,7 +1052,7 @@ std::vector<Item> Scheduler::admissible(const TuneDB& db, u32 env, const Objecti
         at->second = bootstrap;
       } else if (byRuleOf) {
         at->second = byRuleOf(i);
-        std::erase_if(at->second, [&](const Item& item) { return !search(item); });
+        std::erase_if(at->second, [](const Item& item) { return !isSearch(item); });
       }
     }
     return at->second;
@@ -1055,9 +1080,9 @@ std::vector<Item> Scheduler::admissible(const TuneDB& db, u32 env, const Objecti
       }
     }
     // The contender furthest from its calls first, so that a round is spread across its contenders as it goes; each
-    // contender's steps best rate first, which is the search's own order where the value model makes nothing of them.
-    std::ranges::stable_sort(round, [](const Item& a, const Item& b) { return a.rate() > b.rate(); });
+    // contender's steps in its search's order.
     std::ranges::stable_sort(round, [&](const Item& a, const Item& b) { return owed.at(a.index) < owed.at(b.index); });
+    inSearchOrder(round);
     out = std::move(round);
   }
   return inTurn({std::move(swept), std::move(bootstrap), std::move(out)});

@@ -212,6 +212,9 @@ struct Item {
   // which later windows list.
   u64 unlisted = 0;
 
+  // A probe's, a combo's or a restart's: where its entry's search put it among what it offered.
+  u32 order = 0;
+
   [[nodiscard]] double rate() const { return seconds > 0 ? value / seconds : 0; }
 };
 

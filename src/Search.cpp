@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <cassert>
+#include <tuple>
 #include <utility>
 
 namespace tune {
@@ -293,6 +294,20 @@ std::vector<Candidate> EntrySearch::offers(const SearchContext& context, std::sp
                "its best set under the default lines ");
   }
 
+  // What the branches offer, before it is put in the order the entry takes it: steps never taken, then those taken
+  // from another best set, then those that set a value a build failed with.
+  struct Listed {
+    Candidate candidate;
+    int pass = 0;
+    bool structural = false;
+    size_t branch = 0;
+
+    // A step never taken: how many steps of its stage go before it, the ones the rows have taken among them.
+    size_t turn = 0;
+  };
+  std::vector<Listed> listed;
+  bool const rotate = context.strategy.branches();
+
   for (size_t branch = 0; branch < branches.size(); ++branch) {
     double const cost = branches[branch].cost;
     double const value = worth(Offer::Probe, cost);
@@ -304,8 +319,8 @@ std::vector<Candidate> EntrySearch::offers(const SearchContext& context, std::sp
     std::optional<double> againValue;
     auto const again = [&] { return againValue ? *againValue : *(againValue = worth(Offer::Restart, cost)); };
 
-    // Offers what the listing in `memo` has not answered.  Unless it is the `last` listing, false where a stage listed
-    // in part offered nothing, having then offered nothing at all.
+    // Lists what the listing in `memo` has not answered.  Unless it is the `last` listing, false where a stage listed
+    // in part offered nothing, having then listed nothing at all.
     auto offerListed = [&](ListMemo& memo, bool last) {
       const ProbeList& list = memo.list;
       for (size_t r = 0; r < concluded.size(); ++r) {
@@ -320,21 +335,41 @@ std::vector<Candidate> EntrySearch::offers(const SearchContext& context, std::sp
         }
       }
 
-      // The list is in tier order, and a combination waits for the tiers below it to be answered, the points of a stage
-      // not listed yet among them.  A step taken from another best set is no answer here, but it waits for the steps
-      // that were never taken, a combination included: what it did there is some evidence of what it will do here.  A
-      // step that sets a value a build failed with waits for both.
+      // What each stage has had: its steps a row has taken, from this best set or another.
+      std::map<u32, size_t> had;
+      for (size_t p = 0; p < list.probes.size(); ++p) {
+        if (memo.answered[p] || memo.seen[p]) { ++had[list.probes[p].part]; }
+      }
+
+      // A combination waits for the steps of the groups it combines, the points of a stage of theirs not listed yet
+      // among them, since it combines what those found; steps of other groups do not hold it back.  A step taken from
+      // another best set is no answer here, but it waits for the steps that were never taken, a combination included:
+      // what it did there is some evidence of what it will do here.  A step that sets a value a build failed with
+      // waits for both.
       std::optional<u32> lowest;
-      for (const ProbeList::Unlisted& u : list.unlisted) { lowest = std::min(lowest.value_or(u.tier), u.tier); }
-      size_t const first = out.size();
+      std::map<u32, std::set<Group>> waiting;
+      for (const ProbeList::Unlisted& u : list.unlisted) {
+        lowest = std::min(lowest.value_or(u.tier), u.tier);
+        waiting[u.tier].insert(u.groups.begin(), u.groups.end());
+      }
+      auto const held = [&](const Probe& probe) {
+        for (auto const& [tier, groups] : waiting) {
+          if (tier >= probe.tier) { break; }
+          if (std::ranges::any_of(probe.groups, [&](Group g) { return groups.contains(g); })) { return true; }
+        }
+        return false;
+      };
+
+      size_t const first = listed.size();
       std::vector<std::string> taken;
       std::set<u32> fed;
+      std::map<u32, size_t> turns;
       auto const rank = [&](size_t p) { return pinned(list.probes[p].config) ? 2 : memo.seen[p] ? 1 : 0; };
       for (int const pass : {0, 1, 2}) {
         for (size_t p = 0; p < list.probes.size(); ++p) {
           if (memo.answered[p] || rank(p) != pass) { continue; }
           const Probe& probe = list.probes[p];
-          if (lowest && probe.tier > *lowest) { break; }
+          if (held(probe)) { continue; }
           double const probeWorth = pass == 1 ? again() : probe.tier > 1 ? comboValue : value;
           if (probeWorth <= 0) { continue; }
           const std::string& text = memo.texts[p];
@@ -353,12 +388,17 @@ std::vector<Candidate> EntrySearch::offers(const SearchContext& context, std::sp
           if (!offered.insert(text).second) { continue; }
           taken.push_back(text);
           lowest = std::min(lowest.value_or(probe.tier), probe.tier);
+          waiting[probe.tier].insert(probe.groups.begin(), probe.groups.end());
 
           if (fed.insert(probe.part).second) {
             auto const u = std::ranges::find(list.unlisted, probe.part, &ProbeList::Unlisted::part);
             if (u != list.unlisted.end()) { c.unlisted = u->most; }
           }
-          out.push_back(std::move(c));
+          listed.push_back({.candidate = std::move(c),
+                            .pass = pass,
+                            .structural = probe.structural,
+                            .branch = branch,
+                            .turn = pass == 0 && rotate ? had[probe.part] + turns[probe.part]++ : 0});
         }
       }
 
@@ -366,7 +406,7 @@ std::vector<Candidate> EntrySearch::offers(const SearchContext& context, std::sp
       bool const starved = std::ranges::any_of(
         list.unlisted, [&](const ProbeList::Unlisted& u) { return u.tier <= *lowest && !fed.contains(u.part); });
       if (!starved || last) { return true; }
-      out.erase(out.begin() + ptrdiff_t(first), out.end());
+      listed.erase(listed.begin() + ptrdiff_t(first), listed.end());
       for (const std::string& text : taken) { offered.erase(text); }
       return false;
     };
@@ -378,6 +418,18 @@ std::vector<Candidate> EntrySearch::offers(const SearchContext& context, std::sp
       memo = &probeList(context, branches[branch].best, readings, branch == 0, memo->from, true);
     }
   }
+
+  // Structural steps first, since which side of a structural key is the faster one decides where the rest of the
+  // search is best spent.  Then, where the strategy searches by group, the stages take turns a step at a time, a step
+  // going after as many steps of every other stage as its own has had, so that a large stage does not keep the rest
+  // waiting until it is done, and a resumed run takes them in the order an uninterrupted one would.  A stage of the
+  // best branch takes a turn for every turn the same stage takes in all the other branches together.  One key at a
+  // time, no stage is large, and each key's values are taken together, as coordinate descent takes them.
+  size_t const others = std::max<size_t>(1, branches.size() - 1);
+  std::ranges::stable_sort(listed, {}, [&](const Listed& l) {
+    return std::tuple{l.pass, !l.structural, l.branch ? l.turn * others : l.turn, l.branch};
+  });
+  for (Listed& l : listed) { out.push_back(std::move(l.candidate)); }
 
   // A measurement begun is finished, even where nothing above lists it any more: the best set it was a step from, the
   // lines it was laid under or the stage it was listed in have moved on since, and its call counts for nothing until it
@@ -416,6 +468,8 @@ std::vector<Candidate> EntrySearch::offers(const SearchContext& context, std::sp
     }
   }
 
+  // A measurement begun first, since its calls count for nothing until it concludes.
+  (void)std::ranges::stable_partition(out, [](const Candidate& c) { return c.calls > 0; });
   (void)std::ranges::stable_partition(out, [&](const Candidate& c) { return !pinned(c.options); });
   return out;
 }

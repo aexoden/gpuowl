@@ -139,8 +139,11 @@ public:
 
   // Every point of `axes` other than where they stand now: fewest axes moved first, then the combinations of axes in
   // declaration order, then each axis's positions in ascending order.  Stops once `limit` probes have been offered.
-  void enumerate(const std::vector<size_t>& axes, const std::string& stage, u32 limit) {
+  void enumerate(const std::vector<size_t>& axes, const std::string& stage, u32 limit, std::vector<Group> groups,
+                 bool structural = false) {
     ++part_;
+    groups_ = std::move(groups);
+    structural_ = structural;
     u32 const cap = std::min(limit, listed_);
     u32 taken = 0;
     u64 visited = 0;
@@ -164,8 +167,11 @@ public:
   // gain, so a choice never outranks the one with any of its seeds moved back a place, and the choices can be taken
   // from a frontier in order without counting out the cross product, which with seven dimensions of eight seeds
   // would be millions.
-  void combine(const std::vector<std::vector<Seed>>& dims, const std::string& stage, u32 tier, u32 limit) {
+  void combine(const std::vector<std::vector<Seed>>& dims, const std::string& stage, u32 tier, u32 limit,
+               std::vector<Group> groups) {
     ++part_;
+    groups_ = std::move(groups);
+    structural_ = false;
     u32 const cap = std::min(limit, listed_);
     using Point = std::pair<double, std::vector<size_t>>;
     auto const before = [](const Point& a, const Point& b) {
@@ -229,7 +235,7 @@ private:
   void unlisted(const std::string& stage, u32 tier, u32 limit, u32 taken, u64 left) {
     u64 const most = std::min<u64>(left, limit - taken);
     if (taken < limit && most > 0) {
-      out_.unlisted.push_back({.stage = stage, .part = part_ - 1, .tier = tier, .most = most});
+      out_.unlisted.push_back({.stage = stage, .part = part_ - 1, .tier = tier, .most = most, .groups = groups_});
     }
   }
 
@@ -285,6 +291,8 @@ private:
                            .stage = stage,
                            .tier = tier,
                            .part = part_ - 1,
+                           .groups = groups_,
+                           .structural = structural_,
                            .moves = std::move(moves),
                            .key = changed.size() == 1 ? changed.front().first : std::string{},
                            .text = std::move(text),
@@ -299,6 +307,8 @@ private:
   ProbeList& out_;
   std::set<std::string> seen_;
   u32 part_ = 0;
+  std::vector<Group> groups_;
+  bool structural_ = false;
 };
 
 }  // namespace
@@ -508,12 +518,15 @@ void combos(const Env& env, const FFTConfig& fft, const UseConfig& best, const S
 
   // A dimension with no answer but the background's own adds nothing to a cross product, and a group's own bins are
   // worth combining only where two of them have answers.
-  auto combine = [&](const std::vector<std::vector<Seed>>& dims, const std::string& stage, u32 tier, size_t atLeast) {
+  auto combine = [&](const std::vector<std::vector<Seed>>& dims, const std::string& stage, u32 tier, size_t atLeast,
+                     std::vector<Group> groups) {
     std::vector<std::vector<Seed>> useful;
     for (const std::vector<Seed>& seeds : dims) {
       if (seeds.size() > 1) { useful.push_back(seeds); }
     }
-    if (!useful.empty() && useful.size() >= atLeast) { enumerator.combine(useful, stage, tier, strategy.maxPoints); }
+    if (!useful.empty() && useful.size() >= atLeast) {
+      enumerator.combine(useful, stage, tier, strategy.maxPoints, std::move(groups));
+    }
   };
 
   ClusterGraph const graph = clusterGraph(env, fft, canonicalConfig(env, fft, best));
@@ -525,18 +538,27 @@ void combos(const Env& env, const FFTConfig& fft, const UseConfig& best, const S
       stage += (stage.empty() ? "" : "+") + std::string{toString(group)};
     }
     if (cluster.size() >= 2) {
-      combine(dims, stage, 2, 1);
+      combine(dims, stage, 2, 1, cluster);
     } else {
-      combine(dims, stage + " combined", 2, 2);
+      combine(dims, stage + " combined", 2, 2, cluster);
     }
   }
-  for (Group const group : graph.topTier) { combine(dimsOf(group), std::string{toString(group)} + " combined", 2, 2); }
+  for (Group const group : graph.topTier) {
+    combine(dimsOf(group), std::string{toString(group)} + " combined", 2, 2, {group});
+  }
 
   if (strategy.comboTiers < 3) { return; }
   std::vector<std::vector<Seed>> dims;
-  for (Group const group : graph.topTier) { dims.push_back(seedsIn({group})); }
-  for (const std::vector<Group>& cluster : graph.clusters) { dims.push_back(seedsIn(cluster)); }
-  combine(dims, "all", 3, 1);
+  std::vector<Group> every;
+  for (Group const group : graph.topTier) {
+    dims.push_back(seedsIn({group}));
+    every.push_back(group);
+  }
+  for (const std::vector<Group>& cluster : graph.clusters) {
+    dims.push_back(seedsIn(cluster));
+    every.insert(every.end(), cluster.begin(), cluster.end());
+  }
+  combine(dims, "all", 3, 1, std::move(every));
 }
 
 }  // namespace
@@ -556,7 +578,9 @@ ProbeList probesOf(const Env& env, const FFTConfig& fft, const UseConfig& best, 
 
   switch (strategy.kind) {
   case Strategy::Kind::Single:
-    for (size_t i = 0; i < out.axes.size(); ++i) { enumerator.enumerate({i}, "single", ~0u); }
+    for (size_t i = 0; i < out.axes.size(); ++i) {
+      enumerator.enumerate({i}, "single", ~0u, {out.axes[i].option->group});
+    }
     break;
 
   case Strategy::Kind::Permute: {
@@ -565,7 +589,7 @@ ProbeList probesOf(const Env& env, const FFTConfig& fft, const UseConfig& best, 
         return std::ranges::find(strategy.keys, key) != strategy.keys.end();
       });
     });
-    enumerator.enumerate(named, "permute", ~0u);
+    enumerator.enumerate(named, "permute", ~0u, {});
     break;
   }
 
@@ -580,10 +604,10 @@ ProbeList probesOf(const Env& env, const FFTConfig& fft, const UseConfig& best, 
     std::ranges::stable_partition(bins, &Bin::structural);
     for (const Bin& bin : bins) {
       bool const whole = bin.structural || out.axes[bin.axes.front()].option->alone;
-      enumerator.enumerate(bin.axes, bin.stage, whole ? ~0u : strategy.maxPoints);
+      enumerator.enumerate(bin.axes, bin.stage, whole ? ~0u : strategy.maxPoints, {bin.group}, bin.structural);
     }
     for (size_t const i : axesWhere([](const Axis& a) { return a.option->group == Group::None; })) {
-      enumerator.enumerate({i}, "single", ~0u);
+      enumerator.enumerate({i}, "single", ~0u, {Group::None});
     }
     if (strategy.combines()) { combos(env, fft, best, strategy, readings, enumerator, out); }
     break;
