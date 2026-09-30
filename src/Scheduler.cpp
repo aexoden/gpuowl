@@ -47,18 +47,19 @@ namespace {
 // Every option set of each entry that emission could publish, canonical, cheapest first: by pessimistic cost, then as
 // emission breaks a tie, so that the first is the entry's best set.
 [[nodiscard]] std::map<EntryKey, std::vector<Reading>> readingsOf(const std::vector<OptionSet>& sets, const Env& env) {
-  std::vector<const SelectionEntry*> order;
-  for (const OptionSet& s : sets) { order.push_back(&s.entry); }
-  std::ranges::stable_sort(order, [](const SelectionEntry* a, const SelectionEntry* b) {
-    return std::tuple{a->cost, a->id} < std::tuple{b->cost, b->id};
+  std::vector<const OptionSet*> order;
+  for (const OptionSet& s : sets) { order.push_back(&s); }
+  std::ranges::stable_sort(order, [](const OptionSet* a, const OptionSet* b) {
+    return std::tuple{a->entry.cost, a->entry.id} < std::tuple{b->entry.cost, b->entry.id};
   });
 
   std::map<EntryKey, std::vector<Reading>> out;
-  for (const SelectionEntry* e : order) {
-    auto const fft = parseFft(e->fft);
+  for (const OptionSet* s : order) {
+    const SelectionEntry& e = s->entry;
+    auto const fft = parseFft(e.fft);
     if (!fft) { continue; }
-    out[{e->fft, e->kind, e->regime.label()}].push_back(
-      {.config = canonicalConfig(env, *fft, e->opts), .cost = e->cost});
+    out[{e.fft, e.kind, e.regime.label()}].push_back(
+      {.config = canonicalConfig(env, *fft, e.opts), .cost = e.cost, .error = standardError(s->m)});
   }
   return out;
 }

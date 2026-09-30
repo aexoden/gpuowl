@@ -246,7 +246,8 @@ std::vector<Candidate> EntrySearch::offers(const SearchContext& context, std::sp
       UseConfig const structure = branchOf(device, entry_.fft, r.config);
       auto const in = std::ranges::find_if(branches, [&](const Branch& br) { return br.structure == structure; });
       if (in != branches.end()) {
-        from[size_t(in - branches.begin())] += configText(r.config) + " " + std::to_string(r.cost) + ";";
+        from[size_t(in - branches.begin())] +=
+          configText(r.config) + " " + std::to_string(r.cost) + " " + std::to_string(r.error) + ";";
       }
     }
   }

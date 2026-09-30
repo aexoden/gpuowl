@@ -201,10 +201,12 @@ struct ProbeList {
   std::vector<Unlisted> unlisted{};
 };
 
-// An option set of an entry that a row could publish, canonical, and what that row says it costs.
+// An option set of an entry that a row could publish, canonical, and what that row says it costs: pessimistically,
+// PESSIMISM_SIGMA standard errors above its mean, and that standard error.
 struct Reading {
   UseConfig config;
   double cost = 0;
+  double error = 0;
 };
 
 // What the kernels see each structural key set to under `config`, for those that apply: which branch it is in.
@@ -230,7 +232,9 @@ struct Branch {
 // Permute: the axes of the keys named, as one cross product, in the same order and not cut short.
 //
 // Hybrid: what groups offers, then the combo tiers over the readings in `best`'s branch.  The seeds of a bin are its
-// best `comboTop` distinct projections of those readings, the background's own first; tier 2 combines the seeds of the
+// best `comboTop` distinct projections of those readings, the background's own first, and every later one whose mean
+// the readings cannot tell from the last of those, within PESSIMISM_SIGMA of their combined standard error: which of
+// several indistinguishable answers ranks first says nothing of which combines best.  Tier 2 combines the seeds of the
 // bins of each cluster of more than one group (clusterGraph()), and of each other group of more than one bin ("Memory
 // combined"); tier 3 the seeds of each top-tier group and of each cluster, each taken whole.  A stage is its cross
 // product without the background, most promising first -- the highest summed gain of its seeds, a seed's gain being
