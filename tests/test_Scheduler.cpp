@@ -2214,6 +2214,102 @@ TEST(a_workload_of_another_kind_is_halved_from_its_own_first_round_and_the_first
   for (const RoundRow& r : f.db.rounds()) { CHECK(numbers.insert(r.n).second); }
 }
 
+TEST(an_entry_a_narrowed_workload_could_not_serve_has_its_calls_when_the_workload_weighs_it_again) {
+  // A PRP+LL halving over 101 in each kind.  The workload narrows to PRP, whose 101 has its calls, and the round is
+  // ended there, leaving PRP's 101.  Back in PRP+LL, with a stop fraction no new halving could begin under, LL's 101 is
+  // still owed its calls in that round, and has them by rule.
+  Fixture f;
+  char const* const spec = "512:15:512:101";
+  concludedAt(f, spec, {}, 1450);
+  RunScope const mixed = makeScope(
+    ScopeArgs{.lo = 110'000'000, .hi = 135'000'000, .probe = 118'063'003, .kinds = {TestKind::PRP, TestKind::LL}}, {});
+  std::vector<Baseline> entries;
+  for (const Baseline& b : baselines(nvidia(), mixed, shapes())) {
+    if (b.fft.spec() == spec && b.band.contains(118'063'003)) { entries.push_back(b); }
+  }
+  CHECK_EQ(entries.size(), size_t{2});
+  auto const ll = std::ranges::find(entries, TestKind::LL, &Baseline::kind);
+  CHECK(ll != entries.end());
+  CHECK(f.db.add(
+    RunRow{.sess = f.sess,
+           .fft = spec,
+           .kind = TestKind::LL,
+           .exponent = 118'063'003,
+           .regime = ll->band.regime,
+           .cfg = f.db.internCfg({}),
+           .m = {.mean = 1450, .stddev = 0.1, .blocks = 8, .calls = 2, .drift = 1, .status = Status::Ok, .ts = 0}}));
+  Halving const halving{.contenders = 2, .roundCalls = 4};
+  Scheduler const both{mixed, entries, 1000, {}, Strategy{.kind = Strategy::Kind::Single}, false, false, halving};
+  CHECK(std::get<0>(halvingAfter(f, both, mixed)));
+  CHECK_EQ(both.lastHalving().pool.size(), size_t{2});
+
+  Scheduler const prp{scope(), only({spec}), 1000, {}, Strategy{.kind = Strategy::Kind::Single}, false, false, halving};
+  searched(f, spec, 4);
+  CHECK(!std::get<0>(halvingAfter(f, prp, scope(), 1e9)));
+  CHECK_EQ(f.db.rounds().back().members.size(), size_t{1});
+
+  auto const [active, round, budget, pool] = halvingAfter(f, both, mixed, 1e9);
+  CHECK(active);
+  CHECK_EQ(round, 0u);
+  CHECK_EQ(budget, u64{4});
+  CHECK(pool == std::vector<std::string>{spec});
+  CHECK(both.lastHalving().pool.size() == 1 && both.baselines()[both.lastHalving().pool.front()].kind == TestKind::LL);
+  CHECK_EQ(both.lastHalving().halving, 1u);
+  std::vector<Item> const items = both.admissible(f.db, f.env, Objective{f.db, f.env, mixed, Gating::Assumed}, 1e9);
+  CHECK(!items.empty() && std::ranges::all_of(items, [&](const Item& i) {
+    return i.halving && byRule(i) && both.baselines()[i.index].kind == TestKind::LL;
+  }));
+}
+
+TEST(an_entry_of_a_band_the_workload_left_has_its_calls_when_the_band_returns) {
+  // Over 120M-160M, a halving over 512:15:512 below its reach and 1K:8:1K above it.  The workload narrows past
+  // 512:15:512's reach; 1K:8:1K has its calls there and the round is ended.  Once the workload reaches back below it,
+  // 512:15:512 has its calls in the round, whatever the stop fraction, and then the round owes nothing.
+  RunScope const wide = makeScope(ScopeArgs{.lo = 120'000'000, .hi = 160'000'000, .probe = 130'000'017}, {});
+  RunScope const narrow = makeScope(ScopeArgs{.lo = 145'000'000, .hi = 160'000'000, .probe = 150'000'001}, {});
+  auto const entriesOf = [](const RunScope& in) {
+    std::vector<Baseline> out;
+    for (const Baseline& b : baselines(nvidia(), in, {FFTShape{"1K:8:1K"}, FFTShape{"512:15:512"}})) {
+      if ((b.fft.spec() == "1K:8:1K:202" && b.band.contains(150'000'001)) ||
+          (b.fft.spec() == "512:15:512:101" && b.band.contains(130'000'017))) {
+        out.push_back(b);
+      }
+    }
+    return out;
+  };
+  std::vector<Baseline> const entries = entriesOf(wide);
+  CHECK_EQ(entries.size(), size_t{2});
+  CHECK_EQ(entries.front().fft.spec(), std::string{"1K:8:1K:202"});
+  std::vector<Baseline> const within = entriesOf(narrow);
+  CHECK(within.size() == 1 && within.front().fft.spec() == "1K:8:1K:202");
+
+  Fixture f;
+  auto const read = [&](const Baseline& b, u64 exponent, const UseConfig& options, double mean, u32 calls) {
+    CHECK(f.db.add(RunRow{
+      .sess = f.sess,
+      .fft = b.fft.spec(),
+      .kind = TestKind::PRP,
+      .exponent = exponent,
+      .regime = b.band.regime,
+      .cfg = f.db.internCfg(options),
+      .m = {.mean = mean, .stddev = 0.1, .blocks = 4 * calls, .calls = calls, .drift = 1, .status = Status::Ok}}));
+  };
+  read(entries[0], 150'000'001, {}, 3000, MIN_CALLS);
+  read(entries[1], 130'000'017, {}, 1700, MIN_CALLS);
+  Halving const halving{.contenders = 2, .roundCalls = 4};
+  Scheduler const whole{wide, entries, 1000, {}, Strategy{.kind = Strategy::Kind::Single}, false, false, halving};
+  CHECK(halvingAfter(f, whole, wide) ==
+        std::tuple(true, 0u, u64(4), std::vector<std::string>{"512:15:512:101", "1K:8:1K:202"}));
+
+  Scheduler const part{narrow, within, 1000, {}, Strategy{.kind = Strategy::Kind::Single}, false, false, halving};
+  for (u32 c = 0; c < 4; ++c) { read(entries[0], 150'000'001, {{"ZEROHACK_W", "0"}}, 3100, 1); }
+  CHECK(!std::get<0>(halvingAfter(f, part, narrow, 1e9)));
+
+  CHECK(halvingAfter(f, whole, wide, 1e9) == std::tuple(true, 0u, u64(4), std::vector<std::string>{"512:15:512:101"}));
+  for (u32 c = 0; c < 4; ++c) { read(entries[1], 130'000'017, {{"ZEROHACK_W", "0"}}, 1800, 1); }
+  CHECK(!std::get<0>(halvingAfter(f, whole, wide, 1e9)));
+}
+
 TEST(the_search_is_spread_over_the_contenders_before_it_settles_on_one) {
   // The variants of 512:15:512 within a few percent of one another at their defaults, :101 3% further behind but 15%
   // faster in place (INPLACE=1, off by default here); every other move costs 1%.  Ranked by value alone the search
