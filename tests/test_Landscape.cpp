@@ -342,3 +342,21 @@ TEST(landscape_each_band_has_its_own_fft_tuned_at_the_default_stop) {
   CHECK(o.settled().has_value());
   CHECK_EQ(o.published["1K:8:1K:202 prp long32"], std::string{"TAIL_KERNELS=3"});
 }
+
+TEST(landscape_a_structural_branch_that_loses_alone_is_found_at_the_default_stop) {
+  // Every step either value model prices is below the stop fraction once the first halving has found nothing, so it is
+  // the second halving, by rule, that searches B far enough to take WMUL=1 on the wider shuffle.
+  Scenario s = structuralBranch();
+  s.budget = 2 * 3600;
+  Outcome o = simulate(s, Policy{.stop = STOP});
+  CHECK(o.settled().has_value());
+  CHECK_EQ(o.published[std::string{B} + " prp short32"], std::string{"SHUFL_BYTES_W=16,WMUL=1"});
+}
+
+TEST(landscape_a_gain_two_groups_make_together_is_found_at_the_default_stop) {
+  Scenario s = crossBins();
+  s.budget = 2 * 3600;
+  Outcome o = simulate(s, Policy{.stop = STOP});
+  CHECK(o.settled().has_value());
+  CHECK_EQ(o.published[std::string{B} + " prp short32"], std::string{"TAIL_KERNELS=3,ZEROHACK_H=0"});
+}

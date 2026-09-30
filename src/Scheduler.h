@@ -3,9 +3,9 @@
 // The tuning queue: every item that may run, re-scored from the database after every item.  The readings the accuracy
 // gate owes, and baselines where the workload has nothing measured, go first, by rule.  Then the defaults sweep, the
 // bootstrap and the search take turns a call at a time.  The search is spread over the contenders by successive
-// halving, which is begun again, for longer, each time the one it left has had its share, for as long as a step of one
-// of them is worth the stop fraction; otherwise, and between halvings, each item is ranked by how much of the objective
-// T it is expected to remove per second it costs.
+// halving, which is begun again, for longer, each time the one it left has had its share: the first few times whatever
+// the value model says, then for as long as a step of one of them is worth the stop fraction; otherwise, and between
+// halvings, each item is ranked by how much of the objective T it is expected to remove per second it costs.
 //
 // The value model is only as good as its gain distribution, and a bad one misallocates time without ever making a wrong
 // decision: what is published is chosen by ranking measured rows, never by these scores.  That asymmetry is what lets
@@ -305,10 +305,11 @@ public:
   // left behind among them, its first round twice as long as the last halving's.  So an entry whose gains lie further
   // down its search than one round reaches is searched again, for longer each time, and the one ahead keeps at least
   // half of the calls.  A halving once begun runs to its end, since what a round is for is what the value model cannot
-  // see coming; so whether a later one is worth running is decided as it would begin, by whether one of its contenders
-  // has a step worth a call on its value alone.  That keeps a run with a stop fraction finite: each later halving takes
-  // such a step in its first round.  The first halving does not begin while `sweeping`, the defaults sweep still owing
-  // readings at the probe, so that it takes every contender at once.
+  // see coming.  For the same reason the first Halving::halvings begin whatever it makes of their steps; whether a
+  // later one is worth running is decided as it would begin, by whether one of its contenders has a step worth a call
+  // on its value alone.  That keeps a run with a stop fraction finite: each such halving takes such a step in its
+  // first round.  The first halving does not begin while `sweeping`, the defaults sweep still owing readings at the
+  // probe, so that it takes every contender at once.
   [[nodiscard]] HalvingState halvingState(const TuneDB& db, u32 env,
                                           const std::map<EntryKey, std::vector<Reading>>& readings,
                                           const Objective& objective, const Explored& explored, bool sweeping) const;
