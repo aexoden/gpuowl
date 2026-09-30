@@ -381,15 +381,17 @@ TEST(a_measurement_begun_is_finished_where_it_began_after_the_best_set_has_moved
   CHECK(find(offers, "WMUL=1,ZEROHACK_W=0"));
   const Candidate* const begun = find(offers, "ZEROHACK_W=0");
   CHECK(begun && begun->kind == Offer::Probe && begun->exponent == elsewhere && begun->calls == 1);
-  CHECK(begun && begun->cost == 1600 && begun->value == 1.0);
+  CHECK(begun && begun->cost == 1600 && begun->value == 1.0 && begun->observed == 1300);
   CHECK(begun && begun->what == "unfinished ZEROHACK_W=0");
   CHECK(begun && begun == &offers.front());
   CHECK_EQ(std::ranges::count_if(offers, [](const Candidate& c) { return configText(c.options) == "ZEROHACK_W=0"; }),
            1);
 
-  // Priced as the steps are, so where they are worth nothing it is not offered either.
+  // Priced as the steps are, but offered where they are worth nothing, with what its call read to be valued by.
   auto const noSteps = [](Offer kind, double) { return kind == Offer::Probe ? 0.0 : 1.0; };
-  CHECK(!find(ask(search, rows, readings, noSteps), "ZEROHACK_W=0"));
+  std::vector<Candidate> const unpriced = ask(search, rows, readings, noSteps);
+  const Candidate* const still = find(unpriced, "ZEROHACK_W=0");
+  CHECK(still && still->value == 0 && still->observed == 1300 && still->calls == 1 && still == &unpriced.front());
 
   // Once it concludes it is answered.
   rows.add({{"ZEROHACK_W", "0"}}, 1310, MIN_CALLS, Status::Ok, elsewhere);

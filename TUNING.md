@@ -218,8 +218,8 @@ To see what a set of settings would tune for without opening a GPU, put `scope` 
 
 **`stop=<P>%|0`**: the run ends once nothing left is expected to lower `T` by `P` percent. Default `0.1%`. A larger
 value gives a shorter run (`stop=1%`); `stop=0` runs until you stop it with Ctrl-C. The bootstrap, the accuracy
-checks, the coverage of the workload and a halving of the search once begun (see `contenders=`) are always completed,
-whatever `stop=` says.
+checks, the coverage of the workload, a halving of the search once begun (see `contenders=`) and a measurement once
+begun, which one more call finishes, are always completed, whatever `stop=` says.
 
 A value without `%` is refused, except `0`: `0.1` could mean either 0.1% or 10%.
 
@@ -256,7 +256,9 @@ counting the steps it has already had, so a large piece such as `Memory`'s does 
 waiting until it is done. Where both sides of an option of the `INPLACE` kind have been measured, each piece is
 searched on every side, the faster side's taking as many turns as all the other sides' together. The combinations of two groups start once those two
 groups have no step left, while the other groups are still being searched. A measurement that was begun is finished
-before anything else of its FFT. Under `single` each option's values are tried one after another, in turn.
+before anything else of its FFT, and is ranked by what its first call read rather than by what a step of its FFT is
+expected to gain, so one whose first call beat everything else is taken ahead of steps expected to gain less, even
+on an FFT that is otherwise out of the running. Under `single` each option's values are tried one after another, in turn.
 
 Whatever the strategy, an FFT whose search has run out of steps is occasionally tried with a random option set, which
 is what lets the search find combinations no step would reach.

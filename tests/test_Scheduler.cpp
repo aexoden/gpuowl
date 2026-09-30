@@ -1870,6 +1870,72 @@ TEST(a_step_begun_is_still_offered_after_another_step_becomes_the_best_set) {
     std::ranges::any_of(scheduler.admissible(f.db, f.env, Objective{f.db, f.env, scope(), Gating::Assumed}), begun));
 }
 
+namespace {
+
+// 101 costs 400 at its defaults and 102 costs 1700: no gain the value model allows would bring 102 under 400, and it is
+// past either margin a halving admits contenders by.  But ZEROHACK_W=0 has one call on 102, which read `read`.
+struct BegunOnTheSlower {
+  Fixture f;
+  Scheduler scheduler{scope(), only({"512:15:512:101", "512:15:512:102"}), 1000,
+                      {},      Strategy{.kind = Strategy::Kind::Single},   false,
+                      false,   Halving{.contenders = 2, .roundCalls = 4}};
+  std::vector<Item> items;
+  double worth = 0;
+
+  explicit BegunOnTheSlower(double read) {
+    concludedAt(f, "512:15:512:101", {}, 400);
+    concludedAt(f, "512:15:512:102", {}, 1700);
+    CHECK(f.db.add(
+      RunRow{.sess = f.sess,
+             .fft = "512:15:512:102",
+             .kind = TestKind::PRP,
+             .exponent = 118'063'003,
+             .regime = regimeOf(FFTConfig{"512:15:512:102"}, 118'063'003),
+             .cfg = f.db.internCfg({{"ZEROHACK_W", "0"}}),
+             .m = {.mean = read, .stddev = 0.1, .blocks = 4, .calls = 1, .drift = 1, .status = Status::Ok, .ts = 0}}));
+    Objective const objective{f.db, f.env, scope(), Gating::Assumed};
+    items = scheduler.admissible(f.db, f.env, objective);
+    worth = saving(objective.points(), TestKind::PRP, scheduler.baselines()[1].band, read);
+  }
+
+  [[nodiscard]] bool begun(const Item& i) const {
+    return scheduler.baselines()[i.index].fft.spec() == "512:15:512:102" && i.calls == 1 &&
+      configText(i.options) == "ZEROHACK_W=0";
+  }
+};
+
+}  // namespace
+
+TEST(a_step_begun_on_an_entry_no_step_could_make_worth_searching_is_valued_by_what_its_call_read) {
+  BegunOnTheSlower const t{300};
+  CHECK(!t.scheduler.lastHalving().active);
+  CHECK_EQ(t.scheduler.baselines()[1].fft.spec(), std::string{"512:15:512:102"});
+
+  // Worth what it would save were 300 to hold, which is more than any step of 101 is expected to, so it goes first.
+  auto const at = std::ranges::find_if(t.items, [&](const Item& i) { return t.begun(i); });
+  CHECK(at != t.items.end());
+  if (at == t.items.end()) { return; }
+  CHECK(t.worth > 0 && std::abs(at->value - t.worth) <= 1e-9 * t.worth);
+  CHECK(std::ranges::none_of(t.items.begin(), at, [](const Item& i) { return i.value > 0; }));
+  std::optional<Item> const next = t.scheduler.pick(t.items, 0);
+  CHECK(next && t.begun(*next));
+}
+
+TEST(a_step_begun_whose_call_says_it_saves_nothing_is_still_finished_but_after_everything_worth_something) {
+  BegunOnTheSlower const t{1800};
+  auto const at = std::ranges::find_if(t.items, [&](const Item& i) { return t.begun(i); });
+  CHECK(at != t.items.end());
+  if (at == t.items.end()) { return; }
+  CHECK_EQ(at->value, 0.0);
+  CHECK(byRule(*at));
+
+  // One more call concludes it, so it runs where nothing else is worth the stop floor, but not before what is.
+  std::optional<Item> const first = t.scheduler.pick(t.items, 0);
+  CHECK(first && !t.begun(*first) && first->value > 0);
+  std::optional<Item> const last = t.scheduler.pick(t.items, 1e9);
+  CHECK(last && t.begun(*last));
+}
+
 TEST(a_database_with_no_rounds_takes_up_the_halving_where_the_calls_left_it) {
   // Four contenders under the rule before rounds were recorded: all past round 1's 4 calls, and 101 past round 2's
   // 4 + 8.  The halving goes on in round 2, 102 owed the rest of its 8, not begun again.

@@ -52,11 +52,13 @@ struct Baseline {
   [[nodiscard]] EntryKey key() const;
 };
 
-// The row a measurement resumes from: the exponent it was started at, the calls it has, and what it ran, canonical.
+// The row a measurement resumes from: the exponent it was started at, the calls it has, what it ran, canonical, and
+// what those calls read.
 struct Partial {
   u64 exponent = 0;
   u32 calls = 0;
   UseConfig options{};
+  double mean = 0;
 };
 
 // Where each entry stands, from the rows of an env.
@@ -136,8 +138,9 @@ struct Candidate {
   // Where it is measured: the entry's timing exponent, or where a row of it was started.
   u64 exponent = 0;
 
-  // Calls already recorded against it, which is what makes it a resumption.
+  // Calls already recorded against it, which is what makes it a resumption; and what they read.
   u32 calls = 0;
+  double observed = 0;
 
   // A restart's: which draw of the sequence it is.
   u32 draw = 0;
@@ -168,7 +171,8 @@ struct SearchContext {
   bool restarts = false;
 };
 
-// What an offer of `kind` from a best set costing `cost` is worth.  A search leaves out what is worth nothing.
+// What an offer of `kind` from a best set costing `cost` is worth.  A search leaves out what is worth nothing, but for
+// a measurement begun.
 using Worth = std::function<double(Offer kind, double cost)>;
 
 class EntrySearch {
@@ -193,11 +197,13 @@ public:
   // found.  After all of those, the steps the entry's rows took from another best set, which may do otherwise from this
   // one, priced as a jump is (Offer::Restart), since what they did there is some evidence against them here.  Then
   // every other measurement a row began and none concluded, at the exponent it began at and priced as a step, whatever
-  // has moved since.  The next draw of the restart sequence at a local optimum of the declared moves, and ahead of
-  // everything else once the entry has measured RESTART_PERIOD option sets since the last draw was declared, or until a
-  // draw begun is finished, priced then as a step is.  Whatever sets a value a build of the FFT failed with
-  // (TuneDB::failedWith()) after everything else.  Nothing a row of that very configuration concluded or recorded a
-  // failure of, nothing an earlier generation's death keeps out, and nothing tried MAX_ATTEMPTS times in this process.
+  // has moved since, and whatever that price: its calls count for nothing until it concludes, and what they read is a
+  // better guide to what it is worth than a step from the best set, which the caller has in `observed`.  The next draw
+  // of the restart sequence at a local optimum of the declared moves, and ahead of everything else once the entry has
+  // measured RESTART_PERIOD option sets since the last draw was declared, or until a draw begun is finished, priced
+  // then as a step is.  Whatever sets a value a build of the FFT failed with (TuneDB::failedWith()) after everything
+  // else.  Nothing a row of that very configuration concluded or recorded a failure of, nothing an earlier generation's
+  // death keeps out, and nothing tried MAX_ATTEMPTS times in this process.
   [[nodiscard]] std::vector<Candidate> offers(const SearchContext& context, std::span<const Reading> readings,
                                               const Worth& worth);
 

@@ -56,6 +56,7 @@ Progress progressOf(const TuneDB& db, u32 env, const Env& device) {
       p.exponent = row.exponent;
       p.calls = row.m.calls;
       p.options = canonical;
+      p.mean = row.m.mean;
     }
   }
 
@@ -97,6 +98,7 @@ void EntrySearch::resume(const SearchContext& context, const std::string& canoni
       p != context.progress.partial.end() && entry_.band.contains(p->second.exponent)) {
     candidate.exponent = p->second.exponent;
     candidate.calls = p->second.calls;
+    candidate.observed = p->second.mean;
   }
 }
 
@@ -432,9 +434,9 @@ std::vector<Candidate> EntrySearch::offers(const SearchContext& context, std::sp
   });
   for (Listed& l : listed) { out.push_back(std::move(l.candidate)); }
 
-  // A measurement begun is finished, even where nothing above lists it any more: the best set it was a step from, the
-  // lines it was laid under or the stage it was listed in have moved on since, and its call counts for nothing until it
-  // concludes.  The built-in defaults are the sweep's.
+  // A measurement begun is finished, even where nothing above lists it any more or a step from the best set is worth
+  // nothing: the best set it was a step from, the lines it was laid under or the stage it was listed in have moved on
+  // since, and its call counts for nothing until it concludes.  The built-in defaults are the sweep's.
   for (auto p = progress.partial.lower_bound({key_, {}}); p != progress.partial.end() && p->first.first == key_; ++p) {
     const std::string& text = p->first.second;
     const Partial& partial = p->second;
@@ -442,18 +444,16 @@ std::vector<Candidate> EntrySearch::offers(const SearchContext& context, std::sp
         !entry_.band.contains(partial.exponent) || !runnable(context, partial.options, partial.exponent)) {
       continue;
     }
-    double const value = worth(Offer::Probe, best.cost);
-    if (value <= 0) { break; }
-
     auto const drawn = draws.find(text);
     Candidate c{.kind = drawn != draws.end() ? Offer::Restart : Offer::Probe,
                 .options = partial.options,
                 .what = (drawn != draws.end() ? "#" + std::to_string(drawn->second + 1) + " " : "unfinished ") + text,
                 .exponent = partial.exponent,
                 .calls = partial.calls,
+                .observed = partial.mean,
                 .draw = drawn != draws.end() ? drawn->second : 0,
                 .cost = best.cost,
-                .value = value};
+                .value = std::max(0.0, worth(Offer::Probe, best.cost))};
     offered.insert(text);
     out.push_back(std::move(c));
   }
