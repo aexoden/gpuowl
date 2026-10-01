@@ -292,12 +292,12 @@ TEST(the_search_report_says_what_each_group_offers_and_what_its_bins_hold) {
   // One line for the FFT, naming what it offers, what its bins hold where that is more, and what whole groups would.
   CHECK(
     lines.front().starts_with("FFT64 1K:7:256:212: " + std::to_string(size.offered()) + " steps from each best set ("));
-  CHECK(lines.front().find("Memory 93 of 178") != std::string::npos);
+  CHECK(lines.front().find("Memory 93 of 128") != std::string::npos);
   CHECK(lines.front().ends_with("), " + std::to_string(size.whole()) + " with maxPermute=all"));
 
   // Then one per group.
   CHECK(std::ranges::find(lines,
-                          std::string{"  Memory: 7 options in bins of 149 and 29 points, 64 and 29 offered; 4499 "
+                          std::string{"  Memory: 7 options in bins of 99 and 29 points, 64 and 29 offered; 2999 "
                                       "with maxPermute=all"}) != lines.end());
   CHECK(std::ranges::find(lines,
                           std::string{"  Height: 1 option in a bin of 1 point, all offered; 3 structural "

@@ -914,6 +914,18 @@ TEST(duplicate_readings_of_one_configuration_pool) {
   CHECK_EQ(runAt(merged, 143'400'073, 3)->m.mean, 1500.0);
 }
 
+// A measurement taken in a mode the table later withdrew -- the carry shuttle through ld.global.nc, which raced -- stays
+// in the file, but is read as if it were never taken: nothing may choose, publish or pool it.
+TEST(a_reading_in_a_withdrawn_mode_is_not_read) {
+  TuneDB const withdrawn = loaded(withRow("cfg   3 PAD=128", "cfg   3 LOADS=35554", FOLDING));
+  CHECK_EQ(withdrawn.runs().size(), size_t{4});
+  CHECK_EQ(withdrawn.mergedRuns().size(), size_t{2});
+  CHECK(runAt(withdrawn.mergedRuns(), 143'400'073, 3) == nullptr);
+
+  TuneDB const kept = loaded(withRow("cfg   3 PAD=128", "cfg   3 LOADS=35504", FOLDING));
+  CHECK(runAt(kept.mergedRuns(), 143'400'073, 3) != nullptr);
+}
+
 TEST(a_failure_does_not_average_with_a_reading) {
   std::string const okThenErr =
     withRow("run   2 512:15:512:212 prp 143400073 short32 2 1010.000 0.000 4 1 1.0000 ok 2100",

@@ -136,10 +136,10 @@ TEST(a_structural_move_opens_its_dependents_to_the_next_round) {
 TEST(memory_moves_one_access_class_at_a_time) {
   FFTConfig const fft{"2:1K:8:256:212"};
 
-  // NVIDIA with inline PTX: FFT-data loads 2-5 and stores 2-3, the shuttle pairs (4,2) and (5,0), trig loads 5 for the
+  // NVIDIA with inline PTX: FFT-data loads 2-5 and stores 2-3, the shuttle pair (4,2), trig loads 5 for the
   // frequently reused class and 2-5 for the other two, and ENABLE_RESTRICT.
   std::vector<Move> const nv = movesWithin(nvidia(), fft, {}, Group::Memory);
-  CHECK_EQ(nv.size(), size_t(4 + 2 + 2 + 1 + 4 + 4 + 1));
+  CHECK_EQ(nv.size(), size_t(4 + 2 + 1 + 1 + 4 + 4 + 1));
 
   // Every LOADS move changes one digit, and a coupled pair changes the same digit of both keys.
   for (const Move& m : nv) {
