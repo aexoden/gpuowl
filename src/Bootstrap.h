@@ -145,12 +145,13 @@ private:
 
 // The lines the families' option sets make: a key every family it applies to agrees on goes on the global line, and a
 // key they disagree on goes on the line of each family that moved it.  A family that kept the built-in value of a
-// disputed key needs no line for it, since the global line does not set it.
+// disputed key needs no line for it, since the global line does not set it.  Keys coupled with one another
+// (keysCoupledWith) go on the global line only when the families agree on all of them.
 [[nodiscard]] Defaults defaultLines(const Env& env, const std::vector<std::pair<Family, UseConfig>>& decided);
 
 // What a configuration with no option set of its own runs at under `defaults`, canonical.  With `over`, that set with
 // the lines laid on top of it: a key the lines set takes their value, refitted against the rest of `over`, and every
-// other key keeps its own.
+// other key keeps its own, but for a key coupled with one the lines set, which takes the lines' value or its default.
 [[nodiscard]] UseConfig underDefaults(const Env& env, const FFTConfig& fft, TestKind kind, const Defaults& defaults,
                                       const UseConfig& over = {});
 

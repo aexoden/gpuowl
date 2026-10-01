@@ -1033,6 +1033,12 @@ bool usesWithdrawnMode(const UseConfig& config) {
   });
 }
 
+vector<string> keysCoupledWith(const string& key) {
+  bool const paired = std::ranges::any_of(accessClasses(), [](const AccessClass& cls) { return !cls.pairs.empty(); });
+  if (paired && (key == "LOADS" || key == "STORES")) { return {"LOADS", "STORES"}; }
+  return {key};
+}
+
 u32 getDigit(u32 packed, u32 digit) {
   for (u32 i = 0; i < digit; ++i) { packed /= 10; }
   return packed % 10;

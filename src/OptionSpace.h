@@ -247,6 +247,10 @@ struct AccessClass {
 // Whether `config` loads some class of traffic in a mode the table has withdrawn.
 [[nodiscard]] bool usesWithdrawnMode(const UseConfig& config);
 
+// `key` and the keys that must be set beside it: LOADS and STORES while some class chooses its load and store as a
+// pair, since a layer setting one of them over a set that has the other can join modes no pair offers.
+[[nodiscard]] vector<string> keysCoupledWith(const string& key);
+
 // Whether this machine's compiler can emit an access mode.
 [[nodiscard]] bool loadModeExists(const Env& env, int mode);
 [[nodiscard]] bool storeModeExists(const Env& env, int mode);
