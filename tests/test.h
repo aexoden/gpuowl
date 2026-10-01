@@ -39,8 +39,8 @@ void fail(const char* file, int line, const std::string& what);
 
 #define CHECK_EQ(actual, expected)                                                                                     \
   do {                                                                                                                 \
-    auto const& actual_ = (actual);                                                                                    \
-    auto const& expected_ = (expected);                                                                                \
+    auto const actual_ = (actual);                                                                                     \
+    auto const expected_ = (expected);                                                                                 \
     if (!(actual_ == expected_)) {                                                                                     \
       std::ostringstream os_;                                                                                          \
       os_ << #actual " == " #expected ": got " << actual_ << ", expected " << expected_;                               \
