@@ -240,14 +240,17 @@ struct Branch {
 // Permute: the axes of the keys named, as one cross product, in the same order and not cut short.
 //
 // Hybrid: what groups offers, then the combo tiers over the readings in `best`'s branch.  The seeds of a bin are its
-// best `comboTop` distinct projections of those readings, the background's own first, and every later one whose mean
-// the readings cannot tell from the last of those, within PESSIMISM_SIGMA of their combined standard error: which of
-// several indistinguishable answers ranks first says nothing of which combines best.  Tier 2 combines the seeds of the
-// bins of each cluster of more than one group (clusterGraph()), and of each other group of more than one bin ("Memory
+// best `comboTop` answers -- distinct projections of those readings -- the background's own first, and every later one
+// whose effect the readings cannot tell from the last of those, within PESSIMISM_SIGMA of their combined error: which
+// of several indistinguishable answers ranks first says nothing of which combines best.  An answer's effect is what it
+// does to the cost against the background's own answer with everything outside the bin held the same, from the
+// readings that differ only within it, chained through every setting of the rest such readings share and pooled by how
+// exactly each was read; an answer no such reading compares is not a seed.  Tier 2 combines the seeds of the bins of
+// each cluster of more than one group (clusterGraph()), and of each other group of more than one bin ("Memory
 // combined"); tier 3 the seeds of each top-tier group and of each cluster, each taken whole.  A stage is its cross
 // product without the background, most promising first -- the highest summed gain of its seeds, a seed's gain being
-// 1 - cost / the cost of `best`, and no more than 0 -- and cut at `maxPoints`.  `best` must be the first of the
-// readings in its branch, and the rest must follow cheapest first.
+// 1 - its estimated cost ratio, and no more than 0 -- and cut at `maxPoints`.  `best` must be the first of the readings
+// in its branch, and the rest must follow cheapest first.
 //
 // A point is dropped where some key it sets is at a value the table would not offer it alongside the rest.
 //

@@ -154,20 +154,27 @@ TEST(each_tier_the_search_is_given_adds_its_stages_and_nothing_else) {
   CHECK_EQ(withTiers(3, 1).probes.size(), groups.probes.size());
 }
 
-TEST(a_group_answer_is_the_best_reading_of_each_distinct_projection) {
+TEST(an_answer_is_ranked_by_what_it_did_against_the_same_settings_of_everything_else) {
   FFTConfig const fft{"512:15:512:212"};
 
-  // Two readings put Tail where TAIL_KERNELS=3 does, and it is the cheaper of the two that ranks it: here behind
-  // TAIL_TRIGS=1.  A reading that differs from the background outside Tail alone projects to the background's own.
+  // Two readings put Tail where TAIL_KERNELS=3 does.  The cheaper also has WMUL=1, and no reading has WMUL=1 with Tail
+  // where the background has it, so nothing says whether TAIL_KERNELS=3 or WMUL=1 made it cheap: TAIL_KERNELS=3 is
+  // ranked by the dearer one alone, behind TAIL_KERNELS=1.
   std::vector<Reading> readings{{{}, 100},
                                 {{{"ZEROHACK_H", "0"}}, 100.1},
                                 {{{"TAIL_TRIGS", "1"}}, 100.2},
                                 {{{"TAIL_KERNELS", "3"}, {"WMUL", "1"}}, 100.3},
-                                {{{"TAIL_KERNELS", "3"}}, 104},
-                                {{{"TAIL_KERNELS", "1"}}, 100.5}};
+                                {{{"TAIL_KERNELS", "1"}}, 100.5},
+                                {{{"TAIL_KERNELS", "3"}}, 104}};
   ProbeList const list = probesOf(nvidia(), fft, {}, {.kind = Strategy::Kind::Hybrid, .comboTiers = 2}, readings);
   CHECK(textsOf(list, "Tail+Height") ==
-        (std::vector<std::string>{"TAIL_TRIGS=1,ZEROHACK_H=0", "TAIL_KERNELS=3,ZEROHACK_H=0"}));
+        (std::vector<std::string>{"TAIL_TRIGS=1,ZEROHACK_H=0", "TAIL_KERNELS=1,ZEROHACK_H=0"}));
+
+  // An answer read only beside another group's move is no answer at all.
+  readings.pop_back();
+  readings.pop_back();
+  ProbeList const joint = probesOf(nvidia(), fft, {}, {.kind = Strategy::Kind::Hybrid, .comboTiers = 2}, readings);
+  CHECK(textsOf(joint, "Tail+Height") == std::vector<std::string>{"TAIL_TRIGS=1,ZEROHACK_H=0"});
 
   // Out of place, only the readings of that branch count: the in-place ones have nothing to say about it.
   std::vector<Reading> outOfPlace{{{{"INPLACE", "0"}}, 101}, {{{"INPLACE", "0"}, {"TAIL_KERNELS", "1"}}, 101.5}};
@@ -175,6 +182,41 @@ TEST(a_group_answer_is_the_best_reading_of_each_distinct_projection) {
   ProbeList const branch =
     probesOf(nvidia(), fft, {{"INPLACE", "0"}}, {.kind = Strategy::Kind::Hybrid, .comboTiers = 2}, outOfPlace, false);
   CHECK(std::ranges::none_of(branch.probes, [](const Probe& p) { return p.tier > 1; }));
+}
+
+TEST(an_answer_read_against_an_older_background_is_ranked_by_what_it_did_there) {
+  // Tail was raced from the defaults, where TAIL_KERNELS=1 won; WMUL=1 then won from there, and TAIL_KERNELS=3 from
+  // that.  TAIL_KERNELS=0 was read against the background as it stands, and TAIL_TRIGS=1 only against the defaults,
+  // which are dearer: it is the cheaper of the two only against a background it never had.  Chained through the
+  // contexts both were read in, TAIL_TRIGS=1 costs 0.4% more than TAIL_KERNELS=3 and TAIL_KERNELS=0 0.5%.
+  FFTConfig const fft{"512:15:512:212"};
+  std::vector<Reading> const readings{{{{"TAIL_KERNELS", "3"}, {"WMUL", "1"}}, 98.8},
+                                      {{{"TAIL_KERNELS", "1"}, {"WMUL", "1"}}, 99},
+                                      {{{"TAIL_KERNELS", "0"}, {"WMUL", "1"}}, 99.3},
+                                      {{{"TAIL_KERNELS", "1"}}, 99.5},
+                                      {{{"TAIL_TRIGS", "1"}}, 99.7},
+                                      {{}, 100},
+                                      {{{"ZEROHACK_H", "0"}}, 100.1}};
+  ProbeList const list =
+    probesOf(nvidia(), fft, readings.front().config, {.kind = Strategy::Kind::Hybrid, .comboTiers = 2}, readings);
+  CHECK(textsOf(list, "Tail+Height") ==
+        (std::vector<std::string>{"TAIL_KERNELS=1,ZEROHACK_H=0", "TAIL_KERNELS=2,TAIL_TRIGS=1,ZEROHACK_H=0"}));
+}
+
+TEST(an_answer_read_in_several_contexts_is_ranked_by_them_all_as_exactly_as_each_was_read) {
+  // TAIL_TRIGS=1 costs 0.3% against the defaults, read closely, and 2% beside WMUL=1, read loosely; TAIL_KERNELS=1
+  // costs 0.5% against the defaults.  Each context counts for as much as it was read exactly, so TAIL_TRIGS=1 is the
+  // better answer: by the plain mean of the two it would not be.
+  FFTConfig const fft{"512:15:512:212"};
+  std::vector<Reading> const readings{{{}, 100.02, 0.01},
+                                      {{{"ZEROHACK_H", "0"}}, 100.12, 0.01},
+                                      {{{"TAIL_TRIGS", "1"}}, 100.32, 0.01},
+                                      {{{"TAIL_KERNELS", "1"}}, 100.52, 0.01},
+                                      {{{"WMUL", "1"}}, 101, 1},
+                                      {{{"TAIL_TRIGS", "1"}, {"WMUL", "1"}}, 103.02, 1}};
+  ProbeList const list =
+    probesOf(nvidia(), fft, {}, {.kind = Strategy::Kind::Hybrid, .comboTop = 2, .comboTiers = 2}, readings);
+  CHECK(textsOf(list, "Tail+Height") == std::vector<std::string>{"TAIL_TRIGS=1,ZEROHACK_H=0"});
 }
 
 TEST(an_answer_the_readings_cannot_tell_from_the_last_one_carried_is_carried_too) {
@@ -207,11 +249,12 @@ TEST(an_answer_the_readings_cannot_tell_from_the_last_one_carried_is_carried_too
 
 TEST(an_answer_the_background_cannot_hold_is_passed_over) {
   // FFT3261 at width 1K offers L2_STRIPING up to 16 alone but only up to 8 beside MULTI_Q=1.  From MULTI_Q=1, the
-  // cheapest other reading has L2_STRIPING=16, which that background cannot hold: Placement's answers are the next two
-  // instead, while the same reading still answers for Queues, whose MULTI_Q=0 it can hold.
+  // best answer of Placement is L2_STRIPING=16, read against MULTI_Q=0, which that background cannot hold: its answers
+  // are the next two instead, while MULTI_Q=0 is still Queues' answer.
   FFTConfig const fft{"2:1K:8:256:212"};
   std::vector<Reading> const readings{{{{"MULTI_Q", "1"}}, 100},
-                                      {{{"L2_STRIPING", "16"}}, 100.1},
+                                      {{}, 100.1},
+                                      {{{"L2_STRIPING", "16"}}, 100.15},
                                       {{{"MULTI_Q", "1"}, {"LOADS", "2"}}, 100.2},
                                       {{{"MULTI_Q", "1"}, {"L2_STRIPING", "4"}}, 100.3},
                                       {{{"MULTI_Q", "1"}, {"L2_STRIPING", "2"}}, 100.5}};
