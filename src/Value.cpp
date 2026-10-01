@@ -7,7 +7,10 @@
 #include <algorithm>
 #include <cmath>
 #include <functional>
+#include <limits>
+#include <map>
 #include <numbers>
+#include <tuple>
 #include <utility>
 
 namespace tune {
@@ -230,6 +233,16 @@ std::vector<Contest> contests(std::span<const OptionSet> sets, std::span<const O
     return std::tuple{sets[a].entry.cost, sets[a].entry.id} < std::tuple{sets[b].entry.cost, sets[b].entry.id};
   };
 
+  // How many standard errors of the difference `i`'s mean stands above `chosen`'s; below 0 where it is cheaper.
+  auto const behind = [&](size_t i, size_t chosen) {
+    const Measurement& a = sets[i].m;
+    const Measurement& c = sets[chosen].m;
+    double const gap = a.cost() - c.cost();
+    double const se = std::hypot(standardError(a), standardError(c));
+    if (se > 0) { return gap / se; }
+    return gap == 0 ? 0.0 : std::copysign(std::numeric_limits<double>::infinity(), gap);
+  };
+
   std::map<std::pair<size_t, size_t>, double> weights;
   std::vector<size_t> eligible;
   for (const ObjectivePoint& point : points) {
@@ -242,8 +255,15 @@ std::vector<Contest> contests(std::span<const OptionSet> sets, std::span<const O
     }
     if (eligible.size() < 2) { continue; }
 
-    std::ranges::partial_sort(eligible, eligible.begin() + 2, cheaper);
-    weights[{eligible[0], eligible[1]}] += point.weight;
+    size_t const chosen = *std::ranges::min_element(eligible, cheaper);
+    auto const rival = [&](size_t i) {
+      return std::tuple<double, double, const std::string&>{behind(i, chosen), sets[i].entry.cost, sets[i].entry.id};
+    };
+    size_t runnerUp = chosen;
+    for (size_t const i : eligible) {
+      if (i != chosen && (runnerUp == chosen || rival(i) < rival(runnerUp))) { runnerUp = i; }
+    }
+    weights[{chosen, runnerUp}] += point.weight;
   }
 
   std::vector<Contest> out;

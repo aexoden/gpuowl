@@ -373,6 +373,34 @@ TEST(the_pair_contested_at_each_point_is_the_cheapest_two_eligible_there) {
   CHECK(near(out[1].weight, 0.5));
 }
 
+TEST(the_runner_up_is_the_set_most_likely_to_be_cheaper_not_the_second_production_ranks) {
+  std::vector<ObjectivePoint> const points{point(E0, 1, 100)};
+
+  // a is chosen on six calls; b is a close second by the same standard; c has the cheapest mean, but on two calls with
+  // a wide bar its pessimistic cost ranks it last.  A call on c is what could change production's answer.
+  std::vector<OptionSet> const sets{optionSet("a", 100, 0.2, 6), optionSet("b", 100.5, 0.2, 6),
+                                    optionSet("c", 99, 3, 2)};
+  CHECK(sets[2].entry.cost > sets[1].entry.cost);
+
+  std::vector<Contest> const out = contests(sets, points);
+  CHECK_EQ(out.size(), size_t(1));
+  if (out.size() != 1) { return; }
+  CHECK_EQ(out[0].chosen, size_t(0));
+  CHECK_EQ(out[0].runnerUp, size_t(2));
+  CHECK(undecided(out[0], sets));
+
+  std::vector<double> const worth = refineValues(sets, points);
+  CHECK(worth[2] > 0);
+  CHECK(worth[0] > 0);
+  CHECK_EQ(worth[1], 0.0);
+
+  // With the same bar on every side, it is the second by cost after all.
+  std::vector<OptionSet> const even{optionSet("a", 100, 0.2, 6), optionSet("b", 100.5, 0.2, 6),
+                                    optionSet("c", 101, 0.2, 6)};
+  std::vector<Contest> const plain = contests(even, points);
+  CHECK(plain.size() == 1 && plain[0].chosen == 0 && plain[0].runnerUp == 1);
+}
+
 TEST(a_contest_is_refined_only_while_the_race_rule_leaves_it_undecided) {
   std::vector<ObjectivePoint> const points{point(E0, 1, 100)};
   auto worthless = [](const std::vector<double>& worth) {
