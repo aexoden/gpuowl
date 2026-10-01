@@ -710,13 +710,14 @@ judge; only configurations that round exactly as the defaults do are published t
 A timing is only comparable with timings taken on the same GPU, with the same driver, backend (OpenCL or CUDA) and
 kernel code. `tunedb.txt` therefore files each measurement under an *env*: a GPU model and its PCI slot where the
 backend reports it, the driver version, the backend, a few capabilities (and whether `NO_ASM` was set), and a
-fingerprint of the kernel source PRPLL was built with.
+fingerprint of the kernel source PRPLL was built with and of how the tuner times a call.
 
 - **Updating the driver, switching backend, or moving to another card** starts a new env. Its measurements start from
   nothing: tune again.
-- **Updating PRPLL** starts a new env only when the kernel source changed; changes to the rest of the program do not.
-  If the kernels changed, either tune again or, if you are confident the change does not affect your GPU, use
-  [`-tune adopt`](#-tune-adopt).
+- **Updating PRPLL** starts a new env only when the kernel source or the way a call is timed changed; changes to the
+  rest of the program do not. If the kernels changed, either tune again or, if you are confident the change does not
+  affect your GPU, use [`-tune adopt`](#-tune-adopt). If the timing changed, tune again: the old readings and the new
+  ones do not compare.
 - Measurements from other envs stay in the file and are simply not used. `-tune reset,env=<id>` drops them.
 
 Where the subcommands cannot tell which env you mean, they list the envs in the database with their ids, so that you

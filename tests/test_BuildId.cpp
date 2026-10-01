@@ -26,6 +26,14 @@ TEST(fingerprint_is_stable_and_nonzero) {
   CHECK_EQ(hashOf({"a.cl", "b.cl"}, {"one", "two"}), hashOf({"a.cl", "b.cl"}, {"one", "two"}));
 }
 
+// Implemented in bundle.cpp
+const std::vector<const char*>& getClFileNames();
+const std::vector<const char*>& getClFiles();
+
+TEST(fingerprint_moves_with_how_a_call_is_timed_as_well_as_with_the_kernels) {
+  CHECK(buildFingerprint() != fingerprintOf(getClFileNames(), getClFiles()));
+}
+
 TEST(fingerprint_follows_the_sources) {
   u64 const base = hashOf({"a.cl", "b.cl"}, {"one", "two"});
 

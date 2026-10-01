@@ -346,11 +346,15 @@ public:
   //
   // The samples are microseconds per iteration, so each already carries 1/blockSize of a modMul:
   // costs are comparable only across measurements taken at the same blockSize.
-  IterSamples timeIters(u32 nBlocks, u32 blockSize, u32 warmupBlocks = 1);
+  //
+  // With heatSec, blocks of squarings are run first until that long has passed, and the start state is written again
+  // after them: a card that runs fast for a moment after idling is timed at the clock it settles to, and the
+  // iterations behind the residue stay the same.
+  IterSamples timeIters(u32 nBlocks, u32 blockSize, u32 warmupBlocks = 1, double heatSec = 0);
 
   // The LL counterpart: from the LL seed, a block is blockSize LL iterations and nothing else, since there is no check
   // for a modMul to serve.  checkOk stays true; the residue is the only check there is, and the caller makes it.
-  IterSamples timeItersLL(u32 nBlocks, u32 blockSize, u32 warmupBlocks = 1);
+  IterSamples timeItersLL(u32 nBlocks, u32 blockSize, u32 warmupBlocks = 1, double heatSec = 0);
 
   tuple<bool, u64, RoeInfo, RoeInfo> measureROE(bool quick);
   tuple<bool, RoeInfo> measureCarry();

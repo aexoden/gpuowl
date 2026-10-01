@@ -105,8 +105,8 @@ Call timeCall(GpuCommon shared, const FFTConfig& fft, TestKind kind, u64 exponen
   auto gpu = Gpu::make(exponent, shared, fft, asExtraConf(fft, options), false, kind);
   double const buildSec = t.reset();
 
-  Call out = summarize(kind == TestKind::LL ? gpu->timeItersLL(nBlocks, blockSize, CALL_WARMUP_BLOCKS)
-                                            : gpu->timeIters(nBlocks, blockSize, CALL_WARMUP_BLOCKS));
+  Call out = summarize(kind == TestKind::LL ? gpu->timeItersLL(nBlocks, blockSize, CALL_WARMUP_BLOCKS, CALL_HEAT_SEC)
+                                            : gpu->timeIters(nBlocks, blockSize, CALL_WARMUP_BLOCKS, CALL_HEAT_SEC));
   out.timedSec = t.at();
   out.buildSec = buildSec;
   out.ran = gpu->args.flags;
@@ -992,9 +992,9 @@ MeasureOutcome runMeasure(GpuCommon shared, const MeasureArgs& want) {
     double const sampled = double(nBlocks) * blockSize * rawReport.call.mean * 1e-6;
     double const overhead = std::max(0.0, total - sampled);
     log("measure: one call: %.2f s, of which %.2f s is the blocks it timed and %.2f s (%.1f%%) is everything else --\n"
-        "measure:   the Gpu, its buffers, its warm-up block and the kernel loads the first block triggers (%.2f s of\n"
-        "measure:   that is the constructor itself)\n",
-        total, sampled, overhead, total > 0 ? overhead / total * 100 : 0, build.mean);
+        "measure:   the Gpu, its buffers, the %.1f s it heats the device, its warm-up block and the kernel loads the\n"
+        "measure:   first block triggers (%.2f s of that is the constructor itself)\n",
+        total, sampled, overhead, total > 0 ? overhead / total * 100 : 0, CALL_HEAT_SEC, build.mean);
     // The warm-up call pays whatever the kernel cache could not answer, so the gap between it and the rest is what a
     // compile costs on this machine.
     if (warmUpOverhead > overhead + 0.05) {
@@ -1007,7 +1007,7 @@ MeasureOutcome runMeasure(GpuCommon shared, const MeasureArgs& want) {
   if (want.drain && !session.stopped()) {
     auto time = [&](u32 blocks, u32 size) {
       auto gpu = Gpu::make(exponent, shared, fft, asExtraConf(fft, options), false, TestKind::PRP);
-      return statsOf(gpu->timeIters(blocks, size, 5000 / size).usPerIt).mean;
+      return statsOf(gpu->timeIters(blocks, size, 5000 / size, CALL_HEAT_SEC).usPerIt).mean;
     };
 
     double drained = 0;
