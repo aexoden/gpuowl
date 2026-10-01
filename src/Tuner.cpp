@@ -994,9 +994,10 @@ namespace {
   }
 
   Activity activity{.held = TuneDB::writerHolds(dbPath), .written = 0, .now = u64(std::time(nullptr))};
+  // Taken as an age against the file clock's own now, since file_clock::to_sys is optional and MSVC's has none.
   if (auto const when = fs::last_write_time(dbPath, ec); !ec) {
-    auto const since = std::chrono::file_clock::to_sys(when).time_since_epoch();
-    activity.written = u64(std::chrono::duration_cast<std::chrono::seconds>(since).count());
+    auto const ago = std::chrono::duration_cast<std::chrono::seconds>(std::chrono::file_clock::now() - when).count();
+    activity.written = u64(i64(activity.now) - ago);
   }
 
   std::string text;
