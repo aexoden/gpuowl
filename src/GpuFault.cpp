@@ -23,10 +23,11 @@ namespace gpufault {
 namespace {
 
 std::mutex attemptMutex;
-std::string attempt;      // guarded by attemptMutex
-int faultExitStatus = 1;  // set by arm(), read by the handler
+std::string attempt;  // guarded by attemptMutex
 
 #ifndef _WIN32
+
+int faultExitStatus = 1;  // set by arm(), read by the handler
 
 // The log file of the thread that armed this, borrowed. log() writes to a thread-local handle, and the handler runs on
 // a thread of the runtime's own, which has none -- so without this the fault report reaches the terminal and never the

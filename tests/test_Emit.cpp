@@ -56,9 +56,6 @@ const char* const DB =
   "roe   4 1K:8:1K:202 296960407 21 25.10 2150 0.3021 ok - 1753471430\n"
   "roe   9 512:15:512:212 143413741 17 24.40 2150 0.3098 ok - 1753471440\n";
 
-// The accuracy reading of the set published as 2e51eaf52a48bfc9.
-const char* const PAD128_ROE = "roe   4 512:15:512:212 143413741 18 24.40 2150 0.3098 ok - 1753471410\n";
-
 // What env 1 supports.  Costs are the mean plus two standard errors, so the six calls behind PAD=256 buy it a smaller
 // penalty (+1.84) than the four behind PAD=128 (+3.35); PAD=256 at 1776.069 and PAD=512 at 1802.236 are dropped as
 // nothing cheaper than PAD=128 anywhere they run; no ll entry is published, because one of the two ll rows under
