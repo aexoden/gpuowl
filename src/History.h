@@ -56,6 +56,10 @@ struct SessionSpan {
 // ends, then each gap halved in turn.
 [[nodiscard]] std::vector<size_t> spreadOrder(size_t n);
 
+// The share of the workload weight on measured entries from which T is a measurement rather than partly the prior's
+// estimate.
+inline constexpr double WHOLE_WORKLOAD = 0.9995;
+
 // Where the objective stood at one moment.
 struct HistoryPoint {
   // Seconds of measuring on the env before it.
@@ -66,6 +70,8 @@ struct HistoryPoint {
 
   // What production ran at the probe, where a measured entry served it.
   std::optional<double> probe;
+
+  [[nodiscard]] bool measuredWhole() const { return measured >= WHOLE_WORKLOAD; }
 };
 
 // The kind the probe is valued in: PRP where the workload has a PRP grid, else the first kind that has one.
@@ -73,7 +79,9 @@ struct HistoryPoint {
 
 // The objective over the database `text` as it stood at up to `points` moments evenly spread over `env`'s measuring,
 // valued over `scope`, oldest first.  Rebuilt in spreadOrder(), stopping once `more` says no, so that a history cut
-// short still spans the whole range, coarsely.
+// short still spans the whole range, coarsely.  Where those moments hold it, the first moment T was measured over the
+// whole workload and the first a measured entry served the probe are added too, to the second: what each chart has
+// come from is the same however many moments were rebuilt.
 [[nodiscard]] std::vector<HistoryPoint> replay(std::string_view text, u32 env, const RunScope& scope, size_t points,
                                                const std::function<bool()>& more);
 

@@ -8,7 +8,9 @@
 
 #include "test.h"
 
+#include <algorithm>
 #include <cmath>
+#include <optional>
 #include <set>
 #include <string>
 #include <vector>
@@ -120,7 +122,9 @@ TEST(moments_are_rebuilt_so_that_any_prefix_spans_the_whole_range) {
 
 TEST(each_moment_of_the_history_is_the_objective_over_the_database_as_it_stood) {
   RunScope const scope = probeScope();
-  std::vector<HistoryPoint> const history = replay(DB, 1, scope, 14, [] { return true; });
+  std::vector<HistoryPoint> history = replay(DB, 1, scope, 14, [] { return true; });
+  // Besides the evenly spaced moments, the first a chart has a value at, which the next test is about.
+  std::erase_if(history, [](const HistoryPoint& p) { return std::fmod(p.active, 10.0) != 0; });
   CHECK_EQ(history.size(), size_t{14});
   if (history.size() != 14) { return; }
 
@@ -147,6 +151,33 @@ TEST(each_moment_of_the_history_is_the_objective_over_the_database_as_it_stood) 
   CHECK(cut.size() == 2 && cut[0].active == 0 && near(cut[1].active, 130));
 
   CHECK(replay(DB, 3, scope, 14, [] { return true; }).empty());
+}
+
+TEST(the_first_moment_each_chart_has_a_value_is_found_however_coarse_the_moments) {
+  RunScope const scope = probeScope();
+
+  // The first second the probe is served by a measured entry, and the first T is measured over the whole workload.
+  std::optional<double> served;
+  std::optional<double> whole;
+  for (u64 s = 0; s <= 130; ++s) {
+    TuneDB db;
+    CHECK(db.parse(asOf(DB, START + s), "fixture"));
+    Objective const objective{db, 1, scope};
+    std::optional<Cost> const probe = objective.cStar(TestKind::PRP, scope.probe);
+    if (!served && probe && probe->measured()) { served = double(s); }
+    if (!whole && objective.measured() >= WHOLE_WORKLOAD) { whole = double(s); }
+  }
+  CHECK(served && whole);
+  if (!served || !whole) { return; }
+
+  for (size_t const points : {size_t{3}, size_t{4}, size_t{14}}) {
+    std::vector<HistoryPoint> const history = replay(DB, 1, scope, points, [] { return true; });
+    CHECK(std::ranges::is_sorted(history, {}, &HistoryPoint::active));
+    auto const firstServed = std::ranges::find_if(history, [](const HistoryPoint& p) { return p.probe.has_value(); });
+    auto const firstWhole = std::ranges::find_if(history, [](const HistoryPoint& p) { return p.measuredWhole(); });
+    CHECK(firstServed != history.end() && std::abs(firstServed->active - *served) <= 1);
+    CHECK(firstWhole != history.end() && std::abs(firstWhole->active - *whole) <= 1);
+  }
 }
 
 TEST(what_production_runs_at_the_probe_is_set_against_the_built_in_defaults_there) {

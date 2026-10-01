@@ -352,6 +352,11 @@ tune: 8. probe 256:3:256:212 prp short32 Placement INPLACE=0 at 5999137: 59.929 
 tune: 9. baseline 256:3:256:002 prp short32 at the built-in defaults at 5999137 (resumed at call 2): 55.910 us/it, 1.9 s; T 51.224 -> 51.224 us/it
 ```
 
+A measurement also says what its row is now ranked at, as `ranked at <us> over <n> calls`: `selection.txt` and the
+search rank a row by its mean plus two standard errors, so a configuration measured only twice can read faster than the
+one in use and still rank behind it until more calls narrow its error. The tuner gives those calls first to the
+configuration most likely to beat the one in use.
+
 The defaults sweep, the bootstrap and the search take turns, a measurement at a time, so none of them holds the
 others up. The bootstrap says which FFT it searches first for each type, which types it does not, and why:
 
@@ -454,7 +459,8 @@ to a file, say), the setting is ignored with a note. From top to bottom:
   per iteration at the probe. Both fall as the tuning pays. They are rebuilt from the timestamps in `tunedb.txt` when
   the run starts (for up to 10 seconds; a long history is then drawn more coarsely), so they need nothing that an older
   build did not write. `T` is charted only from when every exponent of the workload had a measured FFT, since until
-  then it still includes estimates. `^ this run` marks where the current run began.
+  then it still includes estimates. Each chart's `from` is its first value: where `T` was first measured over the whole
+workload, and what production first ran at the probe. `^ this run` marks where the current run began.
 - **PRODUCTION**: what `selection.txt` runs over the workload, one row per stretch of exponents served by the same FFT
   and options: its share of the workload, its cost, and how that compares with the fastest FFT measured there at the
   built-in defaults, which is what the tuning as a whole bought, the choice of FFT included. `untuned` marks a stretch
@@ -464,8 +470,8 @@ to a file, say), the setting is ignored with a note. From top to bottom:
 - **SAMPLES**: up to seven exponents spread over the workload, the probe among them (marked `*`): for each, the fastest
   FFT at the built-in defaults and its cost, what a normal run would use there now and its cost, and the change. Where
   the tuning moved an exponent to another FFT, this is where it shows.
-- **RECENT**: the measurements this run has made, newest first, with their results; a new best set for an FFT is shown
-  in green with the set.
+- **RECENT**: the measurements this run has made, newest first, with their results and, for a timing, what its row is
+  ranked at and over how many calls; a new best set for an FFT is shown in green with the set.
 - **NEXT**: what the queue would measure next and what each is worth.
 - **EVENTS**: every other line the log gets (the bootstrap's decisions, the default options moving, notes and
   warnings), newest first.
@@ -701,7 +707,8 @@ kind, the exponent range it serves, and the state of its accuracy evidence, and 
 measured with (`-` for the built-in defaults), naming every option the `use` lines set at the value it was measured
 with, so that it runs as measured whatever they say: `n/a` (an NTT, which has no rounding error), `confirmed` (the rounding error was read
 at the top of the range and found comfortably safe, or the range was cut to where it is), `unvalidated` (read at the
-top of PRPLL's standard range and found safe, with less margin), or `unavailable` (too few rounding errors occurred to
+top of PRPLL's standard range and found above the level production warns at, but with less margin than `confirmed`
+asks for; nothing more is owed, and the range is the one PRPLL itself would use), or `unavailable` (too few rounding errors occurred to
 judge; only configurations that round exactly as the defaults do are published this way).
 
 

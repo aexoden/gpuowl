@@ -116,8 +116,11 @@ struct Finished {
   bool completed = false;
   double seconds = 0;
 
-  // A timing's.
+  // A timing's, and what the row it landed on is ranked at now -- PESSIMISM_SIGMA standard errors above its mean --
+  // over how many calls; no ranking where the row was not found.
   double usPerIt = 0;
+  double ranked = 0;
+  u32 calls = 0;
 
   // A gate's or a reach's: the reading, and what the gate made of it.
   bool reads = false;
