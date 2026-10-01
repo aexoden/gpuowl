@@ -33,6 +33,17 @@ namespace {
   return top >= band.lo ? top : 0;
 }
 
+// The row a call of `ran` at `exponent` landed on, as every call to it so far merges.
+[[nodiscard]] std::optional<Measurement> rowOf(const TuneDB& db, u32 env, const FFTConfig& fft, TestKind kind,
+                                               u64 exponent, const UseConfig& ran) {
+  std::string const spec = fft.spec();
+  for (const RunRow& row : db.mergedRuns()) {
+    if (row.exponent != exponent || row.kind != kind || row.fft != spec || db.envOf(row.sess) != env) { continue; }
+    if (const UseConfig* const opts = db.findCfg(row.cfg); opts && *opts == ran && row.m.ok()) { return row.m; }
+  }
+  return std::nullopt;
+}
+
 // The cheapest option set of each identity emission could publish -- whether or not another identity keeps it out of
 // the table, since tuning it is how it might get in.
 [[nodiscard]] std::map<EntryKey, const SelectionEntry*> bestEntries(const std::vector<SelectionEntry>& candidates) {
@@ -1558,6 +1569,7 @@ QueueReport runQueue(Scheduler& scheduler, TuneDB& db, u32 env, Bench& bench, co
     publish(objective, lines);
 
     std::string outcome;
+    std::optional<Measurement> row;
     if (reads && result.completed) {
       const Env& device = scheduler.bootstrap().env();
       outcome = item->kind == ItemKind::Gate ? gateOutcome(db, env, device, fft, *item)
@@ -1567,9 +1579,17 @@ QueueReport runQueue(Scheduler& scheduler, TuneDB& db, u32 env, Bench& bench, co
           out.items, toString(item->kind), label.c_str(), item->exponent, reading.z, reading.n,
           reading.checkOk ? "OK" : "failed", result.seconds, outcome.c_str(), before, objective.T());
     } else if (result.completed) {
-      log("tune: %u. %s %s at %" PRIu64 "%s: %.3f us/it, %.1f s; T %.3f -> %.3f us/it\n", out.items,
-          toString(item->kind), label.c_str(), item->exponent, call.c_str(), result.usPerIt, result.seconds, before,
-          objective.T());
+      row = rowOf(db, env, fft, kind, item->exponent, result.ran);
+      std::string ranked;
+      if (row) {
+        char buf[64];
+        snprintf(buf, sizeof(buf), ", ranked at %.3f over %u call%s", pessimisticCost(*row), row->calls,
+                 row->calls == 1 ? "" : "s");
+        ranked = buf;
+      }
+      log("tune: %u. %s %s at %" PRIu64 "%s: %.3f us/it%s, %.1f s; T %.3f -> %.3f us/it\n", out.items,
+          toString(item->kind), label.c_str(), item->exponent, call.c_str(), result.usPerIt, ranked.c_str(),
+          result.seconds, before, objective.T());
     } else if (result.status == Status::Err) {
       log("tune: %u. %s %s at %" PRIu64 "%s computed wrongly twice, and is held out as an error\n", out.items,
           toString(item->kind), label.c_str(), item->exponent, call.c_str());
@@ -1596,6 +1616,8 @@ QueueReport runQueue(Scheduler& scheduler, TuneDB& db, u32 env, Bench& bench, co
                        .completed = result.completed,
                        .seconds = result.seconds,
                        .usPerIt = result.usPerIt,
+                       .ranked = row ? pessimisticCost(*row) : 0,
+                       .calls = row ? row->calls : 0,
                        .reads = reads,
                        .z = reading.z,
                        .checkOk = reading.checkOk,

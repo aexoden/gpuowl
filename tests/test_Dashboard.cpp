@@ -8,6 +8,7 @@
 
 #include "test.h"
 
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <string>
@@ -277,6 +278,37 @@ TEST(the_wide_frame_holds_every_panel_in_two_columns) {
   CHECK(find("16:44:12 bootstrap complete; the defaults are MULTI_Q=1,SHUFL_BYTES_H=16"));
 }
 
+TEST(a_chart_says_where_it_started_however_long_the_run_grows) {
+  // T measured whole from the first second, falling a little with every item; the first column of any chart wide
+  // enough to draw holds many of these points.
+  Board b = board(true);
+  b.history.clear();
+  for (int k = 0; k <= 600; ++k) {
+    b.history.push_back({.active = double(k), .T = 1300 - 0.1 * k, .measured = 1, .probe = 520 - 0.01 * k});
+  }
+  for (double const total : {600.0, 6000.0, 60000.0}) {
+    b.before = total - b.elapsed;
+    b.history.push_back({.active = total, .T = 1200, .measured = 1, .probe = 500});
+    std::vector<std::string> const lines = text(frame(b, 60, 224));
+    auto find = [&](std::string_view what) {
+      return std::ranges::any_of(lines, [&](const std::string& l) { return l.find(what) != std::string::npos; });
+    };
+    CHECK(find("T, the time per iteration over the workload: now 1200.000 us/it, from 1300.000"));
+    CHECK(find("what production runs at the probe 67513549: now 500.000 us/it, from 520.000"));
+  }
+}
+
+TEST(a_timing_says_what_its_row_is_ranked_at) {
+  Board b = board(true);
+  Finished f = timing(13, "512:7:512:202 prp short32 Memory 2 LOADS=30051", 509.1, 1124.006, 1124.006);
+  f.ranked = 512.345;
+  f.calls = 2;
+  b.recent.push_front({.item = f, .at = "16:50:01"});
+  std::vector<std::string> const lines = text(frame(b, 60, 224));
+  CHECK(std::ranges::any_of(
+    lines, [](const std::string& l) { return l.find("509.100 us/it, ranked 512.345 (2)") != std::string::npos; }));
+}
+
 TEST(the_samples_are_spread_over_the_workload_with_the_probe_among_them) {
   std::vector<ObjectivePoint> points;
   for (u64 k = 0; k < 20; ++k) { points.push_back(point(60'000'000 + k * 1'000'000, 0.05, "e", "512:7:512:202", 500)); }
@@ -371,7 +403,7 @@ TEST(a_narrow_frame_is_one_column_drawn_in_ascii_where_the_terminal_wants_it) {
     "    67000000  1K:7:256:212   523.907  ->  512:7:512:202   502.712  -4.05%|\n"
     "*   67513549  1K:7:256:212   523.907  ->  512:7:512:202   502.712  -4.05%|\n"
     "|\n"
-    "RECENT  items this run, newest first|\n"
+    "RECENT  items this run, newest first; ranked as selection.txt ranks the row (calls)|\n"
     "    12  16:49:47  probe 512:7:5...ory 2 LOADS=30050 at 67513549    509.799 us/it    6.2 s  T -1.094|\n"
     "|\n"
     "NEXT  what the queue ranks highest, best rate first|\n"

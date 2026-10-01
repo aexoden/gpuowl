@@ -169,24 +169,51 @@ std::vector<HistoryPoint> replay(std::string_view text, u32 env, const RunScope&
   size_t const n = total > 0 ? points : 1;
   TestKind const kind = probeKind(scope);
 
+  auto const pointAt = [&](double active) -> std::optional<HistoryPoint> {
+    TuneDB db;
+    if (!db.parse(asOf(text, momentAt(spans, active)), "tunedb.txt as it stood")) { return std::nullopt; }
+    Objective const objective{db, env, scope};
+    std::optional<Cost> const probe = objective.cStar(kind, scope.probe);
+    return HistoryPoint{.active = active,
+                        .T = objective.T(),
+                        .measured = objective.measured(),
+                        .probe = probe && probe->measured() ? std::optional<double>{probe->us} : std::nullopt};
+  };
+
   std::vector<std::optional<HistoryPoint>> at(n);
   for (size_t const k : spreadOrder(n)) {
     if (!more()) { break; }
     double const active = n > 1 ? total * double(k) / double(n - 1) : total;
-    TuneDB db;
-    if (!db.parse(asOf(text, momentAt(spans, active)), "tunedb.txt as it stood")) { continue; }
-    Objective const objective{db, env, scope};
-    std::optional<Cost> const probe = objective.cStar(kind, scope.probe);
-    at[k] = HistoryPoint{.active = active,
-                         .T = objective.T(),
-                         .measured = objective.measured(),
-                         .probe = probe && probe->measured() ? std::optional<double>{probe->us} : std::nullopt};
+    at[k] = pointAt(active);
   }
 
   std::vector<HistoryPoint> out;
   for (const std::optional<HistoryPoint>& p : at) {
     if (p) { out.push_back(*p); }
   }
+
+  // Only where the moment before the first that has it was rebuilt and lacks it: otherwise the first is not bracketed.
+  using Has = bool (*)(const HistoryPoint&);
+  for (Has const has : {Has{[](const HistoryPoint& p) { return p.measuredWhole(); }},
+                        Has{[](const HistoryPoint& p) { return p.probe.has_value(); }}}) {
+    auto const first = std::ranges::find_if(at, [&](const auto& p) { return p && has(*p); });
+    if (first == at.begin() || first == at.end() || !*std::prev(first) || has(**std::prev(first))) { continue; }
+
+    double lo = (*std::prev(first))->active;
+    HistoryPoint earliest = **first;
+    while (earliest.active - lo > 1 && more()) {
+      double const mid = lo + (earliest.active - lo) / 2;
+      std::optional<HistoryPoint> const p = pointAt(mid);
+      if (!p) { break; }
+      if (has(*p)) {
+        earliest = *p;
+      } else {
+        lo = mid;
+      }
+    }
+    if (earliest.active < (*first)->active) { out.push_back(earliest); }
+  }
+  std::ranges::stable_sort(out, {}, &HistoryPoint::active);
   return out;
 }
 

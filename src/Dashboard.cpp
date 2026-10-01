@@ -37,8 +37,6 @@ constexpr std::string_view ENTER = "\x1b[?1049h\x1b[?25l\x1b[?7l\x1b[H\x1b[2J";
 constexpr std::string_view LEAVE = "\x1b[?7h\x1b[?25h\x1b[?1049l";
 
 // What a measured share is taken to be whole at: the objective sums its weights in floating point.
-constexpr double WHOLE = 0.9995;
-
 #ifdef __GNUC__
 std::string format(const char* fmt, ...) __attribute__((format(printf, 1, 2)));
 #endif
@@ -255,6 +253,9 @@ struct Series {
   std::string name;
   std::vector<std::optional<double>> values;
 
+  // The first value of all, which a column holding several points may not show.
+  std::optional<double> from;
+
   // What to say where nothing is drawn yet.
   std::string empty = "nothing measured yet";
 };
@@ -265,6 +266,14 @@ struct Series {
   Series out;
   out.values.resize(width);
   if (!probe) { out.empty = "not measured over the whole workload yet"; }
+  for (const HistoryPoint& h : points) {
+    if (probe && h.probe) {
+      out.from = h.probe;
+    } else if (!probe && h.measuredWhole()) {
+      out.from = h.T;
+    }
+    if (out.from) { break; }
+  }
   size_t p = 0;
   std::optional<size_t> last;
   for (size_t c = 0; c < width; ++c) {
@@ -276,7 +285,7 @@ struct Series {
     // what was measured would set the scale of the whole chart.
     if (probe) {
       out.values[c] = h.probe;
-    } else if (h.measured >= WHOLE) {
+    } else if (h.measuredWhole()) {
       out.values[c] = h.T;
     }
   }
@@ -334,13 +343,6 @@ struct Series {
   return std::nullopt;
 }
 
-[[nodiscard]] std::optional<double> firstOf(const Series& s) {
-  for (const std::optional<double>& v : s.values) {
-    if (v) { return *v; }
-  }
-  return std::nullopt;
-}
-
 // Each chart has a row of its own saying what it is, so the margins only hold the scale.
 constexpr size_t CHART_LEFT = 4;
 constexpr size_t CHART_RIGHT = 14;
@@ -351,11 +353,10 @@ void addChart(std::vector<Line>& out, const Series& s, size_t height, size_t wid
   size_t const cw = width - CHART_LEFT - CHART_RIGHT;
   std::vector<Line> const rows = chart(s, height, g);
   auto const [lo, hi] = rangeOf(s);
-  std::optional<double> const first = firstOf(s);
   std::optional<double> const last = lastOf(s);
 
   std::string title = "  " + s.name + ": ";
-  title += last ? format("now %.3f us/it, from %.3f", *last, *first) : s.empty;
+  title += last && s.from ? format("now %.3f us/it, from %.3f", *last, *s.from) : s.empty;
   out.push_back(fit({{title, Style::Plain}}, width, g.ellipsis));
 
   for (size_t r = 0; r < height; ++r) {
@@ -564,6 +565,7 @@ void addBenefit(std::vector<Line>& out, const Board& b, size_t width, size_t cha
     right.push_back({clipEnd(outcome, std::max<size_t>(24, width * 2 / 5), g.ellipsis), Style::Dim});
   } else {
     right.push_back({format("%9.3f us/it", f.usPerIt), better ? Style::Good : Style::Plain});
+    if (f.calls) { right.push_back({format(", ranked %.3f (%u)", f.ranked, f.calls), Style::Dim}); }
     right.push_back({format("  %5.1f s", f.seconds), Style::Dim});
     right.push_back({format("  T %+.3f", change),
                      change < -1e-9    ? Style::Good
@@ -585,7 +587,9 @@ void addBenefit(std::vector<Line>& out, const Board& b, size_t width, size_t cha
   std::vector<Line> out;
   if (!rows) { return out; }
   const Glyphs& g = glyphs(b);
-  out.push_back(fit(headingLine("RECENT", "items this run, newest first"), width, g.ellipsis));
+  out.push_back(
+    fit(headingLine("RECENT", "items this run, newest first; ranked as selection.txt ranks the row (calls)"), width,
+        g.ellipsis));
   if (b.recent.empty() && rows > 1) { out.push_back({{"  nothing yet", Style::Dim}}); }
   for (const Recent& r : b.recent) {
     if (out.size() >= rows) { break; }
