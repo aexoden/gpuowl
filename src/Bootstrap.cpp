@@ -252,22 +252,29 @@ Defaults defaultLines(const Env& env, const std::vector<std::pair<Family, UseCon
     for (const auto& [key, value] : config) { keys.insert(key); }
   }
 
-  Defaults out;
-  std::map<enum FFT_TYPES, std::vector<std::pair<std::string, std::string>>> lines;
-
-  for (const std::string& key : keys) {
-    const Option* const option = findOption(key);
-    if (!option) { continue; }
-
-    // What each family the key reaches runs it at: its own winner, or the built-in value it kept.
+  // What each family the key reaches runs it at: its own winner, or the built-in value it kept.
+  auto valuesOf = [&](const std::string& key) {
     std::set<std::string> values;
+    const Option* const option = findOption(key);
     for (const auto& [family, config] : decided) {
       if (!option->appliesTo(env, family.fft, config) || option->isInert(env, family.fft, config)) { continue; }
       auto const at = config.find(key);
       values.insert(at != config.end() ? at->second : std::to_string(option->defaultFor(env, family.fft, config)));
     }
+    return values;
+  };
 
-    if (values.size() == 1) {
+  Defaults out;
+  std::map<enum FFT_TYPES, std::vector<std::pair<std::string, std::string>>> lines;
+
+  for (const std::string& key : keys) {
+    if (!findOption(key)) { continue; }
+
+    // A coupled key alone on the global line would meet its partner's default, or a family line's value, in a type
+    // whose own set paired them otherwise.
+    std::set<std::string> const values = valuesOf(key);
+    if (values.size() == 1 &&
+        std::ranges::all_of(keysCoupledWith(key), [&](const std::string& k) { return valuesOf(k).size() <= 1; })) {
       out.global[key] = *values.begin();
       continue;
     }
@@ -293,8 +300,11 @@ UseConfig underDefaults(const Env& env, const FFTConfig& fft, TestKind kind, con
 
   // What `over` holds of a key the lines leave alone is what a value the lines set has to fit against.
   std::vector<std::pair<std::string, std::string>> kept;
+  // The lines set coupled keys together: a partner they leave alone is at its default, not at `over`'s value.
   for (const auto& [key, value] : over) {
-    if (!lines.contains(key)) { kept.emplace_back(key, value); }
+    if (std::ranges::none_of(keysCoupledWith(key), [&](const std::string& k) { return lines.contains(k); })) {
+      kept.emplace_back(key, value);
+    }
   }
   SelectionLayers const stacked{.global = {lines.begin(), lines.end()}, .family = {}, .entry = std::move(kept)};
   return canonicalConfig(env, fft, resolveConfig(Args{true}, fft, kind, fittedTo(stacked, env, fft, kind)));

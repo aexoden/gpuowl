@@ -442,6 +442,47 @@ TEST(a_key_only_amd_and_nvidia_can_choose_is_not_a_move_elsewhere) {
   CHECK(!offersFence(Env{}));
 }
 
+namespace {
+
+// The carry shuttle's (load, store) digits under `config`, which the table offers only as declared pairs.
+bool shuttleIsDeclaredPair(const UseConfig& config) {
+  for (const AccessClass& cls : accessClasses()) {
+    if (cls.pairs.empty()) { continue; }
+    std::pair<int, int> const at{int(getDigit(u32(useValue(config, "LOADS", 0)), cls.digit)),
+                                 int(getDigit(u32(useValue(config, "STORES", 0)), cls.digit))};
+    if (std::ranges::find(cls.pairs, at) == cls.pairs.end()) { return false; }
+  }
+  return true;
+}
+
+}  // namespace
+
+TEST(the_lines_never_split_the_carry_shuttle_pair) {
+  Family const fp64 = familyOf("512:15:512:212");
+  Family const fp32 = familyOf("2:1K:8:256:212");
+  FFTConfig const unsearched{"1:1K:8:256:202"};
+
+  // Both run the shuttle as (4,2) and agree on LOADS, but not on how FFT data is stored.
+  Defaults const d =
+    defaultLines(nvidia(), {{fp64, {{"LOADS", "40"}, {"STORES", "20"}}}, {fp32, {{"LOADS", "40"}, {"STORES", "23"}}}});
+  CHECK(!d.global.contains("LOADS"));
+  CHECK_EQ(configText(underDefaults(nvidia(), fp64.fft, TestKind::PRP, d)), std::string{"LOADS=40,STORES=20"});
+  CHECK_EQ(configText(underDefaults(nvidia(), fp32.fft, TestKind::PRP, d)), std::string{"LOADS=40,STORES=23"});
+  CHECK(shuttleIsDeclaredPair(underDefaults(nvidia(), unsearched, TestKind::PRP, d)));
+
+  // Agreeing on both, the pair goes on the global line whole.
+  Defaults const agreed =
+    defaultLines(nvidia(), {{fp64, {{"LOADS", "40"}, {"STORES", "20"}}}, {fp32, {{"LOADS", "40"}, {"STORES", "20"}}}});
+  CHECK_EQ(linesText(agreed), std::string{"LOADS=40,STORES=20"});
+
+  // A line that sets LOADS alone sets the shuttle's pair as (0,0), so a set laid under it keeps none of its own STORES.
+  Defaults const loadsOnly{.global = {{"LOADS", "5"}}, .family = {}};
+  UseConfig const over{{"LOADS", "40"}, {"STORES", "20"}, {"WMUL", "1"}};
+  UseConfig const laid = underDefaults(nvidia(), fp64.fft, TestKind::PRP, loadsOnly, over);
+  CHECK_EQ(configText(laid), std::string{"LOADS=5,WMUL=1"});
+  CHECK(shuttleIsDeclaredPair(laid));
+}
+
 TEST(a_line_reaches_only_the_shapes_that_can_take_it) {
   // SHUFL_BYTES_W=16 won at width 1K; at 4K it is past the LDS budget, and the host would derive WMUL=0 from it.
   Defaults const d{.global = {{"SHUFL_BYTES_W", "16"}, {"WMUL", "1"}}, .family = {}};
