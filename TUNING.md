@@ -296,7 +296,10 @@ same way.
 
 **`comboTop=<N>`** (`hybrid` only): how many of each group's best answers are carried into the combinations. Default
 `3`. An answer the measurements cannot tell from the last of those, within the noise of both, is carried as well:
-which of several equally good answers happens to read first says nothing about which combines best.
+which of several equally good answers happens to read first says nothing about which combines best. A group's answers
+are ranked by what each did against the same settings of every other group, from measurements that differ only within
+the group, so an answer is not credited with what another group's setting did for it; an answer that was only ever
+measured beside other changes is not carried.
 
 **`comboTiers=1|2|3`** (`hybrid` only): how widely groups are combined. `1`: none (the same as `strategy=groups`);
 `2`: groups that share kernels are combined, and so are the pieces of one group (`Memory combined`, `Cuda combined`),

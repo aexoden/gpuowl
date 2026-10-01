@@ -10,6 +10,7 @@
 #include <cmath>
 #include <iterator>
 #include <limits>
+#include <map>
 #include <numeric>
 #include <set>
 
@@ -80,50 +81,236 @@ namespace {
 }
 
 // One answer a group -- or a cluster, taken whole -- has given in a branch: the moves from the background that put
-// its axes where that answer has them, and what the answer gained against the branch's best.
+// its axes where that answer has them, and what the answer is estimated to gain against the background's own.
 struct Seed {
   std::vector<std::pair<size_t, size_t>> moves;
   double gain = 0;
 };
 
-// Whether the mean of `later` is within PESSIMISM_SIGMA combined standard errors of `earlier`'s, or below it.
-[[nodiscard]] bool indistinguishable(const Reading& earlier, const Reading& later) {
-  double const behind = (later.cost - PESSIMISM_SIGMA * later.error) - (earlier.cost - PESSIMISM_SIGMA * earlier.error);
-  return behind <= PESSIMISM_SIGMA * std::hypot(earlier.error, later.error);
+// A reading of a branch as the seeds compare it: where it puts each axis of the background, the keys it sets that no
+// axis covers, and the logarithm of its mean cost with that logarithm's variance.
+struct Placed {
+  std::vector<std::pair<int, int>> at;
+  UseConfig rest;
+  double logMean = 0;
+  double variance = 0;
+};
+
+[[nodiscard]] std::vector<Placed> placedOf(const Env& env, const FFTConfig& fft, const std::vector<Axis>& axes,
+                                           std::span<const Reading> readings) {
+  std::set<std::string> covered;
+  for (const Axis& axis : axes) {
+    for (std::string& key : axis.keys()) { covered.insert(std::move(key)); }
+  }
+  std::vector<Placed> out;
+  for (const Reading& reading : readings) {
+    Placed p;
+    for (const Axis& axis : axes) { p.at.push_back(positionOf(env, fft, reading.config, axis)); }
+    for (const auto& [key, value] : reading.config) {
+      if (!covered.contains(key)) { p.rest.emplace(key, value); }
+    }
+    double const mean = reading.cost - PESSIMISM_SIGMA * reading.error;
+    p.logMean = std::log(std::max(mean, std::numeric_limits<double>::min()));
+    p.variance = mean > 0 ? (reading.error / mean) * (reading.error / mean) : 0;
+    out.push_back(std::move(p));
+  }
+  return out;
 }
 
-// The best `top` distinct projections of `readings` onto the axes `unit`, the background's own first, then every later
-// one indistinguishable from the last of those.  `readings` are the branch's, the background first and the rest
-// cheapest first.  A projection this background cannot place -- a value that a dependent's list, as the background has
-// it, does not offer -- is passed over.
-[[nodiscard]] std::vector<Seed> seedsOf(const Env& env, const FFTConfig& fft, const std::vector<Axis>& axes,
-                                        const std::vector<size_t>& unit, std::span<const Reading> readings, u32 top) {
-  std::vector<Seed> out{Seed{}};
-  std::set<std::vector<size_t>> seen;
-  std::vector<size_t> origin;
-  for (size_t const i : unit) { origin.push_back(axes[i].current); }
-  seen.insert(std::move(origin));
+// No reading weighs as though it were more exact than this, relative to its mean: one whose spread came out as zero
+// would otherwise outweigh every other.
+inline constexpr double PRECISION_FLOOR = 1e-4;
 
-  const Reading* last = readings.empty() ? nullptr : &readings.front();
-  for (const Reading& reading : readings) {
-    if (out.size() >= top && !indistinguishable(*last, reading)) { continue; }
+// What each answer of a unit is estimated to do to the cost, against the background's own answer, and how exactly.
+struct Effect {
+  u32 answer = 0;
+  double logRatio = 0;
+  double error = 0;
+};
+
+// The effects of the answers of a unit over readings in which each was measured against different settings of
+// everything else.  A reading's context is what it sets outside the unit, and a reading is modelled as its context's
+// cost times its answer's: the log of its mean is the sum of a term for each, fitted by least squares weighted by each
+// reading's precision.  An answer is so compared only with answers read in the same context, directly or through a
+// chain of contexts, and never with the cheapest reading that happens to hold it -- whose other settings may be what
+// made it cheap.  A context of one answer says nothing of answers, and an answer no chain joins to `origin` has no
+// effect against it.  Returns the effects of every answer joined to it but its own, in no particular order.
+[[nodiscard]] std::vector<Effect> effectsOf(const std::vector<u32>& context, const std::vector<u32>& answer,
+                                            std::span<const Placed> placed, u32 origin) {
+  size_t const n = placed.size();
+  std::map<u32, std::vector<size_t>> members;
+  for (size_t r = 0; r < n; ++r) { members[context[r]].push_back(r); }
+  std::erase_if(members, [&](const auto& m) {
+    return std::ranges::all_of(m.second, [&](size_t r) { return answer[r] == answer[m.second.front()]; });
+  });
+
+  std::map<u32, std::vector<u32>> contextsOf;
+  for (const auto& [c, rs] : members) {
+    for (size_t const r : rs) { contextsOf[answer[r]].push_back(c); }
+  }
+  std::map<u32, size_t> unknown;
+  std::set<u32> joined{origin};
+  std::set<u32> visited;
+  for (std::vector<u32> todo{origin}; !todo.empty();) {
+    u32 const a = todo.back();
+    todo.pop_back();
+    for (u32 const c : contextsOf[a]) {
+      if (!visited.insert(c).second) { continue; }
+      for (size_t const r : members[c]) {
+        if (joined.insert(answer[r]).second) {
+          unknown.emplace(answer[r], unknown.size());
+          todo.push_back(answer[r]);
+        }
+      }
+    }
+  }
+  if (unknown.empty()) { return {}; }
+
+  // Where each reading's answer is among the unknowns; the origin's is none.
+  std::vector<std::optional<size_t>> slot(n);
+  for (size_t r = 0; r < n; ++r) {
+    if (auto const it = unknown.find(answer[r]); it != unknown.end()) { slot[r] = it->second; }
+  }
+
+  std::vector<double> weight(n);
+  double heaviest = 0;
+  for (size_t r = 0; r < n; ++r) {
+    weight[r] = 1 / (placed[r].variance + PRECISION_FLOOR * PRECISION_FLOOR);
+    heaviest = std::max(heaviest, weight[r]);
+  }
+  for (double& w : weight) { w /= heaviest; }
+
+  // With each context's term eliminated, the answers' terms solve L x = b, L the weighted graph Laplacian of the
+  // answers through their contexts with the origin's row taken out: symmetric and positive definite, so conjugate
+  // gradients reach it in at most as many steps as there are answers.
+  auto const apply = [&](const std::vector<double>& x) {
+    std::vector<double> out(unknown.size(), 0.0);
+    for (u32 const c : visited) {
+      double sum = 0;
+      double total = 0;
+      for (size_t const r : members[c]) {
+        total += weight[r];
+        if (slot[r]) { sum += weight[r] * x[*slot[r]]; }
+      }
+      double const mean = sum / total;
+      for (size_t const r : members[c]) {
+        if (slot[r]) { out[*slot[r]] += weight[r] * (x[*slot[r]] - mean); }
+      }
+    }
+    return out;
+  };
+  std::vector<double> rhs(unknown.size(), 0.0);
+  for (u32 const c : visited) {
+    double sum = 0;
+    double total = 0;
+    for (size_t const r : members[c]) {
+      sum += weight[r] * placed[r].logMean;
+      total += weight[r];
+    }
+    for (size_t const r : members[c]) {
+      if (slot[r]) { rhs[*slot[r]] += weight[r] * (placed[r].logMean - sum / total); }
+    }
+  }
+  auto const dot = [](const std::vector<double>& a, const std::vector<double>& b) {
+    return std::inner_product(a.begin(), a.end(), b.begin(), 0.0);
+  };
+  std::vector<double> x(unknown.size(), 0.0);
+  std::vector<double> residual = rhs;
+  std::vector<double> direction = residual;
+  double const target = 1e-24 * dot(rhs, rhs);
+  for (size_t step = 0; step < 2 * unknown.size() + 8; ++step) {
+    double const before = dot(residual, residual);
+    if (before <= target) { break; }
+    std::vector<double> const ad = apply(direction);
+    double const alpha = before / dot(direction, ad);
+    for (size_t i = 0; i < x.size(); ++i) {
+      x[i] += alpha * direction[i];
+      residual[i] -= alpha * ad[i];
+    }
+    double const beta = dot(residual, residual) / before;
+    for (size_t i = 0; i < x.size(); ++i) { direction[i] = residual[i] + beta * direction[i]; }
+  }
+
+  // The error of an answer's effect as its direct comparisons give it: each of its readings against the mean of the
+  // others in its context.  It leaves out how exactly the rest of a chain is known.
+  std::vector<double> precision(unknown.size(), 0.0);
+  for (u32 const c : visited) {
+    for (size_t const r : members[c]) {
+      if (!slot[r]) { continue; }
+      double others = 0;
+      for (size_t const q : members[c]) {
+        if (q != r) { others += 1 / placed[q].variance; }
+      }
+      precision[*slot[r]] += 1 / (placed[r].variance + 1 / others);
+    }
+  }
+
+  std::vector<Effect> out;
+  for (auto const& [a, i] : unknown) {
+    out.push_back({.answer = a, .logRatio = x[i], .error = std::sqrt(1 / precision[i])});
+  }
+  return out;
+}
+
+// The best `top` answers of the axes `unit`, the background's own first, then every later one whose effect the readings
+// cannot tell from the last of those, within PESSIMISM_SIGMA of their combined errors.  `placed` are the branch's
+// readings, the background first and the rest cheapest first; an answer is ranked by its effect (effectsOf()), so an
+// answer no reading compares like for like is not one.  An answer this background cannot place -- a value that a
+// dependent's list, as the background has it, does not offer -- is passed over.
+[[nodiscard]] std::vector<Seed> seedsOf(const std::vector<Axis>& axes, const std::vector<size_t>& unit,
+                                        std::span<const Placed> placed, u32 top) {
+  std::vector<Seed> out{Seed{}};
+  if (placed.empty()) { return out; }
+
+  std::vector<bool> inUnit(axes.size(), false);
+  for (size_t const i : unit) { inUnit[i] = true; }
+  std::map<std::pair<std::vector<std::pair<int, int>>, UseConfig>, u32> contexts;
+  std::map<std::vector<std::pair<int, int>>, u32> answers;
+  std::vector<std::vector<std::pair<int, int>>> answerAt;
+  std::vector<u32> context;
+  std::vector<u32> answer;
+  for (const Placed& p : placed) {
+    std::pair<std::vector<std::pair<int, int>>, UseConfig> outside{{}, p.rest};
+    for (size_t i = 0; i < axes.size(); ++i) {
+      if (!inUnit[i]) { outside.first.push_back(p.at[i]); }
+    }
+    std::vector<std::pair<int, int>> inside;
+    for (size_t const i : unit) { inside.push_back(p.at[i]); }
+    context.push_back(contexts.try_emplace(std::move(outside), u32(contexts.size())).first->second);
+    auto const [at, fresh] = answers.try_emplace(inside, u32(answers.size()));
+    if (fresh) { answerAt.push_back(std::move(inside)); }
+    answer.push_back(at->second);
+  }
+
+  std::vector<Effect> effects = effectsOf(context, answer, placed, answer.front());
+  // Ties in the order the answers were first read, cheapest first.
+  std::ranges::stable_sort(effects, {}, &Effect::answer);
+  std::ranges::stable_sort(effects, {}, &Effect::logRatio);
+
+  Effect last{};
+  for (const Effect& e : effects) {
+    if (out.size() >= top && e.logRatio - last.logRatio > PESSIMISM_SIGMA * std::hypot(last.error, e.error)) {
+      continue;
+    }
 
     std::vector<size_t> at;
-    for (size_t const i : unit) {
-      auto const it = std::ranges::find(axes[i].values, positionOf(env, fft, reading.config, axes[i]));
-      if (it == axes[i].values.end()) { break; }
-      at.push_back(size_t(it - axes[i].values.begin()));
+    for (size_t j = 0; j < unit.size(); ++j) {
+      const Axis& axis = axes[unit[j]];
+      auto const it = std::ranges::find(axis.values, answerAt[e.answer][j]);
+      if (it == axis.values.end()) { break; }
+      at.push_back(size_t(it - axis.values.begin()));
     }
-    if (at.size() != unit.size() || !seen.insert(at).second) { continue; }
+    if (at.size() != unit.size()) { continue; }
 
-    // An answer cheaper than the background's own, which a race can leave behind a winner it decided by margin, counts
-    // as no gain: the background's answer is first in every dimension, and the enumeration needs each to fall.
-    Seed seed{.moves = {}, .gain = std::min(0.0, 1 - reading.cost / readings.front().cost)};
+    // An answer that did better than the background's own where they were compared, which a race can leave behind a
+    // winner it decided by margin or another context can reverse, counts as no gain: the background's answer is first
+    // in every dimension, and the enumeration needs each to fall.
+    Seed seed{.moves = {}, .gain = std::min(0.0, -std::expm1(e.logRatio))};
     for (size_t j = 0; j < unit.size(); ++j) {
       if (at[j] != axes[unit[j]].current) { seed.moves.emplace_back(unit[j], at[j]); }
     }
     out.push_back(std::move(seed));
-    if (out.size() <= top) { last = &reading; }
+    if (out.size() <= top) { last = e; }
   }
   return out;
 }
@@ -507,10 +694,9 @@ void combos(const Env& env, const FFTConfig& fft, const UseConfig& best, const S
     if (branchOf(env, fft, r.config) == structure) { inBranch.push_back(r); }
   }
   if (inBranch.empty()) { return; }
+  std::vector<Placed> const placed = placedOf(env, fft, out.axes, inBranch);
 
-  auto seedsOn = [&](const std::vector<size_t>& unit) {
-    return seedsOf(env, fft, out.axes, unit, inBranch, strategy.comboTop);
-  };
+  auto seedsOn = [&](const std::vector<size_t>& unit) { return seedsOf(out.axes, unit, placed, strategy.comboTop); };
   auto seedsIn = [&](const std::vector<Group>& groups) {
     std::vector<size_t> unit;
     for (size_t i = 0; i < out.axes.size(); ++i) {
