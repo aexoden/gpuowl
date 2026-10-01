@@ -23,8 +23,11 @@ namespace tune {
 // respectively.
 //
 // What that gives up is a host-side change that moves a timing without moving a kernel -- the block size, how a call is
-// timed, what a cost is normalized by.  Those are rare and deliberate, and resetting the database is the answer to
-// them; spending a whole database on every save to be safe against a handful of them is not.
+// timed, what a cost is normalized by.  Those are rare and deliberate, so each one bumps MEASUREMENT_PROTOCOL, which
+// the fingerprint takes in: rows timed the old way then sit in an env of their own rather than pooling with new ones.
 [[nodiscard]] u64 buildFingerprint();
+
+// 1 until calls heated the device first (CALL_HEAT_SEC).
+inline constexpr u32 MEASUREMENT_PROTOCOL = 2;
 
 }  // namespace tune

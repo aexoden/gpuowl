@@ -61,6 +61,13 @@ struct Call {
 // Untimed blocks a call runs before its timed ones.
 inline constexpr u32 CALL_WARMUP_BLOCKS = 1;
 
+// Seconds a call keeps the device squaring before it starts over from the start state and runs those blocks.  Some
+// cards run fast for a moment after the idle that building a Gpu leaves: on an RTX 5070 Ti the first block timed after
+// one warm-up read 1.2-2% below the next three in every call, and settled within 0.05% only from about 0.8 s.
+// Production runs at the clock it settles to, and timing the burst made each row's blocks scatter fifteen times more
+// than its calls did.
+inline constexpr double CALL_HEAT_SEC = 1.0;
+
 // The iterations a call of `nBlocks` blocks runs in all, which is what an LL call's residue is checked after.
 [[nodiscard]] constexpr u64 callIterations(u32 nBlocks, u32 blockSize) {
   return u64(CALL_WARMUP_BLOCKS + nBlocks) * blockSize;

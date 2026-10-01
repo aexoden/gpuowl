@@ -2704,7 +2704,7 @@ tuple<bool, u64, RoeInfo, RoeInfo> Gpu::measureROE(bool  /*quick*/) {
   return {ok, res, roes.first, roes.second};
 }
 
-IterSamples Gpu::timeIters(u32 nBlocks, u32 blockSize, u32 warmupBlocks) {
+IterSamples Gpu::timeIters(u32 nBlocks, u32 blockSize, u32 warmupBlocks, double heatSec) {
   assert(nBlocks > 0 && blockSize > 1);
   // The first modMul of a timed block has to close a block of real squarings; with no warm-up it
   // would land on top of the one that establishes the Gerbicz base, and the check would fail.
@@ -2712,13 +2712,9 @@ IterSamples Gpu::timeIters(u32 nBlocks, u32 blockSize, u32 warmupBlocks) {
 
   PRPState const state{.exponent=E, .k=0, .blockSize=blockSize, .res64=3, .check=makeWords(E, 1), .nErrors=0};
   writeState(state.k, state.check, state.blockSize);
-  assert(dataResidue() == state.res64);
 
   enum LEAD_TYPE leadIn = LEAD_NONE;
   enum LEAD_TYPE const leadOut = useLongCarry ? LEAD_NONE : LEAD_WIDTH;
-
-  modMul(bufCheck, bufData, leadIn);
-  leadIn = LEAD_MIDDLE;
 
   auto squares = [&] {
     for (u32 i = 0; i + 1 < blockSize; ++i) {
@@ -2728,6 +2724,20 @@ IterSamples Gpu::timeIters(u32 nBlocks, u32 blockSize, u32 warmupBlocks) {
     square(bufData, bufData, leadIn, LEAD_NONE);
     leadIn = LEAD_NONE;
   };
+
+  queue.setSquareTime(0);     // Busy wait on nVidia to get the most accurate timings while tuning
+  if (heatSec > 0) {
+    for (Timer heat; heat.at() < heatSec;) {
+      squares();
+      queue.finish();
+      if (Signal::stopRequested()) { throw "stop requested"; }
+    }
+    writeState(state.k, state.check, state.blockSize);
+  }
+  assert(dataResidue() == state.res64);
+
+  modMul(bufCheck, bufData, leadIn);
+  leadIn = LEAD_MIDDLE;
 
   for (u32 w = 0; w < warmupBlocks; ++w) {
     if (w) {
@@ -2742,7 +2752,6 @@ IterSamples Gpu::timeIters(u32 nBlocks, u32 blockSize, u32 warmupBlocks) {
   IterSamples out;
   out.usPerIt.reserve(nBlocks);
 
-  queue.setSquareTime(0);     // Busy wait on nVidia to get the most accurate timings while tuning
   Timer t;
   for (u32 b = 0; b < nBlocks; ++b) {
     modMul(bufCheck, bufData, leadIn);
@@ -2763,7 +2772,7 @@ IterSamples Gpu::timeIters(u32 nBlocks, u32 blockSize, u32 warmupBlocks) {
   return out;
 }
 
-IterSamples Gpu::timeItersLL(u32 nBlocks, u32 blockSize, u32 warmupBlocks) {
+IterSamples Gpu::timeItersLL(u32 nBlocks, u32 blockSize, u32 warmupBlocks, double heatSec) {
   assert(nBlocks > 0 && blockSize > 1);
 
   writeIn(bufData, makeWords(E, 4));
@@ -2779,6 +2788,16 @@ IterSamples Gpu::timeItersLL(u32 nBlocks, u32 blockSize, u32 warmupBlocks) {
     squareLL(bufData, leadIn, LEAD_NONE);
   };
 
+  queue.setSquareTime(0);     // Busy wait on nVidia to get the most accurate timings while tuning
+  if (heatSec > 0) {
+    for (Timer heat; heat.at() < heatSec;) {
+      block();
+      queue.finish();
+      if (Signal::stopRequested()) { throw "stop requested"; }
+    }
+    writeIn(bufData, makeWords(E, 4));
+  }
+
   for (u32 w = 0; w < warmupBlocks; ++w) { block(); }
   queue.finish();
   if (Signal::stopRequested()) { throw "stop requested"; }
@@ -2786,7 +2805,6 @@ IterSamples Gpu::timeItersLL(u32 nBlocks, u32 blockSize, u32 warmupBlocks) {
   IterSamples out;
   out.usPerIt.reserve(nBlocks);
 
-  queue.setSquareTime(0);     // Busy wait on nVidia to get the most accurate timings while tuning
   Timer t;
   for (u32 b = 0; b < nBlocks; ++b) {
     block();

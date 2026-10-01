@@ -26,6 +26,13 @@ u64 fingerprintOf(std::span<const char* const> names, std::span<const char* cons
   return std::move(hasher).finish()[0];
 }
 
-u64 buildFingerprint() { return fingerprintOf(getClFileNames(), getClFiles()); }
+u64 buildFingerprint() {
+  std::vector<const char*> names = getClFileNames();
+  std::vector<const char*> sources = getClFiles();
+  std::string const protocol = std::to_string(MEASUREMENT_PROTOCOL);
+  names.push_back("measurement protocol");
+  sources.push_back(protocol.c_str());
+  return fingerprintOf(names, sources);
+}
 
 }  // namespace tune
