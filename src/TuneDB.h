@@ -307,7 +307,8 @@ public:
 
   // One row per distinct measurement, duplicates folded as a running mean and pooled variance with the calls summed
   // and failure statuses sticky.  The rows themselves stay as the file spelled them: what merges is the reading, not
-  // the record of which session took it.
+  // the record of which session took it.  A row whose options use an access mode the table has since withdrawn is
+  // left out, as if it had never been taken.
   [[nodiscard]] std::vector<RunRow> mergedRuns() const;
 
   // The surviving reading for each key.  A later roe replaces the earlier one rather than pooling with it: it is

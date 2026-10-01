@@ -153,7 +153,7 @@ TEST(a_bin_holds_at_most_four_axes_and_a_stage_at_most_64_points) {
     most[p.stage] = p.moves.size();
     if (p.stage == "Memory 1" && p.moves.size() == 1) { ++memorySingles; }
   }
-  CHECK_EQ(memorySingles, size_t(4 + 2 + 1 + 4));
+  CHECK_EQ(memorySingles, size_t(4 + 1 + 1 + 4));
 }
 
 TEST(how_many_axes_a_bin_permutes_and_where_it_is_cut_are_the_strategys) {
@@ -169,7 +169,7 @@ TEST(how_many_axes_a_bin_permutes_and_where_it_is_cut_are_the_strategys) {
 
   // Uncut, Memory's first bin is its whole cross product, and its last points move every axis of the bin.
   std::vector<std::string> const uncut = textsOf(probesOf(nvidia(), fft, {}, {.maxPoints = NO_LIMIT}), "Memory 1");
-  CHECK_EQ(uncut.size(), size_t(5 * 3 * 2 * 5 - 1));
+  CHECK_EQ(uncut.size(), size_t(5 * 2 * 2 * 5 - 1));
   std::vector<std::string> const cut = textsOf(probesOf(nvidia(), fft, {}, {}), "Memory 1");
   CHECK(std::equal(cut.begin(), cut.end(), uncut.begin()));
 
@@ -244,20 +244,20 @@ TEST(a_register_cap_is_searched_a_key_at_a_time) {
   // The largest stage left is Memory's, listed a window at a time.
   auto const memory = std::ranges::find(list.unlisted, std::string{"Memory"}, &ProbeList::Unlisted::stage);
   CHECK(memory != list.unlisted.end());
-  if (memory != list.unlisted.end()) { CHECK(memory->most >= 4499 - PROBE_WINDOW); }
+  if (memory != list.unlisted.end()) { CHECK(memory->most >= 2999 - PROBE_WINDOW); }
 }
 
 TEST(a_search_size_counts_what_the_strategy_offers_without_listing_it) {
-  // FP64 on NVIDIA OpenCL: Memory's seven axes are 5 x 3 x 2 x 5 and 5 x 3 x 2 in two bins, the first cut at 64.
+  // FP64 on NVIDIA OpenCL: Memory's seven axes are 5 x 2 x 2 x 5 and 5 x 3 x 2 in two bins, the first cut at 64.
   FFTConfig const fp64{"1K:7:256:212"};
   SearchSize const size = searchSize(nvidia(), fp64, {}, {});
   auto const memory = std::ranges::find(size.groups, Group::Memory, &SearchSize::GroupSize::group);
   CHECK(memory != size.groups.end());
   if (memory != size.groups.end()) {
     CHECK_EQ(memory->options, size_t(7));
-    CHECK(memory->points == (std::vector<u64>{149, 29}));
+    CHECK(memory->points == (std::vector<u64>{99, 29}));
     CHECK(memory->offered == (std::vector<u64>{64, 29}));
-    CHECK_EQ(memory->whole, u64(4499));
+    CHECK_EQ(memory->whole, u64(2999));
   }
 
   // Where no point is fitted away, what it offers is what probesOf() lists; under CUDA the register caps count one key
@@ -358,9 +358,9 @@ TEST(permute_takes_exactly_the_keys_named_and_is_not_cut) {
     for (const auto& [key, value] : p.config) { CHECK(key == "TAIL_KERNELS" || key == "WMUL"); }
   }
 
-  // LOADS brings every class it has a digit in, the coupled carry shuttle included: 5 x 3 x 2 x 5 x 5.
+  // LOADS brings every class it has a digit in, the coupled carry shuttle included: 5 x 2 x 2 x 5 x 5.
   ProbeList const loads = probesOf(nvidia(), fft, {}, parseStrategy("permute:LOADS"));
-  CHECK_EQ(loads.probes.size(), size_t(5 * 3 * 2 * 5 * 5 - 1));
+  CHECK_EQ(loads.probes.size(), size_t(5 * 2 * 2 * 5 * 5 - 1));
 }
 
 TEST(a_strategy_is_read_and_written_the_same_way) {

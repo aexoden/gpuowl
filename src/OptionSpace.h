@@ -239,9 +239,13 @@ struct AccessClass {
   vector<int> loadModes{};         // empty: no load side
   vector<int> storeModes{};        // empty: no store side
   vector<pair<int, int>> pairs{};  // non-empty: load and store are chosen together, as these pairs
+  vector<int> withdrawnLoads{};    // once offered and found unsafe: a measurement that used one is disregarded
 };
 
 [[nodiscard]] const vector<AccessClass>& accessClasses();
+
+// Whether `config` loads some class of traffic in a mode the table has withdrawn.
+[[nodiscard]] bool usesWithdrawnMode(const UseConfig& config);
 
 // Whether this machine's compiler can emit an access mode.
 [[nodiscard]] bool loadModeExists(const Env& env, int mode);

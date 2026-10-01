@@ -795,7 +795,10 @@ vector<Option> buildTable() {
 vector<AccessClass> buildAccessClasses() {
   return {
     {.name = "FFT data", .digit = 0, .loadModes = {0, 1, 2, 3, 4, 5}, .storeModes = {0, 1, 2, 3}},
-    {.name = "carry shuttle", .digit = 1, .pairs = {{0, 0}, {1, 1}, {4, 2}, {5, 0}}},
+    // Not mode 5, ld.global.nc: the shuttle is written during the kernel by the workgroup before, and the
+    // non-coherent path can return what it held a squaring earlier. Seen on an RTX 5070 Ti as a different wrong
+    // residue on most runs. FFT data and trig keep mode 5: nothing writes them while a kernel reads them.
+    {.name = "carry shuttle", .digit = 1, .pairs = {{0, 0}, {1, 1}, {4, 2}}, .withdrawnLoads = {5}},
     {.name = "trig, frequently reused", .digit = 2, .loadModes = {0, 5}},
     {.name = "trig, several uses", .digit = 3, .loadModes = {0, 1, 2, 3, 4, 5}},
     {.name = "trig, used once", .digit = 4, .loadModes = {0, 1, 2, 3, 4, 5}},
@@ -1091,6 +1094,14 @@ vector<pair<int, int>> usablePairs(const Env& env, const AccessClass& cls) {
     if (loadModeExists(env, load) && storeModeExists(env, store)) { out.emplace_back(load, store); }
   }
   return out;
+}
+
+bool usesWithdrawnMode(const UseConfig& config) {
+  int const packed = useValue(config, "LOADS", 0);
+  if (packed <= 0) { return false; }
+  return std::ranges::any_of(accessClasses(), [&](const AccessClass& cls) {
+    return std::ranges::find(cls.withdrawnLoads, int(getDigit(u32(packed), cls.digit))) != cls.withdrawnLoads.end();
+  });
 }
 
 u32 getDigit(u32 packed, u32 digit) {

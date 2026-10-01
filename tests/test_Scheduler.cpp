@@ -3283,7 +3283,7 @@ TEST(choosing_the_next_item_with_both_limits_lifted_costs_what_is_listed) {
   // A window of each part, and the rest of the space said rather than listed.
   u64 unlisted = 0;
   for (const Item& item : items) { unlisted += item.unlisted; }
-  CHECK(unlisted >= 4499 - PROBE_WINDOW);
+  CHECK(unlisted >= 2999 - PROBE_WINDOW);
   CHECK(unlisted < 10'000);
   CHECK(!items.empty());
   CHECK(items.size() < 2000);

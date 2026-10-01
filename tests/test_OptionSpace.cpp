@@ -681,7 +681,7 @@ TEST(access_classes) {
 
   CHECK_EQ(str(usableLoadModes(nvidia(806), data)), string("02345"));
   CHECK_EQ(str(usableStoreModes(nvidia(806), data)), string("023"));
-  CHECK_EQ(strp(usablePairs(nvidia(806), shuttle)), string("00 42 50 "));
+  CHECK_EQ(strp(usablePairs(nvidia(806), shuttle)), string("00 42 "));
   CHECK_EQ(str(usableLoadModes(nvidia(806), freq)), string("05"));
 
   CHECK_EQ(str(usableLoadModes(nvidia(300), data)), string("0234"));
@@ -700,6 +700,18 @@ TEST(access_classes) {
   CHECK_EQ(setDigit(12'345, 2, 9), 12'945u);
   CHECK_EQ(setDigit(0, 1, 4), 40u);
   CHECK_EQ(setDigit(40, 1, 0), 0u);
+}
+
+// The carry shuttle through ld.global.nc raced with the workgroup writing it, so it is withdrawn; ld.global.nc on FFT
+// data and trig, which nothing writes during the kernel, is not.
+TEST(only_the_carry_shuttle_through_nc_is_withdrawn) {
+  CHECK(usesWithdrawnMode({{"LOADS", "50"}}));
+  CHECK(usesWithdrawnMode({{"LOADS", "35554"}, {"STORES", "3"}}));
+  CHECK(!usesWithdrawnMode({{"LOADS", "35504"}}));
+  CHECK(!usesWithdrawnMode({{"LOADS", "5"}}));
+  CHECK(!usesWithdrawnMode({{"LOADS", "40"}, {"STORES", "20"}}));
+  CHECK(!usesWithdrawnMode({{"STORES", "50"}}));
+  CHECK(!usesWithdrawnMode({}));
 }
 
 // The kernel names kernelGroupOf() knows must be the ones Gpu.h declares: every kernel either maps to

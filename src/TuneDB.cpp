@@ -8,6 +8,7 @@
 #include "File.h"
 #include "fs.h"
 #include "log.h"
+#include "OptionSpace.h"
 
 #include <algorithm>
 #include <cerrno>
@@ -890,7 +891,12 @@ std::vector<RunRow> TuneDB::mergedRuns() const {
     return Key{envOf(row.sess), row.fft, row.kind, row.exponent, row.regime.label(), opts ? *opts : UseConfig{}};
   };
 
-  return foldBy<Key>(runs_, keyOf, [](RunRow& into, const RunRow& add) { mergeInto(into.m, add.m); });
+  std::vector<RunRow> live;
+  std::ranges::copy_if(runs_, std::back_inserter(live), [this](const RunRow& row) {
+    const UseConfig* const opts = findCfg(row.cfg);
+    return !opts || !usesWithdrawnMode(*opts);
+  });
+  return foldBy<Key>(live, keyOf, [](RunRow& into, const RunRow& add) { mergeInto(into.m, add.m); });
 }
 
 std::vector<RoeRow> TuneDB::latestRoes() const {
