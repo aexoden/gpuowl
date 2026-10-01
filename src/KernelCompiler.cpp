@@ -448,7 +448,14 @@ KernelHolder KernelCompiler::loadAux(const string& fileName, const string& kerne
     program = loadBinary(context, deviceId, cacheFile);
   }
 
+  // A load that meets a lost context is not a build failure: the device was gone, usually because a kernel launched
+  // earlier faulted, and compiling (again) would only meet it again.
+  auto const throwIfLost = [&fileName] {
+    if (isContextLost()) { CHECK2(CL_DEVICE_NOT_AVAILABLE, "loading " + fileName); }
+  };
+
   if (!program) {
+    throwIfLost();
     fromCache = false;
     program = compile(fileName, kernelName, args);
   } else if (asmDump && !asmCacheNoted) {
@@ -458,6 +465,7 @@ KernelHolder KernelCompiler::loadAux(const string& fileName, const string& kerne
   }
 
   if (!program) {
+    throwIfLost();
     log("Can't compile %s\n", fileName.c_str());
     throw "Can't compile " + fileName;
   }

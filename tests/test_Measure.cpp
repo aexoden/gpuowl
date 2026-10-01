@@ -218,7 +218,9 @@ TEST(a_stop_is_not_a_failure_of_anything) {
 
 TEST(a_lost_device_is_fatal_and_is_not_recorded_against_the_configuration) {
   for (const char* message :
-       {"DEVICE_NOT_AVAILABLE (-2) clFinish(q) at src/clwrap.cpp:326 finish", "DEVICE_NOT_FOUND (-1) clGetDeviceIDs"}) {
+       {"DEVICE_NOT_AVAILABLE (-2) clFinish(q) at src/clwrap.cpp:326 finish", "DEVICE_NOT_FOUND (-1) clGetDeviceIDs",
+        // A kernel load that met the context an earlier kernel lost: not a build failure of the file it names.
+        "DEVICE_NOT_AVAILABLE (-2) loading fftmiddleout.cl"}) {
     Failure const f = classify(message);
     CHECK(f.stop);
     CHECK(f.fatal);
