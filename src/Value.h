@@ -164,7 +164,7 @@ using EntrySet = std::pair<EntryKey, std::string>;
 [[nodiscard]] double refineValue(double weight, double mu, double se, u32 calls);
 
 // Two option sets production chooses between at some exponents: the one it runs there, the runner-up, and the
-// workload weight of the points where they are the cheapest two.  Indices into the option sets they were found among.
+// workload weight of the points where they are the two.  Indices into the option sets they were found among.
 struct Contest {
   size_t chosen = 0;
   size_t runnerUp = 0;
@@ -181,8 +181,11 @@ inline constexpr double RACE_MARGIN = 0.0025;
 // A reading that has had this many calls without separating from its rival is tied with it.
 inline constexpr u32 RACE_MAX_CALLS = 16;
 
-// Every pair of `sets` that is the cheapest two eligible at some point of `points`, ranked as production ranks them.
-// A pair no point weighs is not a contest at all, whatever their readings: no decision between them changes T.
+// At each point of `points`, the set production runs there, ranked as it ranks them, and the one eligible there most
+// likely to be cheaper in truth: the fewest standard errors of their difference behind it, by mean.  Not the second in
+// production's ranking, which adds standard errors to every mean and so puts a set with few calls behind ones it is
+// probably faster than -- the set a further call could most change the answer for.  A pair no point weighs is not a
+// contest at all, whatever their readings: no decision between them changes T.
 [[nodiscard]] std::vector<Contest> contests(std::span<const OptionSet> sets, std::span<const ObjectivePoint> points);
 
 // What one more call on `sets[side]`, one of the contest's two, is worth.
