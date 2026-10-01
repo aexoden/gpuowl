@@ -77,9 +77,13 @@ static int cudaFail(CUresult r, const char* what) {
   cuGetErrorName(r, &name);
 
   if (isStickyError(r)) {
-    log("\nCUDA context lost in %s: %s (%d).\n"
-        "The context is now unusable and every CUDA operation will fail."
-        "PRPLL must be restarted.\n\n", what, name ? name : "?", (int) r);
+    if (!isContextLost()) {
+      log("\nCUDA context lost in %s: %s (%d).\n"
+          "A kernel fault is reported by the next call that touches the device, not by the launch that caused it, so\n"
+          "the kernel at fault is most likely one launched before this call; CUDA_LAUNCH_BLOCKING=1 names it.\n"
+          "The context is now unusable and every CUDA operation will fail. PRPLL must be restarted.\n\n",
+          what, name ? name : "?", (int) r);
+    }
     markContextLost(name ? name : "a sticky CUDA error");
     return CL_DEVICE_NOT_AVAILABLE;
   }
@@ -291,7 +295,8 @@ static string cacheBlob(const _cl_program* prog) {
 static CUresult loadModule(_cl_program* prog, unsigned nOpts, CUjit_option* opts, void** optVals) {
   if (!prog->cubin.empty()) {
     CUresult const r = cuModuleLoadDataEx(&prog->module, prog->cubin.data(), nOpts, opts, optVals);
-    if (r == CUDA_SUCCESS) { return r; }
+    // A sticky error is an earlier fault surfacing here; it says nothing about the CUBIN, and the PTX would meet it too.
+    if (r == CUDA_SUCCESS || isStickyError(r)) { return r; }
     const char* errName = nullptr;
     cuGetErrorName(r, &errName);
     log("CUBIN rejected by the driver: %s (%d) — loading the PTX through the JIT instead\n", errName ? errName : "?", (int)r);
@@ -329,6 +334,11 @@ cl_program clCreateProgramWithBinary(cl_context ctx, unsigned  /*nDevices*/, con
       prog->moduleLoaded = true;
       moduleRetain(prog->module);  // program owns one reference
       if (binaryStatus) binaryStatus[0] = CL_SUCCESS;
+    } else if (isStickyError(r)) {
+      prog->compiled = false;
+      if (binaryStatus) binaryStatus[0] = CL_INVALID_BINARY;
+      int const lost = cudaFail(r, "cuModuleLoadData");
+      if (err) { *err = lost; return prog; }
     } else {
       log("cuModuleLoadData from cache failed: %d, blob size=%zu\n", (int)r, lengths[0]);
       prog->compiled = false;
@@ -568,6 +578,13 @@ cl_program clLinkProgram(cl_context ctx, unsigned  /*nDevices*/, const cl_device
     (void*)(size_t)sizeof(jitInfoLog), (void*)jitInfoLog
   };
   CUresult const r = loadModule(linked, 4, jitOpts, jitOptVals);
+  if (isStickyError(r)) {
+    // Not a failed link: the PTX is not at fault, so there is nothing to dump.
+    delete linked;
+    int const lost = cudaFail(r, "cuModuleLoadDataEx");
+    if (err) *err = lost;
+    return nullptr;
+  }
   if (r != CUDA_SUCCESS) {
     const char* errName = nullptr;
     cuGetErrorName(r, &errName);
