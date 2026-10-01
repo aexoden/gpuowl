@@ -254,6 +254,28 @@ TEST(faults_sit_under_the_header_whenever_there_are_any) {
   }
 }
 
+// A card whose compiler miscompiles a kernel can collect many of these; the panel keeps the newest few and leaves the
+// full list to -tune status.
+TEST(the_faults_panel_shows_only_the_newest) {
+  Board b = board(true);
+  b.faults.clear();
+  for (u64 i = 1; i <= FAULTS_SHOWN + 3; ++i) {
+    b.faults.push_back({.what = Fault::What::Wrong,
+                        .fft = "2:256:16:256:202",
+                        .kind = TestKind::LL,
+                        .exponent = 67'003'961,
+                        .options = "LOADS=" + std::to_string(i),
+                        .ts = 1'700'000'000 + i,
+                        .gen = 0});
+  }
+  std::vector<std::string> const lines = text(frame(b, 60, 224));
+  CHECK(lines.size() > 4 + FAULTS_SHOWN);
+  CHECK(lines[3].starts_with("FAULTS  8 configurations computed wrong answers"));
+  CHECK(lines[4].starts_with("  wrong  -fft 2:256:16:256:202 -use LOADS=8 "));
+  CHECK(lines[3 + FAULTS_SHOWN].starts_with("  wrong  -fft 2:256:16:256:202 -use LOADS=4 "));
+  CHECK_EQ(lines[4 + FAULTS_SHOWN], std::string{"  and 3 more"});
+}
+
 TEST(the_wide_frame_holds_every_panel_in_two_columns) {
   std::vector<std::string> const lines = text(frame(board(true), 60, 224));
   auto find = [&](std::string_view what) {
