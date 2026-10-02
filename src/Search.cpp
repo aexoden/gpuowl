@@ -275,7 +275,8 @@ std::vector<Candidate> EntrySearch::offers(const SearchContext& context, std::sp
   }
 
   // The lines move as other entries are searched, so an entry is offered them as they stand whatever it has found
-  // itself, and where it has found something, what it found with the lines laid over it.
+  // itself, and where it has found something, what it found with the lines laid over it -- that first, since the lines
+  // alone, once measured, can become the best set and take the entry's own findings out of what it is offered.
   auto offerLines = [&](UseConfig jump, const std::string& what) {
     std::string const text = configText(jump);
     if (jump.empty() || offered.contains(text)) { return; }
@@ -291,11 +292,11 @@ std::vector<Candidate> EntrySearch::offers(const SearchContext& context, std::sp
       out.push_back(std::move(c));
     }
   };
-  offerLines(underDefaults(device, entry_.fft, entry_.kind, context.lines), "the default lines ");
   if (!best.config.empty()) {
     offerLines(underDefaults(device, entry_.fft, entry_.kind, context.lines, best.config),
                "its best set under the default lines ");
   }
+  offerLines(underDefaults(device, entry_.fft, entry_.kind, context.lines), "the default lines ");
 
   // What the branches offer, before it is put in the order the entry takes it: steps never taken, then those taken
   // from another best set, then those that set a value a build failed with.

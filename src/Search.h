@@ -186,8 +186,9 @@ public:
   //
   // First a measurement begun and not concluded, since its calls count for nothing until it is.  Then, but for a
   // restart draw that is due: the lines, which carry what the best entries found, all at once, the one jump most likely
-  // to pay before any single step; and where the entry's best set is not the built-in defaults, that set with the lines
-  // laid over it.  Each is offered while no row has measured it, so as the lines move each entry tries them again.
+  // to pay before any single step -- where the entry's best set is not the built-in defaults, that set with the lines
+  // laid over it first, and then the lines alone.  Each is offered while no row has measured it, so as the lines move
+  // each entry tries them again.
   // Then the steps of each structural branch the strategy searches, each from that branch's best set -- only the
   // entry's best set steps into other branches.  Structural steps go first.  Then, where the strategy searches by
   // group, the stages probesOf() lists take turns a step at a time, each step after as many steps of every other stage

@@ -72,7 +72,7 @@ A run goes through these stages, though it interleaves them and you do not need 
    sets one step at a time (how big a step is depends on `strategy=`), and combine the best answers of different
    option groups. A random option set is tried to escape a local optimum: once no step is left, and after every 32
    option sets an FFT measures whether or not steps are left. Whenever the default options change, an FFT tries them
-   again, both as they are and laid over the best options it has found itself. The search is first spread over the
+   again, laid over the best options it has found itself and then as they are. The search is first spread over the
    contenders, the FFTs within 10% of the fastest, or within 10% of the fastest when both are at their defaults, since
    which of them tunes best cannot be told from their defaults:
    once the sweep has read them all at the probe exponent, each gets an equal share in rounds, the slower half
