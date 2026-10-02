@@ -208,6 +208,12 @@ struct Item {
   // the lines it gives every entry of its type rather than what it saves on its own.
   bool bootstrap = false;
 
+  // A baseline's, a probe's, a combo's or a restart's: run by rule, as a step of an entry's first look.
+  bool look = false;
+
+  // A probe's: run by rule, as the entry's reading under the lines a lines sweep recorded.
+  bool linesSweep = false;
+
   // The first probe or combo offered from a stage listed only in part: at most how many more points the stage has,
   // which later windows list.
   u64 unlisted = 0;
@@ -219,8 +225,9 @@ struct Item {
 };
 
 // Whether `item` runs by rule rather than by value: a step of the bootstrap, a gate reading, a baseline covering the
-// workload or taken in the defaults sweep, a step of a halving's round, or a search's measurement begun, which one more
-// call concludes and whose call so far counts for nothing until it does.
+// workload or taken in the defaults sweep, a step of a first look, a lines sweep's reading, a step of a halving's
+// round, or a search's measurement begun, which one more call concludes and whose call so far counts for nothing until
+// it does.
 [[nodiscard]] bool byRule(const Item& item);
 
 // Whether `item` is worth a call where anything expected to lower T by less than `floor` is not: one that runs by rule
@@ -234,15 +241,18 @@ public:
   // refines, and no bootstrap.  Without `restarts` an entry whose probes are all answered is left there, so the queue
   // can run dry; with them it never does, since a jump is always worth a little, and an entry also jumps once each
   // RESTART_PERIOD option sets it measures.  Without `gate` the accuracy gate reads nothing, so nothing but exact
-  // arithmetic is ever published; the search is the same either way.
+  // arithmetic is ever published; the search is the same either way.  With the default `exploration` no entry has a
+  // first look and nothing is swept under the lines.
   Scheduler(RunScope scope, std::vector<Baseline> baselines, u32 blockSize = 1000, Bootstrap bootstrap = {},
-            std::optional<Strategy> strategy = {}, bool restarts = false, bool gate = false, Halving halving = {});
+            std::optional<Strategy> strategy = {}, bool restarts = false, bool gate = false, Halving halving = {},
+            Exploration exploration = {});
 
   [[nodiscard]] const RunScope& scope() const { return scope_; }
   [[nodiscard]] const std::vector<Baseline>& baselines() const { return baselines_; }
   [[nodiscard]] const Bootstrap& bootstrap() const { return bootstrap_; }
   [[nodiscard]] const std::optional<Strategy>& strategy() const { return strategy_; }
   [[nodiscard]] const Halving& halving() const { return halving_; }
+  [[nodiscard]] const Exploration& exploration() const { return exploration_; }
 
   // Where the halving stood when admissible() last ranked the queue.
   [[nodiscard]] const HalvingState& lastHalving() const { return lastHalving_; }
@@ -262,6 +272,13 @@ public:
   // tries as a step of its own: publishedLines() over the sets the gate has passed, at the probe.
   [[nodiscard]] Defaults lines(const TuneDB& db, u32 env) const;
 
+  // The lines a new lines sweep is to record, where one is due: `now`, the lines as they stand, with a strategy and
+  // Exploration::linesSweep, once the bootstrap is complete and the lines set anything; and then again once a halving
+  // has ended since the last sweep began -- or with `ended`, as if one just had -- and they are not the lines it
+  // recorded.
+  [[nodiscard]] std::optional<Defaults> linesDue(const TuneDB& db, u32 env, const BootstrapState& state,
+                                                 const Defaults& now, bool ended = false) const;
+
   // Every item that may run now, scored against what `env` has measured, by `objective` -- which should count the sets
   // the gate still owes a reading, Gating::Assumed, since those readings are taken first.  While the table would
   // publish a set the accuracy gate owes a reading -- of the set, or of its accuracy reference -- those readings are
@@ -271,7 +288,8 @@ public:
   // there otherwise, and the value of a first measurement is only the gain it might show over the prior, which is its
   // own shape's.  After that three kinds of work take turns, a call at a time, starting after the kind the last call
   // was: with a strategy, the defaults sweep (sweepItems()), the entries whose bands hold the probe first, since each
-  // family is searched on its type's cheapest reading there; the bootstrap, once the configuration each family is on
+  // family is searched on its type's cheapest reading there, then the lines sweep (linesSweepItems()), then the first
+  // looks (lookItems()); the bootstrap, once the configuration each family is on
   // is recorded -- each family still to be read at the built-in defaults, cheapest first, and once every one is, what
   // the search of the cheapest family still owed its calls offers, in the search's own order and whatever it is
   // priced at; and the search.  The search is the halving's round while one is under way (halvingState()): what the
@@ -309,10 +327,12 @@ public:
   // later one is worth running is decided as it would begin, by whether one of its contenders has a step worth a call
   // on its value alone.  That keeps a run with a stop fraction finite: each such halving takes such a step in its
   // first round.  The first halving does not begin while `sweeping`, the defaults sweep still owing readings at the
-  // probe, so that it takes every contender at once.
+  // probe, so that it takes every contender at once; nor does a later one while `relining`, a lines sweep owing
+  // readings or due to begin, so that it takes every contender as the lines left it.
   [[nodiscard]] HalvingState halvingState(const TuneDB& db, u32 env,
                                           const std::map<EntryKey, std::vector<Reading>>& readings,
-                                          const Objective& objective, const Explored& explored, bool sweeping) const;
+                                          const Objective& objective, const Explored& explored, bool sweeping,
+                                          bool relining = false) const;
 
   // The first measurements admissible() offers once nothing runs ahead of them by rule, whether or not a bootstrap
   // call or a gate reading is holding them back now.
@@ -385,8 +405,10 @@ private:
     // The weight of the workload production runs it at.
     std::vector<double> weight;
 
-    // Within CONTEND_MARGIN now, or at the built-in defaults.
-    [[nodiscard]] bool contends(size_t i) const;
+    // Within `margin` now, or at the built-in defaults.
+    [[nodiscard]] bool within(size_t i, double margin) const;
+
+    [[nodiscard]] bool contends(size_t i) const { return within(i, CONTEND_MARGIN); }
 
     // Nearest the fastest first, the one production runs over more of the workload first where two are as near.
     [[nodiscard]] bool ahead(size_t a, size_t b) const;
@@ -394,6 +416,23 @@ private:
 
   [[nodiscard]] Standing standingOf(const std::map<EntryKey, std::vector<Reading>>& readings,
                                     const Objective& objective) const;
+
+  // The FFT types worth exploring: those with an entry whose reading is within Exploration::typeMargin of what
+  // production is measured to run at some exponent of its band the workload weighs, now or at the built-in defaults.
+  // Only a type with a reading can be judged.
+  [[nodiscard]] std::set<enum FFT_TYPES> acceptedTypes(const Standing& standing) const;
+
+  // Every entry of an accepted type, nearest the fastest first, and those with no reading yet after them, cheapest
+  // prior first.
+  [[nodiscard]] std::vector<size_t> explorable(const Standing& standing, const std::set<enum FFT_TYPES>& accepted,
+                                               const Objective& objective) const;
+
+  // The lines sweep: under the lines the env's latest `lines` row recorded, each entry of `entries` with a reading is
+  // read once, and where its best set is not the built-in defaults, that set with the lines laid over it, each until a
+  // row of it concludes or fails.  Where its search has a step of that very configuration begun, the step is resumed.
+  [[nodiscard]] std::vector<Item> linesSweepItems(const TuneDB& db, u32 env, const SearchContext& context,
+                                                  const std::map<EntryKey, std::vector<Reading>>& readings,
+                                                  const std::vector<size_t>& entries) const;
 
   // The calls of search each entry has had: every call at an option set other than the built-in defaults.
   [[nodiscard]] std::vector<u64> searchCalls(const TuneDB& db, u32 env) const;
@@ -429,11 +468,18 @@ private:
   bool restarts_;
   bool gate_;
   Halving halving_;
+  Exploration exploration_;
   mutable HalvingState lastHalving_;
 
   // How many entries the last defaults sweep found within the margin or already read there, and how many it still owed.
   mutable u32 sweepWithin_ = 0;
   mutable u32 sweepOwed_ = 0;
+
+  // How many entries the last ranking found to explore, and of those, how many still owed a first look, and how many a
+  // reading of the lines sweep.
+  mutable u32 explorable_ = 0;
+  mutable u32 lookOwed_ = 0;
+  mutable u32 linesOwed_ = 0;
 
   // The configurations this process has built, whose next build finds its kernels compiled.
   std::set<std::string> built_;
@@ -488,6 +534,9 @@ public:
 
   // Records a round of the halving as `round` has it, in this session and at this time.
   virtual void declareRound(const RoundRow& round) = 0;
+
+  // Records the lines a lines sweep reads every entry under, as `lines` has them, in this session and at this time.
+  virtual void declareLines(const LinesRow& lines) = 0;
 
   struct Reading {
     bool completed = false;
@@ -545,6 +594,9 @@ struct QueueReport {
 
 // The lines as the log says them: the global line, then each family's after a "; ! <type>".
 [[nodiscard]] std::string linesText(const Defaults& lines);
+
+// The lines a `lines` row recorded.
+[[nodiscard]] Defaults recordedLines(const TuneDB& db, const LinesRow& row);
 
 // What a run publishes: the objective the entries give, and the default lines as they stand (Scheduler::lines()).
 using Publisher = std::function<void(const Objective&, const Defaults&)>;

@@ -373,6 +373,22 @@ std::string formatRow(const RoundRow& row) {
   return out;
 }
 
+namespace {
+
+[[nodiscard]] bool isFftType(u32 type) {
+  return type == FFT64 || type == FFT3161 || type == FFT3261 || type == FFT61 || type == FFT323161 || type == FFT3231 ||
+    type == FFT6431 || type == FFT31 || type == FFT32;
+}
+
+}  // namespace
+
+std::string formatRow(const LinesRow& row) {
+  std::string out = "lines " + to_string(row.sess) + ' ' + to_string(row.n) + ' ' + to_string(row.after) + ' ' +
+    to_string(row.ts) + ' ' + to_string(row.global);
+  for (const auto& [type, cfg] : row.family) { out += ' ' + to_string(u32(type)) + ' ' + to_string(cfg); }
+  return out;
+}
+
 std::string formatRow(const NogoRow& row) {
   return "nogo  " + to_string(row.sess) + ' ' + row.fft + ' ' + row.key + '=' + row.val + ' ' + to_string(row.ts);
 }
@@ -662,6 +678,18 @@ bool TuneDB::add(const RoundRow& row) {
   return true;
 }
 
+bool TuneDB::add(const LinesRow& row) {
+  auto const named = [this](u32 cfg) { return cfgs_.contains(cfg); };
+  if (!findSession(row.sess) || !row.n || !named(row.global) || isSealed(row.sess) ||
+      !std::ranges::all_of(row.family, [&](const auto& line) { return named(line.second); })) {
+    return false;
+  }
+  if (!append(formatRow(row))) { return false; }
+  lines_.push_back(row);
+  noteRow(row.sess, row.ts);
+  return true;
+}
+
 bool TuneDB::add(const NogoRow& row) {
   auto const plain = [](std::string_view s) { return s.find_first_of(" \t\"\n\r") == std::string_view::npos; };
   if (!findSession(row.sess) || row.key.empty() || !plain(row.key) || !plain(row.val) || isSealed(row.sess)) {
@@ -920,6 +948,10 @@ bool TuneDB::compact() {
   for (const TryRow& r : tries_) { named.insert(r.cfg); }
   for (const JumpRow& r : jumps_) { named.insert(r.cfg); }
   for (const ComboRow& r : combos_) { named.insert(r.cfg); }
+  for (const LinesRow& r : lines_) {
+    named.insert(r.global);
+    for (const auto& [type, cfg] : r.family) { named.insert(cfg); }
+  }
 
   std::erase_if(cfgs_, [&named](const auto& entry) { return !named.contains(entry.first); });
   return true;
@@ -979,6 +1011,7 @@ bool TuneDB::reset(u32 env, std::string_view fft) {
   std::erase_if(combos_, drop);
   std::erase_if(boots_, drop);
   std::erase_if(rounds_, drop);
+  std::erase_if(lines_, drop);
   std::erase_if(tries_, drop);
 
   std::vector<std::pair<u32, u64>> orphaned;
@@ -1085,6 +1118,7 @@ void TuneDB::clear() {
   combos_.clear();
   boots_.clear();
   rounds_.clear();
+  lines_.clear();
   unknown_.clear();
 }
 
@@ -1139,7 +1173,7 @@ bool TuneDB::parse(std::string_view text, std::string_view name) {
 
     auto const known = tag == "env" || tag == "cfg" || tag == "sess" || tag == "work" || tag == "run" || tag == "try" ||
       tag == "done" || tag == "nogo" || tag == "roe" || tag == "ref" || tag == "jump" || tag == "combo" ||
-      tag == "boot" || tag == "round";
+      tag == "boot" || tag == "round" || tag == "lines";
     if (known && f.size() < 2) {
       refuse(tag + " row has no fields");
       continue;
@@ -1420,6 +1454,41 @@ bool TuneDB::parse(std::string_view text, std::string_view name) {
         continue;
       }
       if (!add(row)) { refuse("round row names a session that is not declared"); }
+    } else if (tag == "lines") {
+      if (f.size() < 6 || (f.size() - 6) % 2 != 0) {
+        refuse("lines row has " + to_string(f.size()) + " fields, expected 6 and 2 for each FFT type's line");
+        continue;
+      }
+      std::optional<u32> const sess = sessionOf();
+      auto const n = parseInt<u32>(f[2]);
+      auto const after = parseInt<u32>(f[3]);
+      auto const ts = parseInt<u64>(f[4]);
+      auto const global = parseInt<u32>(f[5]);
+      if (!n || !*n) { refuse("'" + f[2] + "' is not a sweep number"); }
+      if (!after) { refuse("'" + f[3] + "' is not a round number"); }
+      if (!ts) { refuse("'" + f[4] + "' is not a timestamp"); }
+      if (!global || !findCfg(*global)) { refuse("'" + f[5] + "' is not a declared option set"); }
+      bool ok = sess && n && *n && after && ts && global && findCfg(*global);
+      LinesRow row{.sess = sess.value_or(0),
+                   .n = n.value_or(0),
+                   .after = after.value_or(0),
+                   .ts = ts.value_or(0),
+                   .global = global.value_or(0),
+                   .family = {}};
+      for (size_t at = 6; at < f.size(); at += 2) {
+        auto const type = parseInt<u32>(f[at]);
+        auto const cfg = parseInt<u32>(f[at + 1]);
+        bool const known = type && isFftType(*type);
+        if (!known) { refuse("'" + f[at] + "' is not an FFT type"); }
+        if (!cfg || !findCfg(*cfg)) { refuse("'" + f[at + 1] + "' is not a declared option set"); }
+        if (!known || !cfg || !findCfg(*cfg)) {
+          ok = false;
+          continue;
+        }
+        row.family.emplace_back(FFT_TYPES(*type), *cfg);
+      }
+      if (!ok) { continue; }
+      if (!add(row)) { refuse("lines row names a session that is not declared"); }
     } else if (tag == "alarm") {
       if (f.size() != 3) {
         refuse("alarm row has " + to_string(f.size()) + " fields, expected 3");
@@ -1634,6 +1703,7 @@ std::string TuneDB::text() const {
   for (const ComboRow& r : combos_) { out += formatRow(r) + '\n'; }
   for (const BootRow& r : boots_) { out += formatRow(r) + '\n'; }
   for (const RoundRow& r : rounds_) { out += formatRow(r) + '\n'; }
+  for (const LinesRow& r : lines_) { out += formatRow(r) + '\n'; }
   for (const TryRow& r : tries_) { out += formatRow(r) + '\n'; }
   for (const auto& [sess, ts] : answered_) { out += formatRow(DoneRow{.sess = sess, .ts = ts}) + '\n'; }
   for (const std::string& line : unknown_) { out += line + '\n'; }

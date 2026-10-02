@@ -249,6 +249,22 @@ struct RoundRow {
   std::vector<RoundMember> members;
 };
 
+// The default lines as a sweep of every entry under them began: the global line's option set and each FFT type's.
+// Recorded, since the lines move as entries are searched, and a sweep that followed them would never end.
+struct LinesRow {
+  u32 sess = 0;
+
+  // The sweep's place among the env's, from 1.
+  u32 n = 0;
+
+  // The env's latest round of the halving when it began (RoundRow::n), 0 where there was none.
+  u32 after = 0;
+
+  u64 ts = 0;
+  u32 global = 0;
+  std::vector<std::pair<enum FFT_TYPES, u32>> family;
+};
+
 // One LL residue reading.
 struct RefRow {
   u32 sess = 0;
@@ -303,6 +319,7 @@ public:
   [[nodiscard]] const std::vector<ComboRow>& combos() const { return combos_; }
   [[nodiscard]] const std::vector<BootRow>& boots() const { return boots_; }
   [[nodiscard]] const std::vector<RoundRow>& rounds() const { return rounds_; }
+  [[nodiscard]] const std::vector<LinesRow>& lines() const { return lines_; }
   [[nodiscard]] const std::vector<std::string>& unknownRows() const { return unknown_; }
 
   // One row per distinct measurement, duplicates folded as a running mean and pooled variance with the calls summed
@@ -351,6 +368,7 @@ public:
   [[nodiscard]] bool add(const ComboRow& row);
   [[nodiscard]] bool add(const BootRow& row);
   [[nodiscard]] bool add(const RoundRow& row);
+  [[nodiscard]] bool add(const LinesRow& row);
   [[nodiscard]] bool add(const DoneRow& row);
 
   // The id an identical entry already has, or a fresh one.
@@ -426,6 +444,7 @@ private:
   std::vector<ComboRow> combos_;
   std::vector<BootRow> boots_;
   std::vector<RoundRow> rounds_;
+  std::vector<LinesRow> lines_;
   std::vector<std::string> unknown_;
 
   std::map<u32, TryRow> open_;
@@ -451,6 +470,7 @@ private:
 [[nodiscard]] std::string formatRow(const ComboRow& row);
 [[nodiscard]] std::string formatRow(const BootRow& row);
 [[nodiscard]] std::string formatRow(const RoundRow& row);
+[[nodiscard]] std::string formatRow(const LinesRow& row);
 [[nodiscard]] std::string formatRow(const DoneRow& row);
 
 // Whether `locks`, in the form of Linux's /proc/locks, lists a lock held on the file at (major, minor, inode); a

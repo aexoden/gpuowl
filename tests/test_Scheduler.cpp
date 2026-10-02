@@ -117,6 +117,13 @@ public:
     CHECK(db_.add(row));
   }
 
+  void declareLines(const LinesRow& lines) override {
+    LinesRow row = lines;
+    row.sess = sess_;
+    row.ts = u64(clock_);
+    CHECK(db_.add(row));
+  }
+
   // What the device builds when asked for an option set: what was asked, unless a test says the host sets part of it
   // aside.
   std::function<UseConfig(const UseConfig&)> builtAs = [](const UseConfig& asked) { return asked; };
@@ -2421,6 +2428,224 @@ TEST(an_entry_of_a_band_the_workload_left_has_its_calls_when_the_band_returns) {
   CHECK(halvingAfter(f, whole, wide, 1e9) == std::tuple(true, 0u, u64(4), std::vector<std::string>{"512:15:512:101"}));
   for (u32 c = 0; c < 4; ++c) { read(entries[1], 130'000'017, {{"ZEROHACK_W", "0"}}, 1800, 1); }
   CHECK(!std::get<0>(halvingAfter(f, whole, wide, 1e9)));
+}
+
+namespace {
+
+Scheduler explorer(std::vector<Baseline> entries, Exploration exploration, Halving halving = {}) {
+  return Scheduler{scope(), std::move(entries), 1000, {}, Strategy{.kind = Strategy::Kind::Single}, false, false,
+                   halving, exploration};
+}
+
+// The entries the ranking gives a first look, by spec, in the order it gives them; each of their items runs by rule.
+std::vector<std::string> looking(Fixture& f, const Scheduler& scheduler) {
+  std::vector<std::string> out;
+  for (const Item& item : scheduler.admissible(f.db, f.env, Objective{f.db, f.env, scope(), Gating::Assumed})) {
+    if (!item.look) { continue; }
+    CHECK(byRule(item));
+    std::string const spec = scheduler.baselines()[item.index].fft.spec();
+    if (out.empty() || out.back() != spec) { out.push_back(spec); }
+  }
+  return out;
+}
+
+// What the lines sweep owes, as "<spec> <options>".
+std::vector<std::string> relining(Fixture& f, const Scheduler& scheduler) {
+  std::vector<std::string> out;
+  for (const Item& item : scheduler.admissible(f.db, f.env, Objective{f.db, f.env, scope(), Gating::Assumed})) {
+    if (!item.linesSweep) { continue; }
+    CHECK(byRule(item) && item.kind == ItemKind::Probe);
+    out.push_back(scheduler.baselines()[item.index].fft.spec() + " " + configText(item.options));
+  }
+  return out;
+}
+
+// Records the lines a sweep is due to read under, as a run does before its next call; whether one was due.
+bool sweepLines(Fixture& f, const Scheduler& scheduler) {
+  std::optional<Defaults> const due =
+    scheduler.linesDue(f.db, f.env, scheduler.bootstrapState(f.db, f.env), scheduler.lines(f.db, f.env));
+  if (!due) { return false; }
+  LinesRow row{.sess = f.sess, .n = 1, .after = 0, .ts = 0, .global = f.db.internCfg(due->global), .family = {}};
+  for (const LinesRow& r : f.db.lines()) { row.n = std::max(row.n, r.n + 1); }
+  for (const RoundRow& r : f.db.rounds()) { row.after = std::max(row.after, r.n); }
+  for (const UseLine& line : due->family) {
+    row.family.emplace_back(*line.selector.type, f.db.internCfg({line.uses.begin(), line.uses.end()}));
+  }
+  CHECK(f.db.add(row));
+  return true;
+}
+
+}  // namespace
+
+TEST(every_entry_of_a_type_near_the_fastest_has_a_first_look_however_far_behind_it_is_itself) {
+  // FP64's best is the fastest, so every FP64 entry is looked at, 512:15:512:110 too, 38% behind: further than the
+  // halving or the value model would take it.  FFT61's only entry is 2.8 times as dear, and is not.  One entry at a
+  // time, nearest the fastest first, each until it has had its calls of search.
+  Fixture f;
+  concludedAt(f, "512:15:512:101", {}, 1450);
+  concludedAt(f, "512:15:512:110", {}, 2000);
+  concludedAt(f, "3:1K:8:512:202", {}, 4000);
+  std::vector<Baseline> const entries = only({"512:15:512:101", "512:15:512:110", "3:1K:8:512:202"});
+  Scheduler const scheduler = explorer(entries, {.lookCalls = 4, .typeMargin = 1.0, .linesSweep = false});
+
+  CHECK(looking(f, scheduler) == std::vector<std::string>{"512:15:512:101"});
+  searched(f, "512:15:512:101", 3);
+  CHECK(looking(f, scheduler) == std::vector<std::string>{"512:15:512:101"});
+  searched(f, "512:15:512:101", 1);
+  CHECK(looking(f, scheduler) == std::vector<std::string>{"512:15:512:110"});
+
+  // By rule: taken where nothing is worth the stop fraction.
+  double const floor = std::numeric_limits<double>::max();
+  std::optional<Item> const next =
+    scheduler.pick(scheduler.admissible(f.db, f.env, Objective{f.db, f.env, scope(), Gating::Assumed}, floor), floor);
+  CHECK(next && next->look && scheduler.baselines()[next->index].fft.spec() == "512:15:512:110");
+  Objective const assumed{f.db, f.env, scope(), Gating::Assumed};
+  Phase const phase =
+    scheduler.phase(scheduler.bootstrapState(f.db, f.env), scheduler.admissible(f.db, f.env, assumed), assumed, 0);
+  CHECK(phase.text.find("first looks: 1 of 2 FFTs have had their 4 calls of search") != std::string::npos);
+
+  searched(f, "512:15:512:110", 4, 2100);
+  CHECK(looking(f, scheduler).empty());
+
+  // Every type with the margin lifted, and nothing with no calls to give.
+  double const all = std::numeric_limits<double>::infinity();
+  CHECK(looking(f, explorer(entries, {.lookCalls = 4, .typeMargin = all, .linesSweep = false})) ==
+        std::vector<std::string>{"3:1K:8:512:202"});
+  CHECK(looking(f, explorer(entries, {.lookCalls = 0, .typeMargin = all, .linesSweep = false})).empty());
+}
+
+TEST(an_entry_with_no_reading_has_its_first_look_begin_at_the_built_in_defaults) {
+  // 1K:8:1K:101 is 76% behind by its prior, beyond the defaults sweep, but its type is the fastest.
+  Fixture f;
+  concludedAt(f, "512:15:512:101", {}, 1450);
+  searched(f, "512:15:512:101", 4);
+  Scheduler const scheduler =
+    explorer(only({"512:15:512:101", "1K:8:1K:101"}), {.lookCalls = 4, .typeMargin = 1.0, .linesSweep = false});
+  std::vector<Item> const items = scheduler.admissible(f.db, f.env, Objective{f.db, f.env, scope(), Gating::Assumed});
+  auto const look = std::ranges::find_if(items, &Item::look);
+  CHECK(look != items.end() && look->kind == ItemKind::Baseline && look->options.empty() &&
+        scheduler.baselines()[look->index].fft.spec() == "1K:8:1K:101");
+}
+
+TEST(a_lines_sweep_reads_every_entry_under_the_lines_it_recorded_once) {
+  // FFT61 rounds nothing, so its WMUL=4 is published with the gate off and the lines carry it.  512:15:512:101 has been
+  // searched to ZEROHACK_W=0, which is not published without the gate, so says nothing of the lines.
+  Fixture f;
+  concludedAt(f, "3:1K:8:512:202", {}, 2100);
+  concludedAt(f, "3:1K:8:512:202", {{"WMUL", "4"}}, 2000);
+  concludedAt(f, "512:15:512:101", {}, 1460);
+  concludedAt(f, "512:15:512:101", {{"ZEROHACK_W", "0"}}, 1450);
+  std::vector<Baseline> const entries = only({"512:15:512:101", "3:1K:8:512:202"});
+  Scheduler const scheduler = explorer(entries, {.lookCalls = 0, .typeMargin = 1.0, .linesSweep = true});
+  CHECK_EQ(linesText(scheduler.lines(f.db, f.env)), std::string{"WMUL=4"});
+
+  // Nothing is owed before a sweep is recorded, and one is recorded once.
+  CHECK(relining(f, scheduler).empty());
+  CHECK(sweepLines(f, scheduler));
+  CHECK(!sweepLines(f, scheduler));
+
+  // 101 under the lines, and its best set under them; FFT61's best set is already its own.
+  std::vector<std::string> const both{"512:15:512:101 WMUL=4,ZEROHACK_W=0", "512:15:512:101 WMUL=4"};
+  CHECK(relining(f, scheduler) == both);
+  Objective const assumed{f.db, f.env, scope(), Gating::Assumed};
+  Phase const phase =
+    scheduler.phase(scheduler.bootstrapState(f.db, f.env), scheduler.admissible(f.db, f.env, assumed), assumed, 0);
+  CHECK(phase.text.find("lines sweep: 1 FFT still to be read under the default lines") != std::string::npos);
+  concludedAt(f, "512:15:512:101", {{"WMUL", "4"}}, 1500);
+  CHECK(relining(f, scheduler) == std::vector<std::string>{"512:15:512:101 WMUL=4,ZEROHACK_W=0"});
+  concludedAt(f, "512:15:512:101", {{"WMUL", "4"}, {"ZEROHACK_W", "0"}}, 1490);
+  CHECK(relining(f, scheduler).empty());
+
+  // The lines move, but no halving has ended since the sweep began: none is due, and the recorded lines still rule.
+  concludedAt(f, "3:1K:8:512:202", {{"WMUL", "1"}}, 1900);
+  CHECK_EQ(linesText(scheduler.lines(f.db, f.env)), std::string{"WMUL=1"});
+  CHECK(!sweepLines(f, scheduler));
+  CHECK(relining(f, scheduler).empty());
+
+  // Off, nothing is recorded or owed.
+  Scheduler const off = explorer(entries, {.lookCalls = 0, .typeMargin = 1.0, .linesSweep = false});
+  CHECK(!off.linesDue(f.db, f.env, off.bootstrapState(f.db, f.env), off.lines(f.db, f.env), true));
+}
+
+TEST(a_halving_after_the_first_waits_for_the_lines_sweep_the_last_one_ending_began) {
+  // 101 and 102 contend; FFT61's WMUL=4 makes the lines.  The first halving does not wait on the lines sweep.
+  Fixture f;
+  concludedAt(f, "512:15:512:101", {}, 1450);
+  concludedAt(f, "512:15:512:102", {}, 1460);
+  concludedAt(f, "3:1K:8:512:202", {{"WMUL", "4"}}, 2000);
+  Scheduler const scheduler =
+    explorer(only({"512:15:512:101", "512:15:512:102", "3:1K:8:512:202"}),
+             {.lookCalls = 0, .typeMargin = 1.0, .linesSweep = true}, Halving{.contenders = 2, .roundCalls = 4});
+  CHECK(sweepLines(f, scheduler));
+  std::vector<std::string> const first{"512:15:512:101 WMUL=4", "512:15:512:102 WMUL=4"};
+  CHECK(relining(f, scheduler) == first);
+  CHECK(std::get<0>(halvingAfter(f, scheduler)));
+  concludedAt(f, "512:15:512:101", {{"WMUL", "4"}}, 1600);
+  concludedAt(f, "512:15:512:102", {{"WMUL", "4"}}, 1600);
+  searched(f, "512:15:512:101", 4);
+  searched(f, "512:15:512:102", 4);
+  CHECK(halvingAfter(f, scheduler) == std::tuple(false, 0u, u64(8), std::vector<std::string>{"512:15:512:101"}));
+  CHECK(scheduler.lastHalving().leading);
+
+  // The leader has had its turn and the lines have moved since the sweep: the second halving waits for a new one.
+  searched(f, "512:15:512:101", 8);
+  concludedAt(f, "3:1K:8:512:202", {{"WMUL", "1"}}, 1900);
+  size_t const rows = f.db.rounds().size();
+  CHECK(!std::get<0>(halvingAfter(f, scheduler)));
+  CHECK_EQ(f.db.rounds().size(), rows);
+  CHECK(sweepLines(f, scheduler));
+  std::vector<std::string> const second{"512:15:512:101 WMUL=1", "512:15:512:102 WMUL=1"};
+  CHECK(relining(f, scheduler) == second);
+  CHECK(!std::get<0>(halvingAfter(f, scheduler)));
+
+  concludedAt(f, "512:15:512:101", {{"WMUL", "1"}}, 1600);
+  concludedAt(f, "512:15:512:102", {{"WMUL", "1"}}, 1600);
+  CHECK(halvingAfter(f, scheduler) ==
+        std::tuple(true, 0u, u64(8), std::vector<std::string>{"512:15:512:101", "512:15:512:102"}));
+  CHECK_EQ(scheduler.lastHalving().halving, 2u);
+}
+
+TEST(a_run_gives_every_fft_of_a_type_worth_exploring_its_first_look) {
+  // 1K:8:1K is 76% behind the hybrid, but FP64's 512:15:512 is within 17% of it, so every FP64 FFT has its calls;
+  // FFT61, 52% behind, is past a 40% margin.  Without first looks, 1K:8:1K is never searched at all.
+  auto const run = [](Exploration exploration) {
+    Fixture f;
+    FakeBench bench{f.db, f.sess, false, 2000};
+    Scheduler scheduler{scope(),
+                        baselines(nvidia(), scope(), shapes()),
+                        1000,
+                        {},
+                        Strategy{.kind = Strategy::Kind::Single},
+                        false,
+                        false,
+                        Halving{},
+                        exploration};
+    (void)runQueue(scheduler, f.db, f.env, bench, [](const Objective&, const Defaults&) {}, 0.001);
+    std::map<std::string, u64> calls;
+    for (const Baseline& b : scheduler.baselines()) { calls[b.fft.spec()]; }
+    for (const RunRow& row : f.db.mergedRuns()) {
+      if (!canonicalConfig(scheduler.bootstrap().env(), FFTConfig{row.fft}, *f.db.findCfg(row.cfg)).empty()) {
+        calls[row.fft] += row.m.calls;
+      }
+    }
+    return calls;
+  };
+
+  std::map<std::string, u64> const looked = run({.lookCalls = 4, .typeMargin = 0.4, .linesSweep = false});
+  u32 bigger = 0;
+  for (const auto& [spec, n] : looked) {
+    if (spec.starts_with("3:")) {
+      CHECK_EQ(n, u64{0});
+    } else {
+      CHECK(n >= 4);
+      bigger += spec.starts_with("1K:8:1K:");
+    }
+  }
+  CHECK(bigger > 1);
+
+  for (const auto& [spec, n] : run({})) {
+    if (spec.starts_with("1K:8:1K:")) { CHECK_EQ(n, u64{0}); }
+  }
 }
 
 TEST(the_search_is_spread_over_the_contenders_before_it_settles_on_one) {

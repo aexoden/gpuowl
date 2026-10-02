@@ -368,6 +368,12 @@ void Session::declareRound(RoundRow round) {
   (void)db_.add(round);
 }
 
+void Session::declareLines(LinesRow lines) {
+  lines.sess = session_;
+  lines.ts = now();
+  (void)db_.add(lines);
+}
+
 void Session::keepAnchor() {
   if (!anchorDue()) { return; }
   raceAnchor();

@@ -284,6 +284,11 @@ selection.txt, which a normal run in the same directory (or its -pool) reads.  T
                          roundCalls=<N>      calls each contender is searched for in the first round, doubling [16]
                          halvings=<N>        halvings run whatever stop= says; later ones only while a step is
                                              worth it [2]
+                         lookCalls=<N>       calls of search every FFT of a type worth exploring has, whatever else
+                                             is decided; 0 for none [16]
+                         typeMargin=<P>%%|all how far behind the fastest an FFT type may be and be explored [100%%]
+                         linesSweep=0|1      read every such FFT under the default lines after the bootstrap and
+                                             between halvings [1]
                          tunetxt=0|1         also write tune.txt, for binaries that do not read selection.txt [0]
                          dashboard=0|1       a full-screen view of the run on a terminal; the log file is unchanged [0]
                      Subcommands that open no device (env=<id> picks a database env where there is more than one):

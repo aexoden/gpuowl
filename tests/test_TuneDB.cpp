@@ -47,6 +47,7 @@ const char* const FIXTURE =
   "boot  4 512:15:512:212 143400073 1753471497\n"
   "round 4 1 0 0 1753471498\n"
   "round 4 2 1 16 1753471499 512:15:512:212 prp short32 6 1K:8:1K:101 ll long32 0\n"
+  "lines 4 1 2 1753471499 1 3 17\n"
   "try   4 512:15:512:212 prp 143400073 17 1753471250\n"
   "try   5 512:15:512:212 prp 143400073 1 1753481250\n"
   "done  4 1753471500\n"
@@ -190,6 +191,15 @@ TEST(rows_are_read) {
         (std::vector<RoundMember>{
           {.fft = "512:15:512:212", .kind = TestKind::PRP, .regime = *parseRegime("short32"), .from = 6},
           {.fft = "1K:8:1K:101", .kind = TestKind::LL, .regime = *parseRegime("long32"), .from = 0}}));
+
+  CHECK_EQ(db.lines().size(), size_t{1});
+  const LinesRow& lines = db.lines().at(0);
+  CHECK_EQ(lines.sess, 4u);
+  CHECK_EQ(lines.n, 1u);
+  CHECK_EQ(lines.after, 2u);
+  CHECK_EQ(lines.global, 1u);
+  std::vector<std::pair<enum FFT_TYPES, u32>> const family{{FFT61, 17}};
+  CHECK(lines.family == family);
 }
 
 TEST(unknown_rows_pass_through) {
@@ -250,6 +260,13 @@ TEST(malformed_rows_are_rejected) {
   rejects("round 4 2 1 16 1753471499", "round 4 2 0 16 1753471499");  // entries in a round of none
   rejects("round 4 1 0 0 1753471498", "round 4 1 1 0 1753471498");    // a round of none numbered as one
   rejects("round 4 1 0 0 1753471498", "round 9 1 0 0 1753471498");    // an undeclared session
+  rejects("lines 4 1 2 1753471499 1 3 17", "lines 4 0 2 1753471499 1 3 17");   // no sweep number
+  rejects("lines 4 1 2 1753471499 1 3 17", "lines 9 1 2 1753471499 1 3 17");   // an undeclared session
+  rejects("lines 4 1 2 1753471499 1 3 17", "lines 4 1 2 1753471499 99 3 17");  // an undeclared option set
+  rejects("lines 4 1 2 1753471499 1 3 17", "lines 4 1 2 1753471499 1 3 99");
+  rejects("lines 4 1 2 1753471499 1 3 17", "lines 4 1 2 1753471499 1 7 17");                // not an FFT type
+  rejects("lines 4 1 2 1753471499 1 3 17", "lines 4 1 2 1753471499 1 3");                   // a line a column short
+  rejects("lines 4 1 2 1753471499 1 3 17", "lines 4 1 2 1753471499");                       // no global line
   rejects("29.40 118 0.371094 ok - 1753471402", "29.40 118 0.371094 ok 1753471402");        // no fingerprint field
   rejects("29.40 118 0.371094 ok - 1753471402", "29.40 118 0.371094 ok 12345 1753471402");  // not 16 digits
   rejects("29.40 118 0.371094 ok - 1753471402", "29.40 118 0.371094 ok 0123456789abcdeg 1753471402");
@@ -977,6 +994,11 @@ TEST(a_compacted_database_says_the_same_thing_and_says_it_once) {
   // into the row that names the first.
   CHECK(db.findCfg(1) && db.findCfg(3));
   CHECK(!db.findCfg(2));
+
+  // An option set a lines row alone names is kept as well.
+  TuneDB swept = loaded(std::string{FOLDING} + "lines 1 1 0 1600 3 3 2\n");
+  CHECK(swept.compact());
+  CHECK(swept.findCfg(2) && swept.findCfg(3));
 
   // A rewrite is a file another build has to read back, and compacting one twice changes nothing further.
   TuneDB again = loaded(db.text());

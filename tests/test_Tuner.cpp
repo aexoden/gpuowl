@@ -992,13 +992,14 @@ TEST(a_runs_settings_read_back_as_the_same_run) {
   CHECK_EQ(runSettings(makeScope(parsed("").scope, pending), parsed("")),
            std::string{"workload=118415515-163860861,probe=124647911,probeWeight=0.5,kinds=prp,bootstrap=1,"
                        "strategy=hybrid,maxPermute=4,maxPoints=64,comboTop=3,comboTiers=3,contenders=16,roundCalls=16,"
-                       "halvings=2,stop=0.1%"});
+                       "halvings=2,lookCalls=16,typeMargin=100%,linesSweep=1,stop=0.1%"});
 
   for (const char* const text :
        {"", "workload=100M-400M,probe=136279841,stop=0", "kinds=prp+ll,probeWeight=0.3,bootstrap=0,stop=0.25%",
         "strategy=permute:PAD+IN_SIZEX", "comboTop=2,comboTiers=1", "strategy=single,stop=2%",
         "maxPermute=all,maxPoints=200", "strategy=groups,maxPermute=2,maxPoints=all", "contenders=0",
-        "contenders=4,roundCalls=40", "halvings=1", "halvings=5"}) {
+        "contenders=4,roundCalls=40", "halvings=1", "halvings=5", "lookCalls=0", "lookCalls=40,typeMargin=12.5%",
+        "typeMargin=all,linesSweep=0"}) {
     TuneCommand const command = parsed(text);
     RunScope const scope = makeScope(command.scope, pending);
     std::string const word = runSettings(scope, command);
@@ -1019,12 +1020,18 @@ TEST(a_runs_settings_read_back_as_the_same_run) {
     CHECK_EQ(again.halving.contenders, command.halving.contenders);
     CHECK_EQ(again.halving.roundCalls, command.halving.roundCalls);
     CHECK_EQ(again.halving.halvings, command.halving.halvings);
+    CHECK_EQ(again.exploration.lookCalls, command.exploration.lookCalls);
+    CHECK(again.exploration.typeMargin == command.exploration.typeMargin);
+    CHECK_EQ(again.exploration.linesSweep, command.exploration.linesSweep);
     CHECK(near(again.stop, command.stop));
   }
 
-  // A count, or for roundCalls= and halvings= one of at least 1; and a run's settings, not an emit's.
-  for (const char* const bad : {"contenders=", "contenders=-1", "contenders=all", "roundCalls=0", "roundCalls=x",
-                                "halvings=0", "halvings=", "halvings=all"}) {
+  // A count, or for roundCalls= and halvings= one of at least 1; a percentage or all; 0 or 1; and a run's settings,
+  // not an emit's.
+  for (const char* const bad :
+       {"contenders=", "contenders=-1", "contenders=all", "roundCalls=0", "roundCalls=x", "halvings=0",
+        "halvings=", "halvings=all", "lookCalls=", "lookCalls=all", "typeMargin=100", "typeMargin=-5%",
+        "typeMargin=", "linesSweep=2", "emit,lookCalls=4"}) {
     bool refused = false;
     try {
       (void)parsed(bad);
@@ -1034,6 +1041,11 @@ TEST(a_runs_settings_read_back_as_the_same_run) {
   CHECK_EQ(parsed("contenders=0").halving.on(), false);
   CHECK_EQ(parsed("").halving.halvings, HALVINGS);
   CHECK_EQ(parsed("halvings=1").halving.halvings, 1u);
+  CHECK_EQ(parsed("").exploration.lookCalls, LOOK_CALLS);
+  CHECK(parsed("").exploration.typeMargin == TYPE_MARGIN);
+  CHECK(parsed("").exploration.linesSweep);
+  CHECK(near(parsed("typeMargin=40%").exploration.typeMargin, 0.4));
+  CHECK(std::isinf(parsed("typeMargin=all").exploration.typeMargin));
 }
 
 TEST(a_run_is_weighted_by_the_work_it_recorded_whatever_the_worktodo_says_now) {
