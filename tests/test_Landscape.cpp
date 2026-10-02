@@ -228,6 +228,23 @@ Scenario pulledAway() {
   return s;
 }
 
+// C is 25% behind A at the built-in defaults, too far for the halving or the value model to search it, but ZEROHACK_H=0
+// saves it 25%, where it saves A 2%: once A has found it, the lines carry it, and C under them is the fastest.
+Scenario farBehind() {
+  Scenario s = scenario(around(110'000'000, 135'000'000), {A, B, C}, 4 * 3600);
+  s.landscape.cost = [](const FFTConfig& fft, TestKind, const UseConfig& o) {
+    if (fft.spec() == B) { return flat(fft, o, 1010); }
+    bool const a = fft.spec() == A;
+    double f = (a ? 1000 : 1250) * others(o, {"ZEROHACK_H"});
+    if (has(o, "ZEROHACK_H", "0")) { f *= a ? 0.98 : 0.75; }
+    return f;
+  };
+  s.landscape.best = [](const FFTConfig& fft, TestKind) {
+    return fft.spec() == A ? 980.0 : fft.spec() == B ? 1010.0 : 1250 * 0.75;
+  };
+  return s;
+}
+
 struct Named {
   const char* name;
   Scenario (*make)();
@@ -237,7 +254,8 @@ const std::vector<Named>& scenarios() {
   static const std::vector<Named> all{{"two steps", twoSteps},       {"structural branch", structuralBranch},
                                       {"cross bins", crossBins},     {"late group", lateGroup},
                                       {"failed prior", failedPrior}, {"disjoint bands", disjointBands},
-                                      {"transfer", transfer},        {"pulled away", pulledAway}};
+                                      {"transfer", transfer},        {"pulled away", pulledAway},
+                                      {"far behind", farBehind}};
   return all;
 }
 
@@ -351,6 +369,19 @@ TEST(landscape_a_structural_branch_that_loses_alone_is_found_at_the_default_stop
   Outcome o = simulate(s, Policy{.stop = STOP});
   CHECK(o.settled().has_value());
   CHECK_EQ(o.published[std::string{B} + " prp short32"], std::string{"SHUFL_BYTES_W=16,WMUL=1"});
+}
+
+TEST(landscape_an_fft_far_behind_at_its_defaults_is_found_fastest_under_what_another_found) {
+  Scenario s = farBehind();
+  s.budget = 3600;
+  Outcome looked = simulate(s, Policy{.stop = STOP});
+  CHECK(looked.settled().has_value());
+  CHECK_EQ(looked.published[std::string{C} + " prp short32"], std::string{"ZEROHACK_H=0"});
+
+  // Without first looks or lines sweeps C is never searched.
+  Outcome without = simulate(s, Policy{.exploration = {}, .stop = STOP});
+  CHECK(!without.settled().has_value());
+  CHECK(without.published[std::string{C} + " prp short32"] != "ZEROHACK_H=0");
 }
 
 TEST(landscape_a_gain_two_groups_make_together_is_found_at_the_default_stop) {

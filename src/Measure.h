@@ -167,6 +167,7 @@ public:
 
   // Records a round of the halving as `round` has it, in this session and at this time (a `round` row).
   void declareRound(RoundRow round);
+  void declareLines(LinesRow lines);
 
   [[nodiscard]] u32 id() const { return session_; }
   [[nodiscard]] u32 envId() const { return envId_; }

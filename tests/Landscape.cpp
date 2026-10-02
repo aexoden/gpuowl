@@ -62,6 +62,13 @@ public:
     (void)db_.add(row);
   }
 
+  void declareLines(const LinesRow& lines) override {
+    LinesRow row = lines;
+    row.sess = sess_;
+    row.ts = ts();
+    (void)db_.add(row);
+  }
+
   [[nodiscard]] Result run(const FFTConfig& fft, TestKind kind, u64 exponent, const UseConfig& options,
                            const std::string& moved) override {
     bool const fresh = built_.insert(fft.spec() + " " + configText(options)).second;
@@ -208,8 +215,8 @@ Outcome simulate(const Scenario& scenario, const Policy& policy, TuneDB* given) 
 
   Bootstrap bootstrap{env, scenario.scope.probe, bootstrapFamilies(env, scenario.scope.probe, inScope),
                       policy.bootstrap, probeKind(scenario.scope)};
-  Scheduler scheduler{scenario.scope,  entries,         1000,        std::move(bootstrap),
-                      policy.strategy, policy.restarts, policy.gate, policy.halving};
+  Scheduler scheduler{scenario.scope,  entries,     1000,           std::move(bootstrap), policy.strategy,
+                      policy.restarts, policy.gate, policy.halving, policy.exploration};
 
   SimBench bench{db, sess, scenario.landscape, scenario.budget, epoch};
   Outcome out;

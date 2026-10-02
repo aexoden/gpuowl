@@ -101,6 +101,22 @@ struct Halving {
   [[nodiscard]] bool on() const { return contenders > 1; }
 };
 
+// How many calls of search every entry of a type worth exploring is given whatever the value model or the halving
+// make of it, and how far behind the fastest a type may be and still be worth it.  Wide: what an FFT type gains from
+// its options is not known until some are tried, and one far off the pace is ruled out only once its best entry is.
+inline constexpr u32 LOOK_CALLS = 16;
+inline constexpr double TYPE_MARGIN = 1.0;
+
+struct Exploration {
+  // 0: no first looks.
+  u32 lookCalls = 0;
+  double typeMargin = TYPE_MARGIN;
+
+  // Whether every such entry is read again under the default lines once the bootstrap is done and each time a halving
+  // ends.
+  bool linesSweep = false;
+};
+
 // "hybrid", "single", "groups", or "permute:" followed by tunable keys joined by '+'.  Throws a message for anything
 // else, since a mistyped key would otherwise search nothing.
 [[nodiscard]] Strategy parseStrategy(std::string_view text);

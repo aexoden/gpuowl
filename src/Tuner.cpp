@@ -32,6 +32,7 @@
 #include <cmath>
 #include <cstdio>
 #include <ctime>
+#include <limits>
 #include <map>
 #include <numeric>
 #include <set>
@@ -179,6 +180,17 @@ void parseKinds(std::string_view text, ScopeArgs& out) {
 
 [[nodiscard]] std::string limitText(u32 limit) { return limit == NO_LIMIT ? "all" : std::to_string(limit); }
 
+// A percentage, or `all` for every FFT type.
+[[nodiscard]] double parseMargin(std::string_view text) {
+  if (text == "all") { return std::numeric_limits<double>::infinity(); }
+  std::optional<double> const value =
+    text.ends_with('%') ? parseNonNegative(text.substr(0, text.size() - 1)) : std::nullopt;
+  if (!value || !std::isfinite(*value)) {
+    throw std::string{"-tune: typeMargin= takes a percentage behind the fastest, such as typeMargin=100%, or all"};
+  }
+  return *value / 100;
+}
+
 // The settings that shape `strategy` beyond its name, as key=value words; none where it searches no groups.
 [[nodiscard]] std::vector<std::string> strategySettings(const Strategy& strategy) {
   if (!strategy.branches()) { return {}; }
@@ -274,6 +286,7 @@ public:
   void declareBootstrap(const FFTConfig& fft, u64 probe) override { session_.declareBootstrap(fft, probe); }
 
   void declareRound(const RoundRow& round) override { session_.declareRound(round); }
+  void declareLines(const LinesRow& lines) override { session_.declareLines(lines); }
 
   [[nodiscard]] Result run(const FFTConfig& fft, TestKind kind, u64 exponent, const UseConfig& options,
                            const std::string& moved) override {
@@ -329,8 +342,8 @@ private:
                                      u32 blockSize) {
   std::vector<Baseline> entries = baselines(device, scope);
   Bootstrap bootstrap = bootstrapFor(device, scope, entries, command.bootstrap);
-  return Scheduler{scope, std::move(entries), blockSize, std::move(bootstrap), command.strategy, true,
-                   true,  command.halving};
+  return Scheduler{scope, std::move(entries), blockSize,          std::move(bootstrap), command.strategy, true,
+                   true,  command.halving,    command.exploration};
 }
 
 // The shortest text that reads back as `value`.
@@ -711,6 +724,15 @@ TuneCommand parseTuneCommand(std::string_view text) {
       std::optional<u32> const n = parseInt<u32>(val);
       if (!n || *n < 1) { throw std::string{"-tune: halvings= takes a count of 1 or more"}; }
       out.halving.halvings = *n;
+    } else if (key == "lookCalls" && queues) {
+      std::optional<u32> const n = parseInt<u32>(val);
+      if (!n || val.empty()) { throw std::string{"-tune: lookCalls= takes a count, 0 for none"}; }
+      out.exploration.lookCalls = *n;
+    } else if (key == "typeMargin" && queues) {
+      out.exploration.typeMargin = parseMargin(val);
+    } else if (key == "linesSweep" && queues) {
+      if (val != "0" && val != "1") { throw std::string{"-tune: linesSweep= takes 0 or 1"}; }
+      out.exploration.linesSweep = val == "1";
     } else if (key == "tunetxt" && (isRun || out.verb == TuneVerb::Emit)) {
       if (val != "0" && val != "1") { throw who + ": tunetxt= takes 0 or 1"; }
       out.tuneTxt = val == "1";
@@ -746,13 +768,15 @@ TuneCommand parseTuneCommand(std::string_view text) {
       case TuneVerb::Run:
         accepted = "workload=<lo>-<hi>, probe=<E>, probeWeight=<0..1>, kinds=prp|ll|prp+ll, bootstrap=0|1,"
                    " strategy=hybrid|single|groups|permute:<KEY>+<KEY>..., maxPermute=<N>|all, maxPoints=<N>|all,"
-                   " comboTop=<N>, comboTiers=1|2|3, contenders=<N>, roundCalls=<N>, halvings=<N>, stop=<P>%|0,"
-                   " tunetxt=0|1, dashboard=0|1, or a subcommand: emit, reset, adopt, compact, scope, status, accuracy";
+                   " comboTop=<N>, comboTiers=1|2|3, contenders=<N>, roundCalls=<N>, halvings=<N>, lookCalls=<N>,"
+                   " typeMargin=<P>%|all, linesSweep=0|1, stop=<P>%|0, tunetxt=0|1, dashboard=0|1, or a subcommand:"
+                   " emit, reset, adopt, compact, scope, status, accuracy";
         break;
       case TuneVerb::Status:
         accepted = "env=<id>, and a run's workload=<lo>-<hi>, probe=<E>, probeWeight=<0..1>, kinds=prp|ll|prp+ll,"
                    " bootstrap=0|1, strategy=<S>, maxPermute=<N>|all, maxPoints=<N>|all, comboTop=<N>,"
-                   " comboTiers=1|2|3, contenders=<N>, roundCalls=<N>, halvings=<N>, stop=<P>%|0";
+                   " comboTiers=1|2|3, contenders=<N>, roundCalls=<N>, halvings=<N>, lookCalls=<N>,"
+                   " typeMargin=<P>%|all, linesSweep=0|1, stop=<P>%|0";
         break;
       case TuneVerb::Accuracy: accepted = "workload=<lo>-<hi>, probe=<E>, fft=<spec>, groups=<Group>+<Group>..."; break;
       }
@@ -822,7 +846,10 @@ std::string runSettings(const RunScope& scope, const TuneCommand& command) {
   for (const std::string& setting : strategySettings(command.strategy)) { out += "," + setting; }
   out += ",contenders=" + std::to_string(command.halving.contenders) +
     ",roundCalls=" + std::to_string(command.halving.roundCalls) +
-    ",halvings=" + std::to_string(command.halving.halvings);
+    ",halvings=" + std::to_string(command.halving.halvings) +
+    ",lookCalls=" + std::to_string(command.exploration.lookCalls) + ",typeMargin=" +
+    (std::isfinite(command.exploration.typeMargin) ? shortest(command.exploration.typeMargin * 100) + "%" : "all") +
+    ",linesSweep=" + (command.exploration.linesSweep ? "1" : "0");
   return out + ",stop=" + (command.stop > 0 ? shortest(command.stop * 100) + "%" : "0");
 }
 

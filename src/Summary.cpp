@@ -139,7 +139,12 @@ RunSummary summarize(const Scheduler& scheduler, const TuneDB& db, u32 env, u32 
   if (!waiting.empty()) {
     bool const covering = std::ranges::any_of(report.left, [](const Item& i) { return i.cover; });
     bool const halving = std::ranges::any_of(report.left, [](const Item& i) { return i.halving; });
-    out.heldBy = covering ? "the workload being covered" : halving ? "the halving" : "the accuracy gate";
+    bool const looking = std::ranges::any_of(report.left, [](const Item& i) { return i.look; });
+    out.heldBy = covering  ? "the workload being covered"
+      : halving && looking ? "the halving and the first looks"
+      : halving            ? "the halving"
+      : looking            ? "the first looks"
+                           : "the accuracy gate";
   }
 
   for (const auto& [key, type] : typeOf) {

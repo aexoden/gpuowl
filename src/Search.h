@@ -211,6 +211,10 @@ public:
   // Records that a call was made of `options`, whatever came of it.
   void tried(const Env& device, const UseConfig& options);
 
+  // Whether `options` is still worth asking for at `exponent`: not tried MAX_ATTEMPTS times in this process, and not
+  // what an earlier generation died on there.
+  [[nodiscard]] bool runnable(const SearchContext& context, const UseConfig& options, u64 exponent) const;
+
 private:
   // probesOf(), which is pure, for one best set and whether it steps into other branches, listing at most `listed`
   // points of each stage; each probe's configuration as text, and of the entry's rows checked against it so far,
@@ -242,10 +246,6 @@ private:
   // Whether the entry has measured RESTART_PERIOD option sets since its last draw was declared, or since it was first
   // measured where none has been; or has begun its last draw and not finished it.
   [[nodiscard]] bool restartDue(const SearchContext& context) const;
-
-  // Whether `options` is still worth asking for at `exponent`: not tried MAX_ATTEMPTS times in this process, and not
-  // what an earlier generation died on there.
-  [[nodiscard]] bool runnable(const SearchContext& context, const UseConfig& options, u64 exponent) const;
 
   // Where `canonical` is measured, and the calls a row started there has.
   void resume(const SearchContext& context, const std::string& canonical, Candidate& candidate) const;

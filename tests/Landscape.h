@@ -35,6 +35,7 @@ struct Landscape {
 struct Policy {
   tune::Strategy strategy{};
   tune::Halving halving{.contenders = tune::CONTENDERS, .roundCalls = tune::ROUND_CALLS};
+  tune::Exploration exploration{.lookCalls = tune::LOOK_CALLS, .typeMargin = tune::TYPE_MARGIN, .linesSweep = true};
   bool bootstrap = true;
   bool restarts = true;
   bool gate = true;

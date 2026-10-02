@@ -80,9 +80,25 @@ A run goes through these stages, though it interleaves them and you do not need 
    wherever the next step is expected to gain most, until the FFT left has had as many measurements again as the
    rounds gave out; then the contenders as they stand are halved again, those dropped earlier among them, with every
    share twice as long as last time. So an FFT whose gain lies deep in its search is come back to, for longer each
-   time. FFTs further off the pace are timed at their defaults as they become worth it. The sweep, the bootstrap and
-   the search take turns, a measurement at a time, so none of them waits for the others to finish.
-7. **Accuracy checks.** Read the rounding error of any published configuration whose options change it.
+   time. FFTs further off the pace are timed at their defaults as they become worth it.
+7. **First looks.** Every FFT of a type worth exploring gets a few measurements of search of its own, whatever the
+   halvings and the expected gains make of it: `lookCalls=` calls (16 by default), starting with the default options
+   and then in its search's own order, after a timing at its defaults if it has none. A type is worth exploring when its
+   fastest FFT is within `typeMargin=` (100% by default) of the fastest of all, untuned or as tuned now, so on a card
+   with slow FP64 the FP64 FFTs are left alone, but every FFT of the types that run the workload is tried. The halvings
+   and the search after them spend their time on FFTs near the fastest, and an FFT that looks slow untuned may have
+   gains its defaults do not show; this is where it gets the chance to show them. FFTs nearest the fastest go first,
+   one at a time.
+8. **Lines sweeps.** Once the bootstrap is complete, and again each time a halving ends if the default options have
+   changed since the last sweep, every FFT a first look covers is timed under the default options as they stood when
+   the sweep began, and where it has found options of its own, under those with the default options laid over them.
+   FFTs of one type tend to like the same options, so this carries what the search found on one FFT to every other
+   at the cost of a measurement each. A halving after the first waits for the sweep, so that it starts from the FFTs as
+   the default options leave them.
+
+The defaults sweep, the lines sweep and the first looks, the bootstrap and the search take turns, a measurement at a
+time, so none of them waits for the others to finish. Last, the **accuracy checks** read the rounding error of any
+published configuration whose options change it.
 
 **The default options follow the search.** Once FFTs are published, each FFT type's default options are those of its
 best published FFT: the one a normal run would use at the probe exponent, or where none of that type reaches it, the
@@ -218,9 +234,9 @@ To see what a set of settings would tune for without opening a GPU, put `scope` 
 
 **`stop=<P>%|0`**: the run ends once nothing left is expected to lower `T` by `P` percent. Default `0.1%`. A larger
 value gives a shorter run (`stop=1%`); `stop=0` runs until you stop it with Ctrl-C. The bootstrap, the accuracy
-checks, the coverage of the workload, the first two halvings of the search and any later one once begun (see
-`contenders=` and `halvings=`) and a measurement once begun, which one more call finishes, are always completed,
-whatever `stop=` says.
+checks, the coverage of the workload, the first looks and the lines sweeps (see `lookCalls=` and `linesSweep=`), the
+first two halvings of the search and any later one once begun (see `contenders=` and `halvings=`) and a measurement
+once begun, which one more call finishes, are always completed, whatever `stop=` says.
 
 A value without `%` is refused, except `0`: `0.1` could mean either 0.1% or 10%.
 
@@ -334,6 +350,21 @@ two options that each cost a little alone) is invisible to `stop=`; the second h
 most of those. Later halvings begin only while a step of one of their FFTs is worth `stop=` on its own. `1` gives a
 shorter run that may miss such gains. Default `2`, so with 16 contenders about 3000 calls are made in the first two
 halvings before `stop=` can end a run.
+
+**`lookCalls=<N>`**: how many calls of search every FFT of a type worth exploring gets in its first look, whatever
+anything else makes of it (see stage 7 above). Calls of search it has had already, in this run or an earlier one,
+count towards it, so an FFT that has been searched owes nothing. `0` gives no first looks, and an FFT far behind the
+fastest untuned is then searched only if the expected gains come to favour it. Default `16`; on a card where a few
+hundred FFTs serve the workload, the first looks take a few hours of the run.
+
+**`typeMargin=<P>%|all`**: how far behind the fastest FFT a type's fastest FFT may be, untuned or as tuned now, for
+every FFT of the type to have a first look and be read in the lines sweeps. `all` takes every type. A type is judged
+once one of its FFTs has been timed, which the bootstrap does for every type first. Default `100%`: a type is left
+out only once its best is more than twice as slow as the fastest.
+
+**`linesSweep=0|1`**: whether every FFT a first look covers is timed under the default options once the bootstrap is
+complete, and again each time a halving ends if they have changed (stage 8 above). Each sweep is recorded in the
+database, so an interrupted run carries on with the one it was in. Default `1`.
 
 ### Output
 
