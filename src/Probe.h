@@ -107,6 +107,11 @@ struct Halving {
 inline constexpr u32 LOOK_CALLS = 16;
 inline constexpr double TYPE_MARGIN = 1.0;
 
+// How far behind the fastest an entry of such a type may be, under the default lines, and still have its first look.
+// The lines are where most of an entry's early gain is: past this, the rest of a look has not been seen to bring an
+// entry anywhere near the front.
+inline constexpr double LOOK_MARGIN = 0.5;
+
 struct Exploration {
   // 0: no first looks.
   u32 lookCalls = 0;
@@ -115,6 +120,9 @@ struct Exploration {
   // Whether every such entry is read again under the default lines once the bootstrap is done and each time a halving
   // ends.
   bool linesSweep = false;
+
+  // Against its best reading, or where it has none, its prior.
+  double lookMargin = LOOK_MARGIN;
 };
 
 // "hybrid", "single", "groups", or "permute:" followed by tunable keys joined by '+'.  Throws a message for anything

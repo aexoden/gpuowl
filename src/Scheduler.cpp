@@ -754,6 +754,44 @@ std::vector<u64> Scheduler::searchCalls(const TuneDB& db, u32 env) const {
   return out;
 }
 
+u64 Scheduler::searchCallsSince(const TuneDB& db, u32 env, u64 ts) const {
+  const Env& device = bootstrap_.env();
+  std::map<EntryKey, size_t> const indexOf = entryIndex();
+  // A configuration is canonicalised once, however many rows name it.
+  std::map<std::pair<std::string, u32>, bool> searching;
+  u64 out = 0;
+  for (const RunRow& row : db.runs()) {
+    if (row.m.ts <= ts || db.envOf(row.sess) != env || row.m.status == Status::Lost) { continue; }
+    if (!indexOf.contains({row.fft, row.kind, row.regime.label()})) { continue; }
+    auto const [at, fresh] = searching.try_emplace({row.fft, row.cfg}, false);
+    if (fresh) {
+      auto const fft = parseFft(row.fft);
+      const UseConfig* const opts = db.findCfg(row.cfg);
+      at->second = fft && opts && !canonicalConfig(device, *fft, *opts).empty();
+    }
+    if (at->second) { out += std::max<u32>(row.m.calls, 1); }
+  }
+  return out;
+}
+
+bool Scheduler::looksAt(size_t i, const Standing& standing, const std::vector<std::optional<double>>& fastest,
+                        const Objective& objective) const {
+  double const margin = exploration_.lookMargin;
+  if (standing.gap[i]) { return *standing.gap[i] <= margin; }
+
+  // Without the optimism the value model gives a prior, so that the margin means the same measured or not.
+  const Baseline& b = baselines_[i];
+  double const estimate = objective.priorModel().cost(b.fft.shape) / PRIOR_OPTIMISM;
+  for (size_t p = 0; p < objective.points().size(); ++p) {
+    const ObjectivePoint& point = objective.points()[p];
+    if (fastest[p] && point.weight > 0 && point.kind == b.kind && b.band.contains(point.exponent) &&
+        estimate <= (1 + margin) * *fastest[p]) {
+      return true;
+    }
+  }
+  return false;
+}
+
 std::vector<size_t> Scheduler::poolOf(const Standing& standing, const std::function<bool(size_t)>& eligible,
                                       u32 limit) const {
   // Each shape's variants ranked, and the pool filled rank by rank.
@@ -819,8 +857,7 @@ std::vector<RoundRow> Scheduler::adoption(const Standing& standing, const std::v
 
 HalvingState Scheduler::halvingState(const TuneDB& db, u32 env,
                                      const std::map<EntryKey, std::vector<Reading>>& readings,
-                                     const Objective& objective, const Explored& explored, bool sweeping,
-                                     bool relining) const {
+                                     const Objective& objective, const Explored& explored, bool held) const {
   HalvingState out;
   if (!halving_.on() || !strategy_) { return out; }
 
@@ -918,10 +955,12 @@ HalvingState Scheduler::halvingState(const TuneDB& db, u32 env,
       std::ranges::find_if(rounds.rbegin(), rounds.rend(), [](const RoundRow& r) { return !r.members.empty(); });
 
     if (last == rounds.rend()) {
-      // The first waits for the sweep at the probe, so that it takes every contender at once.
-      if (sweeping) { return out; }
       std::vector<size_t> const pool = poolOf(standing, contends, halving_.contenders);
       if (pool.size() < 2 || !due(pool)) { return out; }
+      if (held) {
+        out.waiting = true;
+        return out;
+      }
       begin(1, halving_.roundCalls, pool);
       continue;
     }
@@ -966,22 +1005,30 @@ HalvingState Scheduler::halvingState(const TuneDB& db, u32 env,
         begin(last->round + 1, pool.size() > 1 ? twice(last->calls) : spent(last), pool);
         continue;
       }
-    } else if (!pool.empty() && had.front() < spent(last) && explored.worth(pool.front())) {
-      out.leading = true;
-      out.budget = spent(last);
-      out.pool = std::move(pool);
-      out.calls = std::move(had);
-      return out;
+    } else if (!pool.empty() && explored.worth(pool.front())) {
+      // The search ranked by value has its share, whichever entries it goes to: the one left need not be what it
+      // prices highest, and counting that one's calls alone would never end a turn whose steps go elsewhere.  It ends
+      // early, as before, once the one left has nothing worth a call, so that a contender's step worth one is still
+      // there to begin the next halving.  A round just begun has had nothing yet.
+      u64 const since = last->sess ? searchCallsSince(db, env, last->ts) : 0;
+      if (since < spent(last)) {
+        out.leading = true;
+        out.budget = spent(last);
+        out.pool = std::move(pool);
+        out.calls = {since};
+        return out;
+      }
     }
 
     // The next halving, over every contender as they stand now, its first round twice the last one's.
-    if (relining) {
-      out.pool = std::move(pool);
-      return out;
-    }
     std::vector<size_t> const next = poolOf(standing, contends, halving_.contenders);
     bool const byRule = (first == rounds.rend() ? 0 : halvings(first)) < halving_.halvings;
     if (next.size() < 2 || !due(next) || (!byRule && std::ranges::none_of(next, explored.worth))) {
+      out.pool = std::move(pool);
+      return out;
+    }
+    if (held) {
+      out.waiting = true;
       out.pool = std::move(pool);
       return out;
     }
@@ -1090,6 +1137,7 @@ std::vector<Item> Scheduler::admissible(const TuneDB& db, u32 env, const Objecti
   std::optional<Defaults> defaults;
 
   // The entries worth exploring, and what the lines sweep owes them.
+  std::optional<Standing> standing;
   std::vector<size_t> explore;
   std::vector<Item> relines;
   explorable_ = 0;
@@ -1138,9 +1186,8 @@ std::vector<Item> Scheduler::admissible(const TuneDB& db, u32 env, const Objecti
     byRuleOf = [offer](size_t i) { return offer(i, true); };
 
     if (exploration_.lookCalls > 0 || exploration_.linesSweep) {
-      Standing const standing = standingOf(readings, objective);
-      explore = explorable(standing, acceptedTypes(standing), objective);
-      explorable_ = u32(explore.size());
+      standing = standingOf(readings, objective);
+      explore = explorable(*standing, acceptedTypes(*standing), objective);
       relines = linesSweepItems(db, env, context, readings, explore);
     }
 
@@ -1232,10 +1279,37 @@ std::vector<Item> Scheduler::admissible(const TuneDB& db, u32 env, const Objecti
     .resumes =
       [&](size_t i) { return std::ranges::any_of(exploring(i), [](const Item& item) { return item.calls > 0; }); },
     .worth = [&](size_t i) { return worth.contains(i); }};
-  bool const sweeping =
-    std::ranges::any_of(swept, [&](const Item& item) { return baselines_[item.index].band.contains(scope_.probe); });
+
+  // A first look is taken an entry at a time, nearest the fastest first: one with no reading is read at the built-in
+  // defaults, and one with a reading has what its search offers, in its own order and whatever it is priced at, until
+  // it has had its calls.  Not the entry the bootstrap is searching, which has its calls there.
+  std::vector<Item> looks;
+  if (exploration_.lookCalls > 0 && standing) {
+    std::vector<u64> const calls = searchCalls(db, env);
+    std::vector<std::optional<double>> const fastest = measuredAt(objective);
+    for (size_t const i : explore) {
+      if (!looksAt(i, *standing, fastest, objective)) { continue; }
+      ++explorable_;
+      if (calls[i] >= exploration_.lookCalls) { continue; }
+      ++lookOwed_;
+      if (!looks.empty() || i == searched) { continue; }
+      if (readings.contains(baselines_[i].key())) {
+        looks = exploring(i);
+      } else if (auto const at = unread.find(i); at != unread.end()) {
+        looks = {at->second};
+        looks.front().what = "at the built-in defaults";
+      }
+      for (Item& item : looks) { item.look = true; }
+    }
+  }
+
+  // No halving begins before the work ahead of it is done, since each part of that work can change who contends.
   bool const relining = !relines.empty() || (defaults && linesDue(db, env, state, *defaults, true));
-  lastHalving_ = halvingState(db, env, readings, objective, asked, sweeping, relining);
+  bool const held = !swept.empty() || !state.complete || relining || !looks.empty();
+  lastHalving_ = halvingState(db, env, readings, objective, asked, held);
+  lastHalving_.waiting = lastHalving_.waiting && swept.empty() && state.complete && relines.empty() && looks.empty();
+
+  // A round once begun runs to its end.
   if (lastHalving_.active) {
     std::map<size_t, u64> owed;
     std::vector<Item> round;
@@ -1254,46 +1328,14 @@ std::vector<Item> Scheduler::admissible(const TuneDB& db, u32 env, const Objecti
     // contender's steps in its search's order.
     std::ranges::stable_sort(round, [&](const Item& a, const Item& b) { return owed.at(a.index) < owed.at(b.index); });
     inSearchOrder(round);
-    out = std::move(round);
+    if (!round.empty()) { return round; }
   }
 
-  // A first look is taken an entry at a time, nearest the fastest first: one with no reading is read at the built-in
-  // defaults, and one with a reading has what its search offers, in its own order and whatever it is priced at, until
-  // it has had its calls.  Not the entry the bootstrap or the halving's round is searching, which has its calls there.
-  std::vector<Item> looks;
-  if (exploration_.lookCalls > 0 && !explore.empty()) {
-    std::vector<u64> const calls = searchCalls(db, env);
-    std::set<size_t> busy;
-    if (searched) { busy.insert(*searched); }
-    if (lastHalving_.active) { busy.insert(lastHalving_.pool.begin(), lastHalving_.pool.end()); }
-    for (const Item& item : swept) { busy.insert(item.index); }
-    for (size_t const i : explore) {
-      if (calls[i] >= exploration_.lookCalls) { continue; }
-      ++lookOwed_;
-      if (!looks.empty() || busy.contains(i)) { continue; }
-      if (readings.contains(baselines_[i].key())) {
-        looks = exploring(i);
-      } else if (auto const at = unread.find(i); at != unread.end()) {
-        looks = {at->second};
-        looks.front().what = "at the built-in defaults";
-      }
-      for (Item& item : looks) { item.look = true; }
-    }
-  }
-
-  std::ranges::move(relines, std::back_inserter(swept));
-  std::ranges::move(looks, std::back_inserter(swept));
-  return inTurn({std::move(swept), std::move(bootstrap), std::move(out)});
-}
-
-std::vector<Item> Scheduler::inTurn(std::array<std::vector<Item>, TURNS> turns) const {
-  size_t const first = lastTurn_ ? (size_t(*lastTurn_) + 1) % TURNS : 0;
-  std::vector<Item> out;
-  for (size_t at = 0; std::ranges::any_of(turns, [&](const auto& items) { return at < items.size(); }); ++at) {
-    for (size_t k = 0; k < TURNS; ++k) {
-      std::vector<Item>& items = turns[(first + k) % TURNS];
-      if (at < items.size()) { out.push_back(std::move(items[at])); }
-    }
+  if (!swept.empty()) { return swept; }
+  if (!bootstrap.empty()) { return bootstrap; }
+  if (!relines.empty() || !looks.empty()) {
+    std::ranges::move(looks, std::back_inserter(relines));
+    return relines;
   }
   return out;
 }
@@ -1370,12 +1412,13 @@ Phase Scheduler::phase(const BootstrapState& state, const std::vector<Item>& ran
     std::string const text = buf;
     snprintf(buf, sizeof(buf), "halving %u/%u", h.round + 1, std::max(rounds, h.round + 1));
     parts.push_back({text, buf});
-  } else if (any([floor](const Item& i) { return !i.sweep && !i.bootstrap && worthRunning(i, floor); })) {
+  } else if (any([floor](const Item& i) {
+               return !i.sweep && !i.bootstrap && !i.linesSweep && !i.look && worthRunning(i, floor);
+             })) {
     const HalvingState& h = lastHalving_;
     if (h.leading && !h.calls.empty()) {
-      snprintf(buf, sizeof(buf),
-               "searching by expected gain, %" PRIu64 " of %s's %" PRIu64 " calls before the next halving",
-               std::min(h.calls.front(), h.budget), baselines_[h.pool.front()].label().c_str(), h.budget);
+      snprintf(buf, sizeof(buf), "searching by expected gain, %" PRIu64 " of %" PRIu64 " calls before the next halving",
+               std::min(h.calls.front(), h.budget), h.budget);
       parts.push_back({buf, "search"});
     } else {
       parts.push_back({"searching by expected gain", "search"});
@@ -1416,14 +1459,6 @@ std::optional<Item> Scheduler::pick(const std::vector<Item>& ranked, double floo
 void Scheduler::ran(const Item& item, double seconds, double usPerIt, bool recorded) {
   last_ = keyOf(item);
   if (item.kind == ItemKind::Anchor) { return; }
-
-  if (item.sweep || item.look || item.linesSweep) {
-    lastTurn_ = Turn::Sweep;
-  } else if (item.bootstrap) {
-    lastTurn_ = Turn::Bootstrap;
-  } else if (item.kind != ItemKind::Gate && !item.cover) {
-    lastTurn_ = Turn::Search;
-  }
 
   if (usPerIt > 0) { clock_.observe(seconds, usPerIt, item.fresh); }
 
@@ -1609,6 +1644,29 @@ QueueReport runQueue(Scheduler& scheduler, TuneDB& db, u32 env, Bench& bench, co
     said = std::move(text);
   };
 
+  // A lines sweep is recorded as it becomes due: once the bootstrap is done, once a halving has ended, and where the
+  // lines have changed since the last, as the next halving would begin.
+  auto const relines = [&](bool waiting) {
+    std::optional<Defaults> const due = scheduler.linesDue(db, env, state, lines, waiting);
+    if (!due) { return false; }
+    LinesRow row{.sess = 0, .n = 1, .after = 0, .ts = 0, .global = db.internCfg(due->global), .family = {}};
+    for (const LinesRow& r : db.lines()) {
+      if (db.envOf(r.sess) == env) { row.n = std::max(row.n, r.n + 1); }
+    }
+    for (const RoundRow& r : db.rounds()) {
+      if (db.envOf(r.sess) == env) { row.after = std::max(row.after, r.n); }
+    }
+    for (const UseLine& line : due->family) {
+      if (line.selector.type) {
+        row.family.emplace_back(*line.selector.type, db.internCfg({line.uses.begin(), line.uses.end()}));
+      }
+    }
+    bench.declareLines(row);
+    log("tune: lines sweep %u: every FFT worth exploring is read under the default lines %s\n", row.n,
+        linesText(*due).c_str());
+    return true;
+  };
+
   while (!bench.stopped()) {
     // Once the defaults sweep is done, which configuration each family is searched on is recorded, so that it stays put
     // as its search adds readings.
@@ -1623,25 +1681,11 @@ QueueReport runQueue(Scheduler& scheduler, TuneDB& db, u32 env, Bench& bench, co
       rescore();
     }
 
-    if (std::optional<Defaults> const due = scheduler.linesDue(db, env, state, lines)) {
-      LinesRow row{.sess = 0, .n = 1, .after = 0, .ts = 0, .global = db.internCfg(due->global), .family = {}};
-      for (const LinesRow& r : db.lines()) {
-        if (db.envOf(r.sess) == env) { row.n = std::max(row.n, r.n + 1); }
-      }
-      for (const RoundRow& r : db.rounds()) {
-        if (db.envOf(r.sess) == env) { row.after = std::max(row.after, r.n); }
-      }
-      for (const UseLine& line : due->family) {
-        if (line.selector.type) {
-          row.family.emplace_back(*line.selector.type, db.internCfg({line.uses.begin(), line.uses.end()}));
-        }
-      }
-      bench.declareLines(row);
-      log("tune: lines sweep %u: every FFT worth exploring is read under the default lines %s\n", row.n,
-          linesText(*due).c_str());
+    (void)relines(false);
+    std::vector<Item> ranked = scheduler.admissible(db, env, valuing, stop * valuing.T());
+    if (scheduler.lastHalving().waiting && relines(true)) {
+      ranked = scheduler.admissible(db, env, valuing, stop * valuing.T());
     }
-
-    std::vector<Item> const ranked = scheduler.admissible(db, env, valuing, stop * valuing.T());
     const HalvingState& h = scheduler.lastHalving();
     for (const RoundRow& round : h.unrecorded) { bench.declareRound(round); }
     if (h.active && saidRound != h.n) {
@@ -1653,8 +1697,8 @@ QueueReport runQueue(Scheduler& scheduler, TuneDB& db, u32 env, Bench& bench, co
       saidRound = h.n;
     } else if (!h.active && saidRound) {
       if (h.leading) {
-        log("tune: halving done; %s is left, and the search is ranked by what it is expected to gain until it has had "
-            "%" PRIu64 " more calls, when the next halving begins\n",
+        log("tune: halving done; %s is left, and the search is ranked by what it is expected to gain for %" PRIu64
+            " calls of search, when the next halving begins\n",
             scheduler.baselines()[h.pool.front()].label().c_str(), h.budget);
       } else {
         log("tune: halving done; %s is left, and the search is ranked by what it is expected to gain from here\n",
@@ -1700,9 +1744,10 @@ QueueReport runQueue(Scheduler& scheduler, TuneDB& db, u32 env, Bench& bench, co
     TestKind const kind = baseline ? baseline->kind : TestKind::PRP;
     bool const reads = item->kind == ItemKind::Gate || item->kind == ItemKind::Reach;
     bool const probing = baseline && item->kind != ItemKind::Baseline && !reads;
-    std::string const label = !baseline ? item->what
-      : item->what.empty()              ? baseline->label()
-                                        : baseline->label() + " " + item->what;
+    std::string const label = (!baseline              ? item->what
+                                 : item->what.empty() ? baseline->label()
+                                                      : baseline->label() + " " + item->what) +
+      (item->look ? ", its first look" : "");
     std::optional<std::string> const bestBefore =
       probing ? bestOf(db, env, scheduler.bootstrap().env(), *baseline) : std::nullopt;
 

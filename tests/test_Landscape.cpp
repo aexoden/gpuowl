@@ -351,26 +351,44 @@ TEST(landscape_each_band_has_its_own_fft_tuned) {
 
 TEST(landscape_each_band_has_its_own_fft_tuned_at_the_default_stop) {
   // The halving's rounds are what reach 1K:8:1K's step, since by then no step of it is worth the stop fraction on its
-  // own.
+  // own.  The default strategy and rounds: with single steps and rounds of 4 calls, its first look's steps have shown
+  // so little by the third halving that the fourth, which would reach it, is not worth beginning.
   Scenario s = disjointBands();
   s.budget = 2 * 3600;
-  Policy p = small();
-  p.stop = STOP;
-  Outcome o = simulate(s, p);
+  Outcome o = simulate(s, Policy{.stop = STOP});
   CHECK(o.settled().has_value());
   CHECK_EQ(o.published["1K:8:1K:202 prp long32"], std::string{"TAIL_KERNELS=3"});
 }
 
+TEST(landscape_a_structural_branch_that_loses_alone_is_found_at_half_the_default_stop) {
+  // Every step either value model prices is below the stop fraction once the first halving has found nothing, so it is
+  // the halvings, by rule, that search B far enough to take WMUL=1 on the wider shuffle.  At the default stop they no
+  // longer do: B's share of each halving goes to the HOIST_W and HOIST_H combinations of its own branch first, and the
+  // run ends before the wider shuffle is searched.
+  Scenario s = structuralBranch();
+  s.budget = 5 * 3600;
+  Outcome o = simulate(s, Policy{.stop = STOP / 2});
+  CHECK(o.settled().has_value());
+  CHECK_EQ(o.published[std::string{B} + " prp short32"], std::string{"SHUFL_BYTES_W=16,WMUL=1"});
+}
+
 TEST(landscape_an_fft_far_behind_at_its_defaults_is_found_fastest_under_what_another_found) {
-  // At half the default stop: at the default one the first halving ends before C is searched far enough.
   Scenario s = farBehind();
   s.budget = 3600;
-  Outcome looked = simulate(s, Policy{.stop = STOP / 2});
+  Outcome looked = simulate(s, Policy{.stop = STOP});
   CHECK(looked.settled().has_value());
   CHECK_EQ(looked.published[std::string{C} + " prp short32"], std::string{"ZEROHACK_H=0"});
 
   // Without first looks or lines sweeps C is never searched.
-  Outcome without = simulate(s, Policy{.exploration = {}, .stop = STOP / 2});
+  Outcome without = simulate(s, Policy{.exploration = {}, .stop = STOP});
   CHECK(!without.settled().has_value());
   CHECK(without.published[std::string{C} + " prp short32"] != "ZEROHACK_H=0");
+}
+
+TEST(landscape_a_gain_two_groups_make_together_is_found_at_the_default_stop) {
+  Scenario s = crossBins();
+  s.budget = 4 * 3600;
+  Outcome o = simulate(s, Policy{.stop = STOP});
+  CHECK(o.settled().has_value());
+  CHECK_EQ(o.published[std::string{B} + " prp short32"], std::string{"TAIL_KERNELS=3,ZEROHACK_H=0"});
 }

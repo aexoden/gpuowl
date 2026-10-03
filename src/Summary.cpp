@@ -134,17 +134,19 @@ RunSummary summarize(const Scheduler& scheduler, const TuneDB& db, u32 env, u32 
     if (offered.contains(keyOf(b)) || !waiting.insert(keyOf(b)).second) { continue; }
     ++families[b.fft.shape.fft_type].waiting;
   }
-  // The sweep and the bootstrap take turns with the search, so only the barriers ahead of them, or a halving's round,
-  // which is all the search there is while it lasts, hold anything back.
+  // Each part of the work runs before the search ranked by value, so whichever the queue is in holds them back.
   if (!waiting.empty()) {
-    bool const covering = std::ranges::any_of(report.left, [](const Item& i) { return i.cover; });
-    bool const halving = std::ranges::any_of(report.left, [](const Item& i) { return i.halving; });
-    bool const looking = std::ranges::any_of(report.left, [](const Item& i) { return i.look; });
-    out.heldBy = covering  ? "the workload being covered"
-      : halving && looking ? "the halving and the first looks"
-      : halving            ? "the halving"
-      : looking            ? "the first looks"
-                           : "the accuracy gate";
+    auto const any = [&](auto&& pred) { return std::ranges::any_of(report.left, pred); };
+    bool const relining = any([](const Item& i) { return i.linesSweep; });
+    bool const looking = any([](const Item& i) { return i.look; });
+    out.heldBy = any([](const Item& i) { return i.cover; }) ? "the workload being covered"
+      : any([](const Item& i) { return i.halving; })        ? "the halving"
+      : any([](const Item& i) { return i.sweep; })          ? "the defaults sweep"
+      : any([](const Item& i) { return i.bootstrap; })      ? "the bootstrap"
+      : relining && looking                                 ? "the lines sweep and the first looks"
+      : relining                                            ? "the lines sweep"
+      : looking                                             ? "the first looks"
+                                                            : "the accuracy gate";
   }
 
   for (const auto& [key, type] : typeOf) {

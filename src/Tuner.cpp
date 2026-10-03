@@ -180,13 +180,14 @@ void parseKinds(std::string_view text, ScopeArgs& out) {
 
 [[nodiscard]] std::string limitText(u32 limit) { return limit == NO_LIMIT ? "all" : std::to_string(limit); }
 
-// A percentage, or `all` for every FFT type.
-[[nodiscard]] double parseMargin(std::string_view text) {
+// A percentage, or `all` for no limit.
+[[nodiscard]] double parseMargin(std::string_view key, std::string_view text) {
   if (text == "all") { return std::numeric_limits<double>::infinity(); }
   std::optional<double> const value =
     text.ends_with('%') ? parseNonNegative(text.substr(0, text.size() - 1)) : std::nullopt;
   if (!value || !std::isfinite(*value)) {
-    throw std::string{"-tune: typeMargin= takes a percentage behind the fastest, such as typeMargin=100%, or all"};
+    throw "-tune: " + std::string{key} + "= takes a percentage behind the fastest, such as " + std::string{key} +
+      "=50%, or all";
   }
   return *value / 100;
 }
@@ -351,6 +352,10 @@ private:
   char buf[32];
   auto const [end, ec] = std::to_chars(buf, buf + sizeof(buf), value);
   return ec == std::errc{} ? std::string(buf, end) : std::to_string(value);
+}
+
+[[nodiscard]] std::string marginText(double margin) {
+  return std::isfinite(margin) ? shortest(margin * 100) + "%" : "all";
 }
 
 [[nodiscard]] std::vector<std::string_view> settingTokens(std::string_view text) {
@@ -729,7 +734,9 @@ TuneCommand parseTuneCommand(std::string_view text) {
       if (!n || val.empty()) { throw std::string{"-tune: lookCalls= takes a count, 0 for none"}; }
       out.exploration.lookCalls = *n;
     } else if (key == "typeMargin" && queues) {
-      out.exploration.typeMargin = parseMargin(val);
+      out.exploration.typeMargin = parseMargin(key, val);
+    } else if (key == "lookMargin" && queues) {
+      out.exploration.lookMargin = parseMargin(key, val);
     } else if (key == "linesSweep" && queues) {
       if (val != "0" && val != "1") { throw std::string{"-tune: linesSweep= takes 0 or 1"}; }
       out.exploration.linesSweep = val == "1";
@@ -769,14 +776,15 @@ TuneCommand parseTuneCommand(std::string_view text) {
         accepted = "workload=<lo>-<hi>, probe=<E>, probeWeight=<0..1>, kinds=prp|ll|prp+ll, bootstrap=0|1,"
                    " strategy=hybrid|single|groups|permute:<KEY>+<KEY>..., maxPermute=<N>|all, maxPoints=<N>|all,"
                    " comboTop=<N>, comboTiers=1|2|3, contenders=<N>, roundCalls=<N>, halvings=<N>, lookCalls=<N>,"
-                   " typeMargin=<P>%|all, linesSweep=0|1, stop=<P>%|0, tunetxt=0|1, dashboard=0|1, or a subcommand:"
+                   " typeMargin=<P>%|all, lookMargin=<P>%|all, linesSweep=0|1, stop=<P>%|0, tunetxt=0|1, dashboard=0|1,"
+                   " or a subcommand:"
                    " emit, reset, adopt, compact, scope, status, accuracy";
         break;
       case TuneVerb::Status:
         accepted = "env=<id>, and a run's workload=<lo>-<hi>, probe=<E>, probeWeight=<0..1>, kinds=prp|ll|prp+ll,"
                    " bootstrap=0|1, strategy=<S>, maxPermute=<N>|all, maxPoints=<N>|all, comboTop=<N>,"
                    " comboTiers=1|2|3, contenders=<N>, roundCalls=<N>, halvings=<N>, lookCalls=<N>,"
-                   " typeMargin=<P>%|all, linesSweep=0|1, stop=<P>%|0";
+                   " typeMargin=<P>%|all, lookMargin=<P>%|all, linesSweep=0|1, stop=<P>%|0";
         break;
       case TuneVerb::Accuracy: accepted = "workload=<lo>-<hi>, probe=<E>, fft=<spec>, groups=<Group>+<Group>..."; break;
       }
@@ -847,8 +855,9 @@ std::string runSettings(const RunScope& scope, const TuneCommand& command) {
   out += ",contenders=" + std::to_string(command.halving.contenders) +
     ",roundCalls=" + std::to_string(command.halving.roundCalls) +
     ",halvings=" + std::to_string(command.halving.halvings) +
-    ",lookCalls=" + std::to_string(command.exploration.lookCalls) + ",typeMargin=" +
-    (std::isfinite(command.exploration.typeMargin) ? shortest(command.exploration.typeMargin * 100) + "%" : "all") +
+    ",lookCalls=" + std::to_string(command.exploration.lookCalls) +
+    ",typeMargin=" + marginText(command.exploration.typeMargin) +
+    ",lookMargin=" + marginText(command.exploration.lookMargin) +
     ",linesSweep=" + (command.exploration.linesSweep ? "1" : "0");
   return out + ",stop=" + (command.stop > 0 ? shortest(command.stop * 100) + "%" : "0");
 }
