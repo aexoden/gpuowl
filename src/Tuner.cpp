@@ -8,6 +8,7 @@
 #include "Dashboard.h"
 #include "Emit.h"
 #include "Faults.h"
+#include "FFTVariants.h"
 #include "File.h"
 #include "GpuCommon.h"
 #include "History.h"
@@ -384,6 +385,22 @@ const Grid* RunScope::grid(TestKind kind) const {
   return at == grids.end() ? nullptr : &*at;
 }
 
+bool RunScope::admits(const FFTShape& shape) const {
+  if (!shape.isPfa()) { return true; }
+  FFTParts const parts = fftParts(shape.fft_type);
+  bool const hybrid = parts.fp64 || parts.fp32;
+  return pfaShapes == PfaShapes::All || (pfaShapes == PfaShapes::Ntt && !hybrid);
+}
+
+const char* toString(PfaShapes shapes) {
+  switch (shapes) {
+  case PfaShapes::None: return "none";
+  case PfaShapes::Ntt: return "ntt";
+  case PfaShapes::All: return "all";
+  }
+  return "?";
+}
+
 RunScope makeScope(const ScopeArgs& args, const std::vector<PendingWork>& pending) {
   if (args.kinds.empty()) { throw std::string{"-tune: there is no test kind to tune for"}; }
 
@@ -405,6 +422,7 @@ RunScope makeScope(const ScopeArgs& args, const std::vector<PendingWork>& pendin
 
   RunScope out;
   out.probeWeight = args.probeWeight;
+  out.pfaShapes = args.pfaShapes;
 
   if (args.lo) {
     out.lo = args.lo;
@@ -514,6 +532,19 @@ std::vector<PendingWork> scanWorktodo(const std::vector<fs::path>& files) {
   return out;
 }
 
+namespace {
+
+[[nodiscard]] const char* whosePfa(PfaShapes shapes) {
+  switch (shapes) {
+  case PfaShapes::None: return "none";
+  case PfaShapes::Ntt: return "the NTT types'";
+  case PfaShapes::All: return "every type's";
+  }
+  return "?";
+}
+
+}  // namespace
+
 void reportScope(const RunScope& scope, const std::vector<fs::path>& files, const Objective& objective,
                  const std::string& against) {
   std::string read;
@@ -523,6 +554,7 @@ void reportScope(const RunScope& scope, const std::vector<fs::path>& files, cons
   log("tune: workload %" PRIu64 "-%" PRIu64 " (%s)\n", scope.lo, scope.hi, scope.rangeSource.c_str());
   log("tune: probe %" PRIu64 " (%s), carrying %.0f%% of the weight\n", scope.probe, scope.probeSource.c_str(),
       scope.probeWeight * 100);
+  log("tune: prime-factor middles: %s (pfaShapes=%s)\n", whosePfa(scope.pfaShapes), toString(scope.pfaShapes));
 
   for (const Grid& grid : scope.grids) {
     log("tune: %s grid: %zu %s, spread across the range\n", toString(grid.kind), grid.points.size(),
@@ -710,6 +742,16 @@ TuneCommand parseTuneCommand(std::string_view text) {
       out.scope.probeWeight = *weight;
     } else if (key == "kinds" && takesScope && !isAccuracy) {
       parseKinds(val, out.scope);
+    } else if (key == "pfaShapes" && takesScope && !isAccuracy) {
+      if (val == "ntt") {
+        out.scope.pfaShapes = PfaShapes::Ntt;
+      } else if (val == "all") {
+        out.scope.pfaShapes = PfaShapes::All;
+      } else if (val == "none") {
+        out.scope.pfaShapes = PfaShapes::None;
+      } else {
+        throw std::string{"-tune: pfaShapes= takes ntt, all or none"};
+      }
     } else if (key == "bootstrap" && queues) {
       if (val != "0" && val != "1") { throw std::string{"-tune: bootstrap= takes 0 or 1"}; }
       out.bootstrap = val == "1";
@@ -763,28 +805,30 @@ TuneCommand parseTuneCommand(std::string_view text) {
       switch (out.verb) {
       case TuneVerb::Emit:
         accepted = "env=<id>, tunetxt=0|1, and the run's workload=<lo>-<hi>, probe=<E>, probeWeight=<0..1>,"
-                   " kinds=prp|ll|prp+ll";
+                   " kinds=prp|ll|prp+ll, pfaShapes=ntt|all|none";
         break;
       case TuneVerb::Reset: accepted = "env=<id>, fft=<spec>"; break;
       case TuneVerb::Adopt: accepted = "into=<id> (or env=<id>), from=<id>"; break;
       case TuneVerb::Compact: break;
       case TuneVerb::Scope:
-        accepted = "workload=<lo>-<hi>, probe=<E>, probeWeight=<0..1>, kinds=prp|ll|prp+ll, env=<id>,"
-                   " strategy=<S>, maxPermute=<N>|all, maxPoints=<N>|all, comboTop=<N>, comboTiers=1|2|3";
+        accepted = "workload=<lo>-<hi>, probe=<E>, probeWeight=<0..1>, kinds=prp|ll|prp+ll, pfaShapes=ntt|all|none,"
+                   " env=<id>, strategy=<S>, maxPermute=<N>|all, maxPoints=<N>|all, comboTop=<N>, comboTiers=1|2|3";
         break;
       case TuneVerb::Run:
-        accepted = "workload=<lo>-<hi>, probe=<E>, probeWeight=<0..1>, kinds=prp|ll|prp+ll, bootstrap=0|1,"
-                   " strategy=hybrid|single|groups|permute:<KEY>+<KEY>..., maxPermute=<N>|all, maxPoints=<N>|all,"
+        accepted = "workload=<lo>-<hi>, probe=<E>, probeWeight=<0..1>, kinds=prp|ll|prp+ll, pfaShapes=ntt|all|none,"
+                   " bootstrap=0|1, strategy=hybrid|single|groups|permute:<KEY>+<KEY>..., maxPermute=<N>|all,"
+                   " maxPoints=<N>|all,"
                    " comboTop=<N>, comboTiers=1|2|3, contenders=<N>, roundCalls=<N>, halvings=<N>, lookCalls=<N>,"
                    " typeMargin=<P>%|all, lookMargin=<P>%|all, linesSweep=0|1, stop=<P>%|0, tunetxt=0|1, dashboard=0|1,"
                    " or a subcommand:"
                    " emit, reset, adopt, compact, scope, status, accuracy";
         break;
       case TuneVerb::Status:
-        accepted = "env=<id>, and a run's workload=<lo>-<hi>, probe=<E>, probeWeight=<0..1>, kinds=prp|ll|prp+ll,"
-                   " bootstrap=0|1, strategy=<S>, maxPermute=<N>|all, maxPoints=<N>|all, comboTop=<N>,"
-                   " comboTiers=1|2|3, contenders=<N>, roundCalls=<N>, halvings=<N>, lookCalls=<N>,"
-                   " typeMargin=<P>%|all, lookMargin=<P>%|all, linesSweep=0|1, stop=<P>%|0";
+        accepted =
+          "env=<id>, and a run's workload=<lo>-<hi>, probe=<E>, probeWeight=<0..1>, kinds=prp|ll|prp+ll,"
+          " pfaShapes=ntt|all|none, bootstrap=0|1, strategy=<S>, maxPermute=<N>|all, maxPoints=<N>|all, comboTop=<N>,"
+          " comboTiers=1|2|3, contenders=<N>, roundCalls=<N>, halvings=<N>, lookCalls=<N>,"
+          " typeMargin=<P>%|all, lookMargin=<P>%|all, linesSweep=0|1, stop=<P>%|0";
         break;
       case TuneVerb::Accuracy: accepted = "workload=<lo>-<hi>, probe=<E>, fft=<spec>, groups=<Group>+<Group>..."; break;
       }
@@ -850,7 +894,8 @@ std::string runSettings(const RunScope& scope, const TuneCommand& command) {
 
   std::string out = "workload=" + std::to_string(scope.lo) + "-" + std::to_string(scope.hi) +
     ",probe=" + std::to_string(scope.probe) + ",probeWeight=" + shortest(scope.probeWeight) + ",kinds=" + kinds +
-    ",bootstrap=" + (command.bootstrap ? "1" : "0") + ",strategy=" + command.strategy.text();
+    ",pfaShapes=" + toString(scope.pfaShapes) + ",bootstrap=" + (command.bootstrap ? "1" : "0") +
+    ",strategy=" + command.strategy.text();
   for (const std::string& setting : strategySettings(command.strategy)) { out += "," + setting; }
   out += ",contenders=" + std::to_string(command.halving.contenders) +
     ",roundCalls=" + std::to_string(command.halving.roundCalls) +

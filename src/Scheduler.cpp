@@ -111,6 +111,7 @@ std::vector<Baseline> baselines(const Env& env, const RunScope& scope, const std
   // automatic one switches) or a 64-bit carry where the automatic one needs only 32 bits -- slower over a band it
   // already serves.  Neither can be the cheapest thing at any exponent.
   for (const FFTShape& shape : shapes) {
+    if (!scope.admits(shape)) { continue; }
     for (u32 const variant : runnableVariants(env, shape)) {
       FFTConfig const fft{shape, variant, CARRY_AUTO};
       for (const Interval& band : intervals(fft, minExp(fft), maxExp(fft))) {

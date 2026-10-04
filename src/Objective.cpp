@@ -92,6 +92,7 @@ Objective::Objective(const Env& env, const RunScope& scope) : Objective(env, {},
 Objective::Objective(const Env& env, std::vector<SelectionEntry> entries, Prior prior, const RunScope& scope) :
   entries_{std::move(entries)}, prior_{std::move(prior)} {
   for (const FFTShape& shape : FFTShape::allShapes()) {
+    if (!scope.admits(shape)) { continue; }
     u64 hi = 0;
     for (u32 variant : runnableVariants(env, shape)) {
       hi = std::max(hi, maxExp(FFTConfig{shape, variant, CARRY_AUTO}));

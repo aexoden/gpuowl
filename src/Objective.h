@@ -3,7 +3,8 @@
 // The one number a tuning run descends: the expected iteration time of the declared workload.
 //
 //   c*(E) = the cost of the entry production would run at E, where some entry covers E
-//         = prior(E), the optimistic estimate of the cheapest configuration that could, where none does
+//         = prior(E), the optimistic estimate of the cheapest configuration the scope admits that could, where none
+//           does
 //   T     = sum over the grid of W(E) * c*(E)
 //
 // A pure function of the database, the env and the scope.  The entries are the ones the selection file would publish,

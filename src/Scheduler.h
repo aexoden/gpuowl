@@ -141,8 +141,8 @@ private:
   u32 compileN_ = 0;
 };
 
-// Every entry `env` could publish that the workload gives any weight to: each shape, at each variant `env` can compile,
-// in each regime band of the automatic carry that holds a grid point.
+// Every entry `env` could publish that the workload gives any weight to: each shape the scope admits, at each variant
+// `env` can compile, in each regime band of the automatic carry that holds a grid point.
 [[nodiscard]] std::vector<Baseline> baselines(const Env& env, const RunScope& scope,
                                               const std::vector<FFTShape>& shapes = FFTShape::allShapes());
 

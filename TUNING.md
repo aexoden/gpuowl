@@ -153,6 +153,7 @@ tune: Tuning from built-in defaults; no -use settings to ignore
 tune: pending work read from worktodo-0.txt
 tune: workload 112159852-170349795 (2 assignments pending, from 5% below to 25% above)
 tune: probe 118063003 (the most-populated 2% bin of the pending work), carrying 50% of the weight
+tune: prime-factor middles: the NTT types' (pfaShapes=ntt)
 tune: prp grid: 65 exponents, spread across the range
 tune:   118063003  75.0%    870.302 us/it  prior, from 1K:13:256  (probe)
 tune:   136279841  25.0%   1013.328 us/it  prior, from 1K:15:256
@@ -210,6 +211,13 @@ run LL tests; with `prp+ll` each kind gets its own measurements and its own shar
 checked against the residue two different FFTs agree on at their built-in defaults, since there is no known LL residue
 to compare with. The bootstrap searches in PRP when PRP is among the kinds and in LL otherwise, so an LL-only tune takes
 no PRP measurements.
+
+**`pfaShapes=ntt|all|none`**: which FFTs with a prime-factor middle (3, 7, 9 or 11 times a power of two, done as a
+Good-Thomas transform) to consider. They exist only for the NTT and hybrid types, and fill in the sizes between the
+power-of-two middles there. Default `ntt`: the pure NTTs' (types 1 and 3). `all` adds the hybrids' (an FP32 or
+FP64 part), which have to run with `INPLACE=0` and a two-kernel tail and so are rarely the fastest; `none` leaves
+every one out. The bootstrap always searches a power-of-two middle of each type, since a prime-factor one cannot
+race `INPLACE` or the middle chains for the rest of its type.
 
 Examples:
 
@@ -580,7 +588,7 @@ prpll -tune scope
 prpll -tune scope,workload=330M-340M
 ```
 
-Takes `workload=`, `probe=`, `probeWeight=`, `kinds=` and `env=`, and the search's `strategy=`, `maxPermute=`,
+Takes `workload=`, `probe=`, `probeWeight=`, `kinds=`, `pfaShapes=` and `env=`, and the search's `strategy=`, `maxPermute=`,
 `maxPoints=`, `comboTop=` and `comboTiers=`. It changes nothing, and without a database it creates none. With a
 database it also says, group by group, how many steps the search takes from one best set of each FFT type (see
 [`maxPoints=`](#how-to-search)); without one, which card the database is for is not known, and a run says it as it
@@ -590,6 +598,7 @@ starts instead.
 tune: pending work read from no worktodo file
 tune: workload 100000000-400000000 (the default range, there being no pending work)
 tune: probe 199999991 (the geometric centre of the range, the prime at or below 200000000), carrying 50% of the weight
+tune: prime-factor middles: the NTT types' (pfaShapes=ntt)
 tune: prp grid: 65 exponents, spread across the range
 tune:   100000000   0.8%    728.591 us/it  prior, from 1K:11:256
 ...
@@ -614,7 +623,7 @@ prpll -tune status,stop=1%        # what would a run with stop=1% still do?
 tune: status: env 1, Tesla P100-PCIE-16GB (nvidia,cuda,cc600,pdl); tunedb.txt last written 101 min ago
 tune: status: nothing holds the database
 tune: status: the latest session on env 1 is session 2, a run started 2026-09-26 17:55
-tune: status: valued as session 2's run, over the 0 assignments pending when it started: workload=67000000-80000000,probe=67513549,probeWeight=0,kinds=prp+ll,bootstrap=1,strategy=hybrid,maxPermute=all,maxPoints=all,comboTop=3,comboTiers=3,contenders=16,roundCalls=16,stop=0
+tune: status: valued as session 2's run, over the 0 assignments pending when it started: workload=67000000-80000000,probe=67513549,probeWeight=0,kinds=prp+ll,pfaShapes=ntt,bootstrap=1,strategy=hybrid,maxPermute=all,maxPoints=all,comboTop=3,comboTiers=3,contenders=16,roundCalls=16,stop=0
 tune: status: T 1103.939 us/it, 100.0% of the weight on measured entries
 tune: status: a run started now would begin in defaults sweep: 2 of 464 FFTs read at the built-in defaults + halving: round 1 of 4, 16 contenders, 0 of 256 calls
 tune: status: FFT64: 172 of 3394 entries measured, 462 not, 2760 waiting on the halving
@@ -650,7 +659,7 @@ prpll -tune emit,tunetxt=1
 The default `use` lines are chosen at the probe exponent (the best searched FFT published there, for each type), so
 `emit` has to use the same probe as the run did. It derives it from the worktodo, as the run did; if your worktodo has changed since, give the
 run's `probe=` (and `workload=`), which `-tune status` shows. Takes `workload=`, `probe=`, `probeWeight=`, `kinds=`,
-`tunetxt=` and `env=`.
+`pfaShapes=`, `tunetxt=` and `env=`.
 
 ### `-tune reset`
 

@@ -273,6 +273,9 @@ selection.txt, which a normal run in the same directory (or its -pool) reads.  T
                                              middle of the workload]
                          probeWeight=<0..1>  share of the weight on the probe alone; 0 weighs the workload evenly [0.5]
                          kinds=prp|ll|prp+ll test kinds to tune [prp]
+                         pfaShapes=ntt|all|none
+                                             prime-factor middles (3, 7, 9 or 11 times a power of two) to consider:
+                                             the NTT types' alone, every type's, or none [ntt]
                          stop=<P>%%|0         stop once nothing left is worth <P>%% of the time per iteration;
                                              0 runs until Ctrl-C [0.1%%]
                          bootstrap=0|1       first search each FFT type's fastest FFT, for 4 x roundCalls calls [1]

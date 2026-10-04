@@ -9,8 +9,10 @@
 #include "Args.h"
 #include "BuildId.h"
 #include "Emit.h"
+#include "FFTVariants.h"
 #include "File.h"
 #include "Objective.h"
+#include "Scheduler.h"
 #include "Selection.h"
 #include "TuneDB.h"
 
@@ -19,6 +21,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -121,6 +124,9 @@ TEST(every_setting_the_help_names_is_accepted_where_it_says) {
         "kinds=prp",
         "kinds=ll",
         "kinds=prp+ll",
+        "pfaShapes=ntt",
+        "pfaShapes=all",
+        "pfaShapes=none",
         "stop=0.5%",
         "stop=0",
         "bootstrap=0",
@@ -133,11 +139,14 @@ TEST(every_setting_the_help_names_is_accepted_where_it_says) {
         "strategy=groups,maxPermute=all,maxPoints=500",
         "tunetxt=1",
         "scope,workload=330M-340M,probe=335M,probeWeight=0.5,kinds=prp,env=1",
+        "scope,pfaShapes=all",
         "scope,strategy=groups,maxPermute=all,maxPoints=200",
         "scope,maxPermute=3,comboTop=2,comboTiers=2",
         "status,stop=1%,env=1,workload=100M-140M,probe=118063003,probeWeight=0.5,kinds=prp+ll,bootstrap=1,"
         "strategy=hybrid,maxPermute=4,maxPoints=64,comboTop=3,comboTiers=3",
         "emit,tunetxt=1,env=1,workload=100M-140M,probe=118063003,probeWeight=0.5,kinds=prp",
+        "emit,pfaShapes=none",
+        "status,pfaShapes=all",
         "reset",
         "reset,env=2",
         "reset,fft=1K:13:256:212",
@@ -174,6 +183,39 @@ TEST(settings_alone_or_nothing_at_all_is_a_tuning_run) {
 
   // The two settings still have to agree.
   CHECK(!refusal("workload=100M-400M,probe=500000003").empty());
+}
+
+// The NTT types' prime-factor middles are considered by default, the hybrids' only when asked, and none when asked.
+TEST(pfa_shapes_chooses_the_prime_factor_middles_a_run_considers) {
+  CHECK(parsed("").scope.pfaShapes == PfaShapes::Ntt);
+  CHECK(parsed("pfaShapes=all").scope.pfaShapes == PfaShapes::All);
+  CHECK(parsed("pfaShapes=none").scope.pfaShapes == PfaShapes::None);
+  CHECK(!refusal("pfaShapes=hybrid").empty());
+  CHECK(!refusal("pfaShapes=").empty());
+  CHECK(!refusal("accuracy,pfaShapes=all").empty());
+
+  Env const device{.isNvidia = true, .computeCapability = 806};
+  auto considered = [&](PfaShapes shapes) {
+    ScopeArgs args{.lo = 100'000'000, .hi = 140'000'000};
+    args.pfaShapes = shapes;
+    RunScope const scope = makeScope(args, {});
+    std::set<std::string> out;
+    for (const Baseline& b : baselines(device, scope)) {
+      if (b.fft.shape.isPfa()) { out.insert(b.fft.FFT_FP64 || b.fft.FFT_FP32 ? "hybrid" : "ntt"); }
+    }
+    Objective const objective{device, scope};
+    for (const ObjectivePoint& point : objective.points()) {
+      if (!point.cost) { continue; }
+      FFTShape const shape = FFTConfig{point.cost->fft}.shape;
+      FFTParts const parts = fftParts(shape.fft_type);
+      if (shape.isPfa() && (parts.fp64 || parts.fp32)) { out.insert("hybrid prior"); }
+    }
+    return out;
+  };
+  CHECK(considered(PfaShapes::Ntt) == (std::set<std::string>{"ntt"}));
+  CHECK(considered(PfaShapes::None).empty());
+  std::set<std::string> const all = considered(PfaShapes::All);
+  CHECK(all.contains("ntt") && all.contains("hybrid"));
 }
 
 TEST(the_combo_settings_shape_hybrid_in_either_order) {
@@ -991,7 +1033,7 @@ TEST(a_runs_settings_read_back_as_the_same_run) {
 
   // Resolved from the pending work, the range and the probe are named in the word.
   CHECK_EQ(runSettings(makeScope(parsed("").scope, pending), parsed("")),
-           std::string{"workload=118415515-163860861,probe=124647911,probeWeight=0.5,kinds=prp,bootstrap=1,"
+           std::string{"workload=118415515-163860861,probe=124647911,probeWeight=0.5,kinds=prp,pfaShapes=ntt,bootstrap=1,"
                        "strategy=hybrid,maxPermute=4,maxPoints=64,comboTop=3,comboTiers=3,contenders=16,roundCalls=16,"
                        "halvings=2,lookCalls=16,typeMargin=100%,lookMargin=50%,linesSweep=1,stop=0.1%"});
 
@@ -1000,7 +1042,8 @@ TEST(a_runs_settings_read_back_as_the_same_run) {
         "strategy=permute:PAD+IN_SIZEX", "comboTop=2,comboTiers=1", "strategy=single,stop=2%",
         "maxPermute=all,maxPoints=200", "strategy=groups,maxPermute=2,maxPoints=all", "contenders=0",
         "contenders=4,roundCalls=40", "halvings=1", "halvings=5", "lookCalls=0", "lookCalls=40,typeMargin=12.5%",
-        "typeMargin=all,linesSweep=0", "lookMargin=all", "lookMargin=35%,typeMargin=60%"}) {
+        "typeMargin=all,linesSweep=0", "lookMargin=all", "lookMargin=35%,typeMargin=60%", "pfaShapes=all",
+        "pfaShapes=none"}) {
     TuneCommand const command = parsed(text);
     RunScope const scope = makeScope(command.scope, pending);
     std::string const word = runSettings(scope, command);
@@ -1012,6 +1055,7 @@ TEST(a_runs_settings_read_back_as_the_same_run) {
     CHECK_EQ(back.hi, scope.hi);
     CHECK_EQ(back.probe, scope.probe);
     CHECK(sameGrids(back, scope));
+    CHECK(back.pfaShapes == scope.pfaShapes);
     CHECK(again.bootstrap == command.bootstrap);
     CHECK_EQ(again.strategy.text(), command.strategy.text());
     CHECK_EQ(again.strategy.maxPermute, command.strategy.maxPermute);

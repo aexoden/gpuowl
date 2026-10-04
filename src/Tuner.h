@@ -79,6 +79,14 @@ enum class TuneVerb : u8 {
 // Whether the verb builds kernels on a device; the others work on the files alone.
 [[nodiscard]] bool opensDevice(TuneVerb verb);
 
+// Which prime-factor middles (MIDDLE 3, 7, 9 or 11 times a power of two) a run considers: the NTT types' alone, every
+// type's, or none.  A hybrid's runs out of place with a two-kernel FP tail, which rarely makes it the fastest.
+enum class PfaShapes : u8 { None, Ntt, All };
+
+inline constexpr PfaShapes PFA_SHAPES = PfaShapes::Ntt;
+
+[[nodiscard]] const char* toString(PfaShapes shapes);
+
 // What `-tune` was asked to work within. Zero where the setting was not given and is to be derived from the worktodo.
 struct ScopeArgs {
   u64 lo = 0;
@@ -86,6 +94,7 @@ struct ScopeArgs {
   u64 probe = 0;
   double probeWeight = PROBE_WEIGHT;
   std::vector<TestKind> kinds{TestKind::PRP};
+  PfaShapes pfaShapes = PFA_SHAPES;
 
   [[nodiscard]] bool wantsKind(TestKind kind) const;
 };
@@ -174,7 +183,12 @@ struct RunScope {
 
   std::vector<Grid> grids;
 
+  PfaShapes pfaShapes = PFA_SHAPES;
+
   [[nodiscard]] const Grid* grid(TestKind kind) const;
+
+  // Whether a run considers `shape` at all.
+  [[nodiscard]] bool admits(const FFTShape& shape) const;
 };
 
 // The scope the settings and the pending work imply. Pure: every file has been read by the time it is called, and the
