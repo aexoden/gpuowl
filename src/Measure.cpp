@@ -26,7 +26,7 @@ namespace tune {
 namespace {
 
 std::vector<KeyVal> asExtraConf(const FFTConfig& fft, const UseConfig& options) {
-  UseConfig const fitted = withLdsFit(fft, options);
+  UseConfig const fitted = withHostFit(fft, options);
   return {fitted.begin(), fitted.end()};
 }
 

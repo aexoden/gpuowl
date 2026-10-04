@@ -5,6 +5,7 @@
 
 #include "test.h"
 
+#include "Bootstrap.h"
 #include "FFTVariants.h"
 #include "OptionSpace.h"
 
@@ -551,26 +552,40 @@ TEST(swiz_recompute) {
   CHECK_EQ(defaultOf(amd(), "512:15:512:101", swizW, "SWIZ_RECOMPUTE"), 1);
 }
 
-TEST(lds_fit_writes_in_what_the_host_would_derive) {
+TEST(host_fit_writes_in_what_the_host_would_derive) {
   FFTConfig const wide{"4K:12:512:101"};
   FFTConfig const oneK{"1K:8:1K:101"};
   FFTConfig const narrow{"512:15:512:101"};
 
   // At 4K the host caps its WMUL of 2 at 1, and 4K * 8 * 1 then fills the budget.
-  CHECK(withLdsFit(wide, {}) == (UseConfig{{"LDSPAD_W", "0"}, {"WMUL", "1"}}));
-  CHECK(withLdsFit(wide, {{"SHUFL_BYTES_W", "4"}}) == (UseConfig{{"SHUFL_BYTES_W", "4"}, {"WMUL", "1"}}));
+  CHECK(withHostFit(wide, {}) == (UseConfig{{"LDSPAD_W", "0"}, {"WMUL", "1"}}));
+  CHECK(withHostFit(wide, {{"SHUFL_BYTES_W", "4"}}) == (UseConfig{{"SHUFL_BYTES_W", "4"}, {"WMUL", "1"}}));
 
   // 1K * 16 * 2 fills it, and 1K * 16 * 1 does not.
-  CHECK(withLdsFit(oneK, {{"SHUFL_BYTES_W", "16"}}) == (UseConfig{{"LDSPAD_W", "0"}, {"SHUFL_BYTES_W", "16"}}));
+  CHECK(withHostFit(oneK, {{"SHUFL_BYTES_W", "16"}}) == (UseConfig{{"LDSPAD_W", "0"}, {"SHUFL_BYTES_W", "16"}}));
   UseConfig const halved{{"SHUFL_BYTES_W", "16"}, {"WMUL", "1"}};
-  CHECK(withLdsFit(oneK, halved) == halved);
-  CHECK(withLdsFit(oneK, {{"LDSPAD_W", "0"}, {"SHUFL_BYTES_W", "16"}}) ==
+  CHECK(withHostFit(oneK, halved) == halved);
+  CHECK(withHostFit(oneK, {{"LDSPAD_W", "0"}, {"SHUFL_BYTES_W", "16"}}) ==
         (UseConfig{{"LDSPAD_W", "0"}, {"SHUFL_BYTES_W", "16"}}));
 
   // Nothing to derive, and a WMUL that was set is the host's to cap and report.
-  CHECK(withLdsFit(narrow, {}).empty());
-  CHECK(withLdsFit(narrow, {{"WMUL", "4"}}) == (UseConfig{{"WMUL", "4"}}));
-  CHECK(withLdsFit(oneK, {{"WMUL", "4"}}) == (UseConfig{{"WMUL", "4"}}));
+  CHECK(withHostFit(narrow, {}).empty());
+  CHECK(withHostFit(narrow, {{"WMUL", "4"}}) == (UseConfig{{"WMUL", "4"}}));
+  CHECK(withHostFit(oneK, {{"WMUL", "4"}}) == (UseConfig{{"WMUL", "4"}}));
+
+  // A prime-factor middle runs out of place, and a hybrid's FP tail as two kernels: written in, so the host has no
+  // change to report, and still the built-in defaults.  A key that was set is left to the host.
+  for (const char* spec : {"1:1K:6:256:202", "51:512:12:512:202", "2:512:7:512:202"}) {
+    FFTConfig const fft{spec};
+    bool const hybrid = fft.FFT_FP64 || fft.FFT_FP32;
+    UseConfig const fitted = withHostFit(fft, {});
+    CHECK(fitted == (hybrid ? UseConfig{{"INPLACE", "0"}, {"TAIL_KERNELS", "3"}} : UseConfig{{"INPLACE", "0"}}));
+    for (const Env& e : {nvidia(), amd()}) { CHECK(canonicalConfig(e, fft, fitted).empty()); }
+  }
+  CHECK(withHostFit(FFTConfig{"51:512:12:512:202"}, {{"TAIL_KERNELS", "1"}}) ==
+        (UseConfig{{"INPLACE", "0"}, {"TAIL_KERNELS", "1"}}));
+  CHECK(withHostFit(FFTConfig{"1:1K:6:256:202"}, {{"INPLACE", "1"}}) == (UseConfig{{"INPLACE", "1"}}));
+  CHECK(withHostFit(FFTConfig{"1:1K:8:256:202"}, {}).empty());
 }
 
 TEST(lds_aside_note_names_padding_a_move_turns_off) {

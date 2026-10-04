@@ -221,10 +221,11 @@ struct ClusterGraph {
 // alone.
 [[nodiscard]] string clusterPictureMismatch(const ClusterGraph& graph);
 
-// `config` with WMUL and LDSPAD_W written in wherever the host would otherwise derive them from the LDS budget itself,
-// logging each change: an unset WMUL is 2 to the host until it is capped, and a width row that fills the budget loses
-// its padding. The host's lines are then left for what the table does not predict, as is a WMUL that was set.
-[[nodiscard]] UseConfig withLdsFit(const FFTConfig& fft, UseConfig config);
+// `config` with what the host would otherwise derive for this FFT written in, so that it has nothing to change and log:
+// an unset WMUL is 2 to the host until the LDS budget caps it, and a width row that fills the budget loses its padding;
+// a prime-factor middle runs out of place, and a prime-factor hybrid's FP tail as two kernels. The host's lines are
+// then left for what the table does not predict, as is a key that was set.
+[[nodiscard]] UseConfig withHostFit(const FFTConfig& fft, UseConfig config);
 
 // For a label: " (LDSPAD_W=0: LDS budget)" where the LDS budget turns the padding off under `to` but not under `from`
 // and `named` does not already give LDSPAD_W, or nothing. A move of SHUFL_BYTES_W can fill the budget, so the one move
