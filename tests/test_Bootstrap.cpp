@@ -87,6 +87,12 @@ TEST(one_configuration_has_one_option_set) {
   // The defaults are the vendor's: INPLACE=1 is a move on AMD, where it is not the default.
   CHECK_EQ(configText(canonicalConfig(amd(), fft, {{"INPLACE", "1"}})), std::string{"INPLACE=1"});
   CHECK(canonicalConfig(nvidia(), fft, {}).empty());
+
+  // What the host writes in for a prime-factor middle, and a row then records as what ran, is that FFT's defaults.
+  CHECK(canonicalConfig(nvidia(), FFTConfig{"1:1K:6:256:202"}, {{"INPLACE", "0"}}).empty());
+  CHECK(canonicalConfig(nvidia(), FFTConfig{"51:512:12:512:202"}, {{"INPLACE", "0"}, {"TAIL_KERNELS", "3"}}).empty());
+  CHECK_EQ(configText(canonicalConfig(amd(), FFTConfig{"51:512:12:512:202"}, {{"TAIL_KERNELS", "1"}})),
+           std::string{"TAIL_KERNELS=1"});
 }
 
 TEST(a_move_is_one_step_within_one_group) {
@@ -165,7 +171,7 @@ TEST(the_families_are_the_smallest_shape_of_each_type_the_workload_reaches) {
     bootstrapFamilies(nvidia(), PROBE, {FFTConfig{"512:15:512:101"}, FFTConfig{"1:512:8:512:202"}});
   CHECK_EQ(all.size(), size_t(2));
   CHECK_EQ(all[0].fft.spec(), std::string{"1K:13:256:212"});
-  CHECK_EQ(all[1].fft.spec(), std::string{"1:1K:6:256:202"});
+  CHECK_EQ(all[1].fft.spec(), std::string{"1:1K:8:256:202"});
 
   for (const Family& f : all) {
     CHECK(std::ranges::any_of(anchorCandidates(PROBE), [&](const AnchorSpec& a) { return a.fft == f.fft.spec(); }));

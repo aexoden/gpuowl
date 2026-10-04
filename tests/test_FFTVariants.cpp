@@ -74,7 +74,8 @@ const std::set<int>& carryTypedTypes() {
 }
 
 // An independent description of the kernels a spelling compiles, from the kernel facts above: which fft_common body
-// each pass runs, the middle chain defaults where a floating-point middle reads them, and when CARRY64 is defined.
+// each pass runs, the middle chain defaults where a floating-point middle reads them (not at a prime-factor MIDDLE,
+// which the host compiles with PFA), and when CARRY64 is defined.
 std::string kernelKey(const FFTShape& shape, u32 v, CARRY_KIND carry) {
   FFTConfig const parts{shape, 202, CARRY_AUTO};
 
@@ -86,7 +87,8 @@ std::string kernelKey(const FFTShape& shape, u32 v, CARRY_KIND carry) {
   };
 
   std::string key = pass(shape.width, shape.nW(), variant_W(v)) + "/";
-  key += ((parts.FFT_FP64 || parts.FFT_FP32) && shape.middle != 2) ? std::to_string(variant_M(v)) : "-";
+  bool const chainsRead = (parts.FFT_FP64 || parts.FFT_FP32) && shape.middle != 2 && !shape.isPfa();
+  key += chainsRead ? std::to_string(variant_M(v)) : "-";
   key += "/" + pass(shape.height, shape.nH(), variant_H(v)) + "/";
 
   if (!carryTypedTypes().contains(shape.fft_type)) { return key + "-"; }
@@ -143,6 +145,17 @@ TEST(kernel_facts_are_found) {
   std::string const middle = clSource("fft-middle.cl");
   CHECK(middle.find("#define MM_CHAIN (FFT_VARIANT_M == 0 ? 0 : 1)") != std::string::npos);
   CHECK(middle.find("#define MM2_CHAIN (FFT_VARIANT_M == 0 ? 0 : 2)") != std::string::npos);
+
+  // Under PFA each arithmetic's out-of-place middle kernels run pfaMiddleIn/Out in place of the chained middleMuls.
+  auto count = [](const std::string& text, const std::string& what) {
+    size_t n = 0;
+    for (size_t at = text.find(what); at != std::string::npos; at = text.find(what, at + 1)) { ++n; }
+    return n;
+  };
+  std::string const in = clSource("fftmiddlein.cl");
+  std::string const out = clSource("fftmiddleout.cl");
+  CHECK_EQ(count(in, "#if PFA\n  pfaMiddleIn("), size_t{4});
+  CHECK_EQ(count(out, "#if PFA\n  pfaMiddleOut("), size_t{4});
 }
 
 TEST(one_name_per_configuration) {
@@ -193,6 +206,11 @@ TEST(variant_folds) {
   CHECK_EQ(canonicalSpec("4K:12:512:100"), std::string{"4K:12:512:100"});
   CHECK_EQ(canonicalSpec("512:15:512:101"), std::string{"512:15:512:101"});
   CHECK_EQ(canonicalSpec("51:1K:8:512:111"), std::string{"51:1K:8:512:111"});
+
+  // A prime-factor MIDDLE reads no middle chain, so its middle digit folds onto 0.
+  CHECK_EQ(canonicalSpec("51:512:12:512:212"), std::string{"51:512:12:512:202"});
+  CHECK_EQ(canonicalSpec("2:512:7:512:212"), std::string{"2:512:7:512:202"});
+  CHECK_EQ(canonicalSpec("51:512:16:512:212"), std::string{"51:512:16:512:212"});
 
   // Width and height 2048: every digit runs the one WG = 256 body, so 1 folds onto 2; digit 0 cannot compile there.
   CHECK_EQ(canonicalSpec("2K:8:512:101"), std::string{"2K:8:512:201"});

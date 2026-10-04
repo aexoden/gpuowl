@@ -74,9 +74,10 @@ TEST(anchor_candidates_are_the_smallest_eligible_shape_of_each_type) {
     CHECK_EQ(fft.variant, defaultVariant(fft.shape));
     CHECK(fft.carry == CARRY_AUTO);
 
-    // Nothing of the same type and eligible there is smaller.
+    // Nothing of the same type and eligible there is smaller, but for prime-factor middles, which stand for nothing.
+    CHECK(!fft.shape.isPfa());
     for (const FFTShape& shape : FFTShape::allShapes()) {
-      if (shape.fft_type != fft.shape.fft_type || shape.size() >= fft.size()) { continue; }
+      if (shape.fft_type != fft.shape.fft_type || shape.size() >= fft.size() || shape.isPfa()) { continue; }
       CHECK(interval(FFTConfig{shape, defaultVariant(shape), CARRY_AUTO}, E).empty());
     }
   }

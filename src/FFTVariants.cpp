@@ -67,7 +67,8 @@ std::vector<u32> heightDigits(const FFTShape& shape) { return passDigits(shape, 
 
 std::vector<u32> middleDigits(const FFTShape& shape) {
   FFTParts const parts = fftParts(shape.fft_type);
-  if (!(parts.fp64 || parts.fp32) || shape.middle == 2) { return {0}; }
+  // The digit only chooses the middle chains' defaults, which a prime-factor middle never reads.
+  if (!(parts.fp64 || parts.fp32) || shape.middle == 2 || shape.isPfa()) { return {0}; }
   return {0, 1};
 }
 

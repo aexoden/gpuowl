@@ -56,8 +56,9 @@ struct AnchorSpec {
 [[nodiscard]] std::optional<AnchorSpec> parseAnchorSpec(std::string_view text);
 
 // What an env's anchor is chosen among at `exponent`: for each FFT type production chooses among, the smallest shape
-// whose default variant is eligible there, at that variant and the automatic carry.  Smallest-that-fits is the cheapest
-// thing in a family to re-time.  In type order, FP64 first; empty for an exponent nothing can hold.
+// whose default variant is eligible there, at that variant and the automatic carry, leaving out prime-factor middles.
+// Smallest-that-fits is the cheapest thing in a family to re-time.  In type order, FP64 first; empty for an exponent
+// nothing can hold.
 [[nodiscard]] std::vector<AnchorSpec> anchorCandidates(u64 exponent);
 
 // One candidate's reading, in microseconds per iteration.

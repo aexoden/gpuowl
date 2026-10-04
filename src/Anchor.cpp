@@ -56,7 +56,9 @@ std::vector<AnchorSpec> anchorCandidates(u64 exponent) {
   // allShapes() is in ascending size, so the first eligible shape of a type is its smallest.
   std::map<enum FFT_TYPES, FFTConfig> smallest;
   for (const FFTShape& shape : FFTShape::allShapes()) {
-    if (smallest.contains(shape.fft_type)) { continue; }
+    // A prime-factor middle runs out of place and has no middle chains, so it would stand for nothing those settle for
+    // the rest of its type.
+    if (smallest.contains(shape.fft_type) || shape.isPfa()) { continue; }
 
     // Both ends: isEligible() answers only the bits-per-word floor the Gpu constructor enforces, and an anchor above
     // the top of its own range is not a configuration anything would run.

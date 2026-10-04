@@ -29,7 +29,8 @@ struct FFTParts {
 // With no FP64 part every digit compiles the same kernels and folds onto 2.
 //
 // Middle: the digit only chooses the defaults of MM_CHAIN and MM2_CHAIN, so it names distinct kernels where there is a
-// floating-point middle that reads them, i.e. not for a pure NTT, nor at MIDDLE == 2 where both are no-ops.
+// floating-point middle that reads them, i.e. not for a pure NTT, nor at MIDDLE == 2 where both are no-ops, nor at a
+// prime-factor MIDDLE, whose middle step is its own.
 [[nodiscard]] std::vector<u32> widthDigits(const FFTShape& shape);
 [[nodiscard]] std::vector<u32> middleDigits(const FFTShape& shape);
 [[nodiscard]] std::vector<u32> heightDigits(const FFTShape& shape);

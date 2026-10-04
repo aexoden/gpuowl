@@ -85,13 +85,23 @@ bool hasGF61(const Env&, const FFTConfig& f, const UseConfig&) { return f.NTT_GF
 bool hasFloat(const Env&, const FFTConfig& f, const UseConfig&) { return f.FFT_FP64 || f.FFT_FP32; }
 bool hasNtt(const Env&, const FFTConfig& f, const UseConfig&) { return f.NTT_GF31 || f.NTT_GF61; }
 
+// A prime-factor MIDDLE is written for the out-of-place layout alone: clDefines() turns INPLACE off for it, whatever
+// was asked.
+bool pfa(const FFTConfig& f) { return f.shape.isPfa(); }
+
+// The FP side of a prime-factor hybrid has more self-paired tail lines than one tail kernel handles, so clDefines()
+// moves TAIL_KERNELS 0 and 2 to their two-kernel forms, 1 and 3.
+bool pfaFloatTail(const FFTConfig& f) { return pfa(f) && (f.FFT_FP64 || f.FFT_FP32); }
+
 // base.cl defaults INPLACE to 1 on nVidia and 0 everywhere else, and clDefines() matches, so an undecided INPLACE
 // means different applicability on different GPUs.
-int inplaceDefault(const Env& e) { return e.isNvidia ? 1 : 0; }
-bool inplaceOn(const Env& e, const UseConfig& d) { return useValue(d, "INPLACE", inplaceDefault(e)) != 0; }
+int inplaceDefault(const Env& e, const FFTConfig& f) { return e.isNvidia && !pfa(f) ? 1 : 0; }
+bool inplaceOn(const Env& e, const FFTConfig& f, const UseConfig& d) {
+  return !pfa(f) && useValue(d, "INPLACE", inplaceDefault(e, f)) != 0;
+}
 
 // The middle-buffer geometry is compiled only under "#if !INPLACE".
-bool inplaceOff(const Env& e, const FFTConfig&, const UseConfig& d) { return !inplaceOn(e, d); }
+bool inplaceOff(const Env& e, const FFTConfig& f, const UseConfig& d) { return !inplaceOn(e, f, d); }
 
 u32 numDataTypes(const FFTConfig& f) {
   return ((f.FFT_FP64 || f.FFT_FP32) ? 1u : 0u) + (f.NTT_GF31 ? 1u : 0u) + (f.NTT_GF61 ? 1u : 0u);
@@ -205,7 +215,10 @@ bool middleDigitPinsChains(const FFTConfig& f) { return variant_M(f.variant) == 
 int mmChainDefault(const FFTConfig& f) { return middleDigitPinsChains(f) ? 1 : 0; }
 int mm2ChainDefault(const FFTConfig& f) { return middleDigitPinsChains(f) ? 2 : 0; }
 
-bool mm2ChainInert(const FFTConfig& f) { return f.shape.middle < 5; }
+// A prime-factor MIDDLE's own middle step (pfaMiddleIn/Out) takes the place of middleMul, middleMul2 and fft_MIDDLE, so
+// nothing reads the middle chains there.
+bool mmChainInert(const FFTConfig& f) { return f.shape.middle == 2 || pfa(f); }
+bool mm2ChainInert(const FFTConfig& f) { return f.shape.middle < 5 || pfa(f); }
 
 //
 // CUDA Registers
@@ -231,9 +244,9 @@ vector<int> regLadder(const Env& e, const FFTConfig&, const UseConfig&) {
 }
 
 // Upstream caps the in-place middle kernels at two waves by default on Vega.
-vector<int> regMiddleLadder(const Env& e, const FFTConfig&, const UseConfig& d) {
+vector<int> regMiddleLadder(const Env& e, const FFTConfig& f, const UseConfig& d) {
   if (e.cudaBackend) { return REG_LADDER; }
-  return (e.isVega() && inplaceOn(e, d)) ? AMD_WAVES_CAPPED : AMD_WAVES;
+  return (e.isVega() && inplaceOn(e, f, d)) ? AMD_WAVES_CAPPED : AMD_WAVES;
 }
 
 template<enum FFT_TYPES T> bool regCarryApplies(const Env& e, const FFTConfig& f, const UseConfig& d) {
@@ -306,15 +319,18 @@ vector<Option> buildTable() {
                .group = Group::Placement,
                .touches = KG_GLOBAL,
                .structural = true,
-               .values = {0, 1},
-               .defaultFn = [](const Env& e, const FFTConfig&, const UseConfig&) { return inplaceDefault(e); }});
+               .valuesFn = [](const Env&, const FFTConfig& f,
+                              const UseConfig&) { return pfa(f) ? vector<int>{0} : vector<int>{0, 1}; },
+               .defaultFn = [](const Env& e, const FFTConfig& f, const UseConfig&) { return inplaceDefault(e, f); },
+               .inert = [](const Env&, const FFTConfig& f, const UseConfig&) { return pfa(f); },
+               .inertWhen = "a prime-factor MIDDLE, which runs out of place"});
 
   t.push_back({.key = "L2_STRIPING",
                .group = Group::Placement,
                .touches = KG_GLOBAL,
                .dependsOn = {"INPLACE", "MULTI_Q"},
                .applies = [](const Env& e, const FFTConfig& f,
-                             const UseConfig& d) { return inplaceOn(e, d) && maxStriping(f, d) >= 1; },
+                             const UseConfig& d) { return inplaceOn(e, f, d) && maxStriping(f, d) >= 1; },
                .valuesFn =
                  [](const Env&, const FFTConfig& f, const UseConfig& d) {
                    vector<int> v{0};
@@ -388,9 +404,9 @@ vector<Option> buildTable() {
                    return mm2ChainInert(f) ? vector<int>{0} : vector<int>{0, 1};
                  },
                .defaultFn = [](const Env&, const FFTConfig& f, const UseConfig&) { return mmChainDefault(f); },
-               // Both arms reduce to the shared WADD(1, w) plus a zero-iteration loop.
-               .inert = [](const Env&, const FFTConfig& f, const UseConfig&) { return f.shape.middle == 2; },
-               .inertWhen = "MIDDLE == 2"});
+               // At MIDDLE 2 both arms reduce to the shared WADD(1, w) plus a zero-iteration loop.
+               .inert = [](const Env&, const FFTConfig& f, const UseConfig&) { return mmChainInert(f); },
+               .inertWhen = "MIDDLE == 2, or a prime-factor MIDDLE"});
   t.push_back({.key = "MM2_CHAIN",
                .group = Group::Middle,
                .touches = KG_MIDDLE_IN | KG_MIDDLE_OUT,
@@ -403,18 +419,18 @@ vector<Option> buildTable() {
                    return useValue(d, "MM_CHAIN", mmChainDefault(f)) == 1 ? vector<int>{0, 1} : vector<int>{0, 1, 2};
                  },
                .defaultFn = [](const Env&, const FFTConfig& f, const UseConfig&) { return mm2ChainDefault(f); },
-               // Every branch sits in middleMul2's "MIDDLE >= SHARP_MIDDLE" arm.
+               // Below MIDDLE 5 every branch sits in middleMul2's "MIDDLE >= SHARP_MIDDLE" arm.
                .inert = [](const Env&, const FFTConfig& f, const UseConfig&) { return mm2ChainInert(f); },
-               .inertWhen = "MIDDLE < 5"});
+               .inertWhen = "MIDDLE < 5, or a prime-factor MIDDLE"});
   t.push_back({.key = "MIDDLE_CHAIN",
                .group = Group::Middle,
                .touches = KG_MIDDLE_IN | KG_MIDDLE_OUT,
                .applies = hasNtt,
                .values = {0, 1},
                .defaultValue = 0,
-               // Both branches compute the same value and return.
-               .inert = [](const Env&, const FFTConfig& f, const UseConfig&) { return f.shape.middle == 2; },
-               .inertWhen = "MIDDLE == 2"});
+               // At MIDDLE 2 both branches compute the same value and return.
+               .inert = [](const Env&, const FFTConfig& f, const UseConfig&) { return mmChainInert(f); },
+               .inertWhen = "MIDDLE == 2, or a prime-factor MIDDLE"});
 
   t.push_back({.key = "LOADS",
                .scope = Scope::Device,
@@ -470,14 +486,18 @@ vector<Option> buildTable() {
                .values = {0, 1},
                .defaultValue = 0});
 
-  t.push_back({.key = "TAIL_KERNELS",
-               .scope = Scope::Variant,
-               .group = Group::Tail,
-               .touches = KG_TAIL,
-               .accuracyImpact = AccuracyImpact::Yes,
-               .defaultRounding = {3},
-               .values = {0, 1, 2, 3},
-               .defaultValue = 2});
+  t.push_back(
+    {.key = "TAIL_KERNELS",
+     .scope = Scope::Variant,
+     .group = Group::Tail,
+     .touches = KG_TAIL,
+     .accuracyImpact = AccuracyImpact::Yes,
+     .defaultRounding = {3},
+     .values = {0, 1, 2, 3},
+     .valuesFn = [](const Env&, const FFTConfig& f,
+                    const UseConfig&) { return pfaFloatTail(f) ? vector<int>{1, 3} : vector<int>{0, 1, 2, 3}; },
+     .defaultValue = 2,
+     .defaultFn = [](const Env&, const FFTConfig& f, const UseConfig&) { return pfaFloatTail(f) ? 3 : 2; }});
   t.push_back({.key = "TAIL_TRIGS",
                .scope = Scope::Family,
                .group = Group::Tail,
@@ -485,7 +505,10 @@ vector<Option> buildTable() {
                .accuracyImpact = AccuracyImpact::Yes,
                .applies = hasFP64,
                .values = {0, 1, 2},
-               .defaultValue = 2});
+               .defaultValue = 2,
+               // The prime-factor FP tail computes its own twiddles.
+               .inert = [](const Env&, const FFTConfig& f, const UseConfig&) { return pfa(f); },
+               .inertWhen = "a prime-factor MIDDLE"});
   t.push_back({.key = "TAIL_TRIGS31",
                .scope = Scope::Family,
                .group = Group::Tail,
@@ -500,7 +523,10 @@ vector<Option> buildTable() {
                .accuracyImpact = AccuracyImpact::Yes,
                .applies = hasFP32,
                .values = {0, 1, 2},
-               .defaultValue = 2});
+               .defaultValue = 2,
+               // The prime-factor FP tail computes its own twiddles.
+               .inert = [](const Env&, const FFTConfig& f, const UseConfig&) { return pfa(f); },
+               .inertWhen = "a prime-factor MIDDLE"});
   t.push_back({.key = "TAIL_TRIGS61",
                .scope = Scope::Family,
                .group = Group::Tail,
@@ -961,8 +987,10 @@ ClusterGraph clusterGraph(const Env& env, const FFTConfig& fft, const UseConfig&
     if (it == g.touches.end()) { continue; }
 
     // A register cap reshapes each kernel it reaches, and between them the REG* keys reach every pass, so on AMD, where
-    // they are the whole group, their honest touches would chain every kernel-local group into one cluster.
-    if ((it->second & KG_GLOBAL) || group == Group::Cuda) {
+    // they are the whole group, their honest touches would chain every kernel-local group into one cluster.  Placement
+    // does the same where INPLACE is not in play (a prime-factor middle): PAD and the middle geometry are then all of
+    // it.
+    if ((it->second & KG_GLOBAL) || group == Group::Cuda || group == Group::Placement) {
       g.topTier.push_back(group);
     } else {
       local.push_back(group);
@@ -1159,6 +1187,10 @@ vector<MatrixPoint> selfCheckMatrix() {
   ffts.emplace_back(FFTShape{FFT3161, 512, 4, 512}, 202, CARRY_AUTO);
   ffts.emplace_back(FFTShape{FFT3261, 512, 4, 512}, 202, CARRY_AUTO);
   ffts.emplace_back(FFTShape{FFT3161, 1024, 16, 1024}, 202, CARRY_AUTO);
+  // Prime-factor middles: an NTT, and a hybrid of each float width.
+  ffts.emplace_back(FFTShape{FFT3161, 1024, 6, 256}, 202, CARRY_AUTO);
+  ffts.emplace_back(FFTShape{FFT6431, 512, 12, 512}, 202, CARRY_AUTO);
+  ffts.emplace_back(FFTShape{FFT3261, 512, 7, 512}, 202, CARRY_AUTO);
 
   vector<vector<KeyVal>> const scenarios{
     {},
@@ -1234,8 +1266,9 @@ u32 selfCheck() {
         if (o.accuracyImpact == AccuracyImpact::None) {
           fail(o.key + " lists values that round as the default, but none that round otherwise");
         }
+        // A per-FFT list or default may narrow the fixed ones; the matrix below holds it to them.
         for (int v : o.defaultRounding) {
-          if (o.valuesFn || o.defaultFn || std::ranges::find(o.values, v) == o.values.end() || v == o.defaultValue) {
+          if (std::ranges::find(o.values, v) == o.values.end() || v == o.defaultValue) {
             fail(o.key + ": " + to_string(v) + " is not a fixed value other than its fixed default");
           }
         }
@@ -1315,6 +1348,15 @@ u32 selfCheck() {
       int const d = o.defaultFor(p.env, p.fft, p.decided);
       if (!contains(vals, d)) {
         fail(o.key + " default " + to_string(d) + " is not among {" + join(vals) + "}" + where);
+      }
+      // "Rounds as the default does" has to mean one thing wherever the default lies.
+      if (!o.defaultRounding.empty()) {
+        if (d != o.defaultValue && !contains(o.defaultRounding, d)) {
+          fail(o.key + " default " + to_string(d) + " rounds otherwise than its fixed default" + where);
+        }
+        for (int v : vals) {
+          if (!contains(o.values, v)) { fail(o.key + " offers " + to_string(v) + ", outside its fixed list" + where); }
+        }
       }
       if (!o.isInert(p.env, p.fft, p.decided) && o.touchesFor(p.env, p.fft, p.decided) == 0) {
         fail(o.key + " applies but touches no kernel" + where);

@@ -176,6 +176,47 @@ TEST(inert_middle_chains) {
   CHECK_EQ(defaultOf(e, "512:15:512:111", {}, "MM2_CHAIN"), 2);
 }
 
+// A prime-factor MIDDLE runs out of place whatever INPLACE says, has a middle step of its own that reads no chain, and
+// on a hybrid an FP tail of two kernels with twiddles of its own.
+TEST(prime_factor_middles) {
+  for (const Env& e : {nvidia(), amd()}) {
+    for (const char* spec : {"1:1K:6:256:202", "51:512:12:512:202", "2:512:7:512:202"}) {
+      CHECK_EQ(valuesOf(e, spec, {}, "INPLACE"), string("0"));
+      CHECK_EQ(defaultOf(e, spec, {}, "INPLACE"), 0);
+      CHECK(inert(e, spec, "INPLACE"));
+      for (const UseConfig& asked : {UseConfig{}, UseConfig{{"INPLACE", "1"}}}) {
+        CHECK(!applicable(e, spec, asked, "L2_STRIPING"));
+        CHECK(applicable(e, spec, asked, "IN_WG"));
+        CHECK(applicable(e, spec, asked, "MIDDLE_IN_LDS_TRANSPOSE"));
+      }
+      for (const char* chain : {"MM_CHAIN", "MM2_CHAIN", "MIDDLE_CHAIN"}) {
+        CHECK(!applicable(e, spec, {}, chain));
+      }
+    }
+
+    CHECK(inert(e, "1:1K:6:256:202", "MIDDLE_CHAIN"));
+    CHECK(inert(e, "51:512:12:512:202", "MM_CHAIN"));
+    CHECK(inert(e, "51:512:12:512:202", "MM2_CHAIN"));
+    CHECK(!inert(e, "51:512:16:512:202", "MM2_CHAIN"));
+
+    // The NTT keeps every tail; the hybrids' FP tails run as two kernels and compute their own twiddles.
+    CHECK_EQ(valuesOf(e, "1:1K:6:256:202", {}, "TAIL_KERNELS"), string("0,1,2,3"));
+    CHECK_EQ(defaultOf(e, "1:1K:6:256:202", {}, "TAIL_KERNELS"), 2);
+    for (const char* spec : {"51:512:12:512:202", "2:512:7:512:202"}) {
+      CHECK_EQ(valuesOf(e, spec, {}, "TAIL_KERNELS"), string("1,3"));
+      CHECK_EQ(defaultOf(e, spec, {}, "TAIL_KERNELS"), 3);
+    }
+    CHECK(inert(e, "51:512:12:512:202", "TAIL_TRIGS"));
+    CHECK(inert(e, "2:512:7:512:202", "TAIL_TRIGS32"));
+    CHECK(!inert(e, "51:512:12:512:202", "TAIL_TRIGS31"));
+    CHECK(!inert(e, "51:512:16:512:202", "TAIL_TRIGS"));
+  }
+
+  // Placement still heads the combinations where only PAD and the middle geometry are left of it.
+  CHECK(graphOf(amd(), "1:1K:6:256:202", {}).starts_with("top{Placement "));
+  CHECK(graphOf(amd(), "1:1K:8:256:202", {}).starts_with("top{Placement "));
+}
+
 // The middle digit only defaults the chains, so each effective (MM_CHAIN, MM2_CHAIN) pair is offered under exactly one
 // middle digit: digit 1 keeps its own defaults, digit 0 offers the rest.
 TEST(middle_digit_partitions_chains) {

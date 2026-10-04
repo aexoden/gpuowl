@@ -405,4 +405,11 @@ TEST(selection_lines_are_fitted_to_the_fft_they_reach) {
   withEntry.entry = {{"SHUFL_BYTES_W", "4"}};
   SelectionLayers const entry = fittedTo(withEntry, nv, FFTConfig{"2:4K:8:256:212"}, TestKind::PRP);
   CHECK(entry.entry == withEntry.entry);
+
+  // A prime-factor MIDDLE runs out of place, so an INPLACE=1 line does not reach it, nor a single-kernel tail a hybrid.
+  SelectionLayers const placed{.global = {{"INPLACE", "1"}, {"TAIL_KERNELS", "2"}}, .family = {}, .entry = {}};
+  SelectionLayers const ntt = fittedTo(placed, nv, FFTConfig{"1:1K:6:256:202"}, TestKind::PRP);
+  CHECK_EQ(configText(UseConfig{ntt.global.begin(), ntt.global.end()}), std::string{"TAIL_KERNELS=2"});
+  SelectionLayers const hybrid = fittedTo(placed, nv, FFTConfig{"51:512:12:512:202"}, TestKind::PRP);
+  CHECK(hybrid.global.empty());
 }
