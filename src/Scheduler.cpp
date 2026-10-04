@@ -546,7 +546,7 @@ std::vector<Item> Scheduler::sweepItems(const TuneDB& db, u32 env, const Progres
     for (size_t p = 0; p < objective.points().size() && !contends; ++p) {
       const ObjectivePoint& point = objective.points()[p];
       contends = fastest[p] && point.kind == b.kind && b.band.contains(point.exponent) &&
-        o.estimate <= (1 + CONTEND_MARGIN) * *fastest[p];
+        o.estimate <= (1 + exploration_.sweepMargin) * *fastest[p];
     }
 
     // One read is counted as read whether or not it still contends, so that what the sweep says it has read only
@@ -668,8 +668,9 @@ std::vector<size_t> Scheduler::explorable(const Standing& standing, const std::s
 
 std::vector<Item> Scheduler::linesSweepItems(const TuneDB& db, u32 env, const SearchContext& context,
                                              const std::map<EntryKey, std::vector<Reading>>& readings,
-                                             const std::vector<size_t>& entries) const {
+                                             const std::vector<size_t>& entries, const Objective& objective) const {
   linesOwed_ = 0;
+  linesWithin_ = 0;
   const LinesRow* latest = nullptr;
   for (const LinesRow& row : db.lines()) {
     if (db.envOf(row.sess) == env && (!latest || row.n > latest->n)) { latest = &row; }
@@ -683,13 +684,15 @@ std::vector<Item> Scheduler::linesSweepItems(const TuneDB& db, u32 env, const Se
     const Baseline& b = baselines_[i];
     EntryKey const key = b.key();
     auto const at = readings.find(key);
-    if (at == readings.end()) { continue; }
-    const Reading& best = at->second.front();
+    const Reading* const best = at == readings.end() ? nullptr : &at->second.front();
 
     bool owed = false;
+    bool within = false;
     auto const read = [&](UseConfig options, const std::string& what) {
       std::string const text = configText(options);
-      if (options.empty() || context.progress.answered.contains({key, text})) { return; }
+      if (options.empty()) { return; }
+      within = true;
+      if (context.progress.answered.contains({key, text})) { return; }
       Candidate c{.kind = Offer::Lines, .options = std::move(options), .what = what + text, .exponent = b.exponent};
       if (auto const p = context.progress.partial.find({key, text});
           p != context.progress.partial.end() && b.band.contains(p->second.exponent)) {
@@ -698,7 +701,9 @@ std::vector<Item> Scheduler::linesSweepItems(const TuneDB& db, u32 env, const Se
         c.observed = p->second.mean;
       }
       if (!searches_[i].runnable(context, c.options, c.exponent)) { return; }
-      c.cost = best.cost;
+      // One not read yet is read under the lines alone, which is all the sweep needs of it: a reading at the built-in
+      // defaults would say less of what it costs tuned.
+      c.cost = best ? best->cost : objective.priorModel().cost(b.fft.shape) / PRIOR_OPTIMISM;
       c.value = std::numeric_limits<double>::min();
       Item& item = out.emplace_back(itemOf(i, std::move(c)));
       item.linesSweep = true;
@@ -706,12 +711,13 @@ std::vector<Item> Scheduler::linesSweepItems(const TuneDB& db, u32 env, const Se
     };
     // The entry's own findings under the lines first, as its search takes them.
     UseConfig const lines = underDefaults(device, b.fft, b.kind, swept);
-    if (!best.config.empty()) {
-      UseConfig const over = underDefaults(device, b.fft, b.kind, swept, best.config);
+    if (best && !best->config.empty()) {
+      UseConfig const over = underDefaults(device, b.fft, b.kind, swept, best->config);
       if (over != lines) { read(over, "its best set under the default lines "); }
     }
     read(lines, "the default lines ");
     linesOwed_ += owed;
+    linesWithin_ += within;
   }
   return out;
 }
@@ -1189,7 +1195,7 @@ std::vector<Item> Scheduler::admissible(const TuneDB& db, u32 env, const Objecti
     if (exploration_.lookCalls > 0 || exploration_.linesSweep) {
       standing = standingOf(readings, objective);
       explore = explorable(*standing, acceptedTypes(*standing), objective);
-      relines = linesSweepItems(db, env, context, readings, explore);
+      relines = linesSweepItems(db, env, context, readings, explore, objective);
     }
 
     // The cheapest family still owed its calls, whose search has something to offer.
@@ -1334,10 +1340,8 @@ std::vector<Item> Scheduler::admissible(const TuneDB& db, u32 env, const Objecti
 
   if (!swept.empty()) { return swept; }
   if (!bootstrap.empty()) { return bootstrap; }
-  if (!relines.empty() || !looks.empty()) {
-    std::ranges::move(looks, std::back_inserter(relines));
-    return relines;
-  }
+  if (!relines.empty()) { return relines; }
+  if (!looks.empty()) { return looks; }
   return out;
 }
 
@@ -1367,9 +1371,9 @@ Phase Scheduler::phase(const BootstrapState& state, const std::vector<Item>& ran
     parts.push_back({buf, "sweep " + std::to_string(read) + "/" + std::to_string(sweepWithin_)});
   }
   if (any([](const Item& i) { return i.linesSweep; })) {
-    snprintf(buf, sizeof(buf), "lines sweep: %u %s still to be read under the default lines", linesOwed_,
-             linesOwed_ == 1 ? "FFT" : "FFTs");
-    parts.push_back({buf, "lines " + std::to_string(linesOwed_)});
+    u32 const read = linesWithin_ - std::min(linesOwed_, linesWithin_);
+    snprintf(buf, sizeof(buf), "lines sweep: %u of %u FFTs read under the default lines", read, linesWithin_);
+    parts.push_back({buf, "lines " + std::to_string(read) + "/" + std::to_string(linesWithin_)});
   }
   if (any([](const Item& i) { return i.look; })) {
     u32 const done = explorable_ - std::min(lookOwed_, explorable_);

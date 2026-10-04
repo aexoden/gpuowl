@@ -779,6 +779,8 @@ TuneCommand parseTuneCommand(std::string_view text) {
       out.exploration.typeMargin = parseMargin(key, val);
     } else if (key == "lookMargin" && queues) {
       out.exploration.lookMargin = parseMargin(key, val);
+    } else if (key == "sweepMargin" && queues) {
+      out.exploration.sweepMargin = parseMargin(key, val);
     } else if (key == "linesSweep" && queues) {
       if (val != "0" && val != "1") { throw std::string{"-tune: linesSweep= takes 0 or 1"}; }
       out.exploration.linesSweep = val == "1";
@@ -819,7 +821,8 @@ TuneCommand parseTuneCommand(std::string_view text) {
                    " bootstrap=0|1, strategy=hybrid|single|groups|permute:<KEY>+<KEY>..., maxPermute=<N>|all,"
                    " maxPoints=<N>|all,"
                    " comboTop=<N>, comboTiers=1|2|3, contenders=<N>, roundCalls=<N>, halvings=<N>, lookCalls=<N>,"
-                   " typeMargin=<P>%|all, lookMargin=<P>%|all, linesSweep=0|1, stop=<P>%|0, tunetxt=0|1, dashboard=0|1,"
+                   " typeMargin=<P>%|all, lookMargin=<P>%|all, linesSweep=0|1, sweepMargin=<P>%|all, stop=<P>%|0,"
+                   " tunetxt=0|1, dashboard=0|1,"
                    " or a subcommand:"
                    " emit, reset, adopt, compact, scope, status, accuracy";
         break;
@@ -828,7 +831,7 @@ TuneCommand parseTuneCommand(std::string_view text) {
           "env=<id>, and a run's workload=<lo>-<hi>, probe=<E>, probeWeight=<0..1>, kinds=prp|ll|prp+ll,"
           " pfaShapes=ntt|all|none, bootstrap=0|1, strategy=<S>, maxPermute=<N>|all, maxPoints=<N>|all, comboTop=<N>,"
           " comboTiers=1|2|3, contenders=<N>, roundCalls=<N>, halvings=<N>, lookCalls=<N>,"
-          " typeMargin=<P>%|all, lookMargin=<P>%|all, linesSweep=0|1, stop=<P>%|0";
+          " typeMargin=<P>%|all, lookMargin=<P>%|all, linesSweep=0|1, sweepMargin=<P>%|all, stop=<P>%|0";
         break;
       case TuneVerb::Accuracy: accepted = "workload=<lo>-<hi>, probe=<E>, fft=<spec>, groups=<Group>+<Group>..."; break;
       }
@@ -903,7 +906,8 @@ std::string runSettings(const RunScope& scope, const TuneCommand& command) {
     ",lookCalls=" + std::to_string(command.exploration.lookCalls) +
     ",typeMargin=" + marginText(command.exploration.typeMargin) +
     ",lookMargin=" + marginText(command.exploration.lookMargin) +
-    ",linesSweep=" + (command.exploration.linesSweep ? "1" : "0");
+    ",linesSweep=" + (command.exploration.linesSweep ? "1" : "0") +
+    ",sweepMargin=" + marginText(command.exploration.sweepMargin);
   return out + ",stop=" + (command.stop > 0 ? shortest(command.stop * 100) + "%" : "0");
 }
 
@@ -1283,9 +1287,12 @@ MeasureOutcome runTune(const GpuCommon& shared, const TuneCommand& command) {
     log("tune: bootstrap at %" PRIu64 " over %s, each searched first for %u calls\n", scope.probe, names.c_str(),
         BOOTSTRAP_ROUNDS * command.halving.roundCalls);
   } else if (command.bootstrap) {
-    log("tune: bootstrap at %" PRIu64 " once the workload is covered and every FFT within %.0f%% of the fastest has "
-        "been read at the built-in defaults: each type's fastest there is searched first, for %u calls\n",
-        scope.probe, 100 * CONTEND_MARGIN, BOOTSTRAP_ROUNDS * command.halving.roundCalls);
+    std::string const within = std::isinf(command.exploration.sweepMargin)
+      ? std::string{"every FFT"}
+      : "every FFT within " + marginText(command.exploration.sweepMargin) + " of the fastest";
+    log("tune: bootstrap at %" PRIu64 " once the workload is covered and %s has been read at the built-in defaults: "
+        "each type's fastest there is searched first, for %u calls\n",
+        scope.probe, within.c_str(), BOOTSTRAP_ROUNDS * command.halving.roundCalls);
   }
   reportSearch(env, scope, command.strategy, false);
 

@@ -58,8 +58,8 @@ A run goes through these stages, though it interleaves them and you do not need 
 3. **Coverage.** Make sure every exponent in the workload has an FFT published for it: where none has, time the
    FFT most likely to be cheapest there (its default variant first) and read its rounding error. This runs before
    anything else, so a short run still covers the whole workload.
-4. **Defaults sweep.** Time every FFT within 10% of the fastest one somewhere in the workload at PRPLL's built-in
-   defaults, those at the probe exponent first. This is the untuned map: what each of them costs before any option is
+4. **Defaults sweep.** Time every FFT within `sweepMargin=` (10% by default) of the fastest one somewhere in the
+   workload at PRPLL's built-in defaults, those at the probe exponent first. This is the untuned map: what each of them costs before any option is
    changed, which is what every later gain is a gain over, and what the dashboard compares against. An FFT not timed
    yet that is expected to be faster than anything measured is timed first, and the FFTs it may put out of reach wait
    on it: if it is as fast as expected they are never timed, and if not they join the sweep, whose count then grows.
@@ -83,15 +83,18 @@ A run goes through these stages, though it interleaves them and you do not need 
    time. FFTs further off the pace are timed at their defaults as they become worth it.
 7. **First looks.** Every FFT of a type worth exploring gets a few measurements of search of its own, whatever the
    halvings and the expected gains make of it: `lookCalls=` calls (16 by default), starting with the default options
-   and then in its search's own order, after a timing at its defaults if it has none. A type is worth exploring when its
+   and then in its search's own order. The looks begin once the lines sweep (stage 8) is done, so each FFT has been
+   timed under the default options first; one the default options do not touch is timed at its defaults instead. A type is worth exploring when its
    fastest FFT is within `typeMargin=` (100% by default) of the fastest of all, untuned or as tuned now, so on a card
    with slow FP64 the FP64 FFTs are left alone, but every FFT of the types that run the workload is tried. The halvings
    and the search after them spend their time on FFTs near the fastest, and an FFT that looks slow untuned may have
    gains its defaults do not show; this is where it gets the chance to show them. FFTs nearest the fastest go first,
    one at a time.
 8. **Lines sweeps.** Once the bootstrap is complete, and again each time a halving ends if the default options have
-   changed since the last sweep, every FFT a first look covers is timed under the default options as they stood when
-   the sweep began, and where it has found options of its own, under those with the default options laid over them.
+   changed since the last sweep, every FFT of a type worth exploring, timed before or not, is timed under the default
+   options as they stood when the sweep began, and where it has found options of its own, under those with the
+   default options laid over them. This is the map of the workload with what tuning has found so far: on a card where
+   a few hundred FFTs serve the workload a sweep takes a few hours, and with `typeMargin=all` a day or more.
    FFTs of one type tend to like the same options, so this carries what the search found on one FFT to every other
    at the cost of a measurement each. A halving after the first waits for the sweep, so that it starts from the FFTs as
    the default options leave them.
@@ -370,9 +373,14 @@ every FFT of the type to have a first look and be read in the lines sweeps. `all
 once one of its FFTs has been timed, which the bootstrap does for every type first. Default `100%`: a type is left
 out only once its best is more than twice as slow as the fastest.
 
-**`linesSweep=0|1`**: whether every FFT a first look covers is timed under the default options once the bootstrap is
-complete, and again each time a halving ends if they have changed (stage 8 above). Each sweep is recorded in the
+**`linesSweep=0|1`**: whether every FFT of a type worth exploring is timed under the default options once the
+bootstrap is complete, and again each time a halving ends if they have changed (stage 8 above). Each sweep is recorded in the
 database, so an interrupted run carries on with the one it was in. Default `1`.
+
+**`sweepMargin=<P>%|all`**: how far behind the fastest FFT an FFT may be, timed or as expected, to be timed at the
+built-in defaults in the defaults sweep (stage 4 above). `all` times every FFT that serves the workload before the
+bootstrap begins, which on a wide workload takes many hours. Default `10%`: the lines sweeps time the rest under the
+default options, which says more of what an FFT costs once tuned.
 
 ### Output
 

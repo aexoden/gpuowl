@@ -112,6 +112,11 @@ inline constexpr double TYPE_MARGIN = 1.0;
 // entry anywhere near the front.
 inline constexpr double LOOK_MARGIN = 0.5;
 
+// How far behind the fastest an entry may be and still be read at the built-in defaults before the bootstrap.  Narrow:
+// that sweep is there to find where each type starts from, and the lines sweep reads the rest under the lines, which
+// says more of what an entry will cost tuned.
+inline constexpr double SWEEP_MARGIN = 0.10;
+
 struct Exploration {
   // 0: no first looks.
   u32 lookCalls = 0;
@@ -123,6 +128,9 @@ struct Exploration {
 
   // Against its best reading, or where it has none, its prior.
   double lookMargin = LOOK_MARGIN;
+
+  // Against its cheapest reading, or where it has none, its prior.
+  double sweepMargin = SWEEP_MARGIN;
 };
 
 // "hybrid", "single", "groups", or "permute:" followed by tunable keys joined by '+'.  Throws a message for anything

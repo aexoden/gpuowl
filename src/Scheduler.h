@@ -201,8 +201,8 @@ struct Item {
   // A baseline's: run by rule, because it may serve an exponent the workload weighs that nothing measured serves.
   bool cover = false;
 
-  // A baseline's: run by rule, at the built-in defaults, because the entry is within CONTEND_MARGIN of what
-  // production runs somewhere the workload weighs.
+  // A baseline's: run by rule, at the built-in defaults, because the entry is within Exploration::sweepMargin of
+  // what production runs somewhere the workload weighs.
   bool sweep = false;
 
   // A probe's, a combo's or a restart's: a step of a halving's round, run by rule ahead of anything else.
@@ -427,12 +427,13 @@ private:
   [[nodiscard]] bool looksAt(size_t i, const Standing& standing, const std::vector<std::optional<double>>& fastest,
                              const Objective& objective) const;
 
-  // The lines sweep: under the lines the env's latest `lines` row recorded, each entry of `entries` with a reading is
-  // read once, and where its best set is not the built-in defaults, that set with the lines laid over it, each until a
-  // row of it concludes or fails.  Where its search has a step of that very configuration begun, the step is resumed.
+  // The lines sweep: under the lines the env's latest `lines` row recorded, each entry of `entries` is read once, and
+  // where it has a best set other than the built-in defaults, that set with the lines laid over it, each until a row
+  // of it concludes or fails.  One with no reading yet is read under the lines, priced by its prior.  Where its search
+  // has a step of that very configuration begun, the step is resumed.
   [[nodiscard]] std::vector<Item> linesSweepItems(const TuneDB& db, u32 env, const SearchContext& context,
                                                   const std::map<EntryKey, std::vector<Reading>>& readings,
-                                                  const std::vector<size_t>& entries) const;
+                                                  const std::vector<size_t>& entries, const Objective& objective) const;
 
   // The calls of search each entry has had: every call at an option set other than the built-in defaults.
   [[nodiscard]] std::vector<u64> searchCalls(const TuneDB& db, u32 env) const;
@@ -477,6 +478,7 @@ private:
   // How many entries the last defaults sweep found within the margin or already read there, and how many it still owed.
   mutable u32 sweepWithin_ = 0;
   mutable u32 sweepOwed_ = 0;
+  mutable u32 linesWithin_ = 0;
 
   // How many entries the last ranking found near enough the fastest for a first look, and of those, how many still owed
   // one; and how many entries a reading of the lines sweep.

@@ -2595,7 +2595,7 @@ TEST(a_lines_sweep_reads_every_entry_under_the_lines_it_recorded_once) {
   Objective const assumed{f.db, f.env, scope(), Gating::Assumed};
   Phase const phase =
     scheduler.phase(scheduler.bootstrapState(f.db, f.env), scheduler.admissible(f.db, f.env, assumed), assumed, 0);
-  CHECK(phase.text.find("lines sweep: 1 FFT still to be read under the default lines") != std::string::npos);
+  CHECK(phase.text.find("lines sweep: 1 of 2 FFTs read under the default lines") != std::string::npos);
   concludedAt(f, "512:15:512:101", {{"WMUL", "4"}}, 1500);
   CHECK(relining(f, scheduler) == std::vector<std::string>{"512:15:512:101 WMUL=4,ZEROHACK_W=0"});
   concludedAt(f, "512:15:512:101", {{"WMUL", "4"}, {"ZEROHACK_W", "0"}}, 1490);
@@ -2610,6 +2610,66 @@ TEST(a_lines_sweep_reads_every_entry_under_the_lines_it_recorded_once) {
   // Off, nothing is recorded or owed.
   Scheduler const off = explorer(entries, {.lookCalls = 0, .typeMargin = 1.0, .linesSweep = false});
   CHECK(!off.linesDue(f.db, f.env, off.bootstrapState(f.db, f.env), off.lines(f.db, f.env), true));
+}
+
+TEST(a_lines_sweep_reads_every_entry_of_a_type_worth_exploring_under_the_lines_and_the_looks_wait_for_it) {
+  // As above, with 512:15:512:110 never read: its reading at the built-in defaults failed, so the defaults sweep has
+  // nothing more for it.  Its type is worth exploring, so the lines sweep reads it under the lines.
+  Fixture f;
+  concludedAt(f, "3:1K:8:512:202", {}, 2100);
+  concludedAt(f, "3:1K:8:512:202", {{"WMUL", "4"}}, 2000);
+  concludedAt(f, "512:15:512:101", {}, 1460);
+  concludedAt(f, "512:15:512:101", {{"ZEROHACK_W", "0"}}, 1450);
+  failedAt(f, "512:15:512:110");
+  std::vector<Baseline> const entries = only({"512:15:512:101", "512:15:512:110", "3:1K:8:512:202"});
+  Scheduler const scheduler = explorer(
+    entries,
+    {.lookCalls = 64, .typeMargin = 1.0, .linesSweep = true, .lookMargin = std::numeric_limits<double>::infinity()});
+  CHECK(sweepLines(f, scheduler));
+
+  std::vector<std::string> const owed{"512:15:512:101 WMUL=4,ZEROHACK_W=0", "512:15:512:101 WMUL=4",
+                                      "512:15:512:110 WMUL=4"};
+  CHECK(relining(f, scheduler) == owed);
+  Objective const assumed{f.db, f.env, scope(), Gating::Assumed};
+  std::vector<Item> const items = scheduler.admissible(f.db, f.env, assumed);
+  CHECK(!items.empty() && std::ranges::all_of(items, &Item::linesSweep));
+  Phase const phase = scheduler.phase(scheduler.bootstrapState(f.db, f.env), items, assumed, 0);
+  CHECK(phase.text.find("lines sweep: 1 of 3 FFTs read under the default lines") != std::string::npos);
+  CHECK(phase.text.find("first looks") == std::string::npos);
+
+  concludedAt(f, "512:15:512:101", {{"WMUL", "4"}}, 1500);
+  concludedAt(f, "512:15:512:101", {{"WMUL", "4"}, {"ZEROHACK_W", "0"}}, 1490);
+  CHECK(relining(f, scheduler) == std::vector<std::string>{"512:15:512:110 WMUL=4"});
+  concludedAt(f, "512:15:512:110", {{"WMUL", "4"}}, 1470);
+  CHECK(relining(f, scheduler).empty());
+
+  // The looks then search on from what the sweep read, none of them at the built-in defaults.
+  std::vector<Item> const after = scheduler.admissible(f.db, f.env, assumed);
+  CHECK(!after.empty() && std::ranges::all_of(after, &Item::look));
+  CHECK(std::ranges::none_of(after, [](const Item& i) { return i.kind == ItemKind::Baseline; }));
+}
+
+TEST(the_defaults_sweep_reads_as_far_behind_the_fastest_as_its_margin_says) {
+  // 512:16:512:101 has a reading 30% behind 512:15:512:212, under options only: it is read at the built-in defaults
+  // once the margin takes it in.
+  Fixture f;
+  concludedAt(f, "512:15:512:212", {}, 1000);
+  concludedAt(f, "512:16:512:101", {{"ZEROHACK_W", "0"}}, 1300);
+  std::vector<Baseline> entries;
+  for (const Baseline& b : baselines(nvidia(), scope(), {FFTShape{"512:15:512"}, FFTShape{"512:16:512"}})) {
+    if (b.band.contains(118'063'003) && (b.fft.spec() == "512:15:512:212" || b.fft.spec() == "512:16:512:101")) {
+      entries.push_back(b);
+    }
+  }
+  CHECK_EQ(entries.size(), size_t{2});
+  auto const sweeper = [&](double margin) {
+    return explorer(entries, {.lookCalls = 0, .typeMargin = 1.0, .linesSweep = false, .sweepMargin = margin});
+  };
+
+  CHECK(sweptBy(f, sweeper(SWEEP_MARGIN)).empty());
+  CHECK(sweptBy(f, sweeper(0.25)).empty());
+  CHECK(sweptBy(f, sweeper(0.35)) == std::set<std::string>{"512:16:512:101"});
+  CHECK(sweptBy(f, sweeper(std::numeric_limits<double>::infinity())) == std::set<std::string>{"512:16:512:101"});
 }
 
 TEST(every_halving_waits_for_the_lines_sweep_and_one_is_begun_for_lines_that_moved_since_the_last) {

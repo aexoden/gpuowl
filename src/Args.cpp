@@ -295,8 +295,10 @@ selection.txt, which a normal run in the same directory (or its -pool) reads.  T
                          typeMargin=<P>%%|all how far behind the fastest an FFT type may be and be explored [100%%]
                          lookMargin=<P>%%|all how far behind the fastest, under the default lines, an FFT of such a
                                              type may be and have its first look [50%%]
-                         linesSweep=0|1      read every such FFT under the default lines after the bootstrap and
-                                             between halvings [1]
+                         linesSweep=0|1      read every FFT of such a type under the default lines after the
+                                             bootstrap and between halvings [1]
+                         sweepMargin=<P>%%|all how far behind the fastest an FFT may be and be read at the built-in
+                                             defaults before the bootstrap [10%%]
                          tunetxt=0|1         also write tune.txt, for binaries that do not read selection.txt [0]
                          dashboard=0|1       a full-screen view of the run on a terminal; the log file is unchanged [0]
                      Subcommands that open no device (env=<id> picks a database env where there is more than one):
