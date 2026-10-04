@@ -176,7 +176,10 @@ std::optional<FFTConfig> parseFft(std::string_view spec) {
   if (*width != 256 && *width != 512 && *width != 1024 && *width != 2048 && *width != 4096) { return {}; }
   if (*middle < 2 || *middle > 16) { return {}; }
   if (*height != 256 && *height != 512 && *height != 1024 && *height != 2048) { return {}; }
-  if (type != FFT64 && type != FFT32 && (*middle & (*middle - 1))) { return {}; }
+  if (type != FFT64 && type != FFT32 && (*middle & (*middle - 1)) &&
+      !(FFTShape::pfaMiddle(*middle) && FFTShape::pfaType(type))) {
+    return {};
+  }
 
   u32 variant = LAST_VARIANT;
   if (parts.size() >= 4) {

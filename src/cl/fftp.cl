@@ -100,7 +100,7 @@ KERNEL(G_W) fftP(P(GF31) out, CP(Word2) in, TrigGF31 smallTrig) {
   u32 word_index = (me * BIG_HEIGHT + g) * 2;
 
   // Weight is 2^[ceil(qj / n) - qj/n] where j is the word index, q is the Mersenne exponent, and n is the number of words.
-  const u32 log2_root_two = (u32) (((1ULL << 30) / NWORDS) % 31);
+  const u32 log2_root_two = LOG2_ROOT_TWO31;
   const u32 bigword_weight_shift = (NWORDS - EXP % NWORDS) * log2_root_two % 31;
   const u32 bigword_weight_shift_minus1 = (bigword_weight_shift + 30) % 31;
 
@@ -118,6 +118,9 @@ KERNEL(G_W) fftP(P(GF31) out, CP(Word2) in, TrigGF31 smallTrig) {
 
   for (u32 i = 0; i < NW; ++i) {
     u32 p = G_W * i + me;
+#if PFA
+    combo_counter = pfaCombo(p, g, 31, bigword_weight_shift_minus1, 0);
+#endif
     // Generate the second weight shift
     u32 weight_shift0 = weight_shift;
     combo_counter += combo_step;
@@ -159,7 +162,7 @@ KERNEL(G_W) fftP(P(GF61) out, CP(Word2) in, TrigGF61 smallTrig) {
   // Weight is 2^[ceil(qj / n) - qj/n] where j is the word index, q is the Mersenne exponent, and n is the number of words.
   // Weights can be applied with shifts because 2 is the 60th root GF61.
   // Let s be the shift amount for word 1.  The shift amount for word x is ceil(x * (s - 1) + num_big_words_less_than_x) % 61.
-  const u32 log2_root_two = (u32) (((1ULL << 60) / NWORDS) % 61);
+  const u32 log2_root_two = LOG2_ROOT_TWO61;
   const u32 bigword_weight_shift = (NWORDS - EXP % NWORDS) * log2_root_two % 61;
   const u32 bigword_weight_shift_minus1 = (bigword_weight_shift + 60) % 61;
 
@@ -177,6 +180,9 @@ KERNEL(G_W) fftP(P(GF61) out, CP(Word2) in, TrigGF61 smallTrig) {
 
   for (u32 i = 0; i < NW; ++i) {
     u32 p = G_W * i + me;
+#if PFA
+    combo_counter = pfaCombo(p, g, 61, bigword_weight_shift_minus1, 0);
+#endif
     // Generate the second weight shift
     u32 weight_shift0 = weight_shift;
     combo_counter += combo_step;
@@ -224,7 +230,7 @@ KERNEL(G_W) fftP(P(T2) out, CP(Word2) in, Trig smallTrig, BigTab THREAD_WEIGHTS)
 
   // Weight is 2^[ceil(qj / n) - qj/n] where j is the word index, q is the Mersenne exponent, and n is the number of words.
   // Let s be the shift amount for word 1.  The shift amount for word x is ceil(x * (s - 1) + num_big_words_less_than_x) % 31.
-  const u32 log2_root_two = (u32) (((1ULL << 30) / NWORDS) % 31);
+  const u32 log2_root_two = LOG2_ROOT_TWO31;
   const u32 bigword_weight_shift = (NWORDS - EXP % NWORDS) * log2_root_two % 31;
   const u32 bigword_weight_shift_minus1 = (bigword_weight_shift + 30) % 31;
 
@@ -242,9 +248,15 @@ KERNEL(G_W) fftP(P(T2) out, CP(Word2) in, Trig smallTrig, BigTab THREAD_WEIGHTS)
 
   for (u32 i = 0; i < NW; ++i) {
     u32 p = G_W * i + me;
+#if PFA
+    combo_counter = pfaCombo(p, g, 31, bigword_weight_shift_minus1, 0);
+#endif
     // Generate the FP64 weights and the second GF31 weight shift
     T w1 = i == 0 ? base : optionalHalve(fancyMul(base, fweightStep(i)));
     T w2 = optionalHalve(fancyMul(w1, WEIGHT_STEP));
+#if PFA
+    { T2 pw0, pw1; pfaWeights(p, g, THREAD_WEIGHTS, &pw0, &pw1); w1 = pw0.y; w2 = pw1.y; }
+#endif
     u32 weight_shift0 = weight_shift;
     combo_counter += combo_step;
     if (weight_shift > 31) weight_shift -= 31;
@@ -299,7 +311,7 @@ KERNEL(G_W) fftP(P(T2) out, CP(Word2) in, Trig smallTrig, BigTabFP32 THREAD_WEIG
 
   // Weight is 2^[ceil(qj / n) - qj/n] where j is the word index, q is the Mersenne exponent, and n is the number of words.
   // Let s be the shift amount for word 1.  The shift amount for word x is ceil(x * (s - 1) + num_big_words_less_than_x) % 31.
-  const u32 log2_root_two = (u32) (((1ULL << 30) / NWORDS) % 31);
+  const u32 log2_root_two = LOG2_ROOT_TWO31;
   const u32 bigword_weight_shift = (NWORDS - EXP % NWORDS) * log2_root_two % 31;
   const u32 bigword_weight_shift_minus1 = (bigword_weight_shift + 30) % 31;
 
@@ -317,9 +329,15 @@ KERNEL(G_W) fftP(P(T2) out, CP(Word2) in, Trig smallTrig, BigTabFP32 THREAD_WEIG
 
   for (u32 i = 0; i < NW; ++i) {
     u32 p = G_W * i + me;
+#if PFA
+    combo_counter = pfaCombo(p, g, 31, bigword_weight_shift_minus1, 0);
+#endif
     // Generate the FP32 weights and the second GF31 weight shift
     F w1 = i == 0 ? base : optionalHalve(fancyMul(base, fweightStep(i)), frac_bits > base_frac_bits);
     F w2 = optionalHalve(fancyMul(w1, WEIGHT_STEP), frac_bits + FRAC_BPW_HI > FRAC_BPW_HI);
+#if PFA
+    { F2 pw0, pw1; pfaWeights(p, g, THREAD_WEIGHTS, &pw0, &pw1); w1 = pw0.y; w2 = pw1.y; }
+#endif
     u32 weight_shift0 = weight_shift;
     combo_counter += combo_step;
     if (weight_shift > 31) weight_shift -= 31;
@@ -375,7 +393,7 @@ KERNEL(G_W) fftP(P(T2) out, CP(Word2) in, Trig smallTrig, BigTabFP32 THREAD_WEIG
 
   // Weight is 2^[ceil(qj / n) - qj/n] where j is the word index, q is the Mersenne exponent, and n is the number of words.
   // Let s be the shift amount for word 1.  The shift amount for word x is ceil(x * (s - 1) + num_big_words_less_than_x) % 61.
-  const u32 log2_root_two = (u32) (((1ULL << 60) / NWORDS) % 61);
+  const u32 log2_root_two = LOG2_ROOT_TWO61;
   const u32 bigword_weight_shift = (NWORDS - EXP % NWORDS) * log2_root_two % 61;
   const u32 bigword_weight_shift_minus1 = (bigword_weight_shift + 60) % 61;
 
@@ -393,9 +411,15 @@ KERNEL(G_W) fftP(P(T2) out, CP(Word2) in, Trig smallTrig, BigTabFP32 THREAD_WEIG
 
   for (u32 i = 0; i < NW; ++i) {
     u32 p = G_W * i + me;
+#if PFA
+    combo_counter = pfaCombo(p, g, 61, bigword_weight_shift_minus1, 0);
+#endif
     // Generate the FP32 weights and the second GF61 weight shift
     F w1 = i == 0 ? base : optionalHalve(fancyMul(base, fweightStep(i)), frac_bits > base_frac_bits);
     F w2 = optionalHalve(fancyMul(w1, WEIGHT_STEP), frac_bits + FRAC_BPW_HI > FRAC_BPW_HI);
+#if PFA
+    { F2 pw0, pw1; pfaWeights(p, g, THREAD_WEIGHTS, &pw0, &pw1); w1 = pw0.y; w2 = pw1.y; }
+#endif
     u32 weight_shift0 = weight_shift;
     combo_counter += combo_step;
     if (weight_shift > 61) weight_shift -= 61;
@@ -446,10 +470,10 @@ KERNEL(G_W) fftP(P(T2) out, CP(Word2) in, Trig smallTrig) {
   // Weight is 2^[ceil(qj / n) - qj/n] where j is the word index, q is the Mersenne exponent, and n is the number of words.
   // Weights can be applied with shifts because 2 is the 60th root GF61.
   // Let s be the shift amount for word 1.  The shift amount for word x is ceil(x * (s - 1) + num_big_words_less_than_x) % 61.
-  const u32 m31_log2_root_two = (u32) (((1ULL << 30) / NWORDS) % 31);
+  const u32 m31_log2_root_two = LOG2_ROOT_TWO31;
   const u32 m31_bigword_weight_shift = (NWORDS - EXP % NWORDS) * m31_log2_root_two % 31;
   const u32 m31_bigword_weight_shift_minus1 = (m31_bigword_weight_shift + 30) % 31;
-  const u32 m61_log2_root_two = (u32) (((1ULL << 60) / NWORDS) % 61);
+  const u32 m61_log2_root_two = LOG2_ROOT_TWO61;
   const u32 m61_bigword_weight_shift = (NWORDS - EXP % NWORDS) * m61_log2_root_two % 61;
   const u32 m61_bigword_weight_shift_minus1 = (m61_bigword_weight_shift + 60) % 61;
 
@@ -473,6 +497,10 @@ KERNEL(G_W) fftP(P(T2) out, CP(Word2) in, Trig smallTrig) {
 
   for (u32 i = 0; i < NW; ++i) {
     u32 p = G_W * i + me;
+#if PFA
+    m31_combo_counter = pfaCombo(p, g, 31, m31_bigword_weight_shift_minus1, 0);
+    m61_combo_counter = pfaCombo(p, g, 61, m61_bigword_weight_shift_minus1, 0);
+#endif
     // Generate the second weight shifts
     u32 m31_weight_shift0 = m31_weight_shift;
     m31_combo_counter += m31_combo_step;
@@ -540,10 +568,10 @@ KERNEL(G_W) fftP(P(T2) out, CP(Word2) in, Trig smallTrig, BigTabFP32 THREAD_WEIG
   // Weight is 2^[ceil(qj / n) - qj/n] where j is the word index, q is the Mersenne exponent, and n is the number of words.
   // Weights can be applied with shifts because 2 is the 60th root GF61.
   // Let s be the shift amount for word 1.  The shift amount for word x is ceil(x * (s - 1) + num_big_words_less_than_x) % 61.
-  const u32 m31_log2_root_two = (u32) (((1ULL << 30) / NWORDS) % 31);
+  const u32 m31_log2_root_two = LOG2_ROOT_TWO31;
   const u32 m31_bigword_weight_shift = (NWORDS - EXP % NWORDS) * m31_log2_root_two % 31;
   const u32 m31_bigword_weight_shift_minus1 = (m31_bigword_weight_shift + 30) % 31;
-  const u32 m61_log2_root_two = (u32) (((1ULL << 60) / NWORDS) % 61);
+  const u32 m61_log2_root_two = LOG2_ROOT_TWO61;
   const u32 m61_bigword_weight_shift = (NWORDS - EXP % NWORDS) * m61_log2_root_two % 61;
   const u32 m61_bigword_weight_shift_minus1 = (m61_bigword_weight_shift + 60) % 61;
 
@@ -567,9 +595,16 @@ KERNEL(G_W) fftP(P(T2) out, CP(Word2) in, Trig smallTrig, BigTabFP32 THREAD_WEIG
 
   for (u32 i = 0; i < NW; ++i) {
     u32 p = G_W * i + me;
+#if PFA
+    m31_combo_counter = pfaCombo(p, g, 31, m31_bigword_weight_shift_minus1, 0);
+    m61_combo_counter = pfaCombo(p, g, 61, m61_bigword_weight_shift_minus1, 0);
+#endif
     // Generate the FP32 weights and the second GF31 and GF61 weight shift
     F w1 = i == 0 ? base : optionalHalve(fancyMul(base, fweightStep(i)), frac_bits > base_frac_bits);
     F w2 = optionalHalve(fancyMul(w1, WEIGHT_STEP), frac_bits + FRAC_BPW_HI > FRAC_BPW_HI);
+#if PFA
+    { F2 pw0, pw1; pfaWeights(p, g, THREAD_WEIGHTS, &pw0, &pw1); w1 = pw0.y; w2 = pw1.y; }
+#endif
     u32 m31_weight_shift0 = m31_weight_shift;
     m31_combo_counter += m31_combo_step;
     m31_weight_shift = adjust_m31_weight_shift(m31_weight_shift);

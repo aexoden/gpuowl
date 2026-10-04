@@ -96,7 +96,26 @@ Weights genWeights(FFTConfig fft, u64 E, u32 W, u32 H, u32 nW, bool nvidiaGpu) {
   vector<double> weightsConstIF;
   vector<double> weightsIF;
 
-  if (fft.FFT_FP64) {
+  // PFA hybrids (see pfaWeights in weight.cl): the weights of word 2 * x * BH for x < W (scaled as the per-thread weights below),
+  // then those of word 2 * (b + L * r) minus one at W + b + BH * r, for the R rows of L = W * BH pairs.  The weight functions take
+  // the word number k as "line" k / 2 of column 0.
+  bool const pfa = fft.shape.isPfa();
+  u32 const pfaR = fft.shape.pfaRadix(), pfaBH = H / pfaR, pfaL = W * pfaBH;
+  auto pfaK = [&](u32 i) { return i < W ? i * pfaBH : i - W - (i - W) / pfaBH * pfaBH + (i - W) / pfaBH * pfaL; };  // word k / 2 of entry i
+
+  if (fft.FFT_FP64 && pfa) {
+    for (u32 i = 0; i < W; ++i) {
+      weightsIF.push_back(2 * boundUnderOne(invWeight(N, E, H, pfaK(i), 0, 0)));
+      weightsIF.push_back(2 * weight(N, E, H, pfaK(i), 0, 0));
+    }
+    for (u32 i = W; i < W + H; ++i) {
+      weightsIF.push_back(invWeightM1(N, E, H, pfaK(i), 0, 0));
+      weightsIF.push_back(weightM1(N, E, H, pfaK(i), 0, 0));
+    }
+    // Unused with PFA, but the stock weight code is still compiled and reads it
+    if (nvidiaGpu) { weightsConstIF.resize(2 * (64 + H / 64 + 1)); }
+  }
+  else if (fft.FFT_FP64) {
     // Inverse + Forward
     for (u32 thread = 0; thread < groupWidth; ++thread) {
       auto iw = invWeight(N, E, H, 0, thread, 0);
@@ -128,6 +147,16 @@ Weights genWeights(FFTConfig fft, u64 E, u32 W, u32 H, u32 nW, bool nvidiaGpu) {
   else if (fft.FFT_FP32) {
     vector<float> weightsConstIF32;
     vector<float> weightsIF32;
+    if (pfa) {
+      for (u32 i = 0; i < W; ++i) {
+        weightsIF32.push_back(invWeight32(N, E, H, pfaK(i), 0, 0) * 281474976710656.0f);
+        weightsIF32.push_back(weight32(N, E, H, pfaK(i), 0, 0) * 0.000000059604644775390625f);
+      }
+      for (u32 i = W; i < W + H; ++i) {
+        weightsIF32.push_back(invWeightM132(N, E, H, pfaK(i), 0, 0));
+        weightsIF32.push_back(weightM132(N, E, H, pfaK(i), 0, 0));
+      }
+    } else {
     // Inverse + Forward
     for (u32 thread = 0; thread < groupWidth; ++thread) {
       auto iw = invWeight32(N, E, H, 0, thread, 0) ;
@@ -143,6 +172,7 @@ Weights genWeights(FFTConfig fft, u64 E, u32 W, u32 H, u32 nW, bool nvidiaGpu) {
     for (u32 gy = 0; gy < H; ++gy) {
       weightsIF32.push_back(invWeightM132(N, E, H, gy, 0, 0));
       weightsIF32.push_back(weightM132(N, E, H, gy, 0, 0));
+    }
     }
 
     // nVidia GPUs have a fast constant cache that only works on buffer sizes less than 64KB.  Create two smaller buffers
@@ -240,8 +270,11 @@ ROE_SIZE = 100000,
 CARRY_SIZE = 100000
 };
 
+// Any setting adjusted here for this FFT or device (INPLACE, TAIL_KERNELS, WMUL, LDSPAD_W, L2_STRIPING, MULTI_Q, GRAPHS...) is changed
+// only in this Gpu's own copy of args and in the out-parameters.
 string clDefines(Args& args, cl_device_id id, FFTConfig fft, tune::TestKind kind, const vector<KeyVal>& extraConf, u64 E, bool doLog,
-                 bool &tail_single_wide, bool &tail_single_kernel, u32 &in_place, u32 &pad_size, u32 &wmul) {
+                 bool &tail_single_wide, bool &tail_single_kernel, u32 &in_place, u32 &pad_size, u32 &wmul,
+                 u32 &multi_q, u32 &l2_striping, bool &graphs) {
   // Resolve this FFT's options
   tune::resolveInto(args, fft, kind, extraConf);
   map<string, string>& config = args.flags;
@@ -353,11 +386,11 @@ string clDefines(Args& args, cl_device_id id, FFTConfig fft, tune::TestKind kind
   }
 
   // MULTI_Q is not allowed when profiling with -time
-  if (args.profile && args.value("MULTI_Q", 0)) {
-    args.flags["MULTI_Q"] = to_string(0);
-    // config was copied out of args.flags above, so it needs the same treatment: it is what the kernels are
-    // compiled from, and the L2_STRIPING limit a few lines below reads args.  Leaving config alone builds
-    // kernels that still believe in the second queue, with an L2_STRIPING allowed only without it.
+  auto configValue = [&config](const char* key, u32 valNotFound) {
+    auto it = config.find(key);
+    return it == config.end() ? valNotFound : u32(atoi(it->second.c_str()));
+  };
+  if (args.profile && configValue("MULTI_Q", 0)) {
     config["MULTI_Q"] = to_string(0);
     log("MULTI_Q is disabled when profiling with -time.\n");
   }
@@ -378,19 +411,35 @@ string clDefines(Args& args, cl_device_id id, FFTConfig fft, tune::TestKind kind
   // kernels without per-kernel events, and the events recorded while capturing the graph never execute, so the
   // profile would show those kernels -- most of an iteration -- as one call of ~0 ns.
   // (Only the CUDA build has graphs.  Leave the OpenCL build's flags alone, or the next Gpu would report GRAPHS as having no effect.)
+  graphs = configValue("GRAPHS", 1);
 #if CUDA_BACKEND
-  if (args.profile && args.value("GRAPHS", 1)) {
-    args.flags["GRAPHS"] = to_string(0);
+  if (args.profile && graphs) {
+    graphs = false;
     log("GRAPHS are disabled when profiling with -time.\n");
   }
 #endif
+
+  // PFA is only implemented for the not-in-place layout
+  if (fft.shape.isPfa() && in_place) {
+    log("NTTs and hybrid FFTs with non-power-of-two MIDDLE factor need INPLACE=0.  Changing to INPLACE=0.\n");
+    in_place = 0;
+    config["INPLACE"] = to_string(0);
+  }
+
+  // The FP side of a PFA hybrid FFT/NTT has more than two special tail lines, which only the two-kernel tails handle
+  if (fft.shape.isPfa() && (fft.FFT_FP64 || fft.FFT_FP32) && tail_single_kernel) {
+    u32 const tailKernels = tail_single_wide ? 1 : 3;
+    log("Hybrid FFTs with non-power-of-two MIDDLE factor need two tail kernels.  Changing to TAIL_KERNELS=%u.\n", tailKernels);
+    tail_single_kernel = false;
+    config["TAIL_KERNELS"] = to_string(tailKernels);
+  }
 
   // L2_STRIPING is not allowed if INPLACE=0.  Maximum L2_STRIPING is WIDTH/64 if MULTI_Q=0 and WIDTH/128 if MULTI_Q=1.
   // Technically, L2_STRIPING of WIDTH/32, MULTI_Q=0 could be allowed but that is just a more complicated way to implement L2_STRIPING=0.
   // Also, WIDTH/64, MULTI_Q=1 could be allowed with some marker/sync code changes but that is very similar to L2_STRIPING=0.
   {
-    u32 l2_striping = args.value("L2_STRIPING", 0);
-    u32 multi_q = args.value("MULTI_Q", 0);
+    l2_striping = configValue("L2_STRIPING", 0);
+    multi_q = configValue("MULTI_Q", 0);
     if (l2_striping && !in_place) {
       config["L2_STRIPING"] = to_string(0);
       log("L2_STRIPING is only allowed if INPLACE=1.  Changing to L2_STRIPING=0.\n");
@@ -408,7 +457,7 @@ string clDefines(Args& args, cl_device_id id, FFTConfig fft, tune::TestKind kind
     // Hermitian partner WIDTH - L2_STRIPING*16 - base_lo, so the number of groups must be even (a multiple of
     // four with MULTI_Q, which further splits them across two queues).  Otherwise whole stripes are never
     // transformed and others are squared twice.  WIDTH/16 is a power of two, so round down to one that divides.
-    l2_striping = args.value("L2_STRIPING", 0);
+    l2_striping = configValue("L2_STRIPING", 0);
     if (l2_striping) {
       u32 const groupsNeeded = multi_q ? 4 : 2;
       u32 valid = l2_striping;
@@ -475,6 +524,51 @@ string clDefines(Args& args, cl_device_id id, FFTConfig fft, tune::TestKind kind
   }
   if (fft.NTT_GF61) {
     defines += toDefine("TAILTGF61", root1GF61(fft.shape.height * 2, 1));
+  }
+  if (fft.shape.isPfa()) {
+    // MIDDLE = R * 2^k as a Good-Thomas transform (see base.cl).  The root of unity of the radix-R comes from pfaRootOfUnity,
+    // as the tail trig tables do (TrigBufCache.cpp).
+    u32 const R = fft.shape.pfaRadix();
+    u32 const rowL = fft.shape.width * fft.shape.height * (fft.shape.middle / R), rowBH = fft.shape.height * (fft.shape.middle / R);
+    auto invModR = [R](u32 a) { for (u32 x = 1; x < R; ++x) { if (a % R * x % R == 1) { return x; } } assert(false); return 0u; };
+    defines += toDefine("PFA", R);
+    defines += toDefine("PFA_LINV", invModR(rowL));
+    defines += toDefine("PFA_BHINV", invModR(rowBH));
+    // For each prime: R^-1 mod q (weights), R^-1 mod p (normalization), the powers of the root w of the radix-R, and for R = 7 and 11
+    // the coefficients (w^m + w^-m) / 2 and (w^m - w^-m) / 2 of the folded DFT
+    for (u32 q : {31u, 61u}) {
+      if ((q == 31 && !fft.NTT_GF31) || (q == 61 && !fft.NTT_GF61)) { continue; }
+      u64 const p = (u64(1) << q) - 1;
+      string const suffix = q == 61 ? "ull" : "u";
+      u64 const w = pfaRootOfUnity(q, R), half = pfaPowMod(q, 2, q - 1);         // 2^-1 = 2^(q-1) mod p
+      string wpow, c, s;
+      for (u32 m = 0; m < R; ++m) {
+        u64 const wm = pfaPowMod(q, w, m), wmi = pfaPowMod(q, w, (R - m) % R);
+        wpow += (m ? "," : "") + to_string(wm) + suffix;
+        c += (m ? "," : "") + to_string(pfaMulMod(q, (wm + wmi) % p, half)) + suffix;
+        s += (m ? "," : "") + to_string(pfaMulMod(q, (wm + p - wmi) % p, half)) + suffix;
+      }
+      defines += toDefine("PFA_RINV" + to_string(q), [&]{ for (u32 x = 1; x < q; ++x) { if (R * x % q == 1) { return x; } } return 0u; }());
+      defines += toDefine("PFA_INVR_" + to_string(q), to_string(pfaPowMod(q, R, p - 2)) + suffix);
+      defines += toDefine("PFA_WPOW" + to_string(q), wpow);
+      defines += toDefine("PFA_C" + to_string(q), c);
+      defines += toDefine("PFA_S" + to_string(q), s);
+    }
+    // The FP side of a hybrid uses the complex root w = e^(2*pi*i/R) (root1's sign convention) with the coefficients cos(2*pi*m/R)
+    // and sin(2*pi*m/R) of its folded DFT
+    if (fft.FFT_FP64 || fft.FFT_FP32) {
+      string cd, sd, cf, sf;
+      for (u32 m = 0; m < R; ++m) {
+        long double const angle = 2 * M_PIl * m / R;
+        char buf[64];
+        snprintf(buf, sizeof(buf), "%#.20Lg", cosl(angle)); cd += (m ? "," : "") + string(buf); cf += (m ? "," : "") + string(buf) + "f";
+        snprintf(buf, sizeof(buf), "%#.20Lg", sinl(angle)); sd += (m ? "," : "") + string(buf); sf += (m ? "," : "") + string(buf) + "f";
+      }
+      defines += toDefine("PFA_COS", cd);
+      defines += toDefine("PFA_SIN", sd);
+      defines += toDefine("PFA_COSF", cf);
+      defines += toDefine("PFA_SINF", sf);
+    }
   }
 
   // Send the FFT/NTT type and booleans that enable/disable code for each possible FP and NTT
@@ -942,75 +1036,87 @@ Gpu::Gpu(GpuCommon s, FFTConfig fft, u64 E, const vector<KeyVal>& extraConf, boo
   useLongCarry{args.carry == CARRY_64},
   queue{*shared.context, args.profile},
       
-  compiler{args, shared.context, clDefines(args, shared.context->deviceId(), fft, kind, extraConf, E, logFftSize, tail_single_wide, tail_single_kernel, in_place, pad_size, wmul)},
+  compiler{args, shared.context, clDefines(args, shared.context->deviceId(), fft, kind, extraConf, E, logFftSize, tail_single_wide, tail_single_kernel, in_place, pad_size, wmul,
+                               multi_q, l2_striping, graphs)},
 
 #define K(name, ...) name(#name, &compiler, profile.make(#name), &queue, __VA_ARGS__)
 
   K(kfftMidIn,             "fftmiddlein.cl",  "fftMiddleIn",  hN / (BIG_H / SMALL_H), kernelDefines(KFP) + numRegisters(MIDIN)),
+// With PFA every row frequency has its own pair of self-paired tail lines, see tailSquareZero
+#define PFA_ROWS (fft.shape.isPfa() ? fft.shape.pfaRadix() : 1u)
+// The FP side of a PFA hybrid pairs the tail rows k3 and R - k3 (see base.cl): tailSquareZero does 2 + (R - 1) / 2 workgroups, the
+// two-kernel tailSquare PFA_FP_TAIL_PAIRS pairs of lines
+#define PFA_FP (fft.shape.isPfa() && (fft.FFT_FP64 || fft.FFT_FP32))
+#define PFA_FP_TW (WIDTH * (fft.shape.middle / fft.shape.pfaRadix()))
+#define PFA_FP_ZERO_THREADS (SMALL_H / nH * (2 + (fft.shape.pfaRadix() - 1) / 2))
+#define PFA_FP_MAIN_THREADS (SMALL_H / nH * (tail_single_wide ? 1 : 2) * (PFA_FP_TW / 2 - 1 + (fft.shape.pfaRadix() - 1) / 2 * (PFA_FP_TW - 1)))
   K(kfftHin,               "ffthin.cl",  "fftHin",  hN / nH, kernelDefines(KFP)),
-  K(ktailSquareZero,       "tailsquare.cl", "tailSquareZero", SMALL_H / nH * 2, kernelDefines(KFP)),
+  K(ktailSquareZero,       "tailsquare.cl", "tailSquareZero", PFA_FP ? PFA_FP_ZERO_THREADS : SMALL_H / nH * 2 * PFA_ROWS, kernelDefines(KFP)),
   K(ktailSquare,           "tailsquare.cl", "tailSquare",
-                                               !tail_single_wide && !tail_single_kernel ? hN / nH - SMALL_H / nH * 2 : // Double-wide tailSquare with two kernels
+                                               PFA_FP ? PFA_FP_MAIN_THREADS :
+                                               !tail_single_wide && !tail_single_kernel ? hN / nH - SMALL_H / nH * 2 * PFA_ROWS : // Double-wide tailSquare with two kernels
                                                !tail_single_wide ? hN / nH :                                           // Double-wide tailSquare with one kernel
-                                               !tail_single_kernel ? hN / nH / 2 - SMALL_H / nH :                      // Single-wide tailSquare with two kernels
+                                               !tail_single_kernel ? hN / nH / 2 - SMALL_H / nH * PFA_ROWS :                      // Single-wide tailSquare with two kernels
                                                hN / nH / 2, kernelDefines(KFP) + numRegisters(TAIL)),              // Single-wide tailSquare with one kernel
-  K(ktailMulZero,          "tailmul.cl", "tailMulZero", SMALL_H / nH * 2, kernelDefines(KFP)),
-  K(ktailMulLowZero,       "tailmul.cl", "tailMulZero", SMALL_H / nH * 2, kernelDefines(KFP) + "-DMUL_LOW=1"),
+  K(ktailMulZero,          "tailmul.cl", "tailMulZero", PFA_FP ? PFA_FP_ZERO_THREADS : SMALL_H / nH * 2 * PFA_ROWS, kernelDefines(KFP)),
+  K(ktailMulLowZero,       "tailmul.cl", "tailMulZero", PFA_FP ? PFA_FP_ZERO_THREADS : SMALL_H / nH * 2 * PFA_ROWS, kernelDefines(KFP) + "-DMUL_LOW=1"),
   K(ktailMul,              "tailmul.cl", "tailMul",
-                                               !tail_single_wide && !tail_single_kernel ? hN / nH - SMALL_H / nH * 2 : // Double-wide tailMul with two kernels
+                                               PFA_FP ? PFA_FP_MAIN_THREADS :
+                                               !tail_single_wide && !tail_single_kernel ? hN / nH - SMALL_H / nH * 2 * PFA_ROWS : // Double-wide tailMul with two kernels
                                                !tail_single_wide ? hN / nH :                                           // Double-wide tailMul with one kernel
-                                               !tail_single_kernel ? hN / nH / 2 - SMALL_H / nH :                      // Single-wide tailMul with two kernels
+                                               !tail_single_kernel ? hN / nH / 2 - SMALL_H / nH * PFA_ROWS :                      // Single-wide tailMul with two kernels
                                                hN / nH / 2, kernelDefines(KFP)),                                       // Single-wide tailMul with one kernel
   K(ktailMulLow,           "tailmul.cl", "tailMul",
-                                               !tail_single_wide && !tail_single_kernel ? hN / nH - SMALL_H / nH * 2 : // Double-wide tailMul with two kernels
+                                               PFA_FP ? PFA_FP_MAIN_THREADS :
+                                               !tail_single_wide && !tail_single_kernel ? hN / nH - SMALL_H / nH * 2 * PFA_ROWS : // Double-wide tailMul with two kernels
                                                !tail_single_wide ? hN / nH :                                           // Double-wide tailMul with one kernel
-                                               !tail_single_kernel ? hN / nH / 2 - SMALL_H / nH :                      // Single-wide tailMul with two kernels
+                                               !tail_single_kernel ? hN / nH / 2 - SMALL_H / nH * PFA_ROWS :                      // Single-wide tailMul with two kernels
                                                hN / nH / 2, kernelDefines(KFP) + "-DMUL_LOW=1"),                       // Single-wide tailMul with one kernel
   K(kfftMidOut,            "fftmiddleout.cl", "fftMiddleOut", hN / (BIG_H / SMALL_H), kernelDefines(KFP) + numRegisters(MIDOUT)),
   K(kfftW,                 "fftw.cl", "fftW", hN / nW, kernelDefines(KFP)),
 
   K(kfftMidInGF31,         "fftmiddlein.cl",  "fftMiddleInGF31",  hN / (BIG_H / SMALL_H), kernelDefines(K31) + numRegisters(MIDIN31)),
   K(kfftHinGF31,           "ffthin.cl",  "fftHinGF31",  hN / nH, kernelDefines(K31)),
-  K(ktailSquareZeroGF31,   "tailsquare.cl", "tailSquareZeroGF31", SMALL_H / nH * 2, kernelDefines(K31)),
+  K(ktailSquareZeroGF31,   "tailsquare.cl", "tailSquareZeroGF31", SMALL_H / nH * 2 * PFA_ROWS, kernelDefines(K31)),
   K(ktailSquareGF31,       "tailsquare.cl", "tailSquareGF31",
-                                               !tail_single_wide && !tail_single_kernel ? hN / nH - SMALL_H / nH * 2 : // Double-wide tailSquare with two kernels
+                                               !tail_single_wide && !tail_single_kernel ? hN / nH - SMALL_H / nH * 2 * PFA_ROWS : // Double-wide tailSquare with two kernels
                                                !tail_single_wide ? hN / nH :                                           // Double-wide tailSquare with one kernel
-                                               !tail_single_kernel ? hN / nH / 2 - SMALL_H / nH :                      // Single-wide tailSquare with two kernels
+                                               !tail_single_kernel ? hN / nH / 2 - SMALL_H / nH * PFA_ROWS :                      // Single-wide tailSquare with two kernels
                                                hN / nH / 2, kernelDefines(K31) + numRegisters(TAIL31)),            // Single-wide tailSquare with one kernel
-  K(ktailMulZeroGF31,      "tailmul.cl", "tailMulZeroGF31", SMALL_H / nH * 2, kernelDefines(K31)),
-  K(ktailMulLowZeroGF31,   "tailmul.cl", "tailMulZeroGF31", SMALL_H / nH * 2, kernelDefines(K31) + "-DMUL_LOW=1"),
+  K(ktailMulZeroGF31,      "tailmul.cl", "tailMulZeroGF31", SMALL_H / nH * 2 * PFA_ROWS, kernelDefines(K31)),
+  K(ktailMulLowZeroGF31,   "tailmul.cl", "tailMulZeroGF31", SMALL_H / nH * 2 * PFA_ROWS, kernelDefines(K31) + "-DMUL_LOW=1"),
   K(ktailMulGF31,          "tailmul.cl", "tailMulGF31",
-                                               !tail_single_wide && !tail_single_kernel ? hN / nH - SMALL_H / nH * 2 : // Double-wide tailMul with two kernels
+                                               !tail_single_wide && !tail_single_kernel ? hN / nH - SMALL_H / nH * 2 * PFA_ROWS : // Double-wide tailMul with two kernels
                                                !tail_single_wide ? hN / nH :                                           // Double-wide tailMul with one kernel
-                                               !tail_single_kernel ? hN / nH / 2 - SMALL_H / nH :                      // Single-wide tailMul with two kernels
+                                               !tail_single_kernel ? hN / nH / 2 - SMALL_H / nH * PFA_ROWS :                      // Single-wide tailMul with two kernels
                                                hN / nH / 2, kernelDefines(K31)),                                       // Single-wide tailMul with one kernel
   K(ktailMulLowGF31,       "tailmul.cl", "tailMulGF31",
-                                               !tail_single_wide && !tail_single_kernel ? hN / nH - SMALL_H / nH * 2 : // Double-wide tailMul with two kernels
+                                               !tail_single_wide && !tail_single_kernel ? hN / nH - SMALL_H / nH * 2 * PFA_ROWS : // Double-wide tailMul with two kernels
                                                !tail_single_wide ? hN / nH :                                           // Double-wide tailMul with one kernel
-                                               !tail_single_kernel ? hN / nH / 2 - SMALL_H / nH :                      // Single-wide tailMul with two kernels
+                                               !tail_single_kernel ? hN / nH / 2 - SMALL_H / nH * PFA_ROWS :                      // Single-wide tailMul with two kernels
                                                hN / nH / 2, kernelDefines(K31) + "-DMUL_LOW=1"),                       // Single-wide tailMul with one kernel
   K(kfftMidOutGF31,        "fftmiddleout.cl", "fftMiddleOutGF31", hN / (BIG_H / SMALL_H), kernelDefines(K31) + numRegisters(MIDOUT31)),
   K(kfftWGF31,             "fftw.cl", "fftWGF31", hN / nW, kernelDefines(K31)),
 
   K(kfftMidInGF61,         "fftmiddlein.cl",  "fftMiddleInGF61",  hN / (BIG_H / SMALL_H), kernelDefines(K61) + numRegisters(MIDIN61)),
   K(kfftHinGF61,           "ffthin.cl",  "fftHinGF61",  hN / nH, kernelDefines(K61)),
-  K(ktailSquareZeroGF61,   "tailsquare.cl", "tailSquareZeroGF61", SMALL_H / nH * 2, kernelDefines(K61)),
+  K(ktailSquareZeroGF61,   "tailsquare.cl", "tailSquareZeroGF61", SMALL_H / nH * 2 * PFA_ROWS, kernelDefines(K61)),
   K(ktailSquareGF61,       "tailsquare.cl", "tailSquareGF61",
-                                               !tail_single_wide && !tail_single_kernel ? hN / nH - SMALL_H / nH * 2 : // Double-wide tailSquare with two kernels
+                                               !tail_single_wide && !tail_single_kernel ? hN / nH - SMALL_H / nH * 2 * PFA_ROWS : // Double-wide tailSquare with two kernels
                                                !tail_single_wide ? hN / nH :                                           // Double-wide tailSquare with one kernel
-                                               !tail_single_kernel ? hN / nH / 2 - SMALL_H / nH :                      // Single-wide tailSquare with two kernels
+                                               !tail_single_kernel ? hN / nH / 2 - SMALL_H / nH * PFA_ROWS :                      // Single-wide tailSquare with two kernels
                                                hN / nH / 2, kernelDefines(K61) + numRegisters(TAIL61)),            // Single-wide tailSquare with one kernel
-  K(ktailMulZeroGF61,      "tailmul.cl", "tailMulZeroGF61", SMALL_H / nH * 2, kernelDefines(K61)),
-  K(ktailMulLowZeroGF61,   "tailmul.cl", "tailMulZeroGF61", SMALL_H / nH * 2, kernelDefines(K61) + "-DMUL_LOW=1"),
+  K(ktailMulZeroGF61,      "tailmul.cl", "tailMulZeroGF61", SMALL_H / nH * 2 * PFA_ROWS, kernelDefines(K61)),
+  K(ktailMulLowZeroGF61,   "tailmul.cl", "tailMulZeroGF61", SMALL_H / nH * 2 * PFA_ROWS, kernelDefines(K61) + "-DMUL_LOW=1"),
   K(ktailMulGF61,          "tailmul.cl", "tailMulGF61",
-                                               !tail_single_wide && !tail_single_kernel ? hN / nH - SMALL_H / nH * 2 : // Double-wide tailMul with two kernels
+                                               !tail_single_wide && !tail_single_kernel ? hN / nH - SMALL_H / nH * 2 * PFA_ROWS : // Double-wide tailMul with two kernels
                                                !tail_single_wide ? hN / nH :                                           // Double-wide tailMul with one kernel
-                                               !tail_single_kernel ? hN / nH / 2 - SMALL_H / nH :                      // Single-wide tailMul with two kernels
+                                               !tail_single_kernel ? hN / nH / 2 - SMALL_H / nH * PFA_ROWS :                      // Single-wide tailMul with two kernels
                                                hN / nH / 2, kernelDefines(K61)),                                       // Single-wide tailMul with one kernel
   K(ktailMulLowGF61,       "tailmul.cl", "tailMulGF61",
-                                               !tail_single_wide && !tail_single_kernel ? hN / nH - SMALL_H / nH * 2 : // Double-wide tailMul with two kernels
+                                               !tail_single_wide && !tail_single_kernel ? hN / nH - SMALL_H / nH * 2 * PFA_ROWS : // Double-wide tailMul with two kernels
                                                !tail_single_wide ? hN / nH :                                           // Double-wide tailMul with one kernel
-                                               !tail_single_kernel ? hN / nH / 2 - SMALL_H / nH :                      // Single-wide tailMul with two kernels
+                                               !tail_single_kernel ? hN / nH / 2 - SMALL_H / nH * PFA_ROWS :                      // Single-wide tailMul with two kernels
                                                hN / nH / 2, kernelDefines(K61) + "-DMUL_LOW=1"),                       // Single-wide tailMul with one kernel
   K(kfftMidOutGF61,        "fftmiddleout.cl", "fftMiddleOutGF61", hN / (BIG_H / SMALL_H), kernelDefines(K61) + numRegisters(MIDOUT61)),
   K(kfftWGF61,             "fftw.cl", "fftWGF61", hN / nW, kernelDefines(K61)),
@@ -1102,7 +1208,12 @@ Gpu::Gpu(GpuCommon s, FFTConfig fft, u64 E, const vector<KeyVal>& extraConf, boo
     throw "FFT size too large";
   }
 
-  useLongCarry = useLongCarry || (bitsPerWord < 10.0);
+  // carryFused computes each pair's carry-out before it knows the carry-in from the previous line, then adds the carry-in to
+  // the pair's low word and leaves that word's excess, about sqrt(N) in size, unnormalized in the high word.  When 2^bpw is not
+  // well above sqrt(N) the inflated words make the next squaring's outputs larger, which inflates the words further, until the
+  // convolution overflows.  On a Titan V this failed up to bpw = log2(N)/2 - 0.2 and showed inflated carries up to
+  // log2(N)/2 - 0.1; a model of the carry scheme (tools/fused_carry_model.py) is back to long carry's magnitudes by log2(N)/2 + 0.5.
+  useLongCarry = useLongCarry || (bitsPerWord < std::max(10.0, 0.5 * log2(double(N)) + 0.5));
 
   if (useLongCarry) { log("Using long carry!\n"); }
 
@@ -1181,12 +1292,12 @@ Gpu::Gpu(GpuCommon s, FFTConfig fft, u64 E, const vector<KeyVal>& extraConf, boo
   }
 
   // Create aux queues.  For now, we only have one auxiliary queue.  We could do more.
-  if (args.value("MULTI_Q", 0)) {
+  if (multi_q) {
     auxQueues.push_back(Queue{*shared.context, args.profile, true});
   }
 
   // Set flag indicating we're going to use CUDA graphs.
-  use_graphs = graph_square[0].isSupported(shared.context->deviceId()) && args.value("GRAPHS", 1);
+  use_graphs = graph_square[0].isSupported(shared.context->deviceId()) && graphs;
 
   // Set L1 cache configuration.  Really we should only do this once rather than once per worker.
   // However, the current way PRPLL is organized would then make this option hard to tune.
@@ -1251,9 +1362,7 @@ void Gpu::replay() {
   // If there are no recorded kernels to replay, we're done
   if (recorded_kernels.size() == 0) return;
 
-  // Get MULTI_Q and L2_STRIPING settings
-  bool multi_q = args.value("MULTI_Q", 0);
-  int l2_striping = args.value("L2_STRIPING", 0);
+  // MULTI_Q and L2_STRIPING settings are this Gpu's (see clDefines), not args'
 
   // In the simplest case, we use one command queue and process one data type at a time.  By processing one data type at a time, we reduce maximum L2 cache used.
   // For example, a 4M GF61+GF31 NTT needs just 32MB L2 cache during GF61 processing of fftMiddleIn, tailSquare, and fftMiddleOut (and only 16MB duing GF31 processing).
@@ -2084,14 +2193,43 @@ void Gpu::writeWords(Buffer<Word>& buf, vector<Word> &words) {
   }
 }
 
+// With PFA (an NTT with an odd MIDDLE factor, see base.cl) the pair transposeOut puts at x * BIG_HEIGHT + line is logical pair pfaPair(x, line).
+// Return, for each such position, the logical pair it holds.
+static vector<u32> pfaPairMap(const FFTShape& shape) {
+  u32 const R = shape.pfaRadix(), W = shape.width, BH = shape.height * shape.middle, RBH = BH / R, L = W * RBH;   // RBH: PFA_BH
+  u32 linv = 1;
+  while (L % R * linv % R != 1) { ++linv; }
+  vector<u32> map(W * BH);
+  for (u32 x = 0; x < W; ++x) {
+    for (u32 g = 0; g < BH; ++g) {
+      u32 const q = x * RBH + g % RBH;
+      map[x * BH + g] = q + L * ((g % R + R - q % R) * linv % R);
+    }
+  }
+  return map;
+}
+
 vector<Word> Gpu::readOut(Buffer<Word> &buf) {
   transpOut(bufAux, buf);
-  return readWords(bufAux);
+  vector<Word> words = readWords(bufAux);
+  if (fft.shape.isPfa()) {
+    vector<u32> const map = pfaPairMap(fft.shape);
+    vector<Word> logical(words.size());
+    for (u32 i = 0; i < map.size(); ++i) { logical[2 * map[i]] = words[2 * i]; logical[2 * map[i] + 1] = words[2 * i + 1]; }
+    words = std::move(logical);
+  }
+  return words;
 }
 
 void Gpu::writeIn(Buffer<Word>& buf, const vector<u32>& words) { writeIn(buf, expandBits(words, N, E)); }
 
 void Gpu::writeIn(Buffer<Word>& buf, vector<Word>&& words) {
+  if (fft.shape.isPfa()) {
+    vector<u32> const map = pfaPairMap(fft.shape);
+    vector<Word> stock(words.size());
+    for (u32 i = 0; i < map.size(); ++i) { stock[2 * i] = words[2 * map[i]]; stock[2 * i + 1] = words[2 * map[i] + 1]; }
+    words = std::move(stock);
+  }
   writeWords(bufAux, words);
   transpIn(buf, bufAux);
 }

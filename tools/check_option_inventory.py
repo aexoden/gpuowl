@@ -45,6 +45,7 @@ IGNORE: Final = {
     "HAS_PTX": "derived in base.cl from the compute capability the host reports",
     "NO_FP64": "whether the device has FP64, decided by the host",
     "AMD_BARRIER_NO_WAIT": "whether an AMD device's barrier waits for LDS, decided by the host",
+    "PFA": "the odd radix of a prime-factor MIDDLE, decided by the host from the shape",
     "TRY_LDS_CARVEOUT": "an environment variable of the CUDA build; Gpu.cpp names it only to say it is not a -use key",
     "M_PI": "a math constant",
     "M_SQRT1_2": "a math constant",

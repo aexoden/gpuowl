@@ -94,7 +94,7 @@ vector<FFTShape> FFTShape::allShapes(u32 sizeFrom, u32 sizeTo) {
     for (u32 const width : {256, 512, 1024, 2048, 4096}) {
       for (u32 const height : {256, 512, 1024, 2048}) {
         for (u32 const middle : {2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16}) {
-          if (type != FFT64 && type != FFT32 && (middle & (middle - 1))) continue;  // Reject non-power-of-two NTTs
+          if (type != FFT64 && type != FFT32 && (middle & (middle - 1)) && !(pfaMiddle(middle) && pfaType(type))) continue;  // Reject unsupported middles in NTTs and hybrid FFTs
           u32 const sz = width * height * middle * 2;
           if (sizeFrom <= sz && sz <= sizeTo) {
             configs.emplace_back(type, width, middle, height);
@@ -149,6 +149,14 @@ FFTShape::FFTShape(enum FFT_TYPES t, u32 w, u32 m, u32 h) :
   string const s = spec();
   if (auto it = BPW.find(s); it != BPW.end()) {
     bpw = it->second;
+  } else if (isPfa()) {
+    // An NTT has no roundoff, so its BPW depends only on its size.  Interpolate in log2(size) between the W:M0:H and
+    // W:2*M0:H shapes of the same type, M0 the largest power of two below MIDDLE.
+    u32 m0 = 1;
+    while (2 * m0 < m) m0 *= 2;
+    FFTShape const lo{t, w, m0, h}, hi{t, w, 2 * m0, h};
+    float const f = float(log2(double(m) / m0));
+    for (u32 j = 0; j < NUM_BPW_ENTRIES; ++j) bpw[j] = lo.bpw[j] + f * (hi.bpw[j] - lo.bpw[j]);
   } else {
     if (height > width) {
       bpw = FFTShape{t, h, m, w}.bpw;
@@ -216,12 +224,14 @@ bool FFTShape::needsLargeCarry(u64 E) const {
 // Return TRUE for "favored" shapes.  That is, those that are most likely to be useful.  To save time in generating bpw data, only these favored
 // shapes have their bpw data pre-computed.  Bpw for non-favored shapes is guessed from the bpw data we do have.  Also. -tune will normally only
 // time favored shapes.  These are the rules for deciding favored shapes:
-//      WIDTH=4K:  HEIGHT>=512, MIDDLE>=9       (2*8 combos)
+//      WIDTH=4K:  HEIGHT>=1K, MIDDLE>=9        (2*8 combos)
+//      WIDTH=2K:  HEIGHT>=1K, MIDDLE>=9        (2*8 combos)
 //      WIDTH=1K:  MIDDLE>=5                    (3*12 combos)
 //      WIDTH=512: MIDDLE>=4                    (2*13 combos)
 //      WIDTH=256: MIDDLE>=1                    (16 combos)
 bool FFTShape::isFavoredShape() const {
-  return ((width == 4096 && height >= 512 && middle >= 9) ||
+  return ((width == 4096 && height >= 1024 && middle >= 9) ||
+          (width == 2048 && height >= 1024 && middle >= 9) ||
           (width == 1024 && middle >= 5) ||
           (width == 512 && middle >= 4) ||
           (width == 256 && middle >= 1));
@@ -254,8 +264,8 @@ FFTConfig::FFTConfig(const string& spec) {
       log("Height must be 256, 512, 1024, or 2048.\n");
       throw "Invalid FFT spec";
     }
-    if (fft_type != FFT64 && fft_type != FFT32 && (m & (m - 1))) {
-      log("NTT middle must be a power of two.\n");
+    if (fft_type != FFT64 && fft_type != FFT32 && (m & (m - 1)) && !(FFTShape::pfaMiddle(m) && FFTShape::pfaType(fft_type))) {
+      log("NTT and hybrid FFT middle must be 2, 3, 4, 6, 7, 8, 9, 11, 12, or 14.\n");
       throw "Invalid FFT spec";
     }
   }

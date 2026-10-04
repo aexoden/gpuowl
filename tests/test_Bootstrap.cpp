@@ -165,7 +165,7 @@ TEST(the_families_are_the_smallest_shape_of_each_type_the_workload_reaches) {
     bootstrapFamilies(nvidia(), PROBE, {FFTConfig{"512:15:512:101"}, FFTConfig{"1:512:8:512:202"}});
   CHECK_EQ(all.size(), size_t(2));
   CHECK_EQ(all[0].fft.spec(), std::string{"1K:13:256:212"});
-  CHECK_EQ(all[1].fft.spec(), std::string{"1:1K:8:256:202"});
+  CHECK_EQ(all[1].fft.spec(), std::string{"1:1K:6:256:202"});
 
   for (const Family& f : all) {
     CHECK(std::ranges::any_of(anchorCandidates(PROBE), [&](const AnchorSpec& a) { return a.fft == f.fft.spec(); }));

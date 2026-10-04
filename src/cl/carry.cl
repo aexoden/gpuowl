@@ -134,12 +134,17 @@ KERNEL(G_W) carry(P(Word2) out, CP(GF31) in, u32 posROE, P(CarryABM) carryOut, P
   u32 roundMax = 0;
   float carryMax = 0;
 
+#if PFA
+  // A chunk of CARRY_LEN lines never crosses a multiple of SMALL_HEIGHT, so its pairs are consecutive as in the stock layout
+  u32 word_index = pfaPair(G_W * gx + me, line) * 2;
+#else
   u32 word_index = (gx * G_W * H + me * H + line) * 2;
+#endif
 
   // Weight is 2^[ceil(qj / n) - qj/n] where j is the word index, q is the Mersenne exponent, and n is the number of words.
   // Weights can be applied with shifts because 2 is the 30th root GF31.
   // Let s be the shift amount for word 1.  The shift amount for word x is ceil(x * (s - 1) + num_big_words_less_than_x) % 31.
-  const u32 log2_root_two = (u32) (((1ULL << 30) / NWORDS) % 31);
+  const u32 log2_root_two = LOG2_ROOT_TWO31;
   const u32 bigword_weight_shift = (NWORDS - EXP % NWORDS) * log2_root_two % 31;
   const u32 bigword_weight_shift_minus1 = (bigword_weight_shift + 30) % 31;
 
@@ -155,7 +160,7 @@ KERNEL(G_W) carry(P(Word2) out, CP(GF31) in, u32 posROE, P(CarryABM) carryOut, P
 
   // We also adjust shift amount for the fact that NTT returns results multiplied by 2*NWORDS.
   const u32 log2_NWORDS = (WIDTH == 256 ? 8 : WIDTH == 512 ? 9 : WIDTH == 1024 ? 10 : WIDTH == 2048 ? 11 : 12) +
-                          (MIDDLE == 1 ? 0 : MIDDLE == 2 ? 1 : MIDDLE == 4 ? 2 : MIDDLE == 8 ? 3 : 4) +
+                          LOG2_MIDDLE_NTT +
                           (SMALL_HEIGHT == 256 ? 8 : SMALL_HEIGHT == 512 ? 9 : SMALL_HEIGHT == 1024 ? 10 : SMALL_HEIGHT == 2048 ? 11 : 12) + 1;
   weight_shift = (weight_shift + log2_NWORDS + 1) % 31;
 
@@ -210,12 +215,17 @@ KERNEL(G_W) carry(P(Word2) out, CP(GF61) in, u32 posROE, P(CarryABM) carryOut, P
   u32 roundMax = 0;
   float carryMax = 0;
 
+#if PFA
+  // A chunk of CARRY_LEN lines never crosses a multiple of SMALL_HEIGHT, so its pairs are consecutive as in the stock layout
+  u32 word_index = pfaPair(G_W * gx + me, line) * 2;
+#else
   u32 word_index = (gx * G_W * H + me * H + line) * 2;
+#endif
 
   // Weight is 2^[ceil(qj / n) - qj/n] where j is the word index, q is the Mersenne exponent, and n is the number of words.
   // Weights can be applied with shifts because 2 is the 60th root GF61.
   // Let s be the shift amount for word 1.  The shift amount for word x is ceil(x * (s - 1) + num_big_words_less_than_x) % 61.
-  const u32 log2_root_two = (u32) (((1ULL << 60) / NWORDS) % 61);
+  const u32 log2_root_two = LOG2_ROOT_TWO61;
   const u32 bigword_weight_shift = (NWORDS - EXP % NWORDS) * log2_root_two % 61;
   const u32 bigword_weight_shift_minus1 = (bigword_weight_shift + 60) % 61;
 
@@ -232,7 +242,7 @@ KERNEL(G_W) carry(P(Word2) out, CP(GF61) in, u32 posROE, P(CarryABM) carryOut, P
 
   // We also adjust shift amount for the fact that NTT returns results multiplied by 2*NWORDS.
   const u32 log2_NWORDS = (WIDTH == 256 ? 8 : WIDTH == 512 ? 9 : WIDTH == 1024 ? 10 : WIDTH == 2048 ? 11 : 12) +
-                          (MIDDLE == 1 ? 0 : MIDDLE == 2 ? 1 : MIDDLE == 4 ? 2 : MIDDLE == 8 ? 3 : 4) +
+                          LOG2_MIDDLE_NTT +
                           (SMALL_HEIGHT == 256 ? 8 : SMALL_HEIGHT == 512 ? 9 : SMALL_HEIGHT == 1024 ? 10 : SMALL_HEIGHT == 2048 ? 11 : 12) + 1;
   weight_shift = (weight_shift + log2_NWORDS + 1) % 61;
 
@@ -288,12 +298,17 @@ KERNEL(G_W) carry(P(Word2) out, CP(T2) in, u32 posROE, P(CarryABM) carryOut, Big
   float roundMax = 0;
   float carryMax = 0;
 
+#if PFA
+  // A chunk of CARRY_LEN lines never crosses a multiple of SMALL_HEIGHT, so its pairs are consecutive as in the stock layout
+  u32 word_index = pfaPair(G_W * gx + me, line) * 2;
+#else
   u32 word_index = (gx * G_W * H + me * H + line) * 2;
+#endif
 
   T base = optionalDouble(fancyMul(THREAD_WEIGHTS[me].x, iweightStep(gx)));
 
   // Weight is 2^[ceil(qj / n) - qj/n] where j is the word index, q is the Mersenne exponent, and n is the number of words.
-  const u32 log2_root_two = (u32) (((1ULL << 30) / NWORDS) % 31);
+  const u32 log2_root_two = LOG2_ROOT_TWO31;
   const u32 bigword_weight_shift = (NWORDS - EXP % NWORDS) * log2_root_two % 31;
   const u32 bigword_weight_shift_minus1 = (bigword_weight_shift + 30) % 31;
 
@@ -309,7 +324,7 @@ KERNEL(G_W) carry(P(Word2) out, CP(T2) in, u32 posROE, P(CarryABM) carryOut, Big
 
   // We also adjust shift amount for the fact that NTT returns results multiplied by 2*NWORDS.
   const u32 log2_NWORDS = (WIDTH == 256 ? 8 : WIDTH == 512 ? 9 : WIDTH == 1024 ? 10 : WIDTH == 2048 ? 11 : 12) +
-                          (MIDDLE == 1 ? 0 : MIDDLE == 2 ? 1 : MIDDLE == 4 ? 2 : MIDDLE == 8 ? 3 : 4) +
+                          LOG2_MIDDLE_NTT +
                           (SMALL_HEIGHT == 256 ? 8 : SMALL_HEIGHT == 512 ? 9 : SMALL_HEIGHT == 1024 ? 10 : SMALL_HEIGHT == 2048 ? 11 : 12) + 1;
   weight_shift = (weight_shift + log2_NWORDS + 1) % 31;
 
@@ -319,6 +334,9 @@ KERNEL(G_W) carry(P(Word2) out, CP(T2) in, u32 posROE, P(CarryABM) carryOut, Big
     // Generate the FP64 and second GF31 weight shift
     T w1 = optionalDouble(fancyMul(base, THREAD_WEIGHTS[G_W + gy * CARRY_LEN + i].x));
     T w2 = optionalDouble(fancyMul(w1, IWEIGHT_STEP));
+#if PFA
+    { T2 pw0, pw1; pfaWeights(G_W * gx + me, line + i, THREAD_WEIGHTS, &pw0, &pw1); w1 = pw0.x; w2 = pw1.x; }
+#endif
     u32 weight_shift0 = weight_shift;
     combo_counter += combo_step;
     if (weight_shift > 31) weight_shift -= 31;
@@ -369,7 +387,12 @@ KERNEL(G_W) carry(P(Word2) out, CP(T2) in, u32 posROE, P(CarryABM) carryOut, Big
   float roundMax = 0;
   float carryMax = 0;
 
+#if PFA
+  // A chunk of CARRY_LEN lines never crosses a multiple of SMALL_HEIGHT, so its pairs are consecutive as in the stock layout
+  u32 word_index = pfaPair(G_W * gx + me, line) * 2;
+#else
   u32 word_index = (gx * G_W * H + me * H + line) * 2;
+#endif
 
   F base = fancyMul(THREAD_WEIGHTS[me].x, iweightStep(gx));
   u32 me_frac_bits = fracBits(me * H * 2);
@@ -378,7 +401,7 @@ KERNEL(G_W) carry(P(Word2) out, CP(T2) in, u32 posROE, P(CarryABM) carryOut, Big
   base = optionalDouble(base, base_frac_bits > step_frac_bits);
 
   // Weight is 2^[ceil(qj / n) - qj/n] where j is the word index, q is the Mersenne exponent, and n is the number of words.
-  const u32 log2_root_two = (u32) (((1ULL << 30) / NWORDS) % 31);
+  const u32 log2_root_two = LOG2_ROOT_TWO31;
   const u32 bigword_weight_shift = (NWORDS - EXP % NWORDS) * log2_root_two % 31;
   const u32 bigword_weight_shift_minus1 = (bigword_weight_shift + 30) % 31;
 
@@ -394,7 +417,7 @@ KERNEL(G_W) carry(P(Word2) out, CP(T2) in, u32 posROE, P(CarryABM) carryOut, Big
 
   // We also adjust shift amount for the fact that NTT returns results multiplied by 2*NWORDS.
   const u32 log2_NWORDS = (WIDTH == 256 ? 8 : WIDTH == 512 ? 9 : WIDTH == 1024 ? 10 : WIDTH == 2048 ? 11 : 12) +
-                          (MIDDLE == 1 ? 0 : MIDDLE == 2 ? 1 : MIDDLE == 4 ? 2 : MIDDLE == 8 ? 3 : 4) +
+                          LOG2_MIDDLE_NTT +
                           (SMALL_HEIGHT == 256 ? 8 : SMALL_HEIGHT == 512 ? 9 : SMALL_HEIGHT == 1024 ? 10 : SMALL_HEIGHT == 2048 ? 11 : 12) + 1;
   weight_shift = (weight_shift + log2_NWORDS + 1) % 31;
 
@@ -404,6 +427,9 @@ KERNEL(G_W) carry(P(Word2) out, CP(T2) in, u32 posROE, P(CarryABM) carryOut, Big
     // Generate the FP32 and second GF31 weight shift
     F w1 = optionalDouble(fancyMul(base, THREAD_WEIGHTS[G_W + line + i].x), frac_bits > base_frac_bits);
     F w2 = optionalDouble(fancyMul(w1, IWEIGHT_STEP), frac_bits + FRAC_BPW_HI > FRAC_BPW_HI);
+#if PFA
+    { F2 pw0, pw1; pfaWeights(G_W * gx + me, line + i, THREAD_WEIGHTS, &pw0, &pw1); w1 = pw0.x; w2 = pw1.x; }
+#endif
     u32 weight_shift0 = weight_shift;
     combo_counter += combo_step;
     if (weight_shift > 31) weight_shift -= 31;
@@ -454,7 +480,12 @@ KERNEL(G_W) carry(P(Word2) out, CP(T2) in, u32 posROE, P(CarryABM) carryOut, Big
   float roundMax = 0;
   float carryMax = 0;
 
+#if PFA
+  // A chunk of CARRY_LEN lines never crosses a multiple of SMALL_HEIGHT, so its pairs are consecutive as in the stock layout
+  u32 word_index = pfaPair(G_W * gx + me, line) * 2;
+#else
   u32 word_index = (gx * G_W * H + me * H + line) * 2;
+#endif
 
   F base = fancyMul(THREAD_WEIGHTS[me].x, iweightStep(gx));
   u32 me_frac_bits = fracBits(me * H * 2);
@@ -463,7 +494,7 @@ KERNEL(G_W) carry(P(Word2) out, CP(T2) in, u32 posROE, P(CarryABM) carryOut, Big
   base = optionalDouble(base, base_frac_bits > step_frac_bits);
 
   // Weight is 2^[ceil(qj / n) - qj/n] where j is the word index, q is the Mersenne exponent, and n is the number of words.
-  const u32 log2_root_two = (u32) (((1ULL << 60) / NWORDS) % 61);
+  const u32 log2_root_two = LOG2_ROOT_TWO61;
   const u32 bigword_weight_shift = (NWORDS - EXP % NWORDS) * log2_root_two % 61;
   const u32 bigword_weight_shift_minus1 = (bigword_weight_shift + 60) % 61;
 
@@ -480,7 +511,7 @@ KERNEL(G_W) carry(P(Word2) out, CP(T2) in, u32 posROE, P(CarryABM) carryOut, Big
 
   // We also adjust shift amount for the fact that NTT returns results multiplied by 2*NWORDS.
   const u32 log2_NWORDS = (WIDTH == 256 ? 8 : WIDTH == 512 ? 9 : WIDTH == 1024 ? 10 : WIDTH == 2048 ? 11 : 12) +
-                          (MIDDLE == 1 ? 0 : MIDDLE == 2 ? 1 : MIDDLE == 4 ? 2 : MIDDLE == 8 ? 3 : 4) +
+                          LOG2_MIDDLE_NTT +
                           (SMALL_HEIGHT == 256 ? 8 : SMALL_HEIGHT == 512 ? 9 : SMALL_HEIGHT == 1024 ? 10 : SMALL_HEIGHT == 2048 ? 11 : 12) + 1;
   weight_shift = (weight_shift + log2_NWORDS + 1) % 61;
 
@@ -490,6 +521,9 @@ KERNEL(G_W) carry(P(Word2) out, CP(T2) in, u32 posROE, P(CarryABM) carryOut, Big
     // Generate the FP32 and second GF61 weight shift
     F w1 = optionalDouble(fancyMul(base, THREAD_WEIGHTS[G_W + line + i].x), frac_bits > base_frac_bits);
     F w2 = optionalDouble(fancyMul(w1, IWEIGHT_STEP), frac_bits + FRAC_BPW_HI > FRAC_BPW_HI);
+#if PFA
+    { F2 pw0, pw1; pfaWeights(G_W * gx + me, line + i, THREAD_WEIGHTS, &pw0, &pw1); w1 = pw0.x; w2 = pw1.x; }
+#endif
     u32 weight_shift0 = weight_shift;
     combo_counter += combo_step;
     if (weight_shift > 61) weight_shift -= 61;
@@ -541,13 +575,18 @@ KERNEL(G_W) carry(P(Word2) out, CP(T2) in, u32 posROE, P(CarryABM) carryOut, P(u
   u32 roundMax = 0;
   float carryMax = 0;
 
+#if PFA
+  // A chunk of CARRY_LEN lines never crosses a multiple of SMALL_HEIGHT, so its pairs are consecutive as in the stock layout
+  u32 word_index = pfaPair(G_W * gx + me, line) * 2;
+#else
   u32 word_index = (gx * G_W * H + me * H + line) * 2;
+#endif
 
   // Weight is 2^[ceil(qj / n) - qj/n] where j is the word index, q is the Mersenne exponent, and n is the number of words.
-  const u32 m31_log2_root_two = (u32) (((1ULL << 30) / NWORDS) % 31);
+  const u32 m31_log2_root_two = LOG2_ROOT_TWO31;
   const u32 m31_bigword_weight_shift = (NWORDS - EXP % NWORDS) * m31_log2_root_two % 31;
   const u32 m31_bigword_weight_shift_minus1 = (m31_bigword_weight_shift + 30) % 31;
-  const u32 m61_log2_root_two = (u32) (((1ULL << 60) / NWORDS) % 61);
+  const u32 m61_log2_root_two = LOG2_ROOT_TWO61;
   const u32 m61_bigword_weight_shift = (NWORDS - EXP % NWORDS) * m61_log2_root_two % 61;
   const u32 m61_bigword_weight_shift_minus1 = (m61_bigword_weight_shift + 60) % 61;
 
@@ -568,7 +607,7 @@ KERNEL(G_W) carry(P(Word2) out, CP(T2) in, u32 posROE, P(CarryABM) carryOut, P(u
 
   // We also adjust shift amount for the fact that NTT returns results multiplied by 2*NWORDS.
   const u32 log2_NWORDS = (WIDTH == 256 ? 8 : WIDTH == 512 ? 9 : WIDTH == 1024 ? 10 : WIDTH == 2048 ? 11 : 12) +
-                          (MIDDLE == 1 ? 0 : MIDDLE == 2 ? 1 : MIDDLE == 4 ? 2 : MIDDLE == 8 ? 3 : 4) +
+                          LOG2_MIDDLE_NTT +
                           (SMALL_HEIGHT == 256 ? 8 : SMALL_HEIGHT == 512 ? 9 : SMALL_HEIGHT == 1024 ? 10 : SMALL_HEIGHT == 2048 ? 11 : 12) + 1;
   m31_weight_shift = (m31_weight_shift + log2_NWORDS + 1) % 31;
   m61_weight_shift = (m61_weight_shift + log2_NWORDS + 1) % 61;
@@ -636,7 +675,12 @@ KERNEL(G_W) carry(P(Word2) out, CP(T2) in, u32 posROE, P(CarryABM) carryOut, Big
   float roundMax = 0;
   float carryMax = 0;
 
+#if PFA
+  // A chunk of CARRY_LEN lines never crosses a multiple of SMALL_HEIGHT, so its pairs are consecutive as in the stock layout
+  u32 word_index = pfaPair(G_W * gx + me, line) * 2;
+#else
   u32 word_index = (gx * G_W * H + me * H + line) * 2;
+#endif
 
   F base = fancyMul(THREAD_WEIGHTS[me].x, iweightStep(gx));
   u32 me_frac_bits = fracBits(me * H * 2);
@@ -645,10 +689,10 @@ KERNEL(G_W) carry(P(Word2) out, CP(T2) in, u32 posROE, P(CarryABM) carryOut, Big
   base = optionalDouble(base, base_frac_bits > step_frac_bits);
 
   // Weight is 2^[ceil(qj / n) - qj/n] where j is the word index, q is the Mersenne exponent, and n is the number of words.
-  const u32 m31_log2_root_two = (u32) (((1ULL << 30) / NWORDS) % 31);
+  const u32 m31_log2_root_two = LOG2_ROOT_TWO31;
   const u32 m31_bigword_weight_shift = (NWORDS - EXP % NWORDS) * m31_log2_root_two % 31;
   const u32 m31_bigword_weight_shift_minus1 = (m31_bigword_weight_shift + 30) % 31;
-  const u32 m61_log2_root_two = (u32) (((1ULL << 60) / NWORDS) % 61);
+  const u32 m61_log2_root_two = LOG2_ROOT_TWO61;
   const u32 m61_bigword_weight_shift = (NWORDS - EXP % NWORDS) * m61_log2_root_two % 61;
   const u32 m61_bigword_weight_shift_minus1 = (m61_bigword_weight_shift + 60) % 61;
 
@@ -669,7 +713,7 @@ KERNEL(G_W) carry(P(Word2) out, CP(T2) in, u32 posROE, P(CarryABM) carryOut, Big
 
   // We also adjust shift amount for the fact that NTT returns results multiplied by 2*NWORDS.
   const u32 log2_NWORDS = (WIDTH == 256 ? 8 : WIDTH == 512 ? 9 : WIDTH == 1024 ? 10 : WIDTH == 2048 ? 11 : 12) +
-                          (MIDDLE == 1 ? 0 : MIDDLE == 2 ? 1 : MIDDLE == 4 ? 2 : MIDDLE == 8 ? 3 : 4) +
+                          LOG2_MIDDLE_NTT +
                           (SMALL_HEIGHT == 256 ? 8 : SMALL_HEIGHT == 512 ? 9 : SMALL_HEIGHT == 1024 ? 10 : SMALL_HEIGHT == 2048 ? 11 : 12) + 1;
   m31_weight_shift = (m31_weight_shift + log2_NWORDS + 1) % 31;
   m61_weight_shift = (m61_weight_shift + log2_NWORDS + 1) % 61;
@@ -680,6 +724,9 @@ KERNEL(G_W) carry(P(Word2) out, CP(T2) in, u32 posROE, P(CarryABM) carryOut, Big
     // Generate the FP32 and second GF31 and GF61 weight shift
     F w1 = optionalDouble(fancyMul(base, THREAD_WEIGHTS[G_W + line + i].x), frac_bits > base_frac_bits);
     F w2 = optionalDouble(fancyMul(w1, IWEIGHT_STEP), frac_bits + FRAC_BPW_HI > FRAC_BPW_HI);
+#if PFA
+    { F2 pw0, pw1; pfaWeights(G_W * gx + me, line + i, THREAD_WEIGHTS, &pw0, &pw1); w1 = pw0.x; w2 = pw1.x; }
+#endif
     u32 m31_weight_shift0 = m31_weight_shift;
     m31_combo_counter += m31_combo_step;
     m31_weight_shift = adjust_m31_weight_shift(m31_weight_shift);

@@ -366,7 +366,12 @@ TEST(a_malformed_spec_is_refused_rather_than_built) {
   CHECK(!parseFft("512:1:512"));     // a middle out of range
   CHECK(!parseFft("512:15:768"));    // no such height
   CHECK(!parseFft("512:8:4K"));      // nor this one, which is only a width
-  CHECK(!parseFft("1:256:15:256"));  // an NTT middle that is not a power of two
+  CHECK(!parseFft("1:256:15:256"));  // an NTT middle that is neither a power of two nor a prime-factor one
+  CHECK(!parseFft("1:256:5:256"));
+  CHECK(!parseFft("2:256:10:256"));
+  CHECK_EQ(parseFft("1:1K:6:256")->spec(), std::string{"1:1K:6:256:202"});
+  CHECK(parseFft("3:1K:11:256:202"));
+  CHECK(parseFft("51:1K:7:256:212"));
 
   rejects("run   4 512:15:512:212 prp", "run   4 512:15:512:999 prp");
   rejects("run   4 512:15:512:212 prp", "run   4 512:15:512:212:2 prp");
