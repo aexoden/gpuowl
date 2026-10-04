@@ -259,7 +259,9 @@ its reach.
   -use STATS=<val> : enable carry statistics collection & logging (developers), for the kernel according to <val>:
                      1 = CarryFused, 2 = CarryFusedMul, 4 = CarryA, 8 = CarryMul
 
-Tuning: -tune finds the fastest FFT and -use options for the exponents you test on this GPU, and publishes them in
+)"
+         // Two literals: MSVC refuses any one string literal of more than 16380 bytes.
+         R"(Tuning: -tune finds the fastest FFT and -use options for the exponents you test on this GPU, and publishes them in
 selection.txt, which a normal run in the same directory (or its -pool) reads.  TUNING.md explains how to use it.
 
 -tune [<subcommand>][,<setting>=<value>...] : one comma-separated word.  With no subcommand, tune: measurements are
