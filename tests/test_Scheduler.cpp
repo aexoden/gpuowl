@@ -1128,7 +1128,7 @@ std::vector<Baseline> only(std::initializer_list<const char*> specs) {
 TEST(the_sweep_the_bootstrap_and_the_search_each_wait_for_the_one_before) {
   // 1K:8:1K serves the probe in one band and the top of this workload in another, which only the sweep reads.
   u64 const probe = 118'063'003;
-  RunScope const wide = makeScope(ScopeArgs{.lo = 110'000'000, .hi = 200'000'000, .probe = probe}, {});
+  RunScope const wide = makeScope(ScopeArgs{.lo = 110'000'000, .hi = 250'000'000, .probe = probe}, {});
   std::vector<Baseline> const entries = baselines(nvidia(), wide, {FFTShape{"1K:8:1K"}});
   CHECK(std::ranges::any_of(entries, [&](const Baseline& b) { return !b.band.contains(probe); }));
   Fixture f;
@@ -3321,7 +3321,7 @@ TEST(only_the_best_set_steps_into_another_branch) {
 TEST(a_probe_answered_in_one_regime_is_still_owed_in_another) {
   // The same FFT in two regimes is two entries with the same best set.  WMUL=1 measured in one says nothing about the
   // other, however often admissible() is asked.
-  RunScope const wide = makeScope(ScopeArgs{.lo = 70'000'000, .hi = 90'000'000, .probe = 80'000'023}, {});
+  RunScope const wide = makeScope(ScopeArgs{.lo = 85'000'000, .hi = 105'000'000, .probe = 95'000'011}, {});
   std::vector<Baseline> both;
   for (const Baseline& b : baselines(nvidia(), wide, {FFTShape{"512:15:512"}})) {
     if (b.fft.spec() == PROBED) { both.push_back(b); }
@@ -3339,7 +3339,7 @@ TEST(a_probe_answered_in_one_regime_is_still_owed_in_another) {
     (void)bench.run(both[1].fft, both[1].kind, both[1].exponent, {{"WMUL", "1"}}, {});
   }
 
-  Scheduler const scheduler{wide, both, 1000, Bootstrap{nvidia(), 80'000'023, {}, false},
+  Scheduler const scheduler{wide, both, 1000, Bootstrap{nvidia(), 95'000'011, {}, false},
                             Strategy{.kind = Strategy::Kind::Single}};
   Objective const objective{f.db, f.env, wide, Gating::Assumed};
   for (int round = 0; round < 2; ++round) {
@@ -3687,7 +3687,7 @@ TEST(nothing_is_published_that_the_gate_has_not_passed) {
 
   // It was read at the top, a reach was derived for it that no reading bore out, and it was never published; the next
   // cheapest 1K variant was read and published in its place.
-  CHECK_EQ(std::ranges::count(bench.order, std::string{"gate 1K:8:1K:112@167772107"}), 1);
+  CHECK_EQ(std::ranges::count(bench.order, std::string{"gate 1K:8:1K:112@209715139"}), 1);
   CHECK_EQ(std::ranges::count_if(bench.order, [](const std::string& s) { return s.starts_with("gate 1K:8:1K:112@"); }),
            long(MAX_DERIVE_READINGS));
   CHECK(!ever.contains("1K:8:1K:112"));
@@ -3704,7 +3704,7 @@ TEST(a_set_short_of_the_floor_at_its_top_is_published_up_to_the_reach_derived_fo
   Fixture f;
   FakeBench bench{f.db, f.sess};
   FFTConfig const cheapest{"1K:8:1K:112"};
-  u64 const top = 167'772'107;
+  u64 const top = 209'715'139;
   auto const zOf = [=](u64 E) { return 17.0 + (double(top) - double(E)) / double(cheapest.size()) / 0.012; };
   bench.zOf = [&](const FFTConfig& fft, const UseConfig&, u64 E) {
     return fft.spec() == cheapest.spec() ? zOf(E) : 24.0;
@@ -3742,13 +3742,13 @@ TEST(a_reading_the_gate_owes_is_taken_before_anything_valued) {
   std::vector<Item> const owed = scheduler.admissible(f.db, f.env, objective);
   CHECK_EQ(owed.size(), size_t{1});
   CHECK(owed.at(0).kind == ItemKind::Gate);
-  CHECK_EQ(owed.at(0).exponent, u64(167'772'107));
+  CHECK_EQ(owed.at(0).exponent, u64(209'715'139));
   CHECK(owed.at(0).options.empty() && owed.at(0).subject.empty());
 
   // Answered, the baselines are what is left.
   CHECK(f.db.add(RoeRow{.sess = f.sess,
                         .fft = "1K:8:1K:112",
-                        .exponent = 167'772'107,
+                        .exponent = 209'715'139,
                         .cfg = f.db.internCfg({}),
                         .z = 24,
                         .n = 2000,
@@ -4450,7 +4450,7 @@ TEST(a_status_counts_what_the_gate_made_of_what_is_published) {
   Fixture f;
   FakeBench bench{f.db, f.sess};
   FFTConfig const cheapest{"1K:8:1K:112"};
-  u64 const top = 167'772'107;
+  u64 const top = 209'715'139;
   bench.zOf = [&](const FFTConfig& fft, const UseConfig&, u64 E) {
     return fft.spec() == cheapest.spec() ? 17.0 + (double(top) - double(E)) / double(cheapest.size()) / 0.012 : 24.0;
   };

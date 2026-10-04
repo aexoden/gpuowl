@@ -18,9 +18,10 @@ using namespace tune;
 
 namespace {
 
-// One FP64 shape measured once in its short-carry, 32-bit-carry regime, which runs from 78643196 (10 bits per word,
-// below which the carry is long) to 143413744 (above which the carry needs 64 bits); a pure NTT shape covering some of
-// the same exponents at a higher cost; an LL reading; and rows that must count for nothing -- another env's, a single
+// One FP64 shape measured once in its short-carry, 32-bit-carry regime, which runs from 94005717 (log2(N)/2 + 0.5 bits
+// per word, below which the carry is long) to 143413744 (above which the carry needs 64 bits); a pure NTT shape
+// covering some of the same exponents at a higher cost, measured at 120M because its own carry is long below 12 bits
+// per word; an LL reading; and rows that must count for nothing -- another env's, a single
 // call's, and a failure's.  The FP64 set's accuracy has been read at the top of its interval; the NTT rounds nothing.
 const char* const DB =
   "# prpll tunedb v1\n"
@@ -34,13 +35,13 @@ const char* const DB =
   "sess  9 env=2 start=1753471200 gen=0 anchor=512:15:512:212@100000000\n"
   "run   4 512:15:512:212 prp 100000000 short32 17 1774.230 2.100 24 6 1.0000 ok 1753471274\n"
   "run   4 512:15:512:212 ll 100000000 short32 17 1760.000 3.000 16 4 1.0000 ok 1753471284\n"
-  "run   4 3:1K:8:512:202 prp 100000000 short32 21 2000.000 5.000 16 4 1.0000 ok 1753471294\n"
+  "run   4 3:1K:8:512:202 prp 120000000 short32 21 2000.000 5.000 16 4 1.0000 ok 1753471294\n"
   "run   4 1K:8:1K:202 prp 200000000 short32 21 100.000 1.000 4 1 1.0000 ok 1753471304\n"
   "run   4 4K:8:1K:202 prp 900000000 short32 21 100.000 1.000 16 4 1.0000 err 1753471314\n"
   "run   9 512:15:512:212 prp 100000000 short32 17 900.000 1.000 16 4 1.0000 ok 1753471324\n"
   "roe   4 512:15:512:212 143413741 17 24.40 2150 0.3098 ok - 1753471330\n";
 
-constexpr u64 SHORT32_LO = 78'643'196;
+constexpr u64 SHORT32_LO = 94'005'717;
 constexpr u64 SHORT32_HI = 143'413'744;
 
 TuneDB loaded(const char* text = DB) {
@@ -143,15 +144,15 @@ TEST(an_entry_whose_interval_excludes_a_band_does_not_cover_it) {
 
 TEST(c_star_is_the_cheapest_entry_of_its_own_kind_that_covers_the_exponent) {
   TuneDB const db = loaded();
-  RunScope const scope = scopeOver({{100'000'000, 1}});
+  RunScope const scope = scopeOver({{120'000'000, 1}});
   Objective const objective{db, 1, scope};
 
-  // Two PRP entries cover 100M; the FP64 one is cheaper, whatever order they were measured in.
+  // Two PRP entries cover 120M; the FP64 one is cheaper, whatever order they were measured in.
   SelectionEntry const fp64 = entryOf(objective, "512:15:512:212");
   SelectionEntry const ntt = entryOf(objective, "3:1K:8:512:202");
   CHECK(fp64.cost < ntt.cost);
-  CHECK(ntt.emin <= 100'000'000 && 100'000'000 <= ntt.reach);
-  std::optional<Cost> const prp = objective.cStar(TestKind::PRP, 100'000'000);
+  CHECK(ntt.emin <= 120'000'000 && 120'000'000 <= ntt.reach);
+  std::optional<Cost> const prp = objective.cStar(TestKind::PRP, 120'000'000);
   CHECK(prp.has_value());
   CHECK_EQ(prp->entry, fp64.id);
   CHECK(near(objective.T(), fp64.cost));
@@ -159,11 +160,11 @@ TEST(c_star_is_the_cheapest_entry_of_its_own_kind_that_covers_the_exponent) {
   // The LL reading is cheaper than either, and covers the LL grid only.
   SelectionEntry const ll = entryOf(objective, "512:15:512:212", TestKind::LL);
   CHECK(ll.cost < fp64.cost);
-  std::optional<Cost> const llCost = objective.cStar(TestKind::LL, 100'000'000);
+  std::optional<Cost> const llCost = objective.cStar(TestKind::LL, 120'000'000);
   CHECK(llCost.has_value());
   CHECK_EQ(llCost->entry, ll.id);
 
-  Objective const llOnly{db, 1, scopeOver({{100'000'000, 1}}, TestKind::LL)};
+  Objective const llOnly{db, 1, scopeOver({{120'000'000, 1}}, TestKind::LL)};
   CHECK(near(llOnly.T(), ll.cost));
 }
 
@@ -203,19 +204,19 @@ TEST(an_entry_the_gate_still_owes_a_reading_counts_only_for_valuing) {
   std::string const roe = "roe   4 512:15:512:212 143413741 17 24.40 2150 0.3098 ok - 1753471330\n";
   text.erase(text.find(roe), roe.size());
   TuneDB const db = loaded(text.c_str());
-  RunScope const scope = scopeOver({{100'000'000, 1}});
+  RunScope const scope = scopeOver({{120'000'000, 1}});
 
-  // Published, 100M is the NTT's; to the search, which takes the reading next, it is already the FP64 set's.
+  // Published, 120M is the NTT's; to the search, which takes the reading next, it is already the FP64 set's.
   Objective const published{db, 1, scope};
   Objective const valuing{db, 1, scope, Gating::Assumed};
-  CHECK_EQ(published.cStar(TestKind::PRP, 100'000'000)->fft, std::string{"3:1K:8:512:202"});
-  CHECK_EQ(valuing.cStar(TestKind::PRP, 100'000'000)->fft, std::string{"512:15:512:212"});
+  CHECK_EQ(published.cStar(TestKind::PRP, 120'000'000)->fft, std::string{"3:1K:8:512:202"});
+  CHECK_EQ(valuing.cStar(TestKind::PRP, 120'000'000)->fft, std::string{"512:15:512:212"});
   CHECK(valuing.T() < published.T());
 }
 
 TEST(a_point_no_fft_can_run_is_left_out_of_T) {
   TuneDB const db = loaded();
-  RunScope const scope = scopeOver({{1000, 0.25}, {100'000'000, 0.75}});
+  RunScope const scope = scopeOver({{1000, 0.25}, {120'000'000, 0.75}});
   Objective const objective{db, 1, scope};
 
   CHECK(!objective.cStar(TestKind::PRP, 1000).has_value());
@@ -328,16 +329,16 @@ TEST(every_type_production_can_choose_has_a_stated_prior) {
 }
 
 TEST(the_prior_at_an_exponent_is_the_cheapest_shape_that_can_run_it) {
-  Objective const objective{Env{}, scopeOver({{100'000'000, 1}})};
+  Objective const objective{Env{}, scopeOver({{120'000'000, 1}})};
 
-  std::optional<Cost> const at = objective.prior(100'000'000);
+  std::optional<Cost> const at = objective.prior(120'000'000);
   CHECK(at.has_value());
 
   // Nothing any type has that can run 100M is priced below it.
   Prior const nothing;
   for (const FFTShape& shape : FFTShape::allShapes()) {
     FFTConfig const fft{shape, defaultVariant(shape), CARRY_AUTO};
-    if (isEligible(fft, 100'000'000) && fft.maxExp() >= 100'000'000) { CHECK(nothing.cost(shape) >= at->us); }
+    if (isEligible(fft, 120'000'000) && fft.maxExp() >= 120'000'000) { CHECK(nothing.cost(shape) >= at->us); }
   }
   CHECK(near(at->us, nothing.cost(FFTShape{at->fft})));
 }

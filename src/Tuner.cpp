@@ -53,7 +53,7 @@ constexpr size_t GRID_SHOWN = 12;
 [[nodiscard]] bool isUpstreamWord(std::string_view token) {
   std::string_view const key = token.substr(0, token.find('='));
   for (std::string_view const word :
-       {"noconfig", "inplace", "fp64", "ntt", "nofp32", "fp6431", "quick", "minexp", "maxexp"}) {
+       {"noconfig", "inplace", "fp64", "ntt", "nofp32", "fp6431", "1k256", "m61", "pfa", "quick", "minexp", "maxexp"}) {
     if (key == word) { return true; }
   }
   return false;

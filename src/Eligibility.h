@@ -17,7 +17,8 @@ namespace tune {
 
 // Exponent-dependent switches in Gpu that change what runs.
 struct Regime {
-  // The carry is expanded into carryA/carryB rather than fused into the width pass. Forced below 10 bits per word.
+  // The carry is expanded into carryA/carryB rather than fused into the width pass. Forced below 10 bits per word, or
+  // below log2(N)/2 + 0.5 where that is higher.
   bool longCarry = false;
 
   // The kernels are compiled with -DCARRY64, a 64-bit carry. Used either if the exponent needs one or if the spec pins

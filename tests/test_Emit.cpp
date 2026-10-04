@@ -48,8 +48,8 @@ const char* const DB =
   "run   4 512:15:512:212 ll 100000000 short32 17 1800.000 3.000 16 4 1.0000 ok 1753471324\n"
   "run   4 512:15:512:212 ll 100000000 short32 17 1805.000 3.000 16 4 1.0000 err 1753471334\n"
   "run   4 512:15:512:212 ll 100000000 short32 18 1850.000 3.000 16 4 1.0000 ok 1753471344\n"
-  "run   4 1K:8:1K:202 prp 200000000 short32 21 3100.000 4.000 16 4 1.0000 ok 1753471354\n"
-  "run   4 3:1K:8:512:202 prp 100000000 short32 21 2000.000 5.000 16 4 1.0000 ok 1753471364\n"
+  "run   4 1K:8:1K:202 prp 220000000 short32 21 3100.000 4.000 16 4 1.0000 ok 1753471354\n"
+  "run   4 3:1K:8:512:202 prp 120000000 short32 21 2000.000 5.000 16 4 1.0000 ok 1753471364\n"
   "run   9 512:15:512:212 prp 100000000 short32 17 900.000 1.000 16 4 1.0000 ok 1753471374\n"
   "roe   4 512:15:512:212 143413741 18 24.40 2150 0.3098 ok - 1753471410\n"
   "roe   4 512:15:512:212 143498461 17 24.40 2150 0.3098 ok - 1753471420\n"
@@ -65,11 +65,11 @@ const char* const SELECTION = "# prpll selection v1\n"
                               "# %PROVENANCE%\n"
                               "use   INPLACE=1,PAD=256\n"
                               "use ! 1 TAIL_KERNELS=3\n"
-                              "entry 2e51eaf52a48bfc9 1753.354 512:15:512:212 prp 78643196 143413744 unvalidated\n"
+                              "entry 2e51eaf52a48bfc9 1753.354 512:15:512:212 prp 94005717 143413744 unvalidated\n"
                               "opts  2e51eaf52a48bfc9 INPLACE=1,PAD=128,TAIL_KERNELS=3\n"
-                              "entry 688735b9ab069fec 2005.590 3:1K:8:512:202 prp 83886076 152674512 n/a\n"
+                              "entry 688735b9ab069fec 2005.590 3:1K:8:512:202 prp 100663292 152674512 n/a\n"
                               "opts  688735b9ab069fec INPLACE=1,PAD=256\n"
-                              "entry d5c85edcdda38629 3104.472 1K:8:1K:202 prp 167772152 296960416 unvalidated\n"
+                              "entry d5c85edcdda38629 3104.472 1K:8:1K:202 prp 209715192 296960416 unvalidated\n"
                               "opts  d5c85edcdda38629 INPLACE=1,PAD=256\n"
                               "exclude 512:15:512:212 ll short32 INPLACE=1,PAD=256,TAIL_KERNELS=3\n";
 
@@ -165,7 +165,7 @@ TEST(emit_keeps_each_env_to_its_own_rows) {
 // A row that names a regime its own exponent does not run in disagrees with this build about what the kernels do, and
 // which of the two is right is not something emission can decide.
 TEST(emit_refuses_a_row_that_contradicts_its_own_regime) {
-  TuneDB const db = loaded(withRecord("3:1K:8:512:202 prp 100000000 short32", "3:1K:8:512:202 prp 100000000 long32"));
+  TuneDB const db = loaded(withRecord("3:1K:8:512:202 prp 120000000 short32", "3:1K:8:512:202 prp 120000000 long32"));
 
   CHECK(!publishes(db, "3:1K:8:512:202", TestKind::PRP));
   CHECK(publishes(db, "512:15:512:212", TestKind::PRP));
@@ -245,7 +245,7 @@ TEST(emit_keeps_a_configuration_a_refusal_never_ran) {
 // something its row did not run: production resolves exactly what was measured, whatever the lines have come to say.
 TEST(emit_names_every_key_its_own_default_lines_would_change) {
   TuneDB const db =
-    loaded(withRecord("run   4 1K:8:1K:202 prp 200000000 short32 21 ", "run   4 1K:8:1K:202 prp 200000000 short32 1 "));
+    loaded(withRecord("run   4 1K:8:1K:202 prp 220000000 short32 21 ", "run   4 1K:8:1K:202 prp 220000000 short32 1 "));
   FFTConfig const fft{"1K:8:1K:202"};
   Env const nvidia = db.findEnv(1)->toEnv();
 
@@ -292,7 +292,7 @@ std::string withSecondSet(const std::string& roe1K) {
   text.replace(text.find(ROE_1K), std::string{ROE_1K}.size(), roe1K);
   return text +
     "cfg   22 INPLACE=1,PAD=256,TAIL_KERNELS=3\n"
-    "run   4 1K:8:1K:202 prp 200000000 short32 22 3200.000 4.000 16 4 1.0000 ok 1753471450\n"
+    "run   4 1K:8:1K:202 prp 220000000 short32 22 3200.000 4.000 16 4 1.0000 ok 1753471450\n"
     "roe   4 1K:8:1K:202 296960407 22 24.90 2150 0.3040 ok - 1753471460\n";
 }
 
@@ -580,8 +580,8 @@ TEST(a_reduced_reach_is_published_as_a_limit_though_a_cheaper_set_covers_it) {
     .sess = 4,
     .fft = fft.spec(),
     .kind = TestKind::PRP,
-    .exponent = 200'000'000,
-    .regime = regimeOf(fft, 200'000'000),
+    .exponent = 220'000'000,
+    .regime = regimeOf(fft, 220'000'000),
     .cfg = cfg,
     .m = {
       .mean = 2900, .stddev = 4, .blocks = 16, .calls = 4, .drift = 1, .status = Status::Ok, .ts = 1'753'473'000}}));
@@ -644,7 +644,7 @@ TuneDB withAlikeSets(const std::vector<std::string>& dearer) {
   for (size_t i = 0; i < dearer.size(); ++i) {
     std::string const cfg = std::to_string(30 + i);
     text += "cfg   " + cfg + " INPLACE=1,PAD=256," + dearer[i] + "\n";
-    text += "run   4 1K:8:1K:202 prp 200000000 short32 " + cfg + " " + std::to_string(3200 + 100 * i) +
+    text += "run   4 1K:8:1K:202 prp 220000000 short32 " + cfg + " " + std::to_string(3200 + 100 * i) +
       ".000 4.000 16 4 1.0000 ok " + std::to_string(1'753'471'470 + i) + "\n";
   }
   return loaded(text);

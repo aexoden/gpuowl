@@ -145,7 +145,7 @@ TEST(an_entry_the_device_cannot_build_is_passed_over) {
                           .cost = cost,
                           .fft = fft,
                           .kind = TestKind::PRP,
-                          .emin = 100'000'000,
+                          .emin = 110'000'000,
                           .reach = 150'000'000,
                           .regime = {},
                           .evidence = Evidence::Unvalidated,
@@ -260,9 +260,9 @@ TEST(an_exponent_no_entry_covers_is_left_to_the_shape_scan) {
   overdriven.fftOverdrive = 1.5;
   CHECK(chooseFrom(file, overdriven, Env{}, 165'000'000, TestKind::PRP));
 
-  // It does not carry an entry across a regime boundary, though: past 167772151 the 1K:8:1K entry's own kernels are
+  // It does not carry an entry across a regime boundary, though: past 209715191 the 1K:8:1K entry's own kernels are
   // not the ones it was measured with, whatever the user is willing to risk on its accuracy.
-  CHECK(!chooseFrom(file, overdriven, Env{}, 200'000'000, TestKind::PRP));
+  CHECK(!chooseFrom(file, overdriven, Env{}, 210'000'000, TestKind::PRP));
 }
 
 TEST(a_selection_file_is_optional_and_its_own_lines_survive_a_fallback) {

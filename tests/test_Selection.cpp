@@ -315,7 +315,7 @@ TEST(finalize_refuses_an_interval_nothing_runs_over) {
   CHECK(one(100'000'000, 160'000'000));     // one regime, as the fixture has it
   CHECK(!one(160'000'000, 100'000'000));    // empty: the interval runs backwards
   CHECK(!one(100'000'000, 3'005'470'400));  // far past what the bpw table covers
-  CHECK(!one(150'994'944, 285'212'672));    // labelled long32 from emin, but short32 above 167772151
+  CHECK(!one(150'994'944, 285'212'672));    // labelled long32 from emin, but short32 above 209715191
   CHECK(!one(1000, 2000));                  // below the smallest exponent this FFT accepts
 
   // Two entries for one configuration in one regime would share an id, and the file they write cannot be read back.
@@ -368,7 +368,7 @@ TEST(an_empty_selection_file_is_empty_but_an_unreadable_one_is_refused) {
 
 TEST(the_reader_holds_an_entry_to_what_finalize_requires) {
   // Neither bound is hashed into the id, so an interval edited by hand reaches production unless the reader checks
-  // what finalize() checked. 1K:8:1K:202 crosses from long32 to short32 at 167772151.
+  // what finalize() checked. 1K:8:1K:202 crosses from long32 to short32 at 209715191.
   rejects("100000000 160000000 n/a", "100000000 250000000 n/a");
   rejects("100000000 160000000 n/a", "160000000 100000000 n/a");  // runs backwards
   rejects("100000000 160000000 n/a", "1000 2000 n/a");            // below what the FFT accepts

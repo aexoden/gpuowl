@@ -69,6 +69,23 @@ TEST(regime_boundary_fixtures) {
   CHECK(regimeOf(fft, 19 * SMALL_SIZE).carry64);
 }
 
+// At 16M words the long carry is forced up to log2(N)/2 + 0.5 = 12.5 bits per word, above the 10 that holds for small
+// shapes.
+TEST(the_long_carry_boundary_grows_with_the_size) {
+  FFTConfig const fft = cfg(FFTShape{FFT64, 1024, 8, 1024});
+  u64 const size = fft.size();
+  CHECK_EQ(size, u64(1) << 24);
+
+  CHECK(regimeOf(fft, 12 * size).longCarry);
+  CHECK(regimeOf(fft, 25 * size / 2 - 64).longCarry);
+  CHECK(!regimeOf(fft, 25 * size / 2).longCarry);
+
+  std::vector<Interval> const split = intervals(fft, 10 * size, 13 * size);
+  CHECK_EQ(split.size(), size_t(2));
+  CHECK(split[0].regime.longCarry);
+  CHECK(!split[1].regime.longCarry);
+}
+
 // The done-when: an identity spanning a regime boundary yields two entries, not one.
 TEST(spanning_a_boundary_yields_two_entries) {
   FFTConfig const fft = cfg(small());

@@ -50,7 +50,10 @@ bool exactArithmetic(const FFTConfig& fft) { return !fft.FFT_FP64 && !fft.FFT_FP
 float bitsPerWord(const FFTConfig& fft, u64 E) { return E / float(fft.size()); }
 
 Regime regimeOf(const FFTConfig& fft, u64 E) {
-  return {.longCarry = bitsPerWord(fft, E) < 10.0f, .carry64 = needsCarry64(fft, E) || fft.carry == CARRY_64};
+  // As Gpu's constructor decides it: carryFused leaves part of each carry unnormalized, which only settles when the
+  // words are well above sqrt(N).
+  double const longBelow = std::max(10.0, 0.5 * std::log2(double(fft.size())) + 0.5);
+  return {.longCarry = bitsPerWord(fft, E) < longBelow, .carry64 = needsCarry64(fft, E) || fft.carry == CARRY_64};
 }
 
 u64 minExp(const FFTConfig& fft) {

@@ -45,7 +45,7 @@ const char* const DB =
   "sess  9 env=3 start=1753471100 gen=0 anchor=512:15:512:212@100000000\n"
   "run   4 512:15:512:212 prp 100000000 short32 17 1774.230 2.100 12 3 1.0000 ok 1753471274\n"
   "run   4 512:15:512:212 prp 100000000 short32 17 1776.000 2.000 12 3 1.0000 ok 1753471284\n"
-  "run   4 1K:8:1K:202 prp 200000000 short32 18 3100.000 4.000 16 4 1.0000 ok 1753471354\n"
+  "run   4 1K:8:1K:202 prp 220000000 short32 18 3100.000 4.000 16 4 1.0000 ok 1753471354\n"
   "run   9 512:15:512:212 prp 100000000 short32 17 1900.000 2.000 16 4 1.0000 ok 1753471204\n"
   "roe   4 512:15:512:212 143413741 17 24.40 2150 0.3098 ok - 1753471294\n"
   "roe   4 1K:8:1K:202 296960407 18 25.10 2150 0.3021 ok - 1753471364\n";
@@ -103,8 +103,9 @@ struct Dir {
 }  // namespace
 
 TEST(an_option_of_the_previous_tuner_is_refused_naming_its_flag) {
-  for (const char* text : {"noconfig,fp64", "quick=5", "minexp=100000000,maxexp=200000000", "fp6431",
-                           "workload=100M-400M,inplace", "emit,ntt", "status,maxexp=200000000"}) {
+  for (const char* text :
+       {"noconfig,fp64", "quick=5", "minexp=100000000,maxexp=200000000", "fp6431", "workload=100M-400M,inplace",
+        "emit,ntt", "status,maxexp=200000000", "1k256", "m61=1", "pfa=2"}) {
     CHECK(refusal(text).find("-oldtune") != std::string::npos);
   }
   CHECK(refusal("fp65").find("-oldtune") == std::string::npos);
