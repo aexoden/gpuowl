@@ -213,7 +213,8 @@ void parseKinds(std::string_view text, ScopeArgs& out) {
 [[nodiscard]] std::vector<std::string> strategySettings(const Strategy& strategy) {
   if (!strategy.branches()) { return {}; }
   std::vector<std::string> out{"maxPermute=" + limitText(strategy.maxPermute),
-                               "maxPoints=" + limitText(strategy.maxPoints)};
+                               "maxPoints=" + limitText(strategy.maxPoints),
+                               std::string{"turns="} + (strategy.turns == Turns::Option ? "option" : "step")};
   if (strategy.kind == Strategy::Kind::Hybrid) {
     out.push_back("comboTop=" + std::to_string(strategy.comboTop));
     out.push_back("comboTiers=" + std::to_string(strategy.comboTiers));
@@ -717,6 +718,7 @@ TuneCommand parseTuneCommand(std::string_view text) {
 
   // Applied once the strategy they belong to is known, whichever order the settings come in.
   std::optional<u32> maxPermute;
+  std::optional<Turns> turns;
   std::optional<u32> maxPoints;
   std::optional<u32> comboTop;
   std::optional<u32> comboTiers;
@@ -818,6 +820,9 @@ TuneCommand parseTuneCommand(std::string_view text) {
       maxPermute = parseLimit(key, val);
     } else if (key == "maxPoints" && searches) {
       maxPoints = parseLimit(key, val);
+    } else if (key == "turns" && searches) {
+      if (val != "option" && val != "step") { throw std::string{"-tune: turns= takes option or step"}; }
+      turns = val == "option" ? Turns::Option : Turns::Step;
     } else if (key == "comboTop" && searches) {
       comboTop = parseInt<u32>(val);
       if (!comboTop || *comboTop < 1) { throw std::string{"-tune: comboTop= takes a count of 1 or more"}; }
@@ -838,12 +843,13 @@ TuneCommand parseTuneCommand(std::string_view text) {
       case TuneVerb::Compact: break;
       case TuneVerb::Scope:
         accepted = "workload=<lo>-<hi>, probe=<E>, probeWeight=<0..1>, kinds=prp|ll|prp+ll, pfaShapes=ntt|all|none,"
-                   " env=<id>, strategy=<S>, maxPermute=<N>|all, maxPoints=<N>|all, comboTop=<N>, comboTiers=1|2|3";
+                   " env=<id>, strategy=<S>, maxPermute=<N>|all, maxPoints=<N>|all, turns=step|option, comboTop=<N>,"
+                   " comboTiers=1|2|3";
         break;
       case TuneVerb::Run:
         accepted = "workload=<lo>-<hi>, probe=<E>, probeWeight=<0..1>, kinds=prp|ll|prp+ll, pfaShapes=ntt|all|none,"
                    " bootstrap=0|1, strategy=hybrid|single|groups|permute:<KEY>+<KEY>..., maxPermute=<N>|all,"
-                   " maxPoints=<N>|all,"
+                   " maxPoints=<N>|all, turns=step|option,"
                    " comboTop=<N>, comboTiers=1|2|3, contenders=<N>, roundCalls=<N>, halvings=<N>, lookCalls=<N>,"
                    " typeMargin=<P>%|all, lookMargin=<P>%|all, linesSweep=0|1, linesMargin=<P>%+<P>%...|all,"
                    " sweepMargin=<P>%|all, stop=<P>%|0,"
@@ -852,12 +858,12 @@ TuneCommand parseTuneCommand(std::string_view text) {
                    " emit, reset, adopt, compact, scope, status, accuracy";
         break;
       case TuneVerb::Status:
-        accepted =
-          "env=<id>, and a run's workload=<lo>-<hi>, probe=<E>, probeWeight=<0..1>, kinds=prp|ll|prp+ll,"
-          " pfaShapes=ntt|all|none, bootstrap=0|1, strategy=<S>, maxPermute=<N>|all, maxPoints=<N>|all, comboTop=<N>,"
-          " comboTiers=1|2|3, contenders=<N>, roundCalls=<N>, halvings=<N>, lookCalls=<N>,"
-          " typeMargin=<P>%|all, lookMargin=<P>%|all, linesSweep=0|1, linesMargin=<P>%+<P>%...|all,"
-          " sweepMargin=<P>%|all, stop=<P>%|0";
+        accepted = "env=<id>, and a run's workload=<lo>-<hi>, probe=<E>, probeWeight=<0..1>, kinds=prp|ll|prp+ll,"
+                   " pfaShapes=ntt|all|none, bootstrap=0|1, strategy=<S>, maxPermute=<N>|all, maxPoints=<N>|all,"
+                   " turns=step|option, comboTop=<N>,"
+                   " comboTiers=1|2|3, contenders=<N>, roundCalls=<N>, halvings=<N>, lookCalls=<N>,"
+                   " typeMargin=<P>%|all, lookMargin=<P>%|all, linesSweep=0|1, linesMargin=<P>%+<P>%...|all,"
+                   " sweepMargin=<P>%|all, stop=<P>%|0";
         break;
       case TuneVerb::Accuracy: accepted = "workload=<lo>-<hi>, probe=<E>, fft=<spec>, groups=<Group>+<Group>..."; break;
       }
@@ -867,13 +873,15 @@ TuneCommand parseTuneCommand(std::string_view text) {
     if (isStatus && key != "env") { out.settings += (out.settings.empty() ? "" : ",") + std::string{token}; }
   }
 
-  if (maxPermute || maxPoints) {
+  if (maxPermute || maxPoints || turns) {
     if (!out.strategy.branches()) {
-      throw "-tune: maxPermute= and maxPoints= size the groups of strategy=hybrid and groups, not of strategy=" +
+      throw "-tune: maxPermute=, maxPoints= and turns= shape the groups of strategy=hybrid and groups, not of"
+            " strategy=" +
         out.strategy.text();
     }
     out.strategy.maxPermute = maxPermute.value_or(MAX_PERMUTE);
     out.strategy.maxPoints = maxPoints.value_or(MAX_POINTS);
+    out.strategy.turns = turns.value_or(Turns::Step);
   }
 
   if (comboTop || comboTiers) {
@@ -973,7 +981,8 @@ std::string statusSettings(std::string_view run, std::string_view asked) {
   for (std::string_view const token : settingTokens(run)) {
     std::string_view const key = settingKey(token);
     if (named.contains(key) || (rescoped && (key == "workload" || key == "probe")) ||
-        (restrategied && (key == "maxPermute" || key == "maxPoints" || key == "comboTop" || key == "comboTiers"))) {
+        (restrategied &&
+         (key == "maxPermute" || key == "maxPoints" || key == "turns" || key == "comboTop" || key == "comboTiers"))) {
       continue;
     }
     add(token);

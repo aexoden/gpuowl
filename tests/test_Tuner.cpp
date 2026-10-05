@@ -143,7 +143,7 @@ TEST(every_setting_the_help_names_is_accepted_where_it_says) {
         "scope,strategy=groups,maxPermute=all,maxPoints=200",
         "scope,maxPermute=3,comboTop=2,comboTiers=2",
         "status,stop=1%,env=1,workload=100M-140M,probe=118063003,probeWeight=0.5,kinds=prp+ll,bootstrap=1,"
-        "strategy=hybrid,maxPermute=4,maxPoints=64,comboTop=3,comboTiers=3",
+        "strategy=hybrid,maxPermute=4,maxPoints=64,turns=option,comboTop=3,comboTiers=3",
         "emit,tunetxt=1,env=1,workload=100M-140M,probe=118063003,probeWeight=0.5,kinds=prp",
         "emit,pfaShapes=none",
         "status,pfaShapes=all",
@@ -1034,8 +1034,8 @@ TEST(a_runs_settings_read_back_as_the_same_run) {
   // Resolved from the pending work, the range and the probe are named in the word.
   CHECK_EQ(runSettings(makeScope(parsed("").scope, pending), parsed("")),
            std::string{"workload=118415515-163860861,probe=124647911,probeWeight=0.5,kinds=prp,pfaShapes=ntt,bootstrap=1,"
-                       "strategy=hybrid,maxPermute=4,maxPoints=64,comboTop=3,comboTiers=3,contenders=16,roundCalls=16,"
-                       "halvings=2,lookCalls=16,typeMargin=100%,lookMargin=20%,linesSweep=1,"
+                       "strategy=hybrid,maxPermute=4,maxPoints=64,turns=step,comboTop=3,comboTiers=3,contenders=16,"
+                       "roundCalls=16,halvings=2,lookCalls=16,typeMargin=100%,lookMargin=20%,linesSweep=1,"
                        "linesMargin=100%+50%+25%,sweepMargin=10%,stop=0.1%"});
 
   for (const char* const text :
@@ -1045,7 +1045,8 @@ TEST(a_runs_settings_read_back_as_the_same_run) {
         "contenders=4,roundCalls=40", "halvings=1", "halvings=5", "lookCalls=0", "lookCalls=40,typeMargin=12.5%",
         "typeMargin=all,linesSweep=0", "lookMargin=all", "lookMargin=35%,typeMargin=60%", "pfaShapes=all",
         "pfaShapes=none", "sweepMargin=all", "sweepMargin=25%,lookMargin=20%", "linesMargin=all",
-        "linesMargin=all+50%", "linesMargin=40%,lookMargin=50%", "linesMargin=100%+12.5%+all"}) {
+        "linesMargin=all+50%", "linesMargin=40%,lookMargin=50%", "linesMargin=100%+12.5%+all", "turns=option",
+        "strategy=groups,turns=step,maxPoints=8"}) {
     TuneCommand const command = parsed(text);
     RunScope const scope = makeScope(command.scope, pending);
     std::string const word = runSettings(scope, command);
@@ -1062,6 +1063,7 @@ TEST(a_runs_settings_read_back_as_the_same_run) {
     CHECK_EQ(again.strategy.text(), command.strategy.text());
     CHECK_EQ(again.strategy.maxPermute, command.strategy.maxPermute);
     CHECK_EQ(again.strategy.maxPoints, command.strategy.maxPoints);
+    CHECK(again.strategy.turns == command.strategy.turns);
     CHECK_EQ(again.strategy.comboTop, command.strategy.comboTop);
     CHECK_EQ(again.strategy.comboTiers, command.strategy.comboTiers);
     CHECK_EQ(again.halving.contenders, command.halving.contenders);
@@ -1084,7 +1086,7 @@ TEST(a_runs_settings_read_back_as_the_same_run) {
         "typeMargin=", "lookMargin=50", "lookMargin=", "linesSweep=2", "emit,lookCalls=4", "emit,lookMargin=50%",
         "sweepMargin=10", "sweepMargin=", "sweepMargin=-1%", "emit,sweepMargin=10%", "linesMargin=",
         "linesMargin=100", "linesMargin=100%+", "linesMargin=+50%", "linesMargin=100%++50%", "linesMargin=50%+x",
-        "emit,linesMargin=50%"}) {
+        "emit,linesMargin=50%", "turns=", "turns=steps", "strategy=single,turns=step", "emit,turns=step"}) {
     bool refused = false;
     try {
       (void)parsed(bad);
@@ -1155,16 +1157,16 @@ TEST(a_run_is_weighted_by_the_work_it_recorded_whatever_the_worktodo_says_now) {
 
 TEST(a_status_takes_the_latest_runs_settings_with_its_own_in_their_place) {
   std::string const run = "workload=100000000-400000000,probe=136279841,probeWeight=0.5,kinds=prp,bootstrap=1,"
-                          "strategy=hybrid,maxPermute=4,maxPoints=64,comboTop=3,comboTiers=3,stop=0.1%";
+                          "strategy=hybrid,maxPermute=4,maxPoints=64,turns=step,comboTop=3,comboTiers=3,stop=0.1%";
   CHECK_EQ(statusSettings(run, ""), run);
   CHECK_EQ(statusSettings(run, "kinds=ll"),
            std::string{"workload=100000000-400000000,probe=136279841,probeWeight=0.5,bootstrap=1,strategy=hybrid,"
-                       "maxPermute=4,maxPoints=64,comboTop=3,comboTiers=3,stop=0.1%,kinds=ll"});
+                       "maxPermute=4,maxPoints=64,turns=step,comboTop=3,comboTiers=3,stop=0.1%,kinds=ll"});
 
   // The run's range and probe were resolved together, so naming either replaces both.
   CHECK_EQ(statusSettings(run, "probe=200000033"),
-           std::string{"probeWeight=0.5,kinds=prp,bootstrap=1,strategy=hybrid,maxPermute=4,maxPoints=64,comboTop=3,"
-                       "comboTiers=3,stop=0.1%,probe=200000033"});
+           std::string{"probeWeight=0.5,kinds=prp,bootstrap=1,strategy=hybrid,maxPermute=4,maxPoints=64,turns=step,"
+                       "comboTop=3,comboTiers=3,stop=0.1%,probe=200000033"});
   CHECK_EQ(statusSettings(run, "workload=50M-60M").find("probe=136279841"), std::string::npos);
 
   // Another strategy takes hybrid's group and combination settings with it, which would otherwise refuse it.

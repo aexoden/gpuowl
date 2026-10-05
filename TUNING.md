@@ -284,7 +284,8 @@ is the faster one and spends its time there.
 
 Under `hybrid` and `groups` the pieces then take turns: each piece of each group gets a step before any gets another,
 counting the steps it has already had, so a large piece such as `Memory`'s does not keep the rest of the groups
-waiting until it is done. Where both sides of an option of the `INPLACE` kind have been measured, each piece is
+waiting until it is done. Each register limit of the `Cuda` group is a piece of its own, so the search tries the first
+value of every limit before the second of any (`turns=option` takes every value of one option at a time instead). Where both sides of an option of the `INPLACE` kind have been measured, each piece is
 searched on every side, the faster side's taking as many turns as all the other sides' together. The combinations of two groups start once those two
 groups have no step left, while the other groups are still being searched. A measurement that was begun is finished
 before anything else of its FFT, and is ranked by what its first call read rather than by what a step of its FFT is
@@ -299,6 +300,14 @@ more is split into pieces of this many, in a fixed order, and no step moves opti
 each group whole. Default `4`. The register limits of the `Cuda` group (`REGMI64`, `REGTS31` and the like) are never
 permuted: each limits one kernel, run on its own, so each is searched one value at a time whatever `maxPermute` is,
 and the combinations try the best of them together.
+
+**`turns=step|option`** (`hybrid` and `groups`): how the groups take turns. `step` (default): each piece of each
+group gets one step before any gets another, so a group of many one-option pieces, such as the `Cuda` register limits,
+tries the first value of every one of them before the second of any, and takes as many turns as it has pieces.
+`option`: a turn is every value of one option (or every combination of a pair of options moved together), so each
+option is finished before its group moves on, and each group gets one turn before any gets another. `option` reaches
+a gain that two groups only make together later, since their combination waits until both groups have no step left,
+which is why it is not the default.
 
 **`maxPoints=<N>|all`** (`hybrid` and `groups`): how many combinations are tried in each piece of a group, and in each
 combination of groups. A piece's combinations are listed one option moved first, then two, and so on, so a cut keeps

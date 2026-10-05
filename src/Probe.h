@@ -51,6 +51,13 @@ inline constexpr u32 COMBO_TIERS = 3;
 // The structural branches of one entry searched at once, cheapest first.  The rest are left to restarts.
 inline constexpr u32 MAX_BRANCHES = 8;
 
+// How the stages of a search by group take turns.  Step: each stage takes one step before any takes another.  Option:
+// a turn is every point of one set of axes a step moves -- every value of one key, or every point of one pair -- and
+// each group, however many stages it is split into, takes one turn before any takes another.  Step is the default:
+// on the landscapes, Option reaches a gain two groups make together later, since the combination waits for both
+// groups' steps and each turn of Option spends a whole option of the large groups first.
+enum class Turns : u8 { Step, Option };
+
 struct Strategy {
   enum class Kind : u8 {
     Hybrid,   // groups, then the combo tiers above them
@@ -67,6 +74,7 @@ struct Strategy {
   // Hybrid and groups.
   u32 maxPermute = MAX_PERMUTE;
   u32 maxPoints = MAX_POINTS;
+  Turns turns = Turns::Step;
 
   // Hybrid only.
   u32 comboTop = COMBO_TOP;

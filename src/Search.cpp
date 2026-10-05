@@ -364,6 +364,40 @@ std::vector<Candidate> EntrySearch::offers(const SearchContext& context, std::sp
         return false;
       };
 
+      // Under Turns::Option, the turn each unfinished set of axes a step moves takes in its group, its group's finished
+      // sets counted first, as Turns::Step counts what a stage has had.  Structural steps go first whatever their turn,
+      // so take none; a combination takes turns a step at a time.
+      std::map<std::pair<u32, std::vector<size_t>>, size_t> optionTurn;
+      auto const unitOf = [](const Probe& probe) {
+        std::vector<size_t> axes;
+        for (auto const& [axis, position] : probe.moves) { axes.push_back(axis); }
+        std::ranges::sort(axes);
+        return std::pair{probe.part, std::move(axes)};
+      };
+      if (context.strategy.turns == Turns::Option) {
+        std::vector<std::pair<std::pair<u32, std::vector<size_t>>, Group>> units;
+        std::map<std::pair<u32, std::vector<size_t>>, bool> finished;
+        for (size_t p = 0; p < list.probes.size(); ++p) {
+          const Probe& probe = list.probes[p];
+          if (probe.tier > 1 || probe.structural) { continue; }
+          auto unit = unitOf(probe);
+          auto const [at, fresh] = finished.try_emplace(unit, true);
+          at->second = at->second && (memo.answered[p] || memo.seen[p]);
+          if (fresh) { units.emplace_back(std::move(unit), probe.groups.empty() ? Group::None : probe.groups.front()); }
+        }
+        std::map<Group, size_t> next;
+        for (const auto& [unit, group] : units) { next[group] += finished[unit]; }
+        for (const auto& [unit, group] : units) {
+          if (!finished[unit]) { optionTurn[unit] = next[group]++; }
+        }
+      }
+      auto const turnOf = [&](const Probe& probe, std::map<u32, size_t>& had, std::map<u32, size_t>& turns) {
+        if (probe.tier == 1 && !probe.structural && context.strategy.turns == Turns::Option) {
+          return optionTurn[unitOf(probe)];
+        }
+        return had[probe.part] + turns[probe.part]++;
+      };
+
       size_t const first = listed.size();
       std::vector<std::string> taken;
       std::set<u32> fed;
@@ -402,7 +436,7 @@ std::vector<Candidate> EntrySearch::offers(const SearchContext& context, std::sp
                             .pass = pass,
                             .structural = probe.structural,
                             .branch = branch,
-                            .turn = pass == 0 && rotate ? had[probe.part] + turns[probe.part]++ : 0});
+                            .turn = pass == 0 && rotate ? turnOf(probe, had, turns) : 0});
         }
       }
 
@@ -424,9 +458,10 @@ std::vector<Candidate> EntrySearch::offers(const SearchContext& context, std::sp
   }
 
   // Structural steps first, since which side of a structural key is the faster one decides where the rest of the
-  // search is best spent.  Then, where the strategy searches by group, the stages take turns a step at a time, a step
-  // going after as many steps of every other stage as its own has had, so that a large stage does not keep the rest
-  // waiting until it is done, and a resumed run takes them in the order an uninterrupted one would.  A stage of the
+  // search is best spent.  Then, where the strategy searches by group, the groups take turns an option at a time, or
+  // the stages a step at a time, each going after as many turns of every other as its own has had, so that a large
+  // group or stage does not keep the rest waiting until it is done, and a resumed run takes them in the order an
+  // uninterrupted one would.  A stage of the
   // best branch takes a turn for every turn the same stage takes in all the other branches together.  One key at a
   // time, no stage is large, and each key's values are taken together, as coordinate descent takes them.
   size_t const others = std::max<size_t>(1, branches.size() - 1);

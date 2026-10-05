@@ -45,8 +45,8 @@ struct Rows {
   u32 env = 0;
   u32 sess = 0;
 
-  Rows() {
-    env = db.internEnv(dbEnvOf(nvidia()));
+  explicit Rows(const Env& device = nvidia()) {
+    env = db.internEnv(dbEnvOf(device));
     sess = db.beginSession(env, std::string{SPEC} + "@118063003", 0, 1'753'471'200);
     CHECK(env && sess);
   }
@@ -70,10 +70,10 @@ struct Asking {
   Strategy strategy;
   Defaults lines{};
   bool restarts = false;
+  Env device = nvidia();
 
   std::vector<Candidate> operator()(EntrySearch& search, const Rows& rows, const std::vector<Reading>& readings,
                                     const Worth& worth) const {
-    Env const device = nvidia();
     Progress const progress = progressOf(rows.db, rows.env, device);
     SearchContext const context{.device = device,
                                 .strategy = strategy,
@@ -243,7 +243,7 @@ TEST(the_stages_of_a_search_by_group_take_turns_a_step_at_a_time_counting_what_t
   Rows rows;
   rows.add({}, 1700);
   std::vector<Reading> const readings{{.config = {}, .cost = 1700}};
-  Asking const ask{.strategy = Strategy{}};
+  Asking const ask{.strategy = Strategy{.turns = Turns::Step}};
   ProbeList const list = probesOf(nvidia(), FFTConfig{SPEC}, {}, Strategy{});
   std::map<std::string, const Probe*> byText;
   for (const Probe& p : list.probes) { byText[configText(p.config)] = &p; }
@@ -297,6 +297,88 @@ TEST(the_stages_of_a_search_by_group_take_turns_a_step_at_a_time_counting_what_t
   CHECK(std::none_of(own, next.end(), [&](const Turn& t) { return t.part != big && t.turn < 3; }));
 }
 
+TEST(the_groups_of_a_search_by_group_take_turns_an_option_at_a_time_counting_what_the_rows_took) {
+  // A CUDA build, whose Cuda group has a stage for each register limit.
+  Env device = nvidia();
+  device.cudaBackend = true;
+  Rows rows{device};
+  rows.add({}, 1700);
+  std::vector<Reading> const readings{{.config = {}, .cost = 1700}};
+  Asking const ask{.strategy = Strategy{.turns = Turns::Option}, .device = device};
+  ProbeList const list = probesOf(device, FFTConfig{SPEC}, {}, Strategy{});
+
+  // A unit is the axes a step moves within its stage: every value of one key, or every point of one pair.
+  using Unit = std::pair<u32, std::vector<size_t>>;
+  auto const unitOf = [](const Probe& p) {
+    std::vector<size_t> axes;
+    for (auto const& [axis, position] : p.moves) { axes.push_back(axis); }
+    std::ranges::sort(axes);
+    return Unit{p.part, axes};
+  };
+  std::map<std::string, const Probe*> byText;
+  for (const Probe& p : list.probes) { byText[configText(p.config)] = &p; }
+
+  // The units of the steps offered, in the order first offered, and each with its group; false if a unit's steps are
+  // not offered together.
+  struct Offered {
+    std::vector<std::pair<Unit, Group>> units;
+    bool together = true;
+  };
+  auto const unitsOf = [&](const std::vector<Candidate>& offers) {
+    Offered out;
+    std::set<Unit> done;
+    for (const Candidate& c : offers) {
+      auto const at = byText.find(configText(c.options));
+      if (at == byText.end() || at->second->structural || at->second->tier > 1) { continue; }
+      Unit const unit = unitOf(*at->second);
+      if (!out.units.empty() && out.units.back().first == unit) { continue; }
+      out.together = out.together && done.insert(unit).second;
+      out.units.emplace_back(unit, at->second->groups.front());
+    }
+    return out;
+  };
+
+  // Each unit's steps together, and every group's first unit before any group's second: the Cuda group's register
+  // limits, each a stage of its own, take one turn between them.
+  EntrySearch search{entry()};
+  Offered const first = unitsOf(ask(search, rows, readings, flat));
+  CHECK(first.together);
+  std::set<Group> groups;
+  for (const auto& [unit, group] : first.units) { groups.insert(group); }
+  CHECK(groups.size() > 3 && groups.contains(Group::Cuda));
+  CHECK(first.units.size() > groups.size());
+  std::set<Group> once;
+  for (size_t u = 0; u < groups.size() && u < first.units.size(); ++u) {
+    CHECK(once.insert(first.units[u].second).second);
+  }
+  std::set<u32> cudaStages;
+  for (const Probe& p : list.probes) {
+    if (!p.structural && p.tier == 1 && p.groups.front() == Group::Cuda) { cudaStages.insert(p.part); }
+  }
+  CHECK(cudaStages.size() > 1);
+
+  // Every step of the first unit of the first group with two, taken by the rows: that group has had its turn, and its
+  // next unit goes behind every other group's first.
+  auto const twice = std::ranges::find_if(first.units, [&](const auto& u) {
+    return std::ranges::count(first.units, u.second, &std::pair<Unit, Group>::second) > 1;
+  });
+  CHECK(twice != first.units.end());
+  if (twice == first.units.end()) { return; }
+  Unit const taken = twice->first;
+  Group const had = twice->second;
+  for (const Probe& p : list.probes) {
+    if (!p.structural && unitOf(p) == taken) { rows.add(p.config, 1800); }
+  }
+  EntrySearch later{entry()};
+  Offered const next = unitsOf(ask(later, rows, readings, flat));
+  CHECK(next.together);
+  auto const own = std::ranges::find(next.units, had, &std::pair<Unit, Group>::second);
+  CHECK(own != next.units.end());
+  std::set<Group> before;
+  for (auto u = next.units.begin(); u != own; ++u) { before.insert(u->second); }
+  CHECK_EQ(before.size(), groups.size() - 1);
+}
+
 TEST(other_branches_take_turns_beside_the_best_one_whose_stages_take_as_many_as_theirs_together) {
   Rows rows;
   rows.add({}, 1700);
@@ -305,7 +387,7 @@ TEST(other_branches_take_turns_beside_the_best_one_whose_stages_take_as_many_as_
   std::vector<Reading> const readings{{.config = {}, .cost = 1700},
                                       {.config = {{"SHUFL_BYTES_W", "16"}}, .cost = 1720},
                                       {.config = {{"INPLACE", "0"}}, .cost = 1730}};
-  Asking const ask{.strategy = Strategy{}};
+  Asking const ask{.strategy = Strategy{.turns = Turns::Step}};
   EntrySearch search{entry()};
 
   // The other branches' steps priced below the best branch's, by what the set they step from costs.

@@ -285,6 +285,8 @@ selection.txt, which a normal run in the same directory (or its -pool) reads.  T
                                              permute:<KEY>+<KEY>... [hybrid]
                          maxPermute=<N>|all  hybrid, groups: how many options of a group are permuted together [4]
                          maxPoints=<N>|all   hybrid, groups: how many combinations each of those tries [64]
+                         turns=step|option   hybrid, groups: the pieces of the groups take turns a step at a
+                                             time, or the groups an option (every value of one) at a time [step]
                          comboTop=<N>        hybrid: how many of each group's best answers are combined [3]
                          comboTiers=1|2|3    hybrid: how widely groups are combined; 1 is strategy=groups [3]
                          contenders=<N>      how many FFTs the search is first spread over, halving them each round
