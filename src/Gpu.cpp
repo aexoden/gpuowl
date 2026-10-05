@@ -1218,7 +1218,7 @@ Gpu::Gpu(GpuCommon s, FFTConfig fft, u64 E, const vector<KeyVal>& extraConf, boo
   // log2(N)/2 - 0.1; a model of the carry scheme (tools/fused_carry_model.py) is back to long carry's magnitudes by log2(N)/2 + 0.5.
   useLongCarry = useLongCarry || (bitsPerWord < std::max(10.0, 0.5 * log2(double(N)) + 0.5));
 
-  if (useLongCarry) { log("Using long carry!\n"); }
+  if (useLongCarry && logFftSize) { log("Using long carry!\n"); }
 
   if (fft.FFT_FP64 || fft.FFT_FP32) {
     kfftMidIn.setFixedArgs(3, bufTrigM);
