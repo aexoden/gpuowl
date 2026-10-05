@@ -177,18 +177,19 @@ TEST(inert_middle_chains) {
   CHECK_EQ(defaultOf(e, "512:15:512:111", {}, "MM2_CHAIN"), 2);
 }
 
-// A prime-factor MIDDLE runs out of place whatever INPLACE says, has a middle step of its own that reads no chain, and
-// on a hybrid an FP tail of two kernels with twiddles of its own.
+// A prime-factor MIDDLE runs in place or out of place, but never striped; it has a middle step of its own that reads no
+// chain, and on a hybrid an FP tail with twiddles of its own.
 TEST(prime_factor_middles) {
   for (const Env& e : {nvidia(), amd()}) {
     for (const char* spec : {"1:1K:6:256:202", "51:512:12:512:202", "2:512:7:512:202"}) {
-      CHECK_EQ(valuesOf(e, spec, {}, "INPLACE"), string("0"));
-      CHECK_EQ(defaultOf(e, spec, {}, "INPLACE"), 0);
-      CHECK(inert(e, spec, "INPLACE"));
-      for (const UseConfig& asked : {UseConfig{}, UseConfig{{"INPLACE", "1"}}}) {
+      CHECK_EQ(valuesOf(e, spec, {}, "INPLACE"), string("0,1"));
+      CHECK_EQ(defaultOf(e, spec, {}, "INPLACE"), e.isNvidia ? 1 : 0);
+      CHECK(!inert(e, spec, "INPLACE"));
+      for (const UseConfig& asked : {UseConfig{{"INPLACE", "0"}}, UseConfig{{"INPLACE", "1"}}}) {
+        bool const outOfPlace = asked.at("INPLACE") == "0";
         CHECK(!applicable(e, spec, asked, "L2_STRIPING"));
-        CHECK(applicable(e, spec, asked, "IN_WG"));
-        CHECK(applicable(e, spec, asked, "MIDDLE_IN_LDS_TRANSPOSE"));
+        CHECK_EQ(applicable(e, spec, asked, "IN_WG"), outOfPlace);
+        CHECK_EQ(applicable(e, spec, asked, "MIDDLE_IN_LDS_TRANSPOSE"), outOfPlace);
       }
       for (const char* chain : {"MM_CHAIN", "MM2_CHAIN", "MIDDLE_CHAIN"}) {
         CHECK(!applicable(e, spec, {}, chain));
@@ -200,12 +201,10 @@ TEST(prime_factor_middles) {
     CHECK(inert(e, "51:512:12:512:202", "MM2_CHAIN"));
     CHECK(!inert(e, "51:512:16:512:202", "MM2_CHAIN"));
 
-    // The NTT keeps every tail; the hybrids' FP tails run as two kernels and compute their own twiddles.
-    CHECK_EQ(valuesOf(e, "1:1K:6:256:202", {}, "TAIL_KERNELS"), string("0,1,2,3"));
-    CHECK_EQ(defaultOf(e, "1:1K:6:256:202", {}, "TAIL_KERNELS"), 2);
-    for (const char* spec : {"51:512:12:512:202", "2:512:7:512:202"}) {
-      CHECK_EQ(valuesOf(e, spec, {}, "TAIL_KERNELS"), string("1,3"));
-      CHECK_EQ(defaultOf(e, spec, {}, "TAIL_KERNELS"), 3);
+    // Every tail, on the NTT and the hybrids alike; the hybrids' FP tails compute their own twiddles.
+    for (const char* spec : {"1:1K:6:256:202", "51:512:12:512:202", "2:512:7:512:202"}) {
+      CHECK_EQ(valuesOf(e, spec, {}, "TAIL_KERNELS"), string("0,1,2,3"));
+      CHECK_EQ(defaultOf(e, spec, {}, "TAIL_KERNELS"), 2);
     }
     CHECK(inert(e, "51:512:12:512:202", "TAIL_TRIGS"));
     CHECK(inert(e, "2:512:7:512:202", "TAIL_TRIGS32"));
@@ -573,19 +572,10 @@ TEST(host_fit_writes_in_what_the_host_would_derive) {
   CHECK(withHostFit(narrow, {{"WMUL", "4"}}) == (UseConfig{{"WMUL", "4"}}));
   CHECK(withHostFit(oneK, {{"WMUL", "4"}}) == (UseConfig{{"WMUL", "4"}}));
 
-  // A prime-factor middle runs out of place, and a hybrid's FP tail as two kernels: written in, so the host has no
-  // change to report, and still the built-in defaults.  A key that was set is left to the host.
-  for (const char* spec : {"1:1K:6:256:202", "51:512:12:512:202", "2:512:7:512:202"}) {
-    FFTConfig const fft{spec};
-    bool const hybrid = fft.FFT_FP64 || fft.FFT_FP32;
-    UseConfig const fitted = withHostFit(fft, {});
-    CHECK(fitted == (hybrid ? UseConfig{{"INPLACE", "0"}, {"TAIL_KERNELS", "3"}} : UseConfig{{"INPLACE", "0"}}));
-    for (const Env& e : {nvidia(), amd()}) { CHECK(canonicalConfig(e, fft, fitted).empty()); }
+  // A prime-factor middle takes every placement and tail, so there is nothing to write in for it.
+  for (const char* spec : {"1:1K:6:256:202", "51:512:12:512:202", "2:512:7:512:202", "1:1K:8:256:202"}) {
+    CHECK(withHostFit(FFTConfig{spec}, {}).empty());
   }
-  CHECK(withHostFit(FFTConfig{"51:512:12:512:202"}, {{"TAIL_KERNELS", "1"}}) ==
-        (UseConfig{{"INPLACE", "0"}, {"TAIL_KERNELS", "1"}}));
-  CHECK(withHostFit(FFTConfig{"1:1K:6:256:202"}, {{"INPLACE", "1"}}) == (UseConfig{{"INPLACE", "1"}}));
-  CHECK(withHostFit(FFTConfig{"1:1K:8:256:202"}, {}).empty());
 }
 
 TEST(lds_aside_note_names_padding_a_move_turns_off) {

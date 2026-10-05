@@ -85,23 +85,15 @@ bool hasGF61(const Env&, const FFTConfig& f, const UseConfig&) { return f.NTT_GF
 bool hasFloat(const Env&, const FFTConfig& f, const UseConfig&) { return f.FFT_FP64 || f.FFT_FP32; }
 bool hasNtt(const Env&, const FFTConfig& f, const UseConfig&) { return f.NTT_GF31 || f.NTT_GF61; }
 
-// A prime-factor MIDDLE is written for the out-of-place layout alone: clDefines() turns INPLACE off for it, whatever
-// was asked.
 bool pfa(const FFTConfig& f) { return f.shape.isPfa(); }
-
-// The FP side of a prime-factor hybrid has more self-paired tail lines than one tail kernel handles, so clDefines()
-// moves TAIL_KERNELS 0 and 2 to their two-kernel forms, 1 and 3.
-bool pfaFloatTail(const FFTConfig& f) { return pfa(f) && (f.FFT_FP64 || f.FFT_FP32); }
 
 // base.cl defaults INPLACE to 1 on nVidia and 0 everywhere else, and clDefines() matches, so an undecided INPLACE
 // means different applicability on different GPUs.
-int inplaceDefault(const Env& e, const FFTConfig& f) { return e.isNvidia && !pfa(f) ? 1 : 0; }
-bool inplaceOn(const Env& e, const FFTConfig& f, const UseConfig& d) {
-  return !pfa(f) && useValue(d, "INPLACE", inplaceDefault(e, f)) != 0;
-}
+int inplaceDefault(const Env& e) { return e.isNvidia ? 1 : 0; }
+bool inplaceOn(const Env& e, const UseConfig& d) { return useValue(d, "INPLACE", inplaceDefault(e)) != 0; }
 
 // The middle-buffer geometry is compiled only under "#if !INPLACE".
-bool inplaceOff(const Env& e, const FFTConfig& f, const UseConfig& d) { return !inplaceOn(e, f, d); }
+bool inplaceOff(const Env& e, const FFTConfig&, const UseConfig& d) { return !inplaceOn(e, d); }
 
 u32 numDataTypes(const FFTConfig& f) {
   return ((f.FFT_FP64 || f.FFT_FP32) ? 1u : 0u) + (f.NTT_GF31 ? 1u : 0u) + (f.NTT_GF61 ? 1u : 0u);
@@ -244,9 +236,9 @@ vector<int> regLadder(const Env& e, const FFTConfig&, const UseConfig&) {
 }
 
 // Upstream caps the in-place middle kernels at two waves by default on Vega.
-vector<int> regMiddleLadder(const Env& e, const FFTConfig& f, const UseConfig& d) {
+vector<int> regMiddleLadder(const Env& e, const FFTConfig&, const UseConfig& d) {
   if (e.cudaBackend) { return REG_LADDER; }
-  return (e.isVega() && inplaceOn(e, f, d)) ? AMD_WAVES_CAPPED : AMD_WAVES;
+  return (e.isVega() && inplaceOn(e, d)) ? AMD_WAVES_CAPPED : AMD_WAVES;
 }
 
 template<enum FFT_TYPES T> bool regCarryApplies(const Env& e, const FFTConfig& f, const UseConfig& d) {
@@ -319,18 +311,16 @@ vector<Option> buildTable() {
                .group = Group::Placement,
                .touches = KG_GLOBAL,
                .structural = true,
-               .valuesFn = [](const Env&, const FFTConfig& f,
-                              const UseConfig&) { return pfa(f) ? vector<int>{0} : vector<int>{0, 1}; },
-               .defaultFn = [](const Env& e, const FFTConfig& f, const UseConfig&) { return inplaceDefault(e, f); },
-               .inert = [](const Env&, const FFTConfig& f, const UseConfig&) { return pfa(f); },
-               .inertWhen = "a prime-factor MIDDLE, which runs out of place"});
+               .values = {0, 1},
+               .defaultFn = [](const Env& e, const FFTConfig&, const UseConfig&) { return inplaceDefault(e); }});
 
+  // clDefines() turns it off at a prime-factor MIDDLE, whose tail does not pair lines as the stripes assume.
   t.push_back({.key = "L2_STRIPING",
                .group = Group::Placement,
                .touches = KG_GLOBAL,
                .dependsOn = {"INPLACE", "MULTI_Q"},
                .applies = [](const Env& e, const FFTConfig& f,
-                             const UseConfig& d) { return inplaceOn(e, f, d) && maxStriping(f, d) >= 1; },
+                             const UseConfig& d) { return !pfa(f) && inplaceOn(e, d) && maxStriping(f, d) >= 1; },
                .valuesFn =
                  [](const Env&, const FFTConfig& f, const UseConfig& d) {
                    vector<int> v{0};
@@ -486,18 +476,14 @@ vector<Option> buildTable() {
                .values = {0, 1},
                .defaultValue = 0});
 
-  t.push_back(
-    {.key = "TAIL_KERNELS",
-     .scope = Scope::Variant,
-     .group = Group::Tail,
-     .touches = KG_TAIL,
-     .accuracyImpact = AccuracyImpact::Yes,
-     .defaultRounding = {3},
-     .values = {0, 1, 2, 3},
-     .valuesFn = [](const Env&, const FFTConfig& f,
-                    const UseConfig&) { return pfaFloatTail(f) ? vector<int>{1, 3} : vector<int>{0, 1, 2, 3}; },
-     .defaultValue = 2,
-     .defaultFn = [](const Env&, const FFTConfig& f, const UseConfig&) { return pfaFloatTail(f) ? 3 : 2; }});
+  t.push_back({.key = "TAIL_KERNELS",
+               .scope = Scope::Variant,
+               .group = Group::Tail,
+               .touches = KG_TAIL,
+               .accuracyImpact = AccuracyImpact::Yes,
+               .defaultRounding = {3},
+               .values = {0, 1, 2, 3},
+               .defaultValue = 2});
   t.push_back({.key = "TAIL_TRIGS",
                .scope = Scope::Family,
                .group = Group::Tail,
@@ -907,8 +893,6 @@ UseConfig withHostFit(const FFTConfig& fft, UseConfig config) {
   u32 const wmul = effectiveWmul(fft, config);
   if (!config.contains("WMUL") && wmul != 0 && wmul != 2) { config["WMUL"] = std::to_string(wmul); }
   if (!ldsPadWFits(fft, config) && useValue(config, "LDSPAD_W", 1) != 0) { config["LDSPAD_W"] = "0"; }
-  if (pfa(fft) && !config.contains("INPLACE")) { config["INPLACE"] = "0"; }
-  if (pfaFloatTail(fft) && !config.contains("TAIL_KERNELS")) { config["TAIL_KERNELS"] = "3"; }
   return config;
 }
 

@@ -88,11 +88,13 @@ TEST(one_configuration_has_one_option_set) {
   CHECK_EQ(configText(canonicalConfig(amd(), fft, {{"INPLACE", "1"}})), std::string{"INPLACE=1"});
   CHECK(canonicalConfig(nvidia(), fft, {}).empty());
 
-  // What the host writes in for a prime-factor middle, and a row then records as what ran, is that FFT's defaults.
-  CHECK(canonicalConfig(nvidia(), FFTConfig{"1:1K:6:256:202"}, {{"INPLACE", "0"}}).empty());
-  CHECK(canonicalConfig(nvidia(), FFTConfig{"51:512:12:512:202"}, {{"INPLACE", "0"}, {"TAIL_KERNELS", "3"}}).empty());
-  CHECK_EQ(configText(canonicalConfig(amd(), FFTConfig{"51:512:12:512:202"}, {{"TAIL_KERNELS", "1"}})),
-           std::string{"TAIL_KERNELS=1"});
+  // A prime-factor middle has the same defaults as any other shape.
+  CHECK(canonicalConfig(nvidia(), FFTConfig{"1:1K:6:256:202"}, {{"INPLACE", "1"}}).empty());
+  CHECK_EQ(configText(canonicalConfig(nvidia(), FFTConfig{"1:1K:6:256:202"}, {{"INPLACE", "0"}})),
+           std::string{"INPLACE=0"});
+  CHECK_EQ(configText(canonicalConfig(amd(), FFTConfig{"51:512:12:512:202"}, {{"TAIL_KERNELS", "3"}})),
+           std::string{"TAIL_KERNELS=3"});
+  CHECK(canonicalConfig(amd(), FFTConfig{"51:512:12:512:202"}, {{"TAIL_KERNELS", "2"}}).empty());
 }
 
 TEST(a_move_is_one_step_within_one_group) {
