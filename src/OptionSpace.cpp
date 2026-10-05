@@ -656,14 +656,14 @@ vector<Option> buildTable() {
          return v;
        },
      .defaultFn = [](const Env&, const FFTConfig& f, const UseConfig& d) { return int(std::min(2u, maxWmul(f, d))); }});
-  // Only FFT64's carryFused leaves weights for the first butterfly to fold in. nVidia's compiler makes that fusion by
-  // itself, so both values compile alike there.
+  // Only the FP64 and FP32 parts have weights for the first butterfly to fold in. nVidia's compiler makes that fusion
+  // by itself, so both values compile alike there.
   t.push_back({.key = "FUSE_WEIGHT_BUTTERFLY",
                .group = Group::Width,
                .touches = KG_CARRY,
                .accuracyImpact = AccuracyImpact::Suspected,
                .applies = [](const Env& e, const FFTConfig& f,
-                             const UseConfig&) { return e.isAmd && !e.cudaBackend && f.shape.fft_type == FFT64; },
+                             const UseConfig& d) { return e.isAmd && !e.cudaBackend && hasFloat(e, f, d); },
                .values = {0, 1},
                .defaultValue = 1});
 

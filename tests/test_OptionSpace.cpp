@@ -453,9 +453,13 @@ TEST(fused_weight_butterfly) {
   CHECK(applicable(amd(), "256:4:256:212", {}, "FUSE_WEIGHT_BUTTERFLY"));
   CHECK_EQ(defaultOf(amd(), "512:15:512:101", {}, "FUSE_WEIGHT_BUTTERFLY"), 1);
 
-  // FFT6431's carryFused applies every weight itself.
-  CHECK(!applicable(amd(), "51:512:8:512:101", {}, "FUSE_WEIGHT_BUTTERFLY"));
-  CHECK(!applicable(amd(), "2:512:8:512:202", {}, "FUSE_WEIGHT_BUTTERFLY"));
+  // Every type with an FP64 or FP32 part, hybrids included; a pure NTT has no FP weights.
+  for (const char* spec : {"51:512:8:512:101", "2:512:8:512:202", "4:512:8:512:202", "50:512:8:512:202"}) {
+    CHECK(applicable(amd(), spec, {}, "FUSE_WEIGHT_BUTTERFLY"));
+    CHECK_EQ(defaultOf(amd(), spec, {}, "FUSE_WEIGHT_BUTTERFLY"), 1);
+  }
+  CHECK(!applicable(amd(), "1:512:8:512:202", {}, "FUSE_WEIGHT_BUTTERFLY"));
+  CHECK(!applicable(amd(), "3:512:8:512:202", {}, "FUSE_WEIGHT_BUTTERFLY"));
   CHECK(!applicable(nvidia(), "512:15:512:101", {}, "FUSE_WEIGHT_BUTTERFLY"));
   CHECK(!applicable(nvidia(806, true), "512:15:512:101", {}, "FUSE_WEIGHT_BUTTERFLY"));
 }
