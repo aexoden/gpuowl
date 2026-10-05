@@ -17,6 +17,8 @@
 #include "FFTConfig.h"
 #include "OptionSpace.h"
 
+#include <algorithm>
+#include <array>
 #include <optional>
 #include <span>
 #include <string>
@@ -108,9 +110,15 @@ inline constexpr u32 LOOK_CALLS = 16;
 inline constexpr double TYPE_MARGIN = 1.0;
 
 // How far behind the fastest an entry of such a type may be, under the default lines, and still have its first look.
-// The lines are where most of an entry's early gain is: past this, the rest of a look has not been seen to bring an
-// entry anywhere near the front.
-inline constexpr double LOOK_MARGIN = 0.5;
+// The lines are where most of an entry's early gain is: beyond them a look has been seen to gain a few percent at
+// most, which only matters to an entry near enough to become a contender for it.
+inline constexpr double LOOK_MARGIN = 0.2;
+
+// How far behind the fastest an entry of such a type may be and still be read by each lines sweep, the first sweep's
+// margin first, the last repeating for every sweep after.  The first is wide, so that only a shape far too large or a
+// variant far too slow is passed over; each later sweep has already read every entry near the front under the lines
+// before it, and new lines have not been seen to move an entry by more than a fraction of how far behind it was.
+inline constexpr std::array<double, 3> LINES_MARGINS{1.0, 0.5, 0.25};
 
 // How far behind the fastest an entry may be and still be read at the built-in defaults before the bootstrap.  Narrow:
 // that sweep is there to find where each type starts from, and the lines sweep reads the rest under the lines, which
@@ -131,6 +139,14 @@ struct Exploration {
 
   // Against its cheapest reading, or where it has none, its prior.
   double sweepMargin = SWEEP_MARGIN;
+
+  // Against its best reading, or where it has none, its prior.  Never empty.
+  std::vector<double> linesMargin{LINES_MARGINS.begin(), LINES_MARGINS.end()};
+
+  // The margin of the `n`th lines sweep, from 1.
+  [[nodiscard]] double linesMarginOf(u32 n) const {
+    return linesMargin[std::clamp<size_t>(n, 1, linesMargin.size()) - 1];
+  }
 };
 
 // "hybrid", "single", "groups", or "permute:" followed by tunable keys joined by '+'.  Throws a message for anything

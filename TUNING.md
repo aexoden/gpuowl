@@ -81,9 +81,9 @@ A run goes through these stages, though it interleaves them and you do not need 
    rounds gave out; then the contenders as they stand are halved again, those dropped earlier among them, with every
    share twice as long as last time. So an FFT whose gain lies deep in its search is come back to, for longer each
    time. FFTs further off the pace are timed at their defaults as they become worth it.
-7. **First looks.** Every FFT of a type worth exploring gets a few measurements of search of its own, whatever the
-   halvings and the expected gains make of it: `lookCalls=` calls (16 by default), starting with the default options
-   and then in its search's own order. The looks begin once the lines sweep (stage 8) is done, so each FFT has been
+7. **First looks.** Every FFT of a type worth exploring that is within `lookMargin=` (20% by default) of the fastest
+   gets a few measurements of search of its own, whatever the halvings and the expected gains make of it: `lookCalls=`
+   calls (16 by default), starting with the default options and then in its search's own order. The looks begin once the lines sweep (stage 8) is done, so each FFT has been
    timed under the default options first; one the default options do not touch is timed at its defaults instead. A type is worth exploring when its
    fastest FFT is within `typeMargin=` (100% by default) of the fastest of all, untuned or as tuned now, so on a card
    with slow FP64 the FP64 FFTs are left alone, but every FFT of the types that run the workload is tried. The halvings
@@ -91,16 +91,19 @@ A run goes through these stages, though it interleaves them and you do not need 
    gains its defaults do not show; this is where it gets the chance to show them. FFTs nearest the fastest go first,
    one at a time.
 8. **Lines sweeps.** Once the bootstrap is complete, and again each time a halving ends if the default options have
-   changed since the last sweep, every FFT of a type worth exploring, timed before or not, is timed under the default
-   options as they stood when the sweep began, and where it has found options of its own, under those with the
-   default options laid over them. This is the map of the workload with what tuning has found so far: on a card where
-   a few hundred FFTs serve the workload a sweep takes a few hours, and with `typeMargin=all` a day or more.
-   FFTs of one type tend to like the same options, so this carries what the search found on one FFT to every other
-   at the cost of a measurement each. A halving after the first waits for the sweep, so that it starts from the FFTs as
+   changed since the last sweep, every FFT of a type worth exploring that is within `linesMargin=` of the fastest,
+   timed before or not, is timed under the default options as they stood when the sweep began, and where it has found
+   options of its own, under those with the default options laid over them. FFTs of one type tend to like the same
+   options, so this carries what the search found on one FFT to every other at the cost of a measurement each. The
+   first sweep takes every FFT within 100%, judged by its best time or, if it has none, by what its size suggests, so
+   only shapes far larger than the workload needs and variants far off the pace are passed over; each later sweep is
+   narrower (50%, then 25%), since new default options have not been seen to bring an FFT far behind anywhere near
+   the front. A halving after the first waits for the sweep, so that it starts from the FFTs as
    the default options leave them.
 
-The defaults sweep, the lines sweep and the first looks, the bootstrap and the search take turns, a measurement at a
-time, so none of them waits for the others to finish. Last, the **accuracy checks** read the rounding error of any
+Each of these finishes before the next begins (a round of the halving once begun runs to its end), in the order
+the defaults sweep, the bootstrap, the lines sweep, the first looks, then the search, since each can change which
+FFTs are worth the next. Last, the **accuracy checks** read the rounding error of any
 published configuration whose options change it.
 
 **The default options follow the search.** Once FFTs are published, each FFT type's default options are those of its
@@ -373,9 +376,19 @@ every FFT of the type to have a first look and be read in the lines sweeps. `all
 once one of its FFTs has been timed, which the bootstrap does for every type first. Default `100%`: a type is left
 out only once its best is more than twice as slow as the fastest.
 
-**`linesSweep=0|1`**: whether every FFT of a type worth exploring is timed under the default options once the
+**`linesSweep=0|1`**: whether the FFTs of a type worth exploring are timed under the default options once the
 bootstrap is complete, and again each time a halving ends if they have changed (stage 8 above). Each sweep is recorded in the
 database, so an interrupted run carries on with the one it was in. Default `1`.
+
+**`lookMargin=<P>%|all`**: how far behind the fastest FFT an FFT of a type worth exploring may be, by its best time
+under the default options or, if it has none, by what its size suggests, to have its first look (stage 7 above).
+`all` gives every such FFT one. Default `20%`: past the default options a first look has been seen to gain a few
+percent at most, which only matters to an FFT near enough to become a contender.
+
+**`linesMargin=<P>%+<P>%...|all`**: how far behind the fastest FFT an FFT of a type worth exploring may be, by its
+best time or, if it has none, by what its size suggests, to be timed by each lines sweep in turn (stage 8 above); the
+last margin is used for every sweep after. `all` times every such FFT in every sweep, which with `typeMargin=all` can
+take a day per sweep; `all+50%` does that for the first sweep only. Default `100%+50%+25%`.
 
 **`sweepMargin=<P>%|all`**: how far behind the fastest FFT an FFT may be, timed or as expected, to be timed at the
 built-in defaults in the defaults sweep (stage 4 above). `all` times every FFT that serves the workload before the
@@ -407,8 +420,7 @@ search rank a row by its mean plus two standard errors, so a configuration measu
 one in use and still rank behind it until more calls narrow its error. The tuner gives those calls first to the
 configuration most likely to beat the one in use.
 
-The defaults sweep, the bootstrap and the search take turns, a measurement at a time, so none of them holds the
-others up. The bootstrap says which FFT it searches first for each type, which types it does not, and why:
+The bootstrap says which FFT it searches first for each type, which types it does not, and why:
 
 ```text
 tune: bootstrap: FFT64 256:3:256:202 is searched first, for 16 calls, from 50.412 us/it at the built-in defaults

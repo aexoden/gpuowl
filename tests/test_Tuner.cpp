@@ -1035,8 +1035,8 @@ TEST(a_runs_settings_read_back_as_the_same_run) {
   CHECK_EQ(runSettings(makeScope(parsed("").scope, pending), parsed("")),
            std::string{"workload=118415515-163860861,probe=124647911,probeWeight=0.5,kinds=prp,pfaShapes=ntt,bootstrap=1,"
                        "strategy=hybrid,maxPermute=4,maxPoints=64,comboTop=3,comboTiers=3,contenders=16,roundCalls=16,"
-                       "halvings=2,lookCalls=16,typeMargin=100%,lookMargin=50%,linesSweep=1,sweepMargin=10%,"
-                       "stop=0.1%"});
+                       "halvings=2,lookCalls=16,typeMargin=100%,lookMargin=20%,linesSweep=1,"
+                       "linesMargin=100%+50%+25%,sweepMargin=10%,stop=0.1%"});
 
   for (const char* const text :
        {"", "workload=100M-400M,probe=136279841,stop=0", "kinds=prp+ll,probeWeight=0.3,bootstrap=0,stop=0.25%",
@@ -1044,7 +1044,8 @@ TEST(a_runs_settings_read_back_as_the_same_run) {
         "maxPermute=all,maxPoints=200", "strategy=groups,maxPermute=2,maxPoints=all", "contenders=0",
         "contenders=4,roundCalls=40", "halvings=1", "halvings=5", "lookCalls=0", "lookCalls=40,typeMargin=12.5%",
         "typeMargin=all,linesSweep=0", "lookMargin=all", "lookMargin=35%,typeMargin=60%", "pfaShapes=all",
-        "pfaShapes=none", "sweepMargin=all", "sweepMargin=25%,lookMargin=20%"}) {
+        "pfaShapes=none", "sweepMargin=all", "sweepMargin=25%,lookMargin=20%", "linesMargin=all",
+        "linesMargin=all+50%", "linesMargin=40%,lookMargin=50%", "linesMargin=100%+12.5%+all"}) {
     TuneCommand const command = parsed(text);
     RunScope const scope = makeScope(command.scope, pending);
     std::string const word = runSettings(scope, command);
@@ -1070,6 +1071,7 @@ TEST(a_runs_settings_read_back_as_the_same_run) {
     CHECK(again.exploration.typeMargin == command.exploration.typeMargin);
     CHECK(again.exploration.lookMargin == command.exploration.lookMargin);
     CHECK(again.exploration.sweepMargin == command.exploration.sweepMargin);
+    CHECK(again.exploration.linesMargin == command.exploration.linesMargin);
     CHECK_EQ(again.exploration.linesSweep, command.exploration.linesSweep);
     CHECK(near(again.stop, command.stop));
   }
@@ -1080,7 +1082,9 @@ TEST(a_runs_settings_read_back_as_the_same_run) {
        {"contenders=", "contenders=-1", "contenders=all", "roundCalls=0", "roundCalls=x", "halvings=0",
         "halvings=", "halvings=all", "lookCalls=", "lookCalls=all", "typeMargin=100", "typeMargin=-5%",
         "typeMargin=", "lookMargin=50", "lookMargin=", "linesSweep=2", "emit,lookCalls=4", "emit,lookMargin=50%",
-        "sweepMargin=10", "sweepMargin=", "sweepMargin=-1%", "emit,sweepMargin=10%"}) {
+        "sweepMargin=10", "sweepMargin=", "sweepMargin=-1%", "emit,sweepMargin=10%", "linesMargin=",
+        "linesMargin=100", "linesMargin=100%+", "linesMargin=+50%", "linesMargin=100%++50%", "linesMargin=50%+x",
+        "emit,linesMargin=50%"}) {
     bool refused = false;
     try {
       (void)parsed(bad);
@@ -1101,6 +1105,14 @@ TEST(a_runs_settings_read_back_as_the_same_run) {
   CHECK(parsed("").exploration.sweepMargin == SWEEP_MARGIN);
   CHECK(near(parsed("sweepMargin=30%").exploration.sweepMargin, 0.3));
   CHECK(std::isinf(parsed("sweepMargin=all").exploration.sweepMargin));
+
+  // One margin per sweep, the last for every sweep after.
+  Exploration const byDefault = parsed("").exploration;
+  CHECK(byDefault.linesMarginOf(1) == LINES_MARGINS[0] && byDefault.linesMarginOf(2) == LINES_MARGINS[1] &&
+        byDefault.linesMarginOf(3) == LINES_MARGINS[2] && byDefault.linesMarginOf(9) == LINES_MARGINS[2]);
+  Exploration const listed = parsed("linesMargin=all+40%").exploration;
+  CHECK(std::isinf(listed.linesMarginOf(1)) && near(listed.linesMarginOf(2), 0.4) && near(listed.linesMarginOf(7), 0.4));
+  CHECK(std::isinf(parsed("linesMargin=all").exploration.linesMarginOf(5)));
 }
 
 TEST(a_run_is_weighted_by_the_work_it_recorded_whatever_the_worktodo_says_now) {

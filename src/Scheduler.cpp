@@ -10,6 +10,8 @@
 
 #include <algorithm>
 #include <cinttypes>
+#include <cmath>
+#include <cstdio>
 #include <iterator>
 #include <limits>
 #include <tuple>
@@ -668,7 +670,8 @@ std::vector<size_t> Scheduler::explorable(const Standing& standing, const std::s
 
 std::vector<Item> Scheduler::linesSweepItems(const TuneDB& db, u32 env, const SearchContext& context,
                                              const std::map<EntryKey, std::vector<Reading>>& readings,
-                                             const std::vector<size_t>& entries, const Objective& objective) const {
+                                             const Standing& standing, const std::vector<size_t>& entries,
+                                             const Objective& objective) const {
   linesOwed_ = 0;
   linesWithin_ = 0;
   const LinesRow* latest = nullptr;
@@ -679,8 +682,11 @@ std::vector<Item> Scheduler::linesSweepItems(const TuneDB& db, u32 env, const Se
 
   Defaults const swept = recordedLines(db, *latest);
   const Env& device = bootstrap_.env();
+  std::vector<std::optional<double>> const fastest = measuredAt(objective);
+  double const margin = exploration_.linesMarginOf(latest->n);
   std::vector<Item> out;
   for (size_t const i : entries) {
+    if (!nearFastest(i, standing, fastest, objective, margin)) { continue; }
     const Baseline& b = baselines_[i];
     EntryKey const key = b.key();
     auto const at = readings.find(key);
@@ -781,9 +787,8 @@ u64 Scheduler::searchCallsSince(const TuneDB& db, u32 env, u64 ts) const {
   return out;
 }
 
-bool Scheduler::looksAt(size_t i, const Standing& standing, const std::vector<std::optional<double>>& fastest,
-                        const Objective& objective) const {
-  double const margin = exploration_.lookMargin;
+bool Scheduler::nearFastest(size_t i, const Standing& standing, const std::vector<std::optional<double>>& fastest,
+                            const Objective& objective, double margin) const {
   if (standing.gap[i]) { return *standing.gap[i] <= margin; }
 
   // Without the optimism the value model gives a prior, so that the margin means the same measured or not.
@@ -1195,7 +1200,7 @@ std::vector<Item> Scheduler::admissible(const TuneDB& db, u32 env, const Objecti
     if (exploration_.lookCalls > 0 || exploration_.linesSweep) {
       standing = standingOf(readings, objective);
       explore = explorable(*standing, acceptedTypes(*standing), objective);
-      relines = linesSweepItems(db, env, context, readings, explore, objective);
+      relines = linesSweepItems(db, env, context, readings, *standing, explore, objective);
     }
 
     // The cheapest family still owed its calls, whose search has something to offer.
@@ -1295,7 +1300,7 @@ std::vector<Item> Scheduler::admissible(const TuneDB& db, u32 env, const Objecti
     std::vector<u64> const calls = searchCalls(db, env);
     std::vector<std::optional<double>> const fastest = measuredAt(objective);
     for (size_t const i : explore) {
-      if (!looksAt(i, *standing, fastest, objective)) { continue; }
+      if (!nearFastest(i, *standing, fastest, objective, exploration_.lookMargin)) { continue; }
       ++explorable_;
       if (calls[i] >= exploration_.lookCalls) { continue; }
       ++lookOwed_;
@@ -1667,7 +1672,10 @@ QueueReport runQueue(Scheduler& scheduler, TuneDB& db, u32 env, Bench& bench, co
       }
     }
     bench.declareLines(row);
-    log("tune: lines sweep %u: every FFT worth exploring is read under the default lines %s\n", row.n,
+    double const margin = scheduler.exploration().linesMarginOf(row.n);
+    char within[64] = "";
+    if (!std::isinf(margin)) { snprintf(within, sizeof(within), " within %g%% of the fastest", 100 * margin); }
+    log("tune: lines sweep %u: every FFT worth exploring%s is read under the default lines %s\n", row.n, within,
         linesText(*due).c_str());
     return true;
   };

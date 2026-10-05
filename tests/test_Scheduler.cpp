@@ -2487,22 +2487,25 @@ bool sweepLines(Fixture& f, const Scheduler& scheduler, bool waiting = false) {
 }  // namespace
 
 TEST(every_entry_of_a_type_near_the_fastest_within_the_look_margin_has_a_first_look) {
-  // FP64's best is the fastest, so FP64 entries are looked at, 512:15:512:110 too, 38% behind: further than the
-  // halving or the value model would take it.  512:15:512:111, 59% behind, is past the look margin, and FFT61's only
-  // entry is 2.8 times as dear, past the type margin; neither is.  One entry at a time, nearest the fastest first,
-  // each until it has had its calls of search.
+  // FP64's best is the fastest, so FP64 entries are looked at, and within a 50% look margin 512:15:512:110 too, 38%
+  // behind: further than the halving or the value model would take it, but past the default margin.  512:15:512:111,
+  // 59% behind, is past both, and FFT61's only entry is 2.8 times as dear, past the type margin; neither is.  One entry
+  // at a time, nearest the fastest first, each until it has had its calls of search.
   Fixture f;
   concludedAt(f, "512:15:512:101", {}, 1450);
   concludedAt(f, "512:15:512:110", {}, 2000);
   concludedAt(f, "512:15:512:111", {}, 2300);
   concludedAt(f, "3:1K:8:512:202", {}, 4000);
   std::vector<Baseline> const entries = only({"512:15:512:101", "512:15:512:110", "512:15:512:111", "3:1K:8:512:202"});
-  Scheduler const scheduler = explorer(entries, {.lookCalls = 4, .typeMargin = 1.0, .linesSweep = false});
+  Scheduler const scheduler =
+    explorer(entries, {.lookCalls = 4, .typeMargin = 1.0, .linesSweep = false, .lookMargin = 0.5});
+  Scheduler const byDefault = explorer(entries, {.lookCalls = 4, .typeMargin = 1.0, .linesSweep = false});
 
   CHECK(looking(f, scheduler) == std::vector<std::string>{"512:15:512:101"});
   searched(f, "512:15:512:101", 3);
   CHECK(looking(f, scheduler) == std::vector<std::string>{"512:15:512:101"});
   searched(f, "512:15:512:101", 1);
+  CHECK(looking(f, byDefault).empty());
   CHECK(looking(f, scheduler) == std::vector<std::string>{"512:15:512:110"});
 
   // By rule: taken where nothing is worth the stop fraction.
@@ -2524,7 +2527,8 @@ TEST(every_entry_of_a_type_near_the_fastest_within_the_look_margin_has_a_first_l
   CHECK(looking(f, explorer(entries, {.lookCalls = 4, .typeMargin = 1.0, .linesSweep = false, .lookMargin = all})) ==
         std::vector<std::string>{"512:15:512:111"});
   searched(f, "512:15:512:111", 4, 2400);
-  CHECK(looking(f, explorer(entries, {.lookCalls = 4, .typeMargin = all, .linesSweep = false})).empty());
+  CHECK(
+    looking(f, explorer(entries, {.lookCalls = 4, .typeMargin = all, .linesSweep = false, .lookMargin = 0.5})).empty());
   CHECK(looking(f, explorer(entries, {.lookCalls = 4, .typeMargin = all, .linesSweep = false, .lookMargin = all})) ==
         std::vector<std::string>{"3:1K:8:512:202"});
   CHECK(
@@ -2532,15 +2536,15 @@ TEST(every_entry_of_a_type_near_the_fastest_within_the_look_margin_has_a_first_l
 }
 
 TEST(the_first_halving_waits_for_every_first_look_and_nothing_else_runs_beside_them) {
-  // 101 and 102 contend; 110, 38% behind, does not, but has its look.  While any look is owed, the looks are all there
-  // is, an entry at a time, and the halving waits for the last of them.
+  // 101 and 102 contend; 110, 38% behind, does not, but within a 50% look margin has its look.  While any look is
+  // owed, the looks are all there is, an entry at a time, and the halving waits for the last of them.
   Fixture f;
   concludedAt(f, "512:15:512:101", {}, 1450);
   concludedAt(f, "512:15:512:102", {}, 1460);
   concludedAt(f, "512:15:512:110", {}, 2000);
-  Scheduler const scheduler =
-    explorer(only({"512:15:512:101", "512:15:512:102", "512:15:512:110"}),
-             {.lookCalls = 4, .typeMargin = 1.0, .linesSweep = false}, Halving{.contenders = 2, .roundCalls = 4});
+  Scheduler const scheduler = explorer(only({"512:15:512:101", "512:15:512:102", "512:15:512:110"}),
+                                       {.lookCalls = 4, .typeMargin = 1.0, .linesSweep = false, .lookMargin = 0.5},
+                                       Halving{.contenders = 2, .roundCalls = 4});
   for (const char* const spec : {"512:15:512:101", "512:15:512:102", "512:15:512:110"}) {
     std::vector<Item> const items = scheduler.admissible(f.db, f.env, Objective{f.db, f.env, scope(), Gating::Assumed});
     CHECK(!items.empty() && std::ranges::all_of(items, &Item::look));
@@ -2610,6 +2614,59 @@ TEST(a_lines_sweep_reads_every_entry_under_the_lines_it_recorded_once) {
   // Off, nothing is recorded or owed.
   Scheduler const off = explorer(entries, {.lookCalls = 0, .typeMargin = 1.0, .linesSweep = false});
   CHECK(!off.linesDue(f.db, f.env, off.bootstrapState(f.db, f.env), off.lines(f.db, f.env), true));
+}
+
+TEST(each_lines_sweep_reads_the_ffts_within_its_own_margin_the_last_for_every_sweep_after) {
+  // Against 512:15:512:101's 1450, 110 is 38% behind, 111 59% and 112 121%; 1K:8:1K:101 has no reading, and its prior
+  // puts it at 2.2 times the fastest.  FFT61, 38% behind, carries the lines and owes nothing under them.  By default
+  // the first sweep reads within 100%, the second within 50%, and the third and every one after within 25%.
+  Fixture f;
+  concludedAt(f, "3:1K:8:512:202", {}, 2100);
+  concludedAt(f, "3:1K:8:512:202", {{"LDSPAD_W", "0"}}, 2000);
+  std::map<std::string, double> const cost{
+    {"512:15:512:101", 1450}, {"512:15:512:110", 2000}, {"512:15:512:111", 2300}, {"512:15:512:112", 3200}};
+  for (const auto& [spec, mean] : cost) { concludedAt(f, spec, {}, mean); }
+  std::vector<Baseline> const entries =
+    only({"512:15:512:101", "512:15:512:110", "512:15:512:111", "512:15:512:112", "1K:8:1K:101", "3:1K:8:512:202"});
+  Scheduler const scheduler = explorer(entries, {.lookCalls = 0, .typeMargin = 1.0, .linesSweep = true});
+  double const all = std::numeric_limits<double>::infinity();
+  Scheduler const everything =
+    explorer(entries, {.lookCalls = 0, .typeMargin = 1.0, .linesSweep = true, .linesMargin = {all}});
+
+  // The entries the sweep owes readings, each then read as owed at its own cost so that no standing moves.
+  auto const sweep = [&] {
+    std::vector<std::string> specs;
+    for (const Item& item : scheduler.admissible(f.db, f.env, Objective{f.db, f.env, scope(), Gating::Assumed})) {
+      if (!item.linesSweep) { continue; }
+      std::string const spec = scheduler.baselines()[item.index].fft.spec();
+      if (specs.empty() || specs.back() != spec) { specs.push_back(spec); }
+      concludedAt(f, spec, item.options, cost.at(spec));
+    }
+    CHECK(relining(f, scheduler).empty());
+    return specs;
+  };
+
+  CHECK(sweepLines(f, scheduler));
+  std::vector<std::string> const unbounded = relining(f, everything);
+  for (const char* const spec : {"512:15:512:112 LDSPAD_W=0", "1K:8:1K:101 LDSPAD_W=0"}) {
+    CHECK(std::ranges::find(unbounded, std::string{spec}) != unbounded.end());
+  }
+  Objective const assumed{f.db, f.env, scope(), Gating::Assumed};
+  Phase const phase =
+    scheduler.phase(scheduler.bootstrapState(f.db, f.env), scheduler.admissible(f.db, f.env, assumed), assumed, 0);
+  CHECK(phase.text.find("lines sweep: 1 of 4 FFTs read under the default lines") != std::string::npos);
+  std::vector<std::string> const first{"512:15:512:101", "512:15:512:110", "512:15:512:111"};
+  CHECK(sweep() == first);
+
+  concludedAt(f, "3:1K:8:512:202", {{"WMUL", "4"}}, 1900);
+  CHECK(sweepLines(f, scheduler, true));
+  std::vector<std::string> const second{"512:15:512:101", "512:15:512:110"};
+  CHECK(sweep() == second);
+
+  concludedAt(f, "3:1K:8:512:202", {{"WMUL", "1"}}, 1850);
+  CHECK(sweepLines(f, scheduler, true));
+  std::vector<std::string> const third{"512:15:512:101"};
+  CHECK(sweep() == third);
 }
 
 TEST(a_lines_sweep_reads_every_entry_of_a_type_worth_exploring_under_the_lines_and_the_looks_wait_for_it) {
@@ -2728,8 +2785,8 @@ TEST(every_halving_waits_for_the_lines_sweep_and_one_is_begun_for_lines_that_mov
 
 TEST(a_run_gives_every_fft_of_a_type_worth_exploring_its_first_look) {
   // 1K:8:1K is 76% behind the hybrid, but FP64's 512:15:512 is within 17% of it, so with the look margin lifted every
-  // FP64 FFT has its calls; FFT61, 52% behind, is past a 40% type margin.  At the default look margin 1K:8:1K is
-  // past it, and without first looks it is never searched at all.
+  // FP64 FFT has its calls; FFT61, 52% behind, is past a 40% type margin.  At a 50% look margin 1K:8:1K is past it
+  // and every 512:15:512 is within, and without first looks it is never searched at all.
   auto const run = [](Exploration exploration) {
     Fixture f;
     FakeBench bench{f.db, f.sess, false, 2000};
@@ -2767,7 +2824,7 @@ TEST(a_run_gives_every_fft_of_a_type_worth_exploring_its_first_look) {
   }
   CHECK(bigger > 1);
 
-  for (const auto& [spec, n] : run({.lookCalls = 4, .typeMargin = 0.4, .linesSweep = false})) {
+  for (const auto& [spec, n] : run({.lookCalls = 4, .typeMargin = 0.4, .linesSweep = false, .lookMargin = 0.5})) {
     if (spec.starts_with("1K:8:1K:")) { CHECK_EQ(n, u64{0}); }
     if (spec.starts_with("512:15:512:")) { CHECK(n >= 4); }
   }

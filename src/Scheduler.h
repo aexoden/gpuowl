@@ -421,19 +421,19 @@ private:
   [[nodiscard]] std::vector<size_t> explorable(const Standing& standing, const std::set<enum FFT_TYPES>& accepted,
                                                const Objective& objective) const;
 
-  // Whether `baselines_[i]` is near enough the fastest for its first look: its best reading within
-  // Exploration::lookMargin of what production is measured to run at an exponent of its band the workload weighs, or
-  // where it has no reading, its prior.  `fastest` is measuredAt().
-  [[nodiscard]] bool looksAt(size_t i, const Standing& standing, const std::vector<std::optional<double>>& fastest,
-                             const Objective& objective) const;
+  // Whether `baselines_[i]` has its best reading within `margin` of what production is measured to run at an exponent
+  // of its band the workload weighs, or where it has no reading, its prior.  `fastest` is measuredAt().
+  [[nodiscard]] bool nearFastest(size_t i, const Standing& standing, const std::vector<std::optional<double>>& fastest,
+                                 const Objective& objective, double margin) const;
 
-  // The lines sweep: under the lines the env's latest `lines` row recorded, each entry of `entries` is read once, and
-  // where it has a best set other than the built-in defaults, that set with the lines laid over it, each until a row
-  // of it concludes or fails.  One with no reading yet is read under the lines, priced by its prior.  Where its search
-  // has a step of that very configuration begun, the step is resumed.
+  // The lines sweep: under the lines the env's latest `lines` row recorded, each entry of `entries` within that sweep's
+  // Exploration::linesMarginOf() is read once, and where it has a best set other than the built-in defaults, that set
+  // with the lines laid over it, each until a row of it concludes or fails.  One with no reading yet is read under the
+  // lines, priced by its prior.  Where its search has a step of that very configuration begun, the step is resumed.
   [[nodiscard]] std::vector<Item> linesSweepItems(const TuneDB& db, u32 env, const SearchContext& context,
                                                   const std::map<EntryKey, std::vector<Reading>>& readings,
-                                                  const std::vector<size_t>& entries, const Objective& objective) const;
+                                                  const Standing& standing, const std::vector<size_t>& entries,
+                                                  const Objective& objective) const;
 
   // The calls of search each entry has had: every call at an option set other than the built-in defaults.
   [[nodiscard]] std::vector<u64> searchCalls(const TuneDB& db, u32 env) const;

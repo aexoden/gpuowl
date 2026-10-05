@@ -296,9 +296,12 @@ selection.txt, which a normal run in the same directory (or its -pool) reads.  T
                                              is decided; 0 for none [16]
                          typeMargin=<P>%%|all how far behind the fastest an FFT type may be and be explored [100%%]
                          lookMargin=<P>%%|all how far behind the fastest, under the default lines, an FFT of such a
-                                             type may be and have its first look [50%%]
+                                             type may be and have its first look [20%%]
                          linesSweep=0|1      read every FFT of such a type under the default lines after the
                                              bootstrap and between halvings [1]
+                         linesMargin=<P>%%+<P>%%...|all how far behind the fastest an FFT may be and be read by
+                                             each lines sweep in turn, the last for every sweep after
+                                             [100%%+50%%+25%%]
                          sweepMargin=<P>%%|all how far behind the fastest an FFT may be and be read at the built-in
                                              defaults before the bootstrap [10%%]
                          tunetxt=0|1         also write tune.txt, for binaries that do not read selection.txt [0]

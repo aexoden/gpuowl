@@ -193,6 +193,22 @@ void parseKinds(std::string_view text, ScopeArgs& out) {
   return *value / 100;
 }
 
+// One margin per lines sweep, joined by '+', each a percentage or `all`.
+[[nodiscard]] std::vector<double> parseMargins(std::string_view key, std::string_view text) {
+  std::vector<double> out;
+  for (size_t at = 0; at <= text.size();) {
+    size_t const plus = std::min(text.find('+', at), text.size());
+    try {
+      out.push_back(parseMargin(key, text.substr(at, plus - at)));
+    } catch (const std::string&) {
+      throw "-tune: " + std::string{key} + "= takes a percentage behind the fastest for each lines sweep in turn, the" +
+        " last for every sweep after, such as " + std::string{key} + "=100%+50%+25%, or all";
+    }
+    at = plus + 1;
+  }
+  return out;
+}
+
 // The settings that shape `strategy` beyond its name, as key=value words; none where it searches no groups.
 [[nodiscard]] std::vector<std::string> strategySettings(const Strategy& strategy) {
   if (!strategy.branches()) { return {}; }
@@ -357,6 +373,12 @@ private:
 
 [[nodiscard]] std::string marginText(double margin) {
   return std::isfinite(margin) ? shortest(margin * 100) + "%" : "all";
+}
+
+[[nodiscard]] std::string marginsText(const std::vector<double>& margins) {
+  std::string out;
+  for (double const margin : margins) { out += (out.empty() ? "" : "+") + marginText(margin); }
+  return out;
 }
 
 [[nodiscard]] std::vector<std::string_view> settingTokens(std::string_view text) {
@@ -781,6 +803,8 @@ TuneCommand parseTuneCommand(std::string_view text) {
       out.exploration.lookMargin = parseMargin(key, val);
     } else if (key == "sweepMargin" && queues) {
       out.exploration.sweepMargin = parseMargin(key, val);
+    } else if (key == "linesMargin" && queues) {
+      out.exploration.linesMargin = parseMargins(key, val);
     } else if (key == "linesSweep" && queues) {
       if (val != "0" && val != "1") { throw std::string{"-tune: linesSweep= takes 0 or 1"}; }
       out.exploration.linesSweep = val == "1";
@@ -821,7 +845,8 @@ TuneCommand parseTuneCommand(std::string_view text) {
                    " bootstrap=0|1, strategy=hybrid|single|groups|permute:<KEY>+<KEY>..., maxPermute=<N>|all,"
                    " maxPoints=<N>|all,"
                    " comboTop=<N>, comboTiers=1|2|3, contenders=<N>, roundCalls=<N>, halvings=<N>, lookCalls=<N>,"
-                   " typeMargin=<P>%|all, lookMargin=<P>%|all, linesSweep=0|1, sweepMargin=<P>%|all, stop=<P>%|0,"
+                   " typeMargin=<P>%|all, lookMargin=<P>%|all, linesSweep=0|1, linesMargin=<P>%+<P>%...|all,"
+                   " sweepMargin=<P>%|all, stop=<P>%|0,"
                    " tunetxt=0|1, dashboard=0|1,"
                    " or a subcommand:"
                    " emit, reset, adopt, compact, scope, status, accuracy";
@@ -831,7 +856,8 @@ TuneCommand parseTuneCommand(std::string_view text) {
           "env=<id>, and a run's workload=<lo>-<hi>, probe=<E>, probeWeight=<0..1>, kinds=prp|ll|prp+ll,"
           " pfaShapes=ntt|all|none, bootstrap=0|1, strategy=<S>, maxPermute=<N>|all, maxPoints=<N>|all, comboTop=<N>,"
           " comboTiers=1|2|3, contenders=<N>, roundCalls=<N>, halvings=<N>, lookCalls=<N>,"
-          " typeMargin=<P>%|all, lookMargin=<P>%|all, linesSweep=0|1, sweepMargin=<P>%|all, stop=<P>%|0";
+          " typeMargin=<P>%|all, lookMargin=<P>%|all, linesSweep=0|1, linesMargin=<P>%+<P>%...|all,"
+          " sweepMargin=<P>%|all, stop=<P>%|0";
         break;
       case TuneVerb::Accuracy: accepted = "workload=<lo>-<hi>, probe=<E>, fft=<spec>, groups=<Group>+<Group>..."; break;
       }
@@ -907,6 +933,7 @@ std::string runSettings(const RunScope& scope, const TuneCommand& command) {
     ",typeMargin=" + marginText(command.exploration.typeMargin) +
     ",lookMargin=" + marginText(command.exploration.lookMargin) +
     ",linesSweep=" + (command.exploration.linesSweep ? "1" : "0") +
+    ",linesMargin=" + marginsText(command.exploration.linesMargin) +
     ",sweepMargin=" + marginText(command.exploration.sweepMargin);
   return out + ",stop=" + (command.stop > 0 ? shortest(command.stop * 100) + "%" : "0");
 }
