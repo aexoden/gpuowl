@@ -199,6 +199,16 @@ class PreprocessorTest(unittest.TestCase):
             },
         )
 
+    def test_a_loop_after_a_fused_first_step_starts_at_s0(self) -> None:
+        fftbase = "for (u32 s = s0; s < WG; s *= RADIX) { shufl(lds, u, s, numWG, me); }"
+        shape = csi.Shape(8, 64)
+        site = csi.CallSite
+        self.assertEqual(csi.call_sites(fftbase, [shape]), {shape: {site("shufl", 1, 8), site("shufl", 8, 8)}})
+
+    def test_a_loop_from_any_other_start_is_not_read(self) -> None:
+        with self.assertRaises(csi.SourceError):
+            csi.call_sites("for (u32 s = s1; s < WG; s *= RADIX) { shufl(lds, u, s, numWG, me); }", [csi.Shape(8, 64)])
+
     def test_call_to_an_unknown_shufl_is_an_error(self) -> None:
         with self.assertRaises(csi.SourceError):
             csi.call_sites("shufl3(lds, u, 1, numWG, lowMe);", [csi.Shape(8, 64)])

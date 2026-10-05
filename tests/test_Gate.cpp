@@ -282,7 +282,7 @@ TEST(a_reading_counts_in_its_own_regime_at_the_gate) {
 
 TEST(a_set_that_spends_accuracy_waits_for_its_references_reading) {
   Fixture f;
-  u64 const top = 131'952'797;
+  u64 const top = 144'116'281;
   UseConfig const moved{{"TAIL_TRIGS32", "0"}};
 
   f.read(hybrid(), top, moved, 12);
@@ -422,9 +422,9 @@ TEST(a_set_at_default_accuracy_short_of_the_floor_is_published_up_to_a_reach_der
   // one reach. The model reads z 6.1 and fails at the top the table gives now.
   Fixture f;
   FFTConfig const fft{"2:512:8:512:212"};
-  Interval const span = interval(fft, 131'952'797);
+  Interval const span = interval(fft, 144'116'281);
   u64 const top = gateExponent(span);
-  CHECK_EQ(top, u64(131'952'797));
+  CHECK_EQ(top, u64(144'116'281));
 
   auto const [v, taken] = settle(
     f, fft, top, {}, [&](bool, u64 E) { return linear(fft, top, 6.1, 0.021, E); }, [&](u64 E) { return E != top; });
@@ -481,7 +481,7 @@ TEST(a_set_whose_arithmetic_is_its_references_is_published_to_the_same_reach) {
 TEST(a_set_no_reach_can_be_confirmed_for_is_rejected) {
   Fixture f;
   FFTConfig const fft{"2:512:8:512:212"};
-  u64 const top = 131'952'797;
+  u64 const top = 144'116'281;
 
   // Wrong wherever it is read.
   auto const [v, taken] =
@@ -502,7 +502,7 @@ TEST(a_derived_reach_survives_a_reload_of_the_database) {
   // z as the device reports it, with more digits than a roe row is written with.
   Fixture f;
   FFTConfig const fft{"2:512:8:512:212"};
-  u64 const top = 131'952'797;
+  u64 const top = 144'116'281;
   auto const [v, taken] = settle(
     f, fft, top, {}, [&](bool, u64 E) { return linear(fft, top, 6.1234567, 0.021, E) + 0.0012345; },
     [&](u64 E) { return E != top; });

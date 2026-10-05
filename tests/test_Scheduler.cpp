@@ -1413,12 +1413,12 @@ TEST(the_first_call_of_a_cheaper_entry_replaces_its_estimate_while_the_reading_i
 }
 
 TEST(a_cheaper_estimate_holds_an_entry_back_only_where_it_serves) {
-  // 2:512:8:512 is priced well below the 1700 measured but serves nothing above about 132M.  Over a workload it covers,
-  // 512:16:512 waits on it; over one reaching to 140M, 512:16:512 is within 10% of what production runs up there, and
+  // 2:512:8:512 is priced well below the 1700 measured but serves nothing above about 144M.  Over a workload it covers,
+  // 512:16:512 waits on it; over one reaching to 150M, 512:16:512 is within 10% of what production runs up there, and
   // is owed whatever the hybrid turns out to cost.
   Fixture f;
   concludedAt(f, "512:15:512:212", {}, 1700);
-  for (u64 const hi : {130'000'000ull, 140'000'000ull}) {
+  for (u64 const hi : {130'000'000ull, 150'000'000ull}) {
     RunScope const in = makeScope(ScopeArgs{.lo = 110'000'000, .hi = hi, .probe = 118'063'003}, {});
     Scheduler const scheduler{in,
                               entriesOf(in, {"512:15:512:212", "512:16:512:101", "2:512:8:512:202"}),
@@ -1427,7 +1427,7 @@ TEST(a_cheaper_estimate_holds_an_entry_back_only_where_it_serves) {
                               Strategy{.kind = Strategy::Kind::Single}};
     std::set<std::string> const owed = sweptBy(f, scheduler);
     CHECK(owed.contains("2:512:8:512:202"));
-    CHECK_EQ(owed.contains("512:16:512:101"), hi > 132'000'000);
+    CHECK_EQ(owed.contains("512:16:512:101"), hi > 144'000'000);
   }
 }
 

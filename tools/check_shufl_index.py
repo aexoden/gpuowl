@@ -608,7 +608,11 @@ class CallSite(NamedTuple):
 
 
 _CALL: Final = re.compile(r"\b(shufl\w*)\s*\(")
-_GENERIC_LOOP: Final = re.compile(r"\bfor\s*\(\s*u32\s+s\s*=\s*1\s*;\s*s\s*<\s*WG\s*;\s*s\s*\*=\s*RADIX\s*\)\s*\{")
+# The loop starts at s0 where a fused first radix step runs ahead of it; s0 is then 1 or RADIX, so the loop's f values
+# are still powers of RADIX below WG.
+_GENERIC_LOOP: Final = re.compile(
+    r"\bfor\s*\(\s*u32\s+s\s*=\s*(?:1|s0)\s*;\s*s\s*<\s*WG\s*;\s*s\s*\*=\s*RADIX\s*\)\s*\{"
+)
 
 
 def _powers(shape: Shape) -> Iterator[int]:

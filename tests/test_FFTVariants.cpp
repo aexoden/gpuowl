@@ -146,7 +146,8 @@ TEST(kernel_facts_are_found) {
   CHECK(middle.find("#define MM_CHAIN (FFT_VARIANT_M == 0 ? 0 : 1)") != std::string::npos);
   CHECK(middle.find("#define MM2_CHAIN (FFT_VARIANT_M == 0 ? 0 : 2)") != std::string::npos);
 
-  // Under PFA each arithmetic's out-of-place middle kernels run pfaMiddleIn/Out in place of the chained middleMuls.
+  // Under PFA each arithmetic's middle kernels, in place and out of place, run pfaMiddleIn/Out in place of the chained
+  // middleMuls.
   auto count = [](const std::string& text, const std::string& what) {
     size_t n = 0;
     for (size_t at = text.find(what); at != std::string::npos; at = text.find(what, at + 1)) { ++n; }
@@ -154,8 +155,8 @@ TEST(kernel_facts_are_found) {
   };
   std::string const in = clSource("fftmiddlein.cl");
   std::string const out = clSource("fftmiddleout.cl");
-  CHECK_EQ(count(in, "#if PFA\n  pfaMiddleIn("), size_t{4});
-  CHECK_EQ(count(out, "#if PFA\n  pfaMiddleOut("), size_t{4});
+  CHECK_EQ(count(in, "#if PFA\n  pfaMiddleIn("), size_t{8});
+  CHECK_EQ(count(out, "#if PFA\n  pfaMiddleOut("), size_t{8});
 }
 
 TEST(one_name_per_configuration) {
