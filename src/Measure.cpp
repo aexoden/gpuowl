@@ -25,8 +25,8 @@ namespace tune {
 
 namespace {
 
-std::vector<KeyVal> asExtraConf(const FFTConfig& fft, const UseConfig& options) {
-  UseConfig const fitted = withHostFit(fft, options);
+std::vector<KeyVal> asExtraConf(const Env& env, const FFTConfig& fft, const UseConfig& options) {
+  UseConfig const fitted = withHostFit(env, fft, options);
   return {fitted.begin(), fitted.end()};
 }
 
@@ -99,10 +99,10 @@ Call summarize(const IterSamples& samples) {
   return out;
 }
 
-Call timeCall(GpuCommon shared, const FFTConfig& fft, TestKind kind, u64 exponent, const UseConfig& options,
-              u32 nBlocks, u32 blockSize) {
+Call timeCall(GpuCommon shared, const Env& env, const FFTConfig& fft, TestKind kind, u64 exponent,
+              const UseConfig& options, u32 nBlocks, u32 blockSize) {
   Timer t;
-  auto gpu = Gpu::make(exponent, shared, fft, asExtraConf(fft, options), false, kind);
+  auto gpu = Gpu::make(exponent, shared, fft, asExtraConf(env, fft, options), false, kind);
   double const buildSec = t.reset();
 
   Call out = summarize(kind == TestKind::LL ? gpu->timeItersLL(nBlocks, blockSize, CALL_WARMUP_BLOCKS, CALL_HEAT_SEC)
@@ -126,13 +126,13 @@ Call checkedTwice(Call first, const std::function<Call()>& again) {
   return again();
 }
 
-RoeCheck roeCheck(GpuCommon shared, const FFTConfig& fft, const UseConfig& options, u64 exponent) {
+RoeCheck roeCheck(GpuCommon shared, const Env& env, const FFTConfig& fft, const UseConfig& options, u64 exponent) {
   RoeCheck out{.minZ = minSafeZ(fft.shape.fft_type), .exponent = exponent};
 
   if (exactArithmetic(fft)) { return out; }
   out.applicable = true;
 
-  auto gpu = Gpu::make(exponent, shared, fft, asExtraConf(fft, options), false, TestKind::PRP);
+  auto gpu = Gpu::make(exponent, shared, fft, asExtraConf(env, fft, options), false, TestKind::PRP);
   auto [checkOk, res, roeSq, roeMul] = gpu->measureROE(false);
 
   out.checkOk = checkOk;
@@ -594,8 +594,9 @@ Call Session::attempt(GpuCommon shared, const FFTConfig& fft, TestKind kind, u64
     return out;
   }
 
-  if (Status const status = caught([&] { out = timeCall(shared, fft, kind, exponent, options, nBlocks, blockSize); },
-                                   fft, kind, exponent, options, "timing");
+  if (Status const status =
+        caught([&] { out = timeCall(shared, env_, fft, kind, exponent, options, nBlocks, blockSize); }, fft, kind,
+               exponent, options, "timing");
       status != Status::Ok) {
     out.measurement.status = status;
   }
@@ -678,7 +679,7 @@ RoeCheck Session::checkRoe(const FFTConfig& fft, const UseConfig& options, u64 e
     return out;
   }
 
-  if (Status const status = caught([&] { out = roeCheck(shared_, fft, options, exponent); }, fft, TestKind::PRP,
+  if (Status const status = caught([&] { out = roeCheck(shared_, env_, fft, options, exponent); }, fft, TestKind::PRP,
                                    exponent, options, "accuracy check");
       status != Status::Ok) {
     // The reading was never taken, so nothing about it may be reported.
@@ -1012,7 +1013,7 @@ MeasureOutcome runMeasure(GpuCommon shared, const MeasureArgs& want) {
   // What draining at every block boundary costs.
   if (want.drain && !session.stopped()) {
     auto time = [&](u32 blocks, u32 size) {
-      auto gpu = Gpu::make(exponent, shared, fft, asExtraConf(fft, options), false, TestKind::PRP);
+      auto gpu = Gpu::make(exponent, shared, fft, asExtraConf(session.env(), fft, options), false, TestKind::PRP);
       return statsOf(gpu->timeIters(blocks, size, 5000 / size, CALL_HEAT_SEC).usPerIt).mean;
     };
 

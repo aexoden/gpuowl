@@ -49,6 +49,9 @@ struct Env {
   // honor PDL however the kernels were compiled.
   bool pdlLaunch = false;
 
+  // CL_DEVICE_MAX_WORK_GROUP_SIZE, which caps carryFused's WMUL.
+  u32 maxWorkGroupSize = 1024;
+
   string deviceName{};
   string driverVersion{};
 
@@ -222,14 +225,15 @@ struct ClusterGraph {
 [[nodiscard]] string clusterPictureMismatch(const ClusterGraph& graph);
 
 // `config` with what the host would otherwise derive for this FFT written in, so that it has nothing to change and log:
-// an unset WMUL is 2 to the host until the LDS budget caps it, and a width row that fills the budget loses its padding.
-// The host's lines are then left for what the table does not predict, as is a key that was set.
-[[nodiscard]] UseConfig withHostFit(const FFTConfig& fft, UseConfig config);
+// an unset WMUL is 2 to the host until the LDS budget or the device's workgroup size caps it, and a width row that
+// fills the budget loses its padding. The host's lines are then left for what the table does not predict, as is a key
+// that was set.
+[[nodiscard]] UseConfig withHostFit(const Env& env, const FFTConfig& fft, UseConfig config);
 
 // For a label: " (LDSPAD_W=0: LDS budget)" where the LDS budget turns the padding off under `to` but not under `from`
 // and `named` does not already give LDSPAD_W, or nothing. A move of SHUFL_BYTES_W can fill the budget, so the one move
 // a label names is then not all that is measured.
-[[nodiscard]] string ldsAsideNote(const FFTConfig& fft, const UseConfig& from, const UseConfig& to,
+[[nodiscard]] string ldsAsideNote(const Env& env, const FFTConfig& fft, const UseConfig& from, const UseConfig& to,
                                   const std::set<string>& named);
 
 // LOADS and STORES pack one access mode per class of memory traffic into their decimal digits.

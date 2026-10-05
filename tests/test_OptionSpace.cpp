@@ -480,6 +480,15 @@ TEST(lds_budget) {
   CHECK_EQ(valuesOf(e, "512:15:512:101", {}, "WMUL"), string("1,2,4"));
   CHECK_EQ(defaultOf(e, "512:15:512:101", {}, "WMUL"), 2);
 
+  // And at most the device's workgroup size over carryFused's width / nW threads a line.
+  Env const radeon{.isAmd = true, .maxWorkGroupSize = 256, .deviceName = "gfx906"};
+  CHECK_EQ(valuesOf(radeon, "2K:8:256:202", {}, "WMUL"), string("1"));
+  CHECK_EQ(defaultOf(radeon, "2K:8:256:202", {}, "WMUL"), 1);
+  CHECK_EQ(valuesOf(radeon, "1K:8:1K:101", {}, "WMUL"), string("1,2"));
+  CHECK_EQ(valuesOf(radeon, "512:15:512:101", {}, "WMUL"), string("1,2,4"));
+  CHECK_EQ(valuesOf(radeon, "256:4:256:101", {}, "WMUL"), string("1,2,4"));
+  CHECK_EQ(valuesOf(e, "2K:8:256:202", {}, "WMUL"), string("1,2"));
+
   // At 1K * 16 * 2 the width row fills the budget, so clDefines() forces LDSPAD_W=0 and swizzling is
   // offered instead.
   UseConfig const full{{"SHUFL_BYTES_W", "16"}};
@@ -556,45 +565,53 @@ TEST(swiz_recompute) {
 }
 
 TEST(host_fit_writes_in_what_the_host_would_derive) {
+  Env const e = nvidia();
   FFTConfig const wide{"4K:12:512:101"};
   FFTConfig const oneK{"1K:8:1K:101"};
   FFTConfig const narrow{"512:15:512:101"};
 
   // At 4K the host caps its WMUL of 2 at 1, and 4K * 8 * 1 then fills the budget.
-  CHECK(withHostFit(wide, {}) == (UseConfig{{"LDSPAD_W", "0"}, {"WMUL", "1"}}));
-  CHECK(withHostFit(wide, {{"SHUFL_BYTES_W", "4"}}) == (UseConfig{{"SHUFL_BYTES_W", "4"}, {"WMUL", "1"}}));
+  CHECK(withHostFit(e, wide, {}) == (UseConfig{{"LDSPAD_W", "0"}, {"WMUL", "1"}}));
+  CHECK(withHostFit(e, wide, {{"SHUFL_BYTES_W", "4"}}) == (UseConfig{{"SHUFL_BYTES_W", "4"}, {"WMUL", "1"}}));
 
   // 1K * 16 * 2 fills it, and 1K * 16 * 1 does not.
-  CHECK(withHostFit(oneK, {{"SHUFL_BYTES_W", "16"}}) == (UseConfig{{"LDSPAD_W", "0"}, {"SHUFL_BYTES_W", "16"}}));
+  CHECK(withHostFit(e, oneK, {{"SHUFL_BYTES_W", "16"}}) == (UseConfig{{"LDSPAD_W", "0"}, {"SHUFL_BYTES_W", "16"}}));
   UseConfig const halved{{"SHUFL_BYTES_W", "16"}, {"WMUL", "1"}};
-  CHECK(withHostFit(oneK, halved) == halved);
-  CHECK(withHostFit(oneK, {{"LDSPAD_W", "0"}, {"SHUFL_BYTES_W", "16"}}) ==
+  CHECK(withHostFit(e, oneK, halved) == halved);
+  CHECK(withHostFit(e, oneK, {{"LDSPAD_W", "0"}, {"SHUFL_BYTES_W", "16"}}) ==
         (UseConfig{{"LDSPAD_W", "0"}, {"SHUFL_BYTES_W", "16"}}));
 
   // Nothing to derive, and a WMUL that was set is the host's to cap and report.
-  CHECK(withHostFit(narrow, {}).empty());
-  CHECK(withHostFit(narrow, {{"WMUL", "4"}}) == (UseConfig{{"WMUL", "4"}}));
-  CHECK(withHostFit(oneK, {{"WMUL", "4"}}) == (UseConfig{{"WMUL", "4"}}));
+  CHECK(withHostFit(e, narrow, {}).empty());
+  CHECK(withHostFit(e, narrow, {{"WMUL", "4"}}) == (UseConfig{{"WMUL", "4"}}));
+  CHECK(withHostFit(e, oneK, {{"WMUL", "4"}}) == (UseConfig{{"WMUL", "4"}}));
 
   // A prime-factor middle takes every placement and tail, so there is nothing to write in for it.
   for (const char* spec : {"1:1K:6:256:202", "51:512:12:512:202", "2:512:7:512:202", "1:1K:8:256:202"}) {
-    CHECK(withHostFit(FFTConfig{spec}, {}).empty());
+    CHECK(withHostFit(e, FFTConfig{spec}, {}).empty());
   }
+
+  // A device of 256 threads a workgroup takes 2K's 256-thread carryFused line once; the host would lower WMUL to 1.
+  Env const radeon{.isAmd = true, .maxWorkGroupSize = 256, .deviceName = "gfx906"};
+  CHECK(withHostFit(radeon, FFTConfig{"2K:8:256:202"}, {}) == (UseConfig{{"WMUL", "1"}}));
+  CHECK(withHostFit(radeon, FFTConfig{"1K:8:1K:101"}, {}).empty());
+  CHECK(withHostFit(e, FFTConfig{"2K:8:256:202"}, {}) == (UseConfig{{"LDSPAD_W", "0"}}));
 }
 
 TEST(lds_aside_note_names_padding_a_move_turns_off) {
+  Env const e = nvidia();
   FFTConfig const oneK{"1K:8:1K:101"};
   UseConfig const sixteen{{"SHUFL_BYTES_W", "16"}};
-  CHECK_EQ(ldsAsideNote(oneK, {}, sixteen, {"SHUFL_BYTES_W"}), string(" (LDSPAD_W=0: LDS budget)"));
+  CHECK_EQ(ldsAsideNote(e, oneK, {}, sixteen, {"SHUFL_BYTES_W"}), string(" (LDSPAD_W=0: LDS budget)"));
 
   // Not where the label already says so, the background had no padding, or the budget still fits.
-  CHECK_EQ(ldsAsideNote(oneK, {}, sixteen, {"LDSPAD_W", "SHUFL_BYTES_W"}), string());
-  CHECK_EQ(ldsAsideNote(oneK, {{"LDSPAD_W", "0"}}, sixteen, {"SHUFL_BYTES_W"}), string());
-  CHECK_EQ(ldsAsideNote(FFTConfig{"512:15:512:101"}, {}, sixteen, {"SHUFL_BYTES_W"}), string());
+  CHECK_EQ(ldsAsideNote(e, oneK, {}, sixteen, {"LDSPAD_W", "SHUFL_BYTES_W"}), string());
+  CHECK_EQ(ldsAsideNote(e, oneK, {{"LDSPAD_W", "0"}}, sixteen, {"SHUFL_BYTES_W"}), string());
+  CHECK_EQ(ldsAsideNote(e, FFTConfig{"512:15:512:101"}, {}, sixteen, {"SHUFL_BYTES_W"}), string());
 
   // Padding a move makes room for is not set aside: WMUL=1 at 1K, SHUFL_BYTES_W=4 at 4K.
-  CHECK_EQ(ldsAsideNote(oneK, sixteen, {{"SHUFL_BYTES_W", "16"}, {"WMUL", "1"}}, {"WMUL"}), string());
-  CHECK_EQ(ldsAsideNote(FFTConfig{"4K:12:512:101"}, {}, {{"SHUFL_BYTES_W", "4"}}, {"SHUFL_BYTES_W"}), string());
+  CHECK_EQ(ldsAsideNote(e, oneK, sixteen, {{"SHUFL_BYTES_W", "16"}, {"WMUL", "1"}}, {"WMUL"}), string());
+  CHECK_EQ(ldsAsideNote(e, FFTConfig{"4K:12:512:101"}, {}, {{"SHUFL_BYTES_W", "4"}}, {"SHUFL_BYTES_W"}), string());
 }
 
 // Every key that applies, touchesFn, valuesFn, defaultFn or inert reads must be in dependsOn: moving any other key

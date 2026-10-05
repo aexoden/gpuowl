@@ -66,6 +66,7 @@ Env detectEnv(const Context& context, const Args& args) {
   if (env.isNvidia) { env.computeCapability = getNvidiaComputeCapability(id); }
   env.deviceName = getDeviceName(id);
   env.driverVersion = getDriverVersion(id);
+  env.maxWorkGroupSize = getMaxWorkGroupSize(id);
   return env;
 }
 
@@ -106,27 +107,29 @@ u32 numDataTypes(const FFTConfig& f) {
 u32 shuflBytesW(const UseConfig& d) { return u32(useValue(d, "SHUFL_BYTES_W", 8)); }
 u32 shuflBytesH(const UseConfig& d) { return u32(useValue(d, "SHUFL_BYTES_H", 8)); }
 
-u32 maxWmul(const FFTConfig& f, const UseConfig& d) {
+// carryFused's workgroup is width / nW threads per WMUL line, and clDefines() lowers WMUL until that fits the device.
+u32 maxWmul(const Env& e, const FFTConfig& f, const UseConfig& d) {
   u32 m = LDS_BUDGET / (f.shape.width * shuflBytesW(d));
   if (m > 2 && f.shape.width >= 1024) { m = 2; }
   if (m > 1 && f.shape.width >= 4096) { m = 1; }
-  return m;
+  m = std::min(m, e.maxWorkGroupSize / (f.shape.width / f.shape.nW()));
+  return std::max(m, 1u);
 }
 
-u32 effectiveWmul(const FFTConfig& f, const UseConfig& d) {
-  return std::min(u32(useValue(d, "WMUL", 2)), maxWmul(f, d));
+u32 effectiveWmul(const Env& e, const FFTConfig& f, const UseConfig& d) {
+  return std::min(u32(useValue(d, "WMUL", 2)), maxWmul(e, f, d));
 }
 
-bool ldsPadWFits(const FFTConfig& f, const UseConfig& d) {
-  return f.shape.width * shuflBytesW(d) * effectiveWmul(f, d) < LDS_BUDGET;
+bool ldsPadWFits(const Env& e, const FFTConfig& f, const UseConfig& d) {
+  return f.shape.width * shuflBytesW(d) * effectiveWmul(e, f, d) < LDS_BUDGET;
 }
 
-int effectiveLdsPadW(const FFTConfig& f, const UseConfig& d) {
-  return ldsPadWFits(f, d) ? useValue(d, "LDSPAD_W", 1) : 0;
+int effectiveLdsPadW(const Env& e, const FFTConfig& f, const UseConfig& d) {
+  return ldsPadWFits(e, f, d) ? useValue(d, "LDSPAD_W", 1) : 0;
 }
 
-int effectiveLdsSwizW(const FFTConfig& f, const UseConfig& d) {
-  return effectiveLdsPadW(f, d) == 0 ? useValue(d, "LDSSWIZ_W", 0) : 0;
+int effectiveLdsSwizW(const Env& e, const FFTConfig& f, const UseConfig& d) {
+  return effectiveLdsPadW(e, f, d) == 0 ? useValue(d, "LDSSWIZ_W", 0) : 0;
 }
 
 int effectiveLdsSwizH(const UseConfig& d) { return useValue(d, "LDSPAD_H", 1) == 0 ? useValue(d, "LDSSWIZ_H", 0) : 0; }
@@ -180,9 +183,9 @@ bool swizRecomputeReached(const FFTConfig& f, u32 size, u32 radix, u32 shuflByte
   return shuflBytes == 8 || (shuflBytes == 4 && size != 2048);
 }
 
-u32 swizRecomputeTouches(const Env&, const FFTConfig& f, const UseConfig& d) {
+u32 swizRecomputeTouches(const Env& e, const FFTConfig& f, const UseConfig& d) {
   u32 touches = 0;
-  if (swizRecomputeReached(f, f.shape.width, f.shape.nW(), shuflBytesW(d), effectiveLdsSwizW(f, d))) {
+  if (swizRecomputeReached(f, f.shape.width, f.shape.nW(), shuflBytesW(d), effectiveLdsSwizW(e, f, d))) {
     touches |= KG_WIDTH | KG_CARRY;
   }
   if (swizRecomputeReached(f, f.shape.height, f.shape.nH(), shuflBytesH(d), effectiveLdsSwizH(d))) {
@@ -607,7 +610,7 @@ vector<Option> buildTable() {
                .touches = KG_WIDTH | KG_CARRY,
                .structural = true,
                .dependsOn = {"SHUFL_BYTES_W", "WMUL"},
-               .applies = [](const Env&, const FFTConfig& f, const UseConfig& d) { return ldsPadWFits(f, d); },
+               .applies = [](const Env& e, const FFTConfig& f, const UseConfig& d) { return ldsPadWFits(e, f, d); },
                .values = {0, 1},
                .defaultValue = 1});
   t.push_back({.key = "LDSSWIZ_W",
@@ -615,8 +618,8 @@ vector<Option> buildTable() {
                .touches = KG_WIDTH | KG_CARRY,
                .dependsOn = {"SHUFL_BYTES_W", "LDSPAD_W", "WMUL"},
                .applies =
-                 [](const Env&, const FFTConfig& f, const UseConfig& d) {
-                   return ldsSwizReached(f, f.shape.width, shuflBytesW(d)) && effectiveLdsPadW(f, d) == 0;
+                 [](const Env& e, const FFTConfig& f, const UseConfig& d) {
+                   return ldsSwizReached(f, f.shape.width, shuflBytesW(d)) && effectiveLdsPadW(e, f, d) == 0;
                  },
                .values = {0, 1},
                .defaultValue = 0});
@@ -642,20 +645,20 @@ vector<Option> buildTable() {
                .touches = KG_CARRY,
                .values = {0, 1},
                .defaultValue = 1});
-  t.push_back(
-    {.key = "WMUL",
-     .group = Group::Width,
-     .touches = KG_CARRY,
-     .dependsOn = {"SHUFL_BYTES_W"},
-     .valuesFn =
-       [](const Env&, const FFTConfig& f, const UseConfig& d) {
-         vector<int> v;
-         for (u32 w : {1, 2, 4}) {
-           if (w <= maxWmul(f, d)) { v.push_back(int(w)); }
-         }
-         return v;
-       },
-     .defaultFn = [](const Env&, const FFTConfig& f, const UseConfig& d) { return int(std::min(2u, maxWmul(f, d))); }});
+  t.push_back({.key = "WMUL",
+               .group = Group::Width,
+               .touches = KG_CARRY,
+               .dependsOn = {"SHUFL_BYTES_W"},
+               .valuesFn =
+                 [](const Env& e, const FFTConfig& f, const UseConfig& d) {
+                   vector<int> v;
+                   for (u32 w : {1, 2, 4}) {
+                     if (w <= maxWmul(e, f, d)) { v.push_back(int(w)); }
+                   }
+                   return v;
+                 },
+               .defaultFn = [](const Env& e, const FFTConfig& f,
+                               const UseConfig& d) { return int(std::min(2u, maxWmul(e, f, d))); }});
   // Only the FP64 and FP32 parts have weights for the first butterfly to fold in. nVidia's compiler makes that fusion
   // by itself, so both values compile alike there.
   t.push_back({.key = "FUSE_WEIGHT_BUTTERFLY",
@@ -889,15 +892,18 @@ const Option* findOption(const string& key) {
 
 bool isKnownKey(const string& key) { return findOption(key) != nullptr; }
 
-UseConfig withHostFit(const FFTConfig& fft, UseConfig config) {
-  u32 const wmul = effectiveWmul(fft, config);
+UseConfig withHostFit(const Env& env, const FFTConfig& fft, UseConfig config) {
+  u32 const wmul = effectiveWmul(env, fft, config);
   if (!config.contains("WMUL") && wmul != 0 && wmul != 2) { config["WMUL"] = std::to_string(wmul); }
-  if (!ldsPadWFits(fft, config) && useValue(config, "LDSPAD_W", 1) != 0) { config["LDSPAD_W"] = "0"; }
+  if (!ldsPadWFits(env, fft, config) && useValue(config, "LDSPAD_W", 1) != 0) { config["LDSPAD_W"] = "0"; }
   return config;
 }
 
-string ldsAsideNote(const FFTConfig& fft, const UseConfig& from, const UseConfig& to, const std::set<string>& named) {
-  if (named.contains("LDSPAD_W") || effectiveLdsPadW(fft, to) != 0 || effectiveLdsPadW(fft, from) == 0) { return {}; }
+string ldsAsideNote(const Env& env, const FFTConfig& fft, const UseConfig& from, const UseConfig& to,
+                    const std::set<string>& named) {
+  if (named.contains("LDSPAD_W") || effectiveLdsPadW(env, fft, to) != 0 || effectiveLdsPadW(env, fft, from) == 0) {
+    return {};
+  }
   return " (LDSPAD_W=0: LDS budget)";
 }
 
@@ -1155,6 +1161,7 @@ vector<MatrixPoint> selfCheckMatrix() {
                               .noAsm = noAsm,
                               .computeCapability = cc,
                               .pdlLaunch = pdl,
+                              .maxWorkGroupSize = vega ? 256u : 1024u,
                               .deviceName = vega ? "gfx906" : ""});
             }
           }

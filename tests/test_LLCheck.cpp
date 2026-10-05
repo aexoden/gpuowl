@@ -137,7 +137,7 @@ TEST(the_values_the_host_clamps_to_are_still_the_built_in_defaults) {
 
   bool clamped = false;
   for (const FFTConfig& witness : witnessOrder(env, wide, 2'000'000'011)) {
-    UseConfig const host = withHostFit(witness, {});
+    UseConfig const host = withHostFit(env, witness, {});
     clamped = clamped || !host.empty();
     CHECK(atBuiltInDefaults(env, witness, host));
   }

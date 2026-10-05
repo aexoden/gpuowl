@@ -74,7 +74,7 @@ inline constexpr double CALL_HEAT_SEC = 1.0;
 }
 
 // Builds a Gpu for the configuration and times it.  Exceptions from the build or the run propagate.
-[[nodiscard]] Call timeCall(GpuCommon shared, const FFTConfig& fft, TestKind kind, u64 exponent,
+[[nodiscard]] Call timeCall(GpuCommon shared, const Env& env, const FFTConfig& fft, TestKind kind, u64 exponent,
                             const UseConfig& options, u32 nBlocks = BLOCKS_PER_CALL, u32 blockSize = 1000);
 
 // The call to record for an LL reading checked against `reference`.  One that disagrees is read again, since a fault
@@ -116,7 +116,8 @@ struct RoeCheck {
 //
 // Always on the PRP kernel set: only the PRP carry kernels have a ROE variant, so an LL Gpu collects no rounding errors
 // at all.
-[[nodiscard]] RoeCheck roeCheck(GpuCommon shared, const FFTConfig& fft, const UseConfig& options, u64 exponent);
+[[nodiscard]] RoeCheck roeCheck(GpuCommon shared, const Env& env, const FFTConfig& fft, const UseConfig& options,
+                                u64 exponent);
 
 struct Failure {
   Status status = Status::Ok;
@@ -171,6 +172,7 @@ public:
 
   [[nodiscard]] u32 id() const { return session_; }
   [[nodiscard]] u32 envId() const { return envId_; }
+  [[nodiscard]] const Env& env() const { return env_; }
 
   // Returns the reason the configuration is never built again here.
   [[nodiscard]] std::string held(const FFTConfig& fft, TestKind kind, u64 exponent, const UseConfig& options) const;

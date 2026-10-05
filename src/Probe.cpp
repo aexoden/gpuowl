@@ -477,7 +477,7 @@ private:
       text += (text.empty() ? "" : ",") + key + "=" + std::to_string(value);
       named.insert(key);
     }
-    text += ldsAsideNote(fft_, from_, config, named);
+    text += ldsAsideNote(env_, fft_, from_, config, named);
 
     std::set<std::string> keys;
     for (auto const& [axis, index] : moves) {
