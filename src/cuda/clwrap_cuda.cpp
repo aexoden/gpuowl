@@ -1494,14 +1494,20 @@ bool cudaSetKernelRegLimit(cl_program prog, const char* kernelName, int maxRegs,
   CUjit_option jitOpts[] = { CU_JIT_ERROR_LOG_BUFFER_SIZE_BYTES, CU_JIT_ERROR_LOG_BUFFER };
   void* jitOptVals[] = { (void*)(size_t)sizeof(jitErrorLog), (void*)jitErrorLog };
   CUresult r = loadModule(prog, 2, jitOpts, jitOptVals);
+  // A sticky error is an earlier fault surfacing here; it says nothing about the limit, and a retry would meet it too.
+  if (isStickyError(r)) {
+    clResult("cuModuleLoadDataEx", r);
+    return false;
+  }
   if (r != CUDA_SUCCESS && smemSpill) {
-    fprintf(stderr, "%s: the JIT rejected enable_smem_spilling, loading it without (%s)\n", kernelName, jitErrorLog);
+    log("%s: the JIT rejected enable_smem_spilling, loading it without (%s)\n", kernelName, jitErrorLog);
     ptx.erase(ptx.find(pragma, entry + directive.size()), pragma.size());
     jitErrorLog[0] = 0;
     r = loadModule(prog, 2, jitOpts, jitOptVals);
   }
   if (r != CUDA_SUCCESS) {
-    fprintf(stderr, "cuModuleLoadData for %s with maxnreg %d minnctapersm %d failed: %d %s\n", kernelName, maxRegs, minBlocks, (int)r, jitErrorLog);
+    if (isStickyError(r)) { clResult("cuModuleLoadDataEx", r); return false; }
+    log("cuModuleLoadData for %s with maxnreg %d minnctapersm %d failed: %d %s\n", kernelName, maxRegs, minBlocks, (int)r, jitErrorLog);
     return false;
   }
   prog->moduleLoaded = true;

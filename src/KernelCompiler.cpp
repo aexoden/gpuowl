@@ -545,6 +545,7 @@ KernelHolder KernelCompiler::loadAux(const string& fileName, const string& kerne
 
 #ifdef CUDA_BACKEND
   if ((maxRegs > 0 || minBlocks > 0) && !cudaSetKernelRegLimit(program.get(), kernelName.c_str(), maxRegs, minBlocks, smemSpill)) {
+    throwIfLost();
     log("Can't apply the register limit (maxrregcount %d, minblocks %d) to %s\n", maxRegs, minBlocks, kernelName.c_str());
     throw "Can't apply register limit to " + kernelName;
   }
