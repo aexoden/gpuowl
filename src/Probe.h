@@ -58,6 +58,13 @@ inline constexpr u32 MAX_BRANCHES = 8;
 // groups' steps and each turn of Option spends a whole option of the large groups first.
 enum class Turns : u8 { Step, Option };
 
+// Which FFTs the search offers TAIL_KERNELS 11 and 13, the tail*Zero kernels in a queue of their own.  Upstream measured them
+// faster only for NTTs on nVidia (2-7% on a TITAN V); FP64 lost 3% there and a Radeon VII 60-70%.  Ntt: those FFTs with an
+// NTT part, on nVidia.  The table offers both values everywhere, so a reading taken with either stays valid.
+enum class TailQueues : u8 { Ntt, All, None };
+
+[[nodiscard]] const char* toString(TailQueues queues);
+
 struct Strategy {
   enum class Kind : u8 {
     Hybrid,   // groups, then the combo tiers above them
@@ -79,6 +86,9 @@ struct Strategy {
   // Hybrid only.
   u32 comboTop = COMBO_TOP;
   u32 comboTiers = COMBO_TIERS;
+
+  // Every strategy.
+  TailQueues tailQueues = TailQueues::Ntt;
 
   // Whether each structural value is searched as a branch of its own: the strategies that search by group.
   [[nodiscard]] bool branches() const { return kind == Kind::Hybrid || kind == Kind::Groups; }
@@ -183,7 +193,9 @@ struct Axis {
 
 // Every axis of `background` that has somewhere to move: the applicable tunable keys in declaration order, LOADS and
 // STORES taken apart into their access classes in class order, each class offering only the modes `env` can emit.
-[[nodiscard]] std::vector<Axis> axesOf(const Env& env, const FFTConfig& fft, const UseConfig& background);
+// The search's own axes leave out what `tailQueues` does not offer this FFT; with its default every value is there.
+[[nodiscard]] std::vector<Axis> axesOf(const Env& env, const FFTConfig& fft, const UseConfig& background,
+                                       TailQueues tailQueues = TailQueues::All);
 
 // Where `config` puts `axis`.
 [[nodiscard]] std::pair<int, int> positionOf(const Env& env, const FFTConfig& fft, const UseConfig& config,
@@ -356,6 +368,7 @@ struct SearchSize {
 // depends on, against what has been drawn so far, so every assignment the table offers has a chance of being drawn.
 // A fixed sequence per entry, so that a resumed run draws what the first one would have, and a row can be recognised
 // as a restart's by drawing again.
-[[nodiscard]] UseConfig restartOf(const Env& env, const FFTConfig& fft, std::string_view entry, u32 k);
+[[nodiscard]] UseConfig restartOf(const Env& env, const FFTConfig& fft, std::string_view entry, u32 k,
+                                  TailQueues tailQueues = Strategy{}.tailQueues);
 
 }  // namespace tune

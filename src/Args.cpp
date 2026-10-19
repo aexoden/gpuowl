@@ -371,6 +371,8 @@ selection.txt, which a normal run in the same directory (or its -pool) reads.  T
                                              time, or the groups an option (every value of one) at a time [step]
                          comboTop=<N>        hybrid: how many of each group's best answers are combined [3]
                          comboTiers=1|2|3    hybrid: how widely groups are combined; 1 is strategy=groups [3]
+                         tailQueues=ntt|all|none  which FFTs are offered TAIL_KERNELS 11 and 13 (tail*Zero in a
+                                             queue of its own): those with an NTT part on nVidia, all, or none [ntt]
                          contenders=<N>      how many FFTs the search is first spread over, halving them each round
                                              to the faster half; 0 ranks the search by expected gain alone [16]
                          roundCalls=<N>      calls each contender is searched for in the first round, doubling [16]

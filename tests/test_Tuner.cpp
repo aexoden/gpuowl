@@ -141,6 +141,8 @@ TEST(every_setting_the_help_names_is_accepted_where_it_says) {
         "tunetxt=1",
         "scope,workload=330M-340M,probe=335M,probeWeight=0.5,kinds=prp,env=1",
         "scope,pfaShapes=all",
+        "scope,tailQueues=all",
+        "status,tailQueues=none",
         "scope,strategy=groups,maxPermute=all,maxPoints=200",
         "scope,maxPermute=3,comboTop=2,comboTiers=2",
         "status,stop=1%,env=1,workload=100M-140M,probe=118063003,probeWeight=0.5,kinds=prp+ll,bootstrap=1,"
@@ -1035,7 +1037,7 @@ TEST(a_runs_settings_read_back_as_the_same_run) {
   // Resolved from the pending work, the range and the probe are named in the word.
   CHECK_EQ(runSettings(makeScope(parsed("").scope, pending), parsed("")),
            std::string{"workload=118415515-163860861,probe=124647911,probeWeight=0.5,kinds=prp,pfaShapes=ntt,bootstrap=1,"
-                       "strategy=hybrid,maxPermute=4,maxPoints=64,turns=step,comboTop=3,comboTiers=3,contenders=16,"
+                       "strategy=hybrid,maxPermute=4,maxPoints=64,turns=step,comboTop=3,comboTiers=3,tailQueues=ntt,contenders=16,"
                        "roundCalls=16,halvings=2,lookCalls=16,typeMargin=100%,lookMargin=20%,linesSweep=1,"
                        "linesMargin=100%+50%+25%,sweepMargin=10%,stop=0.1%"});
 
@@ -1047,7 +1049,8 @@ TEST(a_runs_settings_read_back_as_the_same_run) {
         "typeMargin=all,linesSweep=0", "lookMargin=all", "lookMargin=35%,typeMargin=60%", "pfaShapes=all",
         "pfaShapes=none", "sweepMargin=all", "sweepMargin=25%,lookMargin=20%", "linesMargin=all",
         "linesMargin=all+50%", "linesMargin=40%,lookMargin=50%", "linesMargin=100%+12.5%+all", "turns=option",
-        "strategy=groups,turns=step,maxPoints=8"}) {
+        "strategy=groups,turns=step,maxPoints=8", "tailQueues=all", "strategy=single,tailQueues=none",
+        "tailQueues=ntt,strategy=permute:TAIL_KERNELS"}) {
     TuneCommand const command = parsed(text);
     RunScope const scope = makeScope(command.scope, pending);
     std::string const word = runSettings(scope, command);
@@ -1087,7 +1090,8 @@ TEST(a_runs_settings_read_back_as_the_same_run) {
         "typeMargin=", "lookMargin=50", "lookMargin=", "linesSweep=2", "emit,lookCalls=4", "emit,lookMargin=50%",
         "sweepMargin=10", "sweepMargin=", "sweepMargin=-1%", "emit,sweepMargin=10%", "linesMargin=",
         "linesMargin=100", "linesMargin=100%+", "linesMargin=+50%", "linesMargin=100%++50%", "linesMargin=50%+x",
-        "emit,linesMargin=50%", "turns=", "turns=steps", "strategy=single,turns=step", "emit,turns=step"}) {
+        "emit,linesMargin=50%", "turns=", "turns=steps", "strategy=single,turns=step", "emit,turns=step",
+        "tailQueues=", "tailQueues=fp64", "emit,tailQueues=all"}) {
     bool refused = false;
     try {
       (void)parsed(bad);

@@ -90,6 +90,11 @@ TEST(structural_and_accuracy_flags) {
   // TAIL_KERNELS=3 is the default's arithmetic split another way; 0 and 1 are not.
   const Option& tail = *findOption("TAIL_KERNELS");
   CHECK(tail.changesRounding(0) && tail.changesRounding(1) && !tail.changesRounding(3));
+  // 11 and 13 compile the kernels of 1 and 3, the tail*Zero kernels only queued apart.
+  CHECK(tail.changesRounding(11) && !tail.changesRounding(13));
+  CHECK_EQ(tail.roundingValue(11), 1);
+  CHECK_EQ(tail.roundingValue(13), 3);
+  CHECK_EQ(tail.roundingValue(2), 2);
   CHECK(findOption("TAIL_TRIGS")->changesRounding(0));
   CHECK(!findOption("TAIL_TRIGS31")->changesRounding(1));
   CHECK(findOption("MODM31")->group == Group::Arith);
@@ -214,7 +219,7 @@ TEST(prime_factor_middles) {
 
     // Every tail, on the NTT and the hybrids alike; the hybrids' FP tails compute their own twiddles.
     for (const char* spec : {"1:1K:6:256:202", "51:512:12:512:202", "2:512:7:512:202"}) {
-      CHECK_EQ(valuesOf(e, spec, {}, "TAIL_KERNELS"), string("0,1,2,3"));
+      CHECK_EQ(valuesOf(e, spec, {}, "TAIL_KERNELS"), string("0,1,2,3,11,13"));
       CHECK_EQ(defaultOf(e, spec, {}, "TAIL_KERNELS"), 2);
     }
     CHECK(inert(e, "51:512:12:512:202", "TAIL_TRIGS"));
@@ -539,6 +544,13 @@ TEST(lds_budget) {
   CHECK_EQ(valuesOf(e, "1K:8:1K:101", {}, "SHUFL_BYTES_W"), string("4,8,16"));
   CHECK_EQ(valuesOf(e, "1K:8:1K:101", {}, "SHUFL_BYTES_H"), string("4,8,16"));
   CHECK_EQ(valuesOf(e, "1K:8:1K:101", {{"TAIL_KERNELS", "0"}}, "SHUFL_BYTES_H"), string("4,8,16"));
+  // A single-wide tail holds one line in LDS; 11 is 1's tail.
+  for (const char* tk : {"1", "11"}) {
+    CHECK_EQ(valuesOf(e, "512:8:2K:101", {{"TAIL_KERNELS", tk}}, "SHUFL_BYTES_H"), string("4,8,16"));
+  }
+  for (const char* tk : {"2", "3", "13"}) {
+    CHECK_EQ(valuesOf(e, "512:8:2K:101", {{"TAIL_KERNELS", tk}}, "SHUFL_BYTES_H"), string("4,8"));
+  }
 
   // WMUL: min(2, maxWmul), capped at 2 from width 1K and 1 at 4K.
   CHECK_EQ(valuesOf(e, "4K:12:512:101", {}, "WMUL"), string("1"));

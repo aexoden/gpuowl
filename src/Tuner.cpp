@@ -210,9 +210,10 @@ void parseKinds(std::string_view text, ScopeArgs& out) {
   return out;
 }
 
-// The settings that shape `strategy` beyond its name, as key=value words; none where it searches no groups.
+// The settings that shape `strategy` beyond its name, as key=value words.
 [[nodiscard]] std::vector<std::string> strategySettings(const Strategy& strategy) {
-  if (!strategy.branches()) { return {}; }
+  std::string const queues = std::string{"tailQueues="} + toString(strategy.tailQueues);
+  if (!strategy.branches()) { return {queues}; }
   std::vector<std::string> out{"maxPermute=" + limitText(strategy.maxPermute),
                                "maxPoints=" + limitText(strategy.maxPoints),
                                std::string{"turns="} + (strategy.turns == Turns::Option ? "option" : "step")};
@@ -220,6 +221,7 @@ void parseKinds(std::string_view text, ScopeArgs& out) {
     out.push_back("comboTop=" + std::to_string(strategy.comboTop));
     out.push_back("comboTiers=" + std::to_string(strategy.comboTiers));
   }
+  out.push_back(queues);
   return out;
 }
 
@@ -723,6 +725,7 @@ TuneCommand parseTuneCommand(std::string_view text) {
   std::optional<u32> maxPoints;
   std::optional<u32> comboTop;
   std::optional<u32> comboTiers;
+  std::optional<TailQueues> tailQueues;
 
   size_t const settingsFrom = isRun ? 0 : firstComma == std::string_view::npos ? text.size() + 1 : firstComma + 1;
   for (size_t at = settingsFrom; at <= text.size();) {
@@ -824,6 +827,16 @@ TuneCommand parseTuneCommand(std::string_view text) {
     } else if (key == "turns" && searches) {
       if (val != "option" && val != "step") { throw std::string{"-tune: turns= takes option or step"}; }
       turns = val == "option" ? Turns::Option : Turns::Step;
+    } else if (key == "tailQueues" && searches) {
+      if (val == "ntt") {
+        tailQueues = TailQueues::Ntt;
+      } else if (val == "all") {
+        tailQueues = TailQueues::All;
+      } else if (val == "none") {
+        tailQueues = TailQueues::None;
+      } else {
+        throw std::string{"-tune: tailQueues= takes ntt, all or none"};
+      }
     } else if (key == "comboTop" && searches) {
       comboTop = parseInt<u32>(val);
       if (!comboTop || *comboTop < 1) { throw std::string{"-tune: comboTop= takes a count of 1 or more"}; }
@@ -845,13 +858,14 @@ TuneCommand parseTuneCommand(std::string_view text) {
       case TuneVerb::Scope:
         accepted = "workload=<lo>-<hi>, probe=<E>, probeWeight=<0..1>, kinds=prp|ll|prp+ll, pfaShapes=ntt|all|none,"
                    " env=<id>, strategy=<S>, maxPermute=<N>|all, maxPoints=<N>|all, turns=step|option, comboTop=<N>,"
-                   " comboTiers=1|2|3";
+                   " comboTiers=1|2|3, tailQueues=ntt|all|none";
         break;
       case TuneVerb::Run:
         accepted = "workload=<lo>-<hi>, probe=<E>, probeWeight=<0..1>, kinds=prp|ll|prp+ll, pfaShapes=ntt|all|none,"
                    " bootstrap=0|1, strategy=hybrid|single|groups|permute:<KEY>+<KEY>..., maxPermute=<N>|all,"
                    " maxPoints=<N>|all, turns=step|option,"
-                   " comboTop=<N>, comboTiers=1|2|3, contenders=<N>, roundCalls=<N>, halvings=<N>, lookCalls=<N>,"
+                   " comboTop=<N>, comboTiers=1|2|3, tailQueues=ntt|all|none, contenders=<N>, roundCalls=<N>,"
+                   " halvings=<N>, lookCalls=<N>,"
                    " typeMargin=<P>%|all, lookMargin=<P>%|all, linesSweep=0|1, linesMargin=<P>%+<P>%...|all,"
                    " sweepMargin=<P>%|all, stop=<P>%|0,"
                    " tunetxt=0|1, dashboard=0|1,"
@@ -862,7 +876,8 @@ TuneCommand parseTuneCommand(std::string_view text) {
         accepted = "env=<id>, and a run's workload=<lo>-<hi>, probe=<E>, probeWeight=<0..1>, kinds=prp|ll|prp+ll,"
                    " pfaShapes=ntt|all|none, bootstrap=0|1, strategy=<S>, maxPermute=<N>|all, maxPoints=<N>|all,"
                    " turns=step|option, comboTop=<N>,"
-                   " comboTiers=1|2|3, contenders=<N>, roundCalls=<N>, halvings=<N>, lookCalls=<N>,"
+                   " comboTiers=1|2|3, tailQueues=ntt|all|none, contenders=<N>, roundCalls=<N>, halvings=<N>,"
+                   " lookCalls=<N>,"
                    " typeMargin=<P>%|all, lookMargin=<P>%|all, linesSweep=0|1, linesMargin=<P>%+<P>%...|all,"
                    " sweepMargin=<P>%|all, stop=<P>%|0";
         break;
@@ -884,6 +899,8 @@ TuneCommand parseTuneCommand(std::string_view text) {
     out.strategy.maxPoints = maxPoints.value_or(MAX_POINTS);
     out.strategy.turns = turns.value_or(Turns::Step);
   }
+
+  if (tailQueues) { out.strategy.tailQueues = *tailQueues; }
 
   if (comboTop || comboTiers) {
     if (out.strategy.kind != Strategy::Kind::Hybrid) {

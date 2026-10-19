@@ -136,10 +136,10 @@ TEST(single_is_the_bootstraps_moves_over_every_group) {
 TEST(a_bin_holds_at_most_four_axes_and_a_stage_at_most_64_points) {
   ProbeList const list = probesOf(nvidia(), FFTConfig{"2:1K:8:256:212"}, {}, {});
 
-  // Tail: TAIL_KERNELS, TAIL_TRIGS32, TAIL_TRIGS61, TABMUL_CHAIN32 are 4 x 3 x 2 x 2 points, the best one of them;
-  // TABMUL_CHAIN61 is a bin of its own.  Memory's first bin would be 5 x 3 x 2 x 5 and is cut.
+  // Tail: TAIL_KERNELS, TAIL_TRIGS32, TAIL_TRIGS61, TABMUL_CHAIN32 would be 6 x 3 x 2 x 2 points and are cut;
+  // TABMUL_CHAIN61 is a bin of its own.  Memory's first bin would be 5 x 3 x 2 x 5 and is cut too.
   std::map<std::string, size_t> const stages = stagesOf(list);
-  CHECK_EQ(stages.at("Tail 1"), size_t(4 * 3 * 2 * 2 - 1));
+  CHECK_EQ(stages.at("Tail 1"), size_t(MAX_POINTS));
   CHECK_EQ(stages.at("Tail 2"), size_t(1));
   CHECK_EQ(stages.at("Memory 1"), size_t(MAX_POINTS));
   CHECK_EQ(stages.at("Queues"), size_t(2 * 2 * 2 * 2 - 1));
@@ -159,10 +159,10 @@ TEST(a_bin_holds_at_most_four_axes_and_a_stage_at_most_64_points) {
 TEST(how_many_axes_a_bin_permutes_and_where_it_is_cut_are_the_strategys) {
   FFTConfig const fft{"2:1K:8:256:212"};
 
-  // Two axes a bin: Tail's five are 4 x 3, 2 x 2 and 2.
+  // Two axes a bin: Tail's five are 6 x 3, 2 x 2 and 2.
   ProbeList const pairs = probesOf(nvidia(), fft, {}, {.maxPermute = 2});
   std::map<std::string, size_t> const paired = stagesOf(pairs);
-  CHECK_EQ(paired.at("Tail 1"), size_t(4 * 3 - 1));
+  CHECK_EQ(paired.at("Tail 1"), size_t(6 * 3 - 1));
   CHECK_EQ(paired.at("Tail 2"), size_t(2 * 2 - 1));
   CHECK_EQ(paired.at("Tail 3"), size_t(1));
   CHECK(std::ranges::all_of(pairs.probes, [](const Probe& p) { return p.tier > 1 || p.moves.size() <= 2; }));
@@ -178,7 +178,7 @@ TEST(how_many_axes_a_bin_permutes_and_where_it_is_cut_are_the_strategys) {
   std::map<std::string, size_t> const stages = stagesOf(whole);
   CHECK(!stages.contains("Memory 1"));
   CHECK(!stages.contains("Tail 1"));
-  CHECK_EQ(stages.at("Tail"), size_t(4 * 3 * 2 * 2 * 2 - 1));
+  CHECK_EQ(stages.at("Tail"), size_t(6 * 3 * 2 * 2 * 2 - 1));
   size_t const memoryAxes =
     size_t(std::ranges::count_if(whole.axes, [](const Axis& a) { return a.option->group == Group::Memory; }));
   size_t most = 0;
@@ -353,7 +353,7 @@ TEST(permute_takes_exactly_the_keys_named_and_is_not_cut) {
   FFTConfig const fft{"512:15:512:212"};
 
   ProbeList const two = probesOf(nvidia(), fft, {}, parseStrategy("permute:TAIL_KERNELS+WMUL"));
-  CHECK_EQ(two.probes.size(), size_t(4 * 3 - 1));
+  CHECK_EQ(two.probes.size(), size_t(4 * 3 - 1));  // FP64: tailQueues=ntt offers it no 11 or 13
   for (const Probe& p : two.probes) {
     CHECK_EQ(p.stage, std::string{"permute"});
     for (const auto& [key, value] : p.config) { CHECK(key == "TAIL_KERNELS" || key == "WMUL"); }
@@ -429,6 +429,31 @@ TEST(a_row_takes_the_same_step_as_a_probe_where_it_agrees_on_what_the_step_depen
   }
 }
 
+TEST(tail_queues_choose_which_ffts_the_search_offers_11_and_13) {
+  auto const tailValues = [](const Env& env, const char* spec, TailQueues queues) {
+    std::string out;
+    for (const Axis& axis : axesOf(env, FFTConfig{spec}, {}, queues)) {
+      if (axis.name != "TAIL_KERNELS") { continue; }
+      for (const auto& [value, digit] : axis.values) { out += (out.empty() ? "" : ",") + std::to_string(value); }
+    }
+    return out;
+  };
+  CHECK_EQ(tailValues(nvidia(), "1:512:8:512:202", TailQueues::Ntt), std::string{"0,1,2,3,11,13"});
+  CHECK_EQ(tailValues(nvidia(), "51:512:8:512:202", TailQueues::Ntt), std::string{"0,1,2,3,11,13"});
+  CHECK_EQ(tailValues(nvidia(), "512:15:512:212", TailQueues::Ntt), std::string{"0,1,2,3"});
+  CHECK_EQ(tailValues(amd(), "1:512:8:512:202", TailQueues::Ntt), std::string{"0,1,2,3"});
+  CHECK_EQ(tailValues(amd(), "512:15:512:212", TailQueues::All), std::string{"0,1,2,3,11,13"});
+  CHECK_EQ(tailValues(nvidia(), "1:512:8:512:202", TailQueues::None), std::string{"0,1,2,3"});
+
+  // Where the set already runs one of them, it stays the axis's position.
+  CHECK_EQ(tailValues(nvidia(), "512:15:512:212", TailQueues::Ntt), tailValues(nvidia(), "512:15:512:212", TailQueues::None));
+  bool held = false;
+  for (const Axis& axis : axesOf(nvidia(), FFTConfig{"512:15:512:212"}, {{"TAIL_KERNELS", "13"}}, TailQueues::None)) {
+    if (axis.name == "TAIL_KERNELS") { held = axis.values[axis.current].first == 13; }
+  }
+  CHECK(held);
+}
+
 TEST(a_restart_is_a_fixed_draw_of_every_axis_the_table_offers) {
   FFTConfig const fft{"512:15:512:212"};
   std::string const entry = "512:15:512:212 prp short32";
@@ -455,7 +480,7 @@ TEST(a_restart_is_a_fixed_draw_of_every_axis_the_table_offers) {
         CHECK(std::ranges::find(values, parseInt<int>(value).value_or(-1)) != values.end());
       }
 
-      for (const Axis& axis : axesOf(env, fft, config)) {
+      for (const Axis& axis : axesOf(env, fft, config, Strategy{}.tailQueues)) {
         offered[axis.name].insert(axis.values.begin(), axis.values.end());
         drawn[axis.name].insert(axis.values[axis.current]);
       }

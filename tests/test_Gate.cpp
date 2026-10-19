@@ -207,6 +207,10 @@ TEST(what_decides_the_rounding_is_the_keys_held_at_a_value_that_changes_it) {
   CHECK(roundingOf(env, fp64(), single) == single);
   CHECK(roundingOf(env, fp64(), {{"TAIL_KERNELS", "1"}}) != roundingOf(env, fp64(), {{"TAIL_KERNELS", "0"}}));
 
+  // Two spellings of one arithmetic are one rounding.
+  CHECK(roundingOf(env, fp64(), {{"TAIL_KERNELS", "11"}}) == single);
+  CHECK(roundingOf(env, fp64(), {{"TAIL_KERNELS", "13"}}).empty());
+
   // A key that does not apply to the FFT changes nothing on it.
   CHECK(roundingOf(env, fp64(), {{"TAIL_TRIGS32", "0"}}).empty());
 }

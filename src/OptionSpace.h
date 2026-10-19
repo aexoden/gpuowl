@@ -151,9 +151,19 @@ struct Option {
   // Values measured to round exactly as the default does, on a key whose other values change the rounding.
   vector<int> defaultRounding{};
 
+  // Values that compile the same arithmetic as another value of the key, and so round exactly as it does: {value, as}.
+  vector<std::pair<int, int>> roundsAs{};
+
+  // The value whose rounding `value` has.
+  [[nodiscard]] int roundingValue(int value) const {
+    auto const it = std::ranges::find(roundsAs, value, &std::pair<int, int>::first);
+    return it == roundsAs.end() ? value : it->second;
+  }
+
   // Whether running the key at `value`, which is not its default, changes the rounding.
   [[nodiscard]] bool changesRounding(int value) const {
-    return accuracyImpact != AccuracyImpact::None && std::ranges::find(defaultRounding, value) == defaultRounding.end();
+    return accuracyImpact != AccuracyImpact::None &&
+           std::ranges::find(defaultRounding, roundingValue(value)) == defaultRounding.end();
   }
 
   // Every key that applies, touchesFn, valuesFn, defaultFn or inert reads. Must name real keys and be acyclic.

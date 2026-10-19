@@ -240,7 +240,7 @@ private:
                                     bool widen = false);
 
   // restartOf(), canonical: a draw takes one enumeration of the axes per axis.
-  [[nodiscard]] const UseConfig& draw(const Env& device, u32 k);
+  [[nodiscard]] const UseConfig& draw(const Env& device, u32 k, TailQueues tailQueues);
 
   // The next draw worth making, if the space has anything left to offer.
   [[nodiscard]] std::optional<Candidate> nextRestart(const SearchContext& context);

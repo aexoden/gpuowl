@@ -309,6 +309,12 @@ option is finished before its group moves on, and each group gets one turn befor
 a gain that two groups only make together later, since their combination waits until both groups have no step left,
 which is why it is not the default.
 
+**`tailQueues=ntt|all|none`** (every strategy): which FFTs the search offers `TAIL_KERNELS` 11 and 13, which run
+the `tail*Zero` kernels in a queue of their own beside `tailSquare`/`tailMul`. Upstream measured them faster only for
+NTTs on nVidia (2-7% on a TITAN V), 3% slower for FP64 there and 60-70% slower on a Radeon VII, and two more values
+make the Tail group's search markedly longer. `ntt` (default): FFTs with an M31 or M61 part, on nVidia. `all`: every
+FFT. `none`: no FFT. Readings already taken with 11 or 13 stay valid whatever this says.
+
 **`maxPoints=<N>|all`** (`hybrid` and `groups`): how many combinations are tried in each piece of a group, and in each
 combination of groups. A piece's combinations are listed one option moved first, then two, and so on, so a cut keeps
 the smaller moves: with the defaults, the larger groups are cut before any step moves all four of their options at

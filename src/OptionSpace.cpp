@@ -146,7 +146,7 @@ int effectiveLdsSwizW(const Env& e, const FFTConfig& f, const UseConfig& d) {
 
 int effectiveLdsSwizH(const UseConfig& d) { return useValue(d, "LDSPAD_H", 1) == 0 ? useValue(d, "LDSSWIZ_H", 0) : 0; }
 
-u32 heightLdsBlocks(const UseConfig& d) { return useValue(d, "TAIL_KERNELS", 2) < 2 ? 1 : 2; }
+u32 heightLdsBlocks(const UseConfig& d) { return useValue(d, "TAIL_KERNELS", 2) % 10 < 2 ? 1 : 2; }
 
 u32 maxStriping(const FFTConfig& f, const UseConfig& d) {
   return f.shape.width / (useValue(d, "MULTI_Q", 0) ? 128 : 64);
@@ -513,13 +513,15 @@ vector<Option> buildTable() {
                .values = {0, 1},
                .defaultValue = 0});
 
+  // 11 and 13 are 1 and 3 with the tail*Zero kernels in a queue of their own: the same kernels, so the same rounding.
   t.push_back({.key = "TAIL_KERNELS",
                .scope = Scope::Variant,
                .group = Group::Tail,
                .touches = KG_TAIL,
                .accuracyImpact = AccuracyImpact::Yes,
                .defaultRounding = {3},
-               .values = {0, 1, 2, 3},
+               .roundsAs = {{11, 1}, {13, 3}},
+               .values = {0, 1, 2, 3, 11, 13},
                .defaultValue = 2});
   t.push_back({.key = "TAIL_TRIGS",
                .scope = Scope::Family,
@@ -1364,6 +1366,11 @@ u32 selfCheck() {
       }
       if (o.inert && !*o.inertWhen) { fail(o.key + " has an inert rule but does not say when"); }
       if (!o.touchesFn && o.touches == 0) { fail(o.key + " touches no kernel"); }
+      for (auto const& [v, as] : o.roundsAs) {
+        if (!contains(o.values, v) || !contains(o.values, as) || v == as) {
+          fail(o.key + ": " + to_string(v) + " rounds as " + to_string(as) + ", which are not two of its fixed values");
+        }
+      }
       if (!o.defaultRounding.empty()) {
         if (o.accuracyImpact == AccuracyImpact::None) {
           fail(o.key + " lists values that round as the default, but none that round otherwise");
@@ -1376,7 +1383,7 @@ u32 selfCheck() {
         }
       }
     } else if (o.group != Group::None || o.structural || o.compound || o.accuracyImpact != AccuracyImpact::None ||
-               !o.defaultRounding.empty() || !o.dependsOn.empty() || o.applies || o.touchesFn || o.valuesFn ||
+               !o.defaultRounding.empty() || !o.roundsAs.empty() || !o.dependsOn.empty() || o.applies || o.touchesFn || o.valuesFn ||
                !o.values.empty() || o.defaultFn || o.inert) {
       fail(o.key + " is never searched but declares search metadata");
     }

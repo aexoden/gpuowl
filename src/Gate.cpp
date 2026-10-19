@@ -43,6 +43,11 @@ bool movesAccuracy(const Env& env, const FFTConfig& fft, const UseConfig& opts) 
 UseConfig roundingOf(const Env& env, const FFTConfig& fft, const UseConfig& opts) {
   UseConfig out = canonicalConfig(env, fft, opts);
   std::erase_if(out, [](const auto& kv) { return !changesRounding(*findOption(kv.first), kv.second); });
+
+  // Spelled as the value whose arithmetic it compiles, so two spellings of one rounding compare equal.
+  for (auto& [key, value] : out) {
+    if (std::optional<int> const v = parseInt<int>(value)) { value = std::to_string(findOption(key)->roundingValue(*v)); }
+  }
   return out;
 }
 

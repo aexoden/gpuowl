@@ -588,8 +588,19 @@ std::vector<std::string> Axis::keys() const {
   return {option->key};
 }
 
-std::vector<Axis> axesOf(const Env& env, const FFTConfig& fft, const UseConfig& background) {
+const char* toString(TailQueues queues) {
+  switch (queues) {
+  case TailQueues::Ntt: return "ntt";
+  case TailQueues::All: return "all";
+  case TailQueues::None: return "none";
+  }
+  return "?";
+}
+
+std::vector<Axis> axesOf(const Env& env, const FFTConfig& fft, const UseConfig& background, TailQueues tailQueues) {
   UseConfig const from = canonicalConfig(env, fft, background);
+  bool const queuesApart = tailQueues == TailQueues::All ||
+    (tailQueues == TailQueues::Ntt && env.isNvidia && (fft.NTT_GF31 || fft.NTT_GF61));
 
   std::vector<Axis> out;
   auto add = [&](Axis axis, std::pair<int, int> current) {
@@ -604,7 +615,10 @@ std::vector<Axis> axesOf(const Env& env, const FFTConfig& fft, const UseConfig& 
   for (const Option* const option : applicableOptions(env, fft, from)) {
     if (!option->compound) {
       Axis axis{.option = option, .name = option->key};
-      for (int const value : option->valuesFor(env, fft, from)) { axis.values.emplace_back(value, 0); }
+      for (int const value : option->valuesFor(env, fft, from)) {
+        if (option->key == "TAIL_KERNELS" && value >= 10 && !queuesApart) { continue; }
+        axis.values.emplace_back(value, 0);
+      }
       add(std::move(axis), positionOf(env, fft, from, Axis{.option = option}));
       continue;
     }
@@ -762,7 +776,7 @@ void combos(const Env& env, const FFTConfig& fft, const UseConfig& best, const S
 
 ProbeList probesOf(const Env& env, const FFTConfig& fft, const UseConfig& best, const Strategy& strategy,
                    std::span<const Reading> readings, bool structuralSteps, u32 listed) {
-  ProbeList out{.axes = axesOf(env, fft, best), .probes = {}};
+  ProbeList out{.axes = axesOf(env, fft, best, strategy.tailQueues), .probes = {}};
   Enumerator enumerator{env, fft, best, listed, out};
 
   auto axesWhere = [&](auto&& pred) {
@@ -837,7 +851,7 @@ SearchSize searchSize(const Env& env, const FFTConfig& fft, const UseConfig& bes
   SearchSize out;
   if (!strategy.branches()) { return out; }
 
-  std::vector<Axis> const axes = axesOf(env, fft, best);
+  std::vector<Axis> const axes = axesOf(env, fft, best, strategy.tailQueues);
   Strategy lifted = strategy;
   lifted.maxPermute = NO_LIMIT;
   for (Group const group : allGroups()) {
@@ -873,7 +887,7 @@ bool sameStep(const Env& env, const FFTConfig& fft, const ProbeList& list, const
   });
 }
 
-UseConfig restartOf(const Env& env, const FFTConfig& fft, std::string_view entry, u32 k) {
+UseConfig restartOf(const Env& env, const FFTConfig& fft, std::string_view entry, u32 k, TailQueues tailQueues) {
   // FNV-1a then splitmix64: the same sequence on every platform and standard library, which std::hash and the
   // standard distributions do not promise.
   u64 state = 0xcbf29ce484222325;
@@ -889,7 +903,7 @@ UseConfig restartOf(const Env& env, const FFTConfig& fft, std::string_view entry
   UseConfig config;
   std::set<std::string> drawn;
   while (true) {
-    std::vector<Axis> const axes = axesOf(env, fft, config);
+    std::vector<Axis> const axes = axesOf(env, fft, config, tailQueues);
 
     std::set<std::string> pending;
     for (const Axis& axis : axes) {
