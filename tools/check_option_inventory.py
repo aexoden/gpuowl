@@ -59,6 +59,8 @@ GENERATED: Final = ("bundle.cpp",)
 
 IDENT: Final = r"[A-Za-z_][A-Za-z0-9_]*"
 KEY: Final = r"[A-Z][A-Z0-9_]{2,}"
+# A -use key the host reads itself may start with a digit (256RADIX8_W), which no kernel macro can.
+TABLE_KEY: Final = r"[A-Z0-9][A-Z0-9_]{2,}"
 
 # A name in an "#if" expression that could be an option.
 _WORD: Final = re.compile(rf"\b{KEY}\b")
@@ -130,10 +132,10 @@ def declared_keys(path: Path) -> set[str]:
     text = read(path)
     table = body_of(text, "vector<Option> buildTable()", path)
 
-    written = set(re.findall(rf'\.key = "({KEY})"', table))
+    written = set(re.findall(rf'\.key = "({TABLE_KEY})"', table))
 
     for form in (rhs.strip() for rhs in re.findall(r"\.key = ([^,}]+)", table)):
-        if not re.fullmatch(rf'"{KEY}"', form) and form not in ("key", "r.key"):
+        if not re.fullmatch(rf'"{TABLE_KEY}"', form) and form not in ("key", "r.key"):
             msg = f"{path.name}: buildTable() sets .key from '{form}', which this checker cannot read"
             raise SourceError(msg)
 

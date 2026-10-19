@@ -33,10 +33,10 @@ bool applicable(const Env& env, const string& spec, const UseConfig& decided, co
   return false;
 }
 
-bool inert(const Env& env, const string& spec, const string& key) {
+bool inert(const Env& env, const string& spec, const string& key, const UseConfig& decided = {}) {
   FFTConfig const fft{spec};
   const Option* const o = findOption(key);
-  return o && o->appliesTo(env, fft, {}) && o->isInert(env, fft, {});
+  return o && o->appliesTo(env, fft, decided) && o->isInert(env, fft, decided);
 }
 
 string valuesOf(const Env& env, const string& spec, const UseConfig& decided, const string& key) {
@@ -72,15 +72,15 @@ string graphOf(const Env& env, const string& spec, const UseConfig& decided) {
 TEST(self_check_is_clean) { CHECK_EQ(selfCheck(), 0u); }
 
 TEST(structural_and_accuracy_flags) {
-  const set<string> structural{"INPLACE",       "NOREG",    "DISABLE_MUL64", "SHUFL_BYTES_W",
-                               "SHUFL_BYTES_H", "LDSPAD_W", "LDSPAD_H",      "L2PERSIST"};
+  const set<string> structural{"INPLACE",  "NOREG",    "DISABLE_MUL64", "SHUFL_BYTES_W", "SHUFL_BYTES_H",
+                               "LDSPAD_W", "LDSPAD_H", "L2PERSIST",     "256RADIX8_W",   "256RADIX8_H"};
   for (const Option& o : allOptions()) { CHECK_EQ(o.structural, structural.contains(o.key)); }
 
   // As measured: every value of every other key rounds bit-identically to the set it moves from.
   const set<string> rounding{"MM_CHAIN",     "MM2_CHAIN",    "TAIL_KERNELS",  "TAIL_TRIGS",
                              "TAIL_TRIGS32", "TABMUL_CHAIN", "TABMUL_CHAIN32"};
   for (const Option& o : allOptions()) {
-    if (o.key == "FUSE_WEIGHT_BUTTERFLY") {
+    if (o.key == "FUSE_WEIGHT_BUTTERFLY" || o.key == "256RADIX8_W" || o.key == "256RADIX8_H") {
       CHECK(o.accuracyImpact == AccuracyImpact::Suspected);
     } else {
       CHECK_EQ(o.accuracyImpact == AccuracyImpact::Yes, rounding.contains(o.key));
@@ -294,6 +294,37 @@ TEST(inert_unroll) {
     CHECK_EQ(defaultOf(env, "1K:8:512:101", {}, "UNROLL_H"), 1);
     CHECK_EQ(defaultOf(env, "512:15:512:101", {}, "UNROLL_W"), 1);
   }
+}
+
+// Radix 8 at 256 is a body of its own: no variant 0, variant 2 compiling as 1, no generic loop, no OPAQUE and no fused
+// first butterfly; on a 64-lane AMD wavefront its 32-thread line makes the host raise WMUL to 2.
+TEST(radix_8_at_256) {
+  Env const e = nvidia();
+  CHECK(applicable(e, "256:4:256:101", {}, "256RADIX8_W"));
+  CHECK(applicable(e, "256:4:256:101", {}, "256RADIX8_H"));
+  CHECK(!applicable(e, "256:4:256:211", {}, "256RADIX8_W"));  // digit 2 would compile digit 1's body
+  CHECK(applicable(e, "256:4:256:211", {}, "256RADIX8_H"));
+  CHECK(!applicable(e, "256:4:256:002", {}, "256RADIX8_W"));  // and there is no digit 0
+  CHECK(applicable(e, "1:256:4:256:202", {}, "256RADIX8_W"));  // the NTTs' digit chooses nothing
+  CHECK(!applicable(e, "512:4:256:101", {}, "256RADIX8_W"));
+  CHECK(!applicable(e, "256:4:512:101", {}, "256RADIX8_H"));
+
+  UseConfig const r8{{"256RADIX8_W", "1"}, {"256RADIX8_H", "1"}};
+  CHECK(!inert(e, "256:4:256:101", "UNROLL_W"));
+  CHECK(inert(e, "256:4:256:101", "UNROLL_W", r8));
+  CHECK(inert(e, "256:4:256:101", "UNROLL_H", r8));
+  CHECK(inert(e, "256:4:256:101", "HOIST_W", r8));
+  CHECK(inert(e, "256:4:256:101", "HOIST_H", r8));
+  CHECK(!inert(e, "256:4:256:101", "HOIST_W"));
+
+  Env wave64 = amd();
+  wave64.amdWavefront = 64;
+  CHECK(applicable(wave64, "256:4:256:101", {}, "FUSE_WEIGHT_BUTTERFLY"));
+  CHECK(!applicable(wave64, "256:4:256:101", r8, "FUSE_WEIGHT_BUTTERFLY"));
+  CHECK_EQ(valuesOf(wave64, "256:4:256:101", r8, "WMUL"), string("2"));
+  CHECK_EQ(defaultOf(wave64, "256:4:256:101", r8, "WMUL"), 2);
+  CHECK_EQ(valuesOf(wave64, "256:4:256:101", {}, "WMUL"), string("1,2,4"));
+  CHECK_EQ(valuesOf(e, "256:4:256:101", r8, "WMUL"), string("1,2,4"));  // nVidia's 32-lane warp holds the line
 }
 
 TEST(inert_fast_barrier) {

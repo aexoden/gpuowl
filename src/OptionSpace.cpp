@@ -112,6 +112,13 @@ u32 radixW(const FFTConfig& f, const UseConfig& d) { return f.shape.nW(useValue(
 u32 radixH(const FFTConfig& f, const UseConfig& d) { return f.shape.nH(useValue(d, "256RADIX8_H", 0) != 0); }
 
 // carryFused's workgroup is width / nW threads per WMUL line, and clDefines() lowers WMUL until that fits the device.
+// On AMD a line narrower than a wavefront (radix 8 at width 256) gets WMUL = wavefront / G_W, whatever was asked, before
+// the limits below; 0 where none is forced.
+u32 forcedWmul(const Env& e, const FFTConfig& f, const UseConfig& d) {
+  u32 const g_w = f.shape.width / radixW(f, d);
+  return e.amdWavefront && g_w < e.amdWavefront ? e.amdWavefront / g_w : 0;
+}
+
 u32 maxWmul(const Env& e, const FFTConfig& f, const UseConfig& d) {
   u32 m = LDS_BUDGET / (f.shape.width * shuflBytesW(d));
   if (m > 2 && f.shape.width >= 1024) { m = 2; }
@@ -121,7 +128,8 @@ u32 maxWmul(const Env& e, const FFTConfig& f, const UseConfig& d) {
 }
 
 u32 effectiveWmul(const Env& e, const FFTConfig& f, const UseConfig& d) {
-  return std::min(u32(useValue(d, "WMUL", 2)), maxWmul(e, f, d));
+  u32 const forced = forcedWmul(e, f, d);
+  return std::min(forced ? forced : u32(useValue(d, "WMUL", 2)), maxWmul(e, f, d));
 }
 
 bool ldsPadWFits(const Env& e, const FFTConfig& f, const UseConfig& d) {
@@ -149,11 +157,11 @@ u32 maxStriping(const FFTConfig& f, const UseConfig& d) {
 //
 
 // UNROLL is read only by the generic "for (s = 1; s < WG; s *= RADIX)" loop of each type's fft_common (cl/fftbase.cl).
-// The radix-8 bodies at 1024 ("WG == 128") and 2048 ("WG == 256") bypass that loop in all four types.  In FP64, digit 2
+// The radix-8 bodies at 256 ("WG == 32"), 1024 ("WG == 128") and 2048 ("WG == 256") bypass that loop in all four types.  In FP64, digit 2
 // has a specialisation at every other size a shape can produce, so a pure FFT64 reads UNROLL only at digits 0 and 1;
 // an FP32, GF31 or GF61 part keeps the generic loop live away from 1024 and 2048.
-bool unrollInert(u32 size, u32 digit, const FFTConfig& f) {
-  return size == 1024 || size == 2048 || (f.shape.fft_type == FFT64 && digit == 2);
+bool unrollInert(u32 size, u32 radix, u32 digit, const FFTConfig& f) {
+  return size == 1024 || size == 2048 || (size == 256 && radix == 8) || (f.shape.fft_type == FFT64 && digit == 2);
 }
 
 // Digit 2's size-1024 body keeps a plain tabMul for its second radix-8 stage, and every digit runs the same 2048 body,
@@ -167,6 +175,9 @@ bool opaqueCompiles(const Env& e) { return e.isAmd ? !e.noAsm : e.hasPtx(1); }
 
 // HOIST 1 and 2 place OPAQUE in every fft_common body a shape reaches. HOIST 3 also moves the cosine loads of
 // partial_tabMul/finish_tabMul, which only FP64's digit-2 bodies call; at 2048 every digit runs the shared body.
+// The radix-8 body at 256 places no OPAQUE and calls no tabMul that does.
+bool hoistInert(u32 size, u32 radix) { return size == 256 && radix == 8; }
+
 vector<int> hoistValues(const Env& e, const FFTConfig& f, u32 size, u32 digit) {
   vector<int> v{0};
   if (opaqueCompiles(e)) { v.insert(v.end(), {1, 2}); }
@@ -606,6 +617,18 @@ vector<Option> buildTable() {
      .values = {0, 1},
      .defaultValue = 0});
 
+  // Radix 8 rather than 4 at a width (height) of 256: a body of its own, with no variant 0 and variant 2 compiling as 1, so
+  // offered only at FP64's digit 1 and on the types whose digit chooses nothing.
+  t.push_back({.key = "256RADIX8_W",
+               .scope = Scope::Variant,
+               .group = Group::Width,
+               .touches = KG_WIDTH | KG_CARRY,
+               .structural = true,
+               .accuracyImpact = AccuracyImpact::Suspected,
+               .applies = [](const Env&, const FFTConfig& f,
+                             const UseConfig&) { return f.shape.width == 256 && (!f.FFT_FP64 || variant_W(f.variant) == 1); },
+               .values = {0, 1},
+               .defaultValue = 0});
   t.push_back({.key = "SHUFL_BYTES_W",
                .group = Group::Width,
                .touches = KG_WIDTH | KG_CARRY,
@@ -641,18 +664,23 @@ vector<Option> buildTable() {
                .scope = Scope::Variant,
                .group = Group::Width,
                .touches = KG_WIDTH,
+               .dependsOn = {"256RADIX8_W"},
                .values = {0, 1},
                .defaultValue = 1,
                .inert = [](const Env&, const FFTConfig& f,
-                           const UseConfig&) { return unrollInert(f.shape.width, variant_W(f.variant), f); },
-               .inertWhen = "width 1024 or 2048, or FFT64 with variant W 2"});
+                           const UseConfig& d) { return unrollInert(f.shape.width, radixW(f, d), variant_W(f.variant), f); },
+               .inertWhen = "width 1024 or 2048, radix 8 at width 256, or FFT64 with variant W 2"});
   t.push_back({.key = "HOIST_W",
                .scope = Scope::Variant,
                .group = Group::Width,
                .touches = KG_WIDTH,
+               .dependsOn = {"256RADIX8_W"},
                .valuesFn = [](const Env& e, const FFTConfig& f,
                               const UseConfig&) { return hoistValues(e, f, f.shape.width, variant_W(f.variant)); },
-               .defaultValue = 0});
+               .defaultValue = 0,
+               .inert = [](const Env&, const FFTConfig& f,
+                           const UseConfig& d) { return hoistInert(f.shape.width, radixW(f, d)); },
+               .inertWhen = "radix 8 at width 256"});
   t.push_back({.key = "ZEROHACK_W",
                .scope = Scope::Variant,
                .group = Group::Width,
@@ -662,28 +690,46 @@ vector<Option> buildTable() {
   t.push_back({.key = "WMUL",
                .group = Group::Width,
                .touches = KG_CARRY,
-               .dependsOn = {"SHUFL_BYTES_W"},
+               .dependsOn = {"SHUFL_BYTES_W", "256RADIX8_W"},
                .valuesFn =
                  [](const Env& e, const FFTConfig& f, const UseConfig& d) {
+                   if (u32 const forced = forcedWmul(e, f, d)) { return vector<int>{int(std::min(forced, maxWmul(e, f, d)))}; }
                    vector<int> v;
                    for (u32 w : {1, 2, 4}) {
                      if (w <= maxWmul(e, f, d)) { v.push_back(int(w)); }
                    }
                    return v;
                  },
-               .defaultFn = [](const Env& e, const FFTConfig& f,
-                               const UseConfig& d) { return int(std::min(2u, maxWmul(e, f, d))); }});
+               .defaultFn =
+                 [](const Env& e, const FFTConfig& f, const UseConfig& d) {
+                   u32 const forced = forcedWmul(e, f, d);
+                   return int(std::min(forced ? forced : 2u, maxWmul(e, f, d)));
+                 }});
   // Only the FP64 and FP32 parts have weights for the first butterfly to fold in. nVidia's compiler makes that fusion
   // by itself, so both values compile alike there.
   t.push_back({.key = "FUSE_WEIGHT_BUTTERFLY",
                .group = Group::Width,
                .touches = KG_CARRY,
                .accuracyImpact = AccuracyImpact::Suspected,
-               .applies = [](const Env& e, const FFTConfig& f,
-                             const UseConfig& d) { return e.isAmd && !e.cudaBackend && hasFloat(e, f, d); },
+               .dependsOn = {"256RADIX8_W"},
+               // The radix-8 body at width 256 has no fused form (base.cl).
+               .applies =
+                 [](const Env& e, const FFTConfig& f, const UseConfig& d) {
+                   return e.isAmd && !e.cudaBackend && hasFloat(e, f, d) && !(f.shape.width == 256 && radixW(f, d) == 8);
+                 },
                .values = {0, 1},
                .defaultValue = 1});
 
+  t.push_back({.key = "256RADIX8_H",
+               .scope = Scope::Variant,
+               .group = Group::Height,
+               .touches = KG_HEIGHT | KG_TAIL,
+               .structural = true,
+               .accuracyImpact = AccuracyImpact::Suspected,
+               .applies = [](const Env&, const FFTConfig& f,
+                             const UseConfig&) { return f.shape.height == 256 && (!f.FFT_FP64 || variant_H(f.variant) == 1); },
+               .values = {0, 1},
+               .defaultValue = 0});
   t.push_back({.key = "SHUFL_BYTES_H",
                .group = Group::Height,
                .touches = KG_HEIGHT | KG_TAIL,
@@ -719,18 +765,23 @@ vector<Option> buildTable() {
                .scope = Scope::Variant,
                .group = Group::Height,
                .touches = KG_HEIGHT,
+               .dependsOn = {"256RADIX8_H"},
                .values = {0, 1},
                .defaultValue = 1,
                .inert = [](const Env&, const FFTConfig& f,
-                           const UseConfig&) { return unrollInert(f.shape.height, variant_H(f.variant), f); },
-               .inertWhen = "height 1024 or 2048, or FFT64 with variant H 2"});
+                           const UseConfig& d) { return unrollInert(f.shape.height, radixH(f, d), variant_H(f.variant), f); },
+               .inertWhen = "height 1024 or 2048, radix 8 at height 256, or FFT64 with variant H 2"});
   t.push_back({.key = "HOIST_H",
                .scope = Scope::Variant,
                .group = Group::Height,
                .touches = KG_HEIGHT,
+               .dependsOn = {"256RADIX8_H"},
                .valuesFn = [](const Env& e, const FFTConfig& f,
                               const UseConfig&) { return hoistValues(e, f, f.shape.height, variant_H(f.variant)); },
-               .defaultValue = 0});
+               .defaultValue = 0,
+               .inert = [](const Env&, const FFTConfig& f,
+                           const UseConfig& d) { return hoistInert(f.shape.height, radixH(f, d)); },
+               .inertWhen = "radix 8 at height 256"});
   t.push_back({.key = "ZEROHACK_H",
                .scope = Scope::Variant,
                .group = Group::Height,
@@ -742,7 +793,8 @@ vector<Option> buildTable() {
     {.key = "SWIZ_RECOMPUTE",
      .group = Group::Width,
      .touchesFn = swizRecomputeTouches,
-     .dependsOn = {"SHUFL_BYTES_W", "LDSPAD_W", "LDSSWIZ_W", "WMUL", "SHUFL_BYTES_H", "LDSPAD_H", "LDSSWIZ_H"},
+     .dependsOn = {"SHUFL_BYTES_W", "LDSPAD_W", "LDSSWIZ_W", "WMUL", "SHUFL_BYTES_H", "LDSPAD_H", "LDSSWIZ_H",
+                   "256RADIX8_W", "256RADIX8_H"},
      .applies = [](const Env& e, const FFTConfig& f,
                    const UseConfig& d) { return opaqueCompiles(e) && swizRecomputeTouches(e, f, d) != 0; },
      .values = {0, 1},
@@ -1179,6 +1231,7 @@ vector<MatrixPoint> selfCheckMatrix() {
                               .computeCapability = cc,
                               .pdlLaunch = pdl,
                               .maxWorkGroupSize = vega ? 256u : 1024u,
+                              .amdWavefront = amd ? 64u : 0u,
                               .deviceName = vega ? "gfx906" : ""});
             }
           }
