@@ -84,7 +84,6 @@ bool hasFP32(const Env&, const FFTConfig& f, const UseConfig&) { return f.FFT_FP
 bool hasGF31(const Env&, const FFTConfig& f, const UseConfig&) { return f.NTT_GF31; }
 bool hasGF61(const Env&, const FFTConfig& f, const UseConfig&) { return f.NTT_GF61; }
 bool hasFloat(const Env&, const FFTConfig& f, const UseConfig&) { return f.FFT_FP64 || f.FFT_FP32; }
-bool hasNtt(const Env&, const FFTConfig& f, const UseConfig&) { return f.NTT_GF31 || f.NTT_GF61; }
 
 bool pfa(const FFTConfig& f) { return f.shape.isPfa(); }
 
@@ -216,7 +215,7 @@ int mm2ChainDefault(const FFTConfig& f) { return middleDigitPinsChains(f) ? 2 : 
 
 // A prime-factor MIDDLE's own middle step (pfaMiddleIn/Out) takes the place of middleMul, middleMul2 and fft_MIDDLE, so
 // nothing reads the middle chains there.
-bool mmChainInert(const FFTConfig& f) { return f.shape.middle == 2 || pfa(f); }
+bool mmChainInert(const FFTConfig& f) { return f.shape.middle <= 2 || pfa(f); }
 bool mm2ChainInert(const FFTConfig& f) { return f.shape.middle < 5 || pfa(f); }
 
 //
@@ -403,7 +402,7 @@ vector<Option> buildTable() {
                .defaultFn = [](const Env&, const FFTConfig& f, const UseConfig&) { return mmChainDefault(f); },
                // At MIDDLE 2 both arms reduce to the shared WADD(1, w) plus a zero-iteration loop.
                .inert = [](const Env&, const FFTConfig& f, const UseConfig&) { return mmChainInert(f); },
-               .inertWhen = "MIDDLE == 2, or a prime-factor MIDDLE"});
+               .inertWhen = "MIDDLE <= 2, or a prime-factor MIDDLE"});
   t.push_back({.key = "MM2_CHAIN",
                .group = Group::Middle,
                .touches = KG_MIDDLE_IN | KG_MIDDLE_OUT,
@@ -419,15 +418,23 @@ vector<Option> buildTable() {
                // Below MIDDLE 5 every branch sits in middleMul2's "MIDDLE >= SHARP_MIDDLE" arm.
                .inert = [](const Env&, const FFTConfig& f, const UseConfig&) { return mm2ChainInert(f); },
                .inertWhen = "MIDDLE < 5, or a prime-factor MIDDLE"});
-  t.push_back({.key = "MIDDLE_CHAIN",
+  // One key per NTT field.  At MIDDLE 1 and 2 both branches compute the same value and return.
+  t.push_back({.key = "MIDDLE_CHAIN31",
                .group = Group::Middle,
                .touches = KG_MIDDLE_IN | KG_MIDDLE_OUT,
-               .applies = hasNtt,
+               .applies = hasGF31,
                .values = {0, 1},
                .defaultValue = 0,
-               // At MIDDLE 2 both branches compute the same value and return.
                .inert = [](const Env&, const FFTConfig& f, const UseConfig&) { return mmChainInert(f); },
-               .inertWhen = "MIDDLE == 2, or a prime-factor MIDDLE"});
+               .inertWhen = "MIDDLE <= 2, or a prime-factor MIDDLE"});
+  t.push_back({.key = "MIDDLE_CHAIN61",
+               .group = Group::Middle,
+               .touches = KG_MIDDLE_IN | KG_MIDDLE_OUT,
+               .applies = hasGF61,
+               .values = {0, 1},
+               .defaultValue = 0,
+               .inert = [](const Env&, const FFTConfig& f, const UseConfig&) { return mmChainInert(f); },
+               .inertWhen = "MIDDLE <= 2, or a prime-factor MIDDLE"});
 
   t.push_back({.key = "LOADS",
                .scope = Scope::Device,
@@ -794,20 +801,21 @@ vector<Option> buildTable() {
   // Recognized but never searched keys.
   for (const char* key : {
          "STATS", "DEBUG", "NO_ASM", "CARRY64", "ROUNDOFF_LIMIT",     // Debugging and correctness options
-         "SHOULD_BE_FASTER", "DISABLE_NEW_ONEPAIRSQ", "TEST_KERNEL",  // Upstream A/B options
+         "DISABLE_NEW_ONEPAIRSQ", "TEST_KERNEL",                      // Upstream A/B options
          "TRY_SHL30", "TRY_SHL31", "TRY_SQRT2",                       // GF61 experiments, correctness unverified
          "WAVEFRONT",                                                 // Set too high, bar() skips needed barriers
          "USE_REGISTER_BARSYNC",   // Picks barsync()'s body, reached only through LDSMUL > 1
          "LDSMUL_W", "LDSMUL_H",   // Shared LDS: slower where tried upstream, and unsafe with variant 2
          "ENABLE_FP32_VARIANT_2",  // Would widen the FP32 variant space
          "NO_INT128",              // For drivers without 128-bit integers; rusticl is detected without it
-         "CARRY96", "CARRY_SUB_X", "M61_SM120", "MIDDLE_CHAIN31", "MIDDLE_CHAIN61", "SMEM_SPILL",
+         "CARRY96", "CARRY_SUB_X", "M61_SM120", "SMEM_SPILL",
        }) {
     t.push_back({.key = key, .kind = Kind::Fixed});
   }
 
   t.push_back({.key = "BIGLIT", .kind = Kind::Deprecated});
   t.push_back({.key = "NONTEMPORAL", .kind = Kind::Deprecated});
+  t.push_back({.key = "MIDDLE_CHAIN", .kind = Kind::Deprecated});
 
   return t;
 }

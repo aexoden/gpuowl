@@ -140,7 +140,7 @@ TEST(known_keys) {
     CHECK(isKnownKey(key));
   }
   // Keys that list missed, so a valid -use drew "unrecognized" while still reaching the compiler.
-  for (const char* key : {"MM_CHAIN", "MM2_CHAIN", "MIDDLE_CHAIN", "SHUFL_BYTES_W", "SHUFL_BYTES_H", "LDSPAD_W",
+  for (const char* key : {"MM_CHAIN", "MM2_CHAIN", "MIDDLE_CHAIN31", "MIDDLE_CHAIN61", "SHUFL_BYTES_W", "SHUFL_BYTES_H", "LDSPAD_W",
                           "LDSPAD_H", "LDSSWIZ_W", "LDSSWIZ_H", "L2_STRIPING", "OLD_FENCE", "ENABLE_BARSYNC", "REGCF64",
                           "REGTS61", "PDL", "TRY_SQRT2", "WAVEFRONT", "ROUNDOFF_LIMIT", "USE_REGISTER_BARSYNC"}) {
     CHECK(isKnownKey(key));
@@ -167,9 +167,19 @@ TEST(inert_middle_chains) {
   CHECK(applicable(e, "2:512:8:512:202", {}, "MM_CHAIN"));   // FP32 as well as FP64
   CHECK(!applicable(e, "3:512:4:512:202", {}, "MM_CHAIN"));  // no float part
 
-  CHECK(inert(e, "3:256:2:256:202", "MIDDLE_CHAIN"));
-  CHECK(applicable(e, "3:512:4:512:202", {}, "MIDDLE_CHAIN"));
-  CHECK(!applicable(e, "512:15:512:101", {}, "MIDDLE_CHAIN"));
+  // One key per NTT field, each read only where its field is.
+  CHECK(inert(e, "3:256:2:256:202", "MIDDLE_CHAIN61"));
+  CHECK(applicable(e, "3:512:4:512:202", {}, "MIDDLE_CHAIN61"));
+  CHECK(!applicable(e, "3:512:4:512:202", {}, "MIDDLE_CHAIN31"));
+  CHECK(applicable(e, "1:512:4:512:202", {}, "MIDDLE_CHAIN31"));
+  CHECK(applicable(e, "1:512:4:512:202", {}, "MIDDLE_CHAIN61"));
+  CHECK(applicable(e, "52:512:4:512:202", {}, "MIDDLE_CHAIN31"));
+  CHECK(!applicable(e, "52:512:4:512:202", {}, "MIDDLE_CHAIN61"));
+  CHECK(!applicable(e, "512:15:512:101", {}, "MIDDLE_CHAIN31"));
+  CHECK(!applicable(e, "512:15:512:101", {}, "MIDDLE_CHAIN61"));
+
+  // The old key, which chained both fields, is recognized but no longer read.
+  CHECK(isKnownKey("MIDDLE_CHAIN") && findOption("MIDDLE_CHAIN")->kind == Kind::Deprecated);
 
   // Defaults come off the M digit.
   CHECK_EQ(defaultOf(e, "512:15:512:101", {}, "MM_CHAIN"), 0);
@@ -191,12 +201,13 @@ TEST(prime_factor_middles) {
         CHECK_EQ(applicable(e, spec, asked, "IN_WG"), outOfPlace);
         CHECK_EQ(applicable(e, spec, asked, "MIDDLE_IN_LDS_TRANSPOSE"), outOfPlace);
       }
-      for (const char* chain : {"MM_CHAIN", "MM2_CHAIN", "MIDDLE_CHAIN"}) {
+      for (const char* chain : {"MM_CHAIN", "MM2_CHAIN", "MIDDLE_CHAIN31", "MIDDLE_CHAIN61"}) {
         CHECK(!applicable(e, spec, {}, chain));
       }
     }
 
-    CHECK(inert(e, "1:1K:6:256:202", "MIDDLE_CHAIN"));
+    CHECK(inert(e, "1:1K:6:256:202", "MIDDLE_CHAIN31"));
+    CHECK(inert(e, "1:1K:6:256:202", "MIDDLE_CHAIN61"));
     CHECK(inert(e, "51:512:12:512:202", "MM_CHAIN"));
     CHECK(inert(e, "51:512:12:512:202", "MM2_CHAIN"));
     CHECK(!inert(e, "51:512:16:512:202", "MM2_CHAIN"));

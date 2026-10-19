@@ -541,6 +541,12 @@ TEST(option_sets_round_trip) {
   CHECK(!parseConfigText("INPLACE=1,"));
 }
 
+TEST(a_stored_middle_chain_reads_as_both_of_the_keys_it_became) {
+  CHECK_EQ(configText(*parseConfigText("MIDDLE_CHAIN=1,PAD=256")),
+           std::string{"MIDDLE_CHAIN31=1,MIDDLE_CHAIN61=1,PAD=256"});
+  CHECK_EQ(configText(*parseConfigText("MIDDLE_CHAIN=1,MIDDLE_CHAIN61=0")), std::string{"MIDDLE_CHAIN31=1,MIDDLE_CHAIN61=0"});
+}
+
 TEST(rows_are_refused_without_what_they_name) {
   TuneDB db;
   CHECK(db.parse("# prpll tunedb v1\n", "fixture"));

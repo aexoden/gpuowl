@@ -248,6 +248,14 @@ std::optional<UseConfig> parseConfigText(std::string_view text) {
     at = comma + 1;
   }
 
+  // MIDDLE_CHAIN chained both NTT fields' middle trig; it is now one key per field.
+  if (auto const it = config.find("MIDDLE_CHAIN"); it != config.end()) {
+    std::string const value = it->second;
+    config.erase(it);
+    config.try_emplace("MIDDLE_CHAIN31", value);
+    config.try_emplace("MIDDLE_CHAIN61", value);
+  }
+
   return config;
 }
 
