@@ -327,6 +327,27 @@ TEST(radix_8_at_256) {
   CHECK_EQ(valuesOf(e, "256:4:256:101", r8, "WMUL"), string("1,2,4"));  // nVidia's 32-lane warp holds the line
 }
 
+// ptxas spills to shared memory from CUDA 13 on sm_75 and up, and only what a register limit makes it spill.
+TEST(shared_memory_spilling) {
+  Env const blackwell{.isNvidia = true, .cudaBackend = true, .computeCapability = 1200, .driverVersion = "CUDA 13.0"};
+  UseConfig const limited{{"REGCF64", "64"}};
+  CHECK(applicable(blackwell, "512:15:512:101", limited, "SMEM_SPILL"));
+  CHECK(!applicable(blackwell, "512:15:512:101", {}, "SMEM_SPILL"));
+  CHECK(!applicable(blackwell, "512:15:512:101", {{"REGCF64", "0"}}, "SMEM_SPILL"));
+  CHECK(!applicable(blackwell, "1:512:4:512:202", limited, "SMEM_SPILL"));  // no FP64 carryFused for it to limit
+  CHECK(applicable(blackwell, "1:512:4:512:202", {{"REGTS61", "1"}}, "SMEM_SPILL"));
+
+  Env older = blackwell;
+  older.driverVersion = "CUDA 12.4";
+  CHECK(!applicable(older, "512:15:512:101", limited, "SMEM_SPILL"));
+  Env volta = blackwell;
+  volta.computeCapability = 700;
+  CHECK(!applicable(volta, "512:15:512:101", limited, "SMEM_SPILL"));
+  Env opencl = blackwell;
+  opencl.cudaBackend = false;
+  CHECK(!applicable(opencl, "512:15:512:101", limited, "SMEM_SPILL"));
+}
+
 TEST(inert_fast_barrier) {
   auto amdOn = [](const char* name) { return Env{.isAmd = true, .deviceName = name}; };
   CHECK(!inert(amdOn("gfx906:sramecc+:xnack-"), "512:15:512:101", "FAST_BARRIER"));

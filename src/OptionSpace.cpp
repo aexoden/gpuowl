@@ -251,6 +251,15 @@ const vector<int> AMD_WAVES_CAPPED{-1, 0, 3, 4};
 // NOREG=1 makes numRegisters() return early, so no REG* key reaches the compiler. Without CUDA only AMD reads them.
 bool regUsable(const Env& e, const UseConfig& d) { return (e.cudaBackend || e.isAmd) && useValue(d, "NOREG", 0) == 0; }
 
+// A REGxxxx key, which limits one kernel's registers; NOREG is not one.
+bool isRegisterLimit(const string& key) { return key != "NOREG" && Args::isRegisterKey(key); }
+
+// The driver's CUDA major version, from what the CUDA build reports as its driver version ("CUDA 12.4"); 0 otherwise.
+u32 cudaDriverMajor(const Env& e) {
+  if (!e.driverVersion.starts_with("CUDA ")) { return 0; }
+  return u32(std::strtoul(e.driverVersion.c_str() + 5, nullptr, 10));
+}
+
 vector<int> regLadder(const Env& e, const FFTConfig&, const UseConfig&) {
   return e.cudaBackend ? REG_LADDER : AMD_WAVES;
 }
@@ -845,6 +854,27 @@ vector<Option> buildTable() {
                .values = {0, 1},
                .defaultValue = 0});
   addRegOptions(t);
+  vector<string> limits{"NOREG"};
+  for (const Option& o : t) {
+    if (isRegisterLimit(o.key)) { limits.push_back(o.key); }
+  }
+  // The registers a REG* limit spills go to shared memory: ptxas takes the pragma from CUDA 13 and sm_75 on.  With no
+  // limit set nothing spills, so it compiles what 0 does.
+  t.push_back({.key = "SMEM_SPILL",
+               .group = Group::Cuda,
+               .touches = KG_CARRY | KG_MIDDLE_IN | KG_MIDDLE_OUT | KG_TAIL,
+               .dependsOn = limits,
+               .applies =
+                 [](const Env& e, const FFTConfig& f, const UseConfig& d) {
+                   if (!e.cudaBackend || !e.isNvidia || e.computeCapability < 750 || cudaDriverMajor(e) < 13) {
+                     return false;
+                   }
+                   return std::ranges::any_of(allOptions(), [&](const Option& o) {
+                     return isRegisterLimit(o.key) && o.appliesTo(e, f, d) && useValue(d, o.key, 0) > 0;
+                   });
+                 },
+               .values = {0, 1},
+               .defaultValue = 0});
   t.push_back({.key = "PDL",
                .scope = Scope::Device,
                .group = Group::Cuda,
@@ -864,7 +894,7 @@ vector<Option> buildTable() {
          "LDSMUL_W", "LDSMUL_H",   // Shared LDS: slower where tried upstream, and unsafe with variant 2
          "ENABLE_FP32_VARIANT_2",  // Would widen the FP32 variant space
          "NO_INT128",              // For drivers without 128-bit integers; rusticl is detected without it
-         "CARRY96", "CARRY_SUB_X", "M61_SM120", "SMEM_SPILL",
+         "CARRY96", "CARRY_SUB_X", "M61_SM120",
        }) {
     t.push_back({.key = key, .kind = Kind::Fixed});
   }
@@ -1240,6 +1270,14 @@ vector<MatrixPoint> selfCheckMatrix() {
     }
   }
 
+  // Blackwell under a CUDA 13 driver, where shared-memory spilling can be asked for.
+  envs.push_back({.isNvidia = true,
+                  .cudaBackend = true,
+                  .computeCapability = 1200,
+                  .pdlLaunch = true,
+                  .deviceName = "NVIDIA GeForce RTX 5070 Ti",
+                  .driverVersion = "CUDA 13.0"});
+
   vector<FFTConfig> ffts;
   for (FFTShape shape : {FFTShape{FFT64, 512, 15, 512}, FFTShape{FFT64, 4096, 12, 512}, FFTShape{FFT64, 256, 4, 256},
                          FFTShape{FFT64, 1024, 8, 1024}, FFTShape{FFT64, 512, 8, 1024}, FFTShape{FFT64, 2048, 8, 512},
@@ -1269,6 +1307,7 @@ vector<MatrixPoint> selfCheckMatrix() {
     {{"SHUFL_BYTES_W", "16"}, {"SHUFL_BYTES_H", "16"}},  // tightens WMUL, may close LDSPAD_W
     {{"WMUL", "4"}},
     {{"NOREG", "1"}},          // closes REG*
+    {{"REGTS64", "64"}, {"REGTS32", "64"}, {"REGTS31", "64"}, {"REGTS61", "64"}},  // opens SMEM_SPILL
     {{"DISABLE_MUL64", "1"}},  // opens ENABLE_ALT_MUL64
   };
 
