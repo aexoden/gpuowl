@@ -838,9 +838,10 @@ error), `drift=0|1` (time the drift anchor; on by default), `drain=0|1`.
 
 ## The previous tuner: `-oldtune`
 
-`-oldtune` is the tuner PRPLL had before (called `-tune` in upstream PRPLL), kept for comparison. It takes the same
-options as before (`noconfig`, `inplace`, `fp64`, `ntt`, `nofp32`, `fp6431`, `minexp=`, `maxexp=`, `quick=`; see
-`prpll -h`). It writes its option choices into `config.txt` and its FFT list into `tune.txt`.
+`-oldtune` is the tuner PRPLL had before (called `-tune` in upstream PRPLL), kept for comparison. It takes upstream's
+options (`noconfig`, `inplace`, `fp64`, `ntt`, `fp32=`, `fp6431`, `1k256`, `m61`, `pfa`, `regs`, `variants`, `fine`,
+`tk=`, `minexp=`, `maxexp=`, `exp=`, `quick=`; see `prpll -h`). It writes its option choices into `config.txt` and its
+FFT list into `tune.txt`, where each line can carry the register limits and other settings it found for that FFT.
 
 The two do not mix well: the `-use` lines `-oldtune` adds to `config.txt` override everything `-tune` measured (see
 [How a normal run uses the result](#how-a-normal-run-uses-the-result)). If you have used it, remove those lines

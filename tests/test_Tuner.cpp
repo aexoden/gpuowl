@@ -108,7 +108,8 @@ struct Dir {
 TEST(an_option_of_the_previous_tuner_is_refused_naming_its_flag) {
   for (const char* text :
        {"noconfig,fp64", "quick=5", "minexp=100000000,maxexp=200000000", "fp6431", "workload=100M-400M,inplace",
-        "emit,ntt", "status,maxexp=200000000", "1k256", "m61=1", "pfa=2"}) {
+        "emit,ntt", "status,maxexp=200000000", "1k256", "m61=1", "pfa=2", "regs", "variants,exp=140M-142M",
+        "fine=5", "tk=auto", "fp32=0"}) {
     CHECK(refusal(text).find("-oldtune") != std::string::npos);
   }
   CHECK(refusal("fp65").find("-oldtune") == std::string::npos);
