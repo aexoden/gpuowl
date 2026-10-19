@@ -11,6 +11,7 @@
 
 #include <algorithm>
 #include <array>
+#include <iterator>
 #include <mutex>
 #include <set>
 #include <utility>
@@ -265,12 +266,28 @@ Choice choose(const Args& args, const Env& env, u64 E, TestKind kind) {
   SelectionLayers layers;
   if (file) { layers = SelectionLayers{.global = file->global, .family = file->family, .entry = {}}; }
 
-  auto const scan = [&](u64 ask) {
-    FFTConfig const fft = FFTConfig::bestFit(args, ask, args.fftSpec, nullptr, env.hasFP64, noted);
-    UseConfig options = resolveConfig(args, fft, kind, fittedTo(layers, env, fft, kind));
+  auto const choiceFor = [&](const FFTConfig& fft, const std::vector<std::pair<std::string, std::string>>& uses) {
+    UseConfig options = resolveConfig(args, fft, kind, fittedTo(layers, env, fft, kind), uses);
     u64 const limit = file ? publishedReach(*file, env, fft, kind, options, E) : maxExp(fft);
 
     return Choice{.fft = fft, .options = std::move(options), .entry = {}, .shadowed = {}, .reach = limit};
+  };
+
+  auto const scan = [&](u64 ask) {
+    std::vector<std::pair<std::string, std::string>> uses;
+    std::vector<FFTConfig> const ffts = FFTConfig::bestFits(args, ask, args.fftSpec, &uses, env.hasFP64, noted);
+    if (!uses.empty()) { logFftUses(args, ffts.front().spec(), uses); }
+
+    Choice choice = choiceFor(ffts.front(), uses);
+
+    // Untuned, the scan's candidates of other types, should this one's kernels not build. Only a build failure moves
+    // to one, so a candidate this machine measured computing wrong answers is not among them.
+    for (auto it = std::next(ffts.begin()); it != ffts.end(); ++it) {
+      Choice next = choiceFor(*it, {});
+      if (file && exclusionFor(*file, env, next.fft, kind, runRegime(args, next.fft, E), next.options)) { continue; }
+      choice.fallbacks.push_back(std::move(next));
+    }
+    return choice;
   };
 
   // The shape scan knows nothing about what has been published, so a configuration whose own measurement stopped short

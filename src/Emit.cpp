@@ -360,10 +360,14 @@ std::optional<SelectionFile> emit(const TuneDB& db, const Defaults& lines, const
 }
 
 std::vector<TuneEntry> compatibilityView(const SelectionFile& file, const Env& env) {
-  std::map<std::string, TuneEntry> cheapest;
+  std::map<std::string, const SelectionEntry*> cheapest;
   std::set<std::string> shortOfTable;
 
-  // An older binary runs a listed FFT at its defaults, and reads no exclusion that would stop it.
+  // tune.txt has no test kind, and the binaries that read it mostly run PRP, so a file with PRP entries speaks for them.
+  bool const anyPrp = std::ranges::any_of(file.entries, [](const SelectionEntry& e) { return e.kind == TestKind::PRP; });
+
+  // A binary from before upstream f222e88 runs a listed FFT at its defaults, and none reads an exclusion that would
+  // stop it.
   std::set<std::string> wrongAtDefaults;
   for (const Exclusion& x : file.excluded) {
     auto const fft = parseFft(x.fft);
@@ -372,7 +376,7 @@ std::vector<TuneEntry> compatibilityView(const SelectionFile& file, const Env& e
 
   for (const SelectionEntry& e : file.entries) {
     auto const fft = parseFft(e.fft);
-    if (!fft) { continue; }
+    if (!fft || (anyPrp && e.kind != TestKind::PRP)) { continue; }
 
     if (e.evidence != Evidence::NotApplicable) {
       // Only an entry at default rounding speaks for what an older binary runs. One held short of the end of its band,
@@ -387,8 +391,8 @@ std::vector<TuneEntry> compatibilityView(const SelectionFile& file, const Env& e
       if (e.regime != regimeOf(*fft, maxExp(*fft))) { continue; }
     }
 
-    auto const [at, fresh] = cheapest.try_emplace(fft->spec(), TuneEntry{e.cost, *fft, {}});
-    if (!fresh) { at->second.cost = std::min(at->second.cost, e.cost); }
+    auto const [at, fresh] = cheapest.try_emplace(fft->spec(), &e);
+    if (!fresh && e.cost < at->second->cost) { at->second = &e; }
   }
 
   for (const Limit& l : file.limits) {
@@ -396,9 +400,16 @@ std::vector<TuneEntry> compatibilityView(const SelectionFile& file, const Env& e
     if (fft && !movesAccuracy(env, *fft, l.rounding)) { shortOfTable.insert(fft->spec()); }
   }
 
+  // A newer binary applies the settings on the line over its config.txt, so they are the entry's whole set as production
+  // resolves it, less what the built-in defaults already are.
   std::vector<TuneEntry> lines;
-  for (const auto& [spec, line] : cheapest) {
-    if (!shortOfTable.contains(spec) && !wrongAtDefaults.contains(spec)) { lines.push_back(line); }
+  for (const auto& [spec, e] : cheapest) {
+    if (shortOfTable.contains(spec) || wrongAtDefaults.contains(spec)) { continue; }
+    FFTConfig const fft = *parseFft(e->fft);
+    UseConfig const resolved =
+      resolveConfig(Args{true}, fft, e->kind, fittedTo(file.layersFor(*e), env, fft, e->kind));
+    UseConfig const uses = canonicalConfig(env, fft, resolved);
+    lines.push_back(TuneEntry{e->cost, fft, {uses.begin(), uses.end()}});
   }
   std::ranges::sort(lines, [](const TuneEntry& a, const TuneEntry& b) { return a.cost < b.cost; });
 
@@ -412,9 +423,11 @@ std::string compatibilityText(const std::vector<TuneEntry>& view) {
   std::string out;
   for (const TuneEntry& line : view) {
     char buf[128];
-    snprintf(buf, sizeof(buf), "%6.1f %14s # %llu\n", line.cost, line.fft.spec().c_str(),
+    snprintf(buf, sizeof(buf), "%6.1f %14s # %llu", line.cost, line.fft.spec().c_str(),
              (unsigned long long)line.fft.maxExp());
     out += buf;
+    for (const auto& [key, value] : line.uses) { out += ", " + key + '=' + value; }
+    out += '\n';
   }
   return out;
 }

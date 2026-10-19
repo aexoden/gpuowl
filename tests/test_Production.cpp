@@ -16,6 +16,7 @@
 #include "test.h"
 
 #include <algorithm>
+#include <set>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -294,6 +295,53 @@ TEST(a_selection_file_is_optional_and_its_own_lines_survive_a_fallback) {
   Choice const uncovered = choose(args, Env{}, 40'000'000, TestKind::PRP);
   CHECK(!uncovered.entry.has_value());
   CHECK_EQ(joined(uncovered.options), std::string{"INPLACE=1"});
+
+  fs::remove_all(dir);
+}
+
+TEST(a_tune_txt_lines_settings_reach_the_shape_scans_choice_over_the_config_and_under_the_command_line) {
+  fs::path const dir = fs::temp_directory_path() / "prpll-test-production-tune-txt-uses";
+  fs::remove_all(dir);
+  fs::create_directories(dir);
+  WorkingDirectory const here{dir};
+
+  FFTConfig const fft{"512:15:512:202"};
+  {
+    File::openWrite("tune.txt")
+      .printf("100.0 %s # %llu, WMUL=1, REGCF64=96\n", fft.spec().c_str(), (unsigned long long)maxExp(fft));
+  }
+
+  Choice const plain = choose(configured({"-use WMUL=2", "-use TAIL_KERNELS=3"}), Env{}, 100'000'000, TestKind::PRP);
+  CHECK_EQ(plain.fft.spec(), fft.spec());
+  CHECK_EQ(joined(plain.options), std::string{"REGCF64=96,TAIL_KERNELS=3,WMUL=1"});
+  CHECK(plain.fallbacks.empty());  // tune.txt answered, so there is nothing to fall back on
+
+  Choice const overridden = choose(configured({}, {"-use WMUL=4"}), Env{}, 100'000'000, TestKind::PRP);
+  CHECK_EQ(joined(overridden.options), std::string{"REGCF64=96,WMUL=4"});
+
+  fs::remove_all(dir);
+}
+
+TEST(an_untuned_choice_carries_the_smallest_fft_of_each_other_type_to_fall_back_on) {
+  fs::path const dir = fs::temp_directory_path() / "prpll-test-production-untuned-fallbacks";
+  fs::remove_all(dir);
+  fs::create_directories(dir);
+  WorkingDirectory const here{dir};
+
+  Choice const untuned = choose(configured({}), Env{}, 40'000'000, TestKind::PRP);
+  CHECK(!untuned.fallbacks.empty());
+  std::set<int> types{untuned.fft.shape.fft_type};
+  for (const Choice& next : untuned.fallbacks) {
+    types.insert(next.fft.shape.fft_type);
+    CHECK(isEligible(next.fft, 40'000'000));
+    CHECK(!next.entry.has_value());
+  }
+  CHECK_EQ(types.size(), untuned.fallbacks.size() + 1);
+
+  // Without FP64, none of them needs it.
+  Choice const noFp64 = choose(configured({}), Env{.hasFP64 = false}, 40'000'000, TestKind::PRP);
+  CHECK(!noFp64.fft.FFT_FP64);
+  for (const Choice& next : noFp64.fallbacks) { CHECK(!next.fft.FFT_FP64); }
 
   fs::remove_all(dir);
 }

@@ -560,8 +560,9 @@ each exponent it takes the cheapest published entry that covers that exponent, a
 for it. The file is read again for every new task, so a run picks up newly published results without being restarted.
 
 Where no published entry covers an exponent (or there is no `selection.txt`), PRPLL falls back to its usual choice of
-FFT (the fastest in `tune.txt`, or the smallest FFT that fits), but still under `selection.txt`'s default `use` lines,
-and still honouring any exponent limits and exclusions the tuner published. Where there is a `selection.txt` but
+FFT (the fastest in `tune.txt`, under any settings on its line, or else the smallest FFT that fits, with the smallest of
+each other type to try should its kernels not build), but still under `selection.txt`'s default `use` lines, and still
+honouring any exponent limits and exclusions the tuner published. Where there is a `selection.txt` but
 nothing in it covers the exponent, PRPLL says so, once per exponent, with the range the file does cover and a workload
 that would cover this exponent too:
 
@@ -576,12 +577,13 @@ until the coverage stage has published an FFT for it.
 first, from:
 
 1. `-use` on the command line
-2. `!` lines in `config.txt` (see `prpll -h`)
-3. plain `-use` lines in `config.txt`
-4. `selection.txt`: the options of the entry chosen
-5. `selection.txt`: the default line of the FFT type
-6. `selection.txt`: the global default line
-7. PRPLL's built-in defaults
+2. where `tune.txt` chose the FFT, the settings on its line
+3. `!` lines in `config.txt` (see `prpll -h`)
+4. plain `-use` lines in `config.txt`
+5. `selection.txt`: the options of the entry chosen
+6. `selection.txt`: the default line of the FFT type
+7. `selection.txt`: the global default line
+8. PRPLL's built-in defaults
 
 So a `-use` line left in `config.txt` (for example by `-oldtune`) overrides what the tuner measured. When that happens,
 PRPLL says so at startup:
@@ -755,7 +757,7 @@ All in the run directory (`-dir`):
 | `tunedb.txt` | tuning runs, `reset`, `adopt`, `compact` | every measurement, with the exact options it was taken under. Appended to as a run goes. |
 | `tunedb.txt.lock` | tuning runs and the subcommands that write | an empty file that is locked while the database is being written, so that two processes cannot write it at once |
 | `selection.txt` | tuning runs (after every measurement), `emit` | what normal runs use: the default `use` lines, then one `entry` and `opts` line per published configuration, `limit` lines for options no entry runs that were measured to hold only to a lower exponent, and `exclude` lines for configurations that computed wrong answers. Replaced atomically. |
-| `tune.txt` | tuning runs and `emit` with `tunetxt=1`; also `-oldtune` | the FFT list older binaries read, holding only FFTs measured as safe to their full standard range under default rounding |
+| `tune.txt` | tuning runs and `emit` with `tunetxt=1`; also `-oldtune` | the FFT list older binaries read, holding only FFTs measured as safe to their full standard range under default rounding, each line with the settings of the entry it lists (from the PRP entries where there are any), which upstream PRPLL applies to that FFT and older binaries ignore |
 
 `tunedb.txt` is worth keeping: it is the only record of the measurements, and deleting it means tuning from scratch.
 `selection.txt` can always be recreated from it with `-tune emit`. Neither is meant to be edited by hand.

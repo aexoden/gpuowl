@@ -101,8 +101,9 @@ struct OptionSet {
 // table's own reach, at default rounding, or with exact arithmetic, and no other -- nor any FFT whose default rounding
 // was held short of the end of a band in any regime, since a line says nothing of regimes, nor any whose defaults are
 // excluded in any regime. Such a binary runs an FFT up to the table's reach under options of its own, so a line is
-// safe only where the table's reach holds at default rounding; its cost is the cheapest entry of that FFT, and the
-// lines form the cost/reach frontier its reader keeps.
+// safe only where the table's reach holds at default rounding; its cost is the cheapest entry of that FFT (of the PRP
+// entries, where there are any), and the lines form the cost/reach frontier its reader keeps.  Each line carries that
+// entry's settings, which binaries since upstream f222e88 apply to that FFT and older ones ignore.
 [[nodiscard]] std::vector<TuneEntry> compatibilityView(const SelectionFile& file, const Env& env);
 
 // The view in upstream's own format.

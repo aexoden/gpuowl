@@ -834,8 +834,32 @@ TEST(tune_txt_offers_only_what_the_table_reach_holds_for_at_default_rounding) {
   std::vector<TuneEntry> const read = TuneEntry::readTuneFile(Args{true});
   fs::current_path(previous);
   CHECK(linesOf(read) == linesOf(view));
-  CHECK(compatibilityText(view).find(" # " + std::to_string(maxExp(FFTConfig{fp64})) + "\n") != std::string::npos);
+  CHECK(compatibilityText(view).find(" # " + std::to_string(maxExp(FFTConfig{fp64})) + ", TAIL_KERNELS=3\n") !=
+        std::string::npos);
   fs::remove_all(dir);
+
+  // Each line carries the settings of the entry its cost is, which upstream's reader hands back for that FFT.
+  CHECK(read.size() == 2 && read[0].uses == (std::vector<KeyVal>{{"TAIL_KERNELS", "3"}}) && read[1].uses.empty());
+}
+
+TEST(tune_txt_lines_carry_the_whole_set_production_resolves_and_speak_for_prp) {
+  std::string const fp64 = "512:15:512:212";
+  SelectionEntry prp = entryOf(fp64, 1750, {{"WMUL", "1"}});
+  SelectionEntry ll = entryOf(fp64, 1700, {{"TAIL_KERNELS", "3"}});
+  ll.kind = TestKind::LL;
+
+  // The file's own lines are part of what the FFT runs, and the defaults are not named.
+  SelectionFile file = fileOf({prp, ll});
+  file.global = {{"INPLACE", "0"}};
+  std::vector<TuneEntry> const view = compatibilityView(file, nvidia());
+  CHECK(view.size() == 1);
+  if (view.size() != 1) { return; }
+  CHECK_EQ(view[0].cost, 1750.0);
+  CHECK(view[0].uses == (std::vector<KeyVal>{{"INPLACE", "0"}, {"WMUL", "1"}}));
+
+  // With no PRP entry at all, the LL ones speak.
+  std::vector<TuneEntry> const llOnly = compatibilityView(fileOf({ll}), nvidia());
+  CHECK(llOnly.size() == 1 && llOnly[0].uses == (std::vector<KeyVal>{{"TAIL_KERNELS", "3"}}));
 }
 
 // An older binary runs a listed FFT at its defaults and reads no exclusion, so an FFT whose defaults computed a wrong
