@@ -52,6 +52,9 @@ struct Env {
   // CL_DEVICE_MAX_WORK_GROUP_SIZE, which caps carryFused's WMUL.
   u32 maxWorkGroupSize = 1024;
 
+  // CL_DEVICE_WAVEFRONT_WIDTH_AMD, 0 elsewhere: a line narrower than a wavefront makes the host raise WMUL.
+  u32 amdWavefront = 0;
+
   string deviceName{};
   string driverVersion{};
 

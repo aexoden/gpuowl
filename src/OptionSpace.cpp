@@ -67,6 +67,7 @@ Env detectEnv(const Context& context, const Args& args) {
   env.deviceName = getDeviceName(id);
   env.driverVersion = getDriverVersion(id);
   env.maxWorkGroupSize = getMaxWorkGroupSize(id);
+  if (env.isAmd) { env.amdWavefront = getAmdWavefrontWidth(id); }
   return env;
 }
 

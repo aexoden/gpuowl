@@ -61,9 +61,12 @@ struct DbEnv {
   bool pdlLaunch = false;
   u32 computeCapability = 0;
 
-  // What a command with no device open cannot ask the card: which FFT types and variants it can build at all.
+  // What a command with no device open cannot ask the card: which FFT types and variants it can build at all, and the
+  // limits that decide what WMUL the host lets carryFused have.  Rows from before wg= and wave= read as 1024 and 0.
   bool hasFP64 = true;
   bool amdBuiltins = true;
+  u32 maxWorkGroupSize = 1024;
+  u32 amdWavefront = 0;
 
   // Which physical card, as a PCI address; empty for a machine that cannot tell.
   std::string machine{};

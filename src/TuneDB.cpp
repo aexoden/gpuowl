@@ -269,6 +269,8 @@ Env DbEnv::toEnv() const {
              .amdBuiltins = amdBuiltins,
              .computeCapability = computeCapability,
              .pdlLaunch = pdlLaunch,
+             .maxWorkGroupSize = maxWorkGroupSize,
+             .amdWavefront = amdWavefront,
              .deviceName = gpu,
              .driverVersion = driver};
 }
@@ -294,6 +296,8 @@ DbEnv dbEnvOf(const Env& env) {
                .computeCapability = env.computeCapability,
                .hasFP64 = env.hasFP64,
                .amdBuiltins = env.amdBuiltins,
+               .maxWorkGroupSize = env.maxWorkGroupSize,
+               .amdWavefront = env.amdWavefront,
                .machine = {},
                .build = buildFingerprint(),
                .extra = {}};
@@ -307,7 +311,8 @@ std::string formatRow(const DbEnv& row) {
                       : "-") +
     " be=" + (row.cudaBackend ? "cuda" : "ocl") + " cc=" + to_string(row.computeCapability) +
     " noasm=" + (row.noAsm ? "1" : "0") + " pdl=" + (row.pdlLaunch ? "1" : "0") + " fp64=" + (row.hasFP64 ? "1" : "0") +
-    " builtins=" + (row.amdBuiltins ? "1" : "0") + " machine=" + (row.machine.empty() ? "-" : quoted(row.machine)) +
+    " builtins=" + (row.amdBuiltins ? "1" : "0") + " wg=" + to_string(row.maxWorkGroupSize) +
+    " wave=" + to_string(row.amdWavefront) + " machine=" + (row.machine.empty() ? "-" : quoted(row.machine)) +
     " build=" + hex16(row.build);
   for (const std::string& field : row.extra) { out += ' ' + quoted(field); }
   return out;
@@ -1283,6 +1288,10 @@ bool TuneDB::parse(std::string_view text, std::string_view name) {
         } else if (key == "builtins") {
           flag(e.amdBuiltins);
           sawBuiltins = true;
+        } else if (key == "wg") {
+          number(e.maxWorkGroupSize);
+        } else if (key == "wave") {
+          number(e.amdWavefront);
         } else if (key == "machine") {
           e.machine = val == "-" ? "" : std::string{val};
         } else if (key == "build") {

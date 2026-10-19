@@ -28,7 +28,7 @@ namespace {
 const char* const FIXTURE =
   "# prpll tunedb v1\n"
   "env   1 gpu=\"NVIDIA RTX A4000\" name=\"NVIDIA RTX A4000\" drv=550.163.01 vendor=nvidia be=ocl cc=806 noasm=0"
-  " pdl=0 fp64=1 builtins=1 machine=01:00.0 build=9a3f21c0d1e2f304 fanspeed=42 \"note=two words\"\n"
+  " pdl=0 fp64=1 builtins=1 wg=1024 wave=0 machine=01:00.0 build=9a3f21c0d1e2f304 fanspeed=42 \"note=two words\"\n"
   "cfg   1 -\n"
   "cfg   17 INPLACE=1,PAD=256,TAIL_KERNELS=3\n"
   "sess  4 env=1 start=1753471200 gen=0 anchor=512:15:512:212@143400073 tune=workload=100000000-400000000,stop=0.1%\n"
@@ -394,9 +394,10 @@ TEST(an_environment_this_build_cannot_name_is_refused) {
 
 TEST(an_env_row_says_what_the_card_can_build) {
   // Without them, a command that opens no device would offer a card FFTs it cannot build.
-  rejects("fp64=1 builtins=1 machine=01:00.0", "builtins=1 machine=01:00.0");
-  rejects("fp64=1 builtins=1 machine=01:00.0", "fp64=1 machine=01:00.0");
-  rejects("fp64=1 builtins=1 machine=01:00.0", "fp64=yes builtins=1 machine=01:00.0");
+  rejects("fp64=1 builtins=1 wg=1024", "builtins=1 wg=1024");
+  rejects("fp64=1 builtins=1 wg=1024", "fp64=1 wg=1024");
+  rejects("fp64=1 builtins=1 wg=1024", "fp64=yes builtins=1 wg=1024");
+  rejects("wg=1024 wave=0", "wg=many wave=0");
 
   std::string text = withRow("vendor=nvidia", "vendor=amd");
   text.replace(text.find("fp64=1 builtins=1"), 17, "fp64=0 builtins=0");
@@ -416,6 +417,22 @@ TEST(an_env_row_says_what_the_card_can_build) {
   DbEnv other = row;
   other.amdBuiltins = true;
   CHECK(!row.sameCard(other));
+
+  // The limits on WMUL, which a row from before them reads as the defaults; they do not tell two cards apart.
+  std::string radeon = text;
+  radeon.replace(radeon.find("wg=1024 wave=0"), 14, "wg=256 wave=64");
+  TuneDB const limited = loaded(radeon);
+  CHECK_EQ(limited.text(), radeon);
+  Env const vega = limited.envs().at(0).toEnv();
+  CHECK_EQ(vega.maxWorkGroupSize, 256u);
+  CHECK_EQ(vega.amdWavefront, 64u);
+  CHECK(limited.envs().at(0).sameCard(row));
+
+  std::string older = text;
+  older.erase(older.find(" wg=1024 wave=0"), 15);
+  TuneDB const before = loaded(older);
+  CHECK_EQ(before.envs().at(0).toEnv().maxWorkGroupSize, 1024u);
+  CHECK_EQ(before.envs().at(0).toEnv().amdWavefront, 0u);
 }
 
 TEST(a_machine_or_an_anchor_holding_a_space_survives) {
