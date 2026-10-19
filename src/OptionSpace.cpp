@@ -225,9 +225,11 @@ bool mm2ChainInert(const FFTConfig& f) { return f.shape.middle < 5 || pfa(f); }
 // The access policy window exists from compute capability 8.0; below it the stream attribute is refused.
 bool l2PersistUsable(const Env& e) { return e.cudaBackend && e.isNvidia && e.computeCapability >= 800; }
 
+// On CUDA 0 leaves the registers to the compiler, 1..20 (Gpu::REG_MAX_OCCUPANCY) are launch bounds' minimum blocks per
+// SM, and larger values a maximum register count.
 const vector<int> REG_LADDER{0, 1, 2, 4, 48, 56, 64, 72, 80, 88, 96, 104, 112, 128};
 
-// On AMD a value of 1..10 asks for that many waves per SIMD, which caps the VGPRs at 128, 84 and 64 for 2, 3 and 4 on
+// On AMD a value of 1..20 asks for that many waves per SIMD, which caps the VGPRs at 128, 84 and 64 for 2, 3 and 4 on
 // gfx9. An explicit VGPR count is left out: ROCm compiles as usual and then spills to fit.
 const vector<int> AMD_WAVES{0, 2, 3, 4};
 
@@ -779,12 +781,14 @@ vector<Option> buildTable() {
                              const UseConfig& d) { return l2PersistUsable(e) && useValue(d, "L2PERSIST", 0) != 0; },
                .values = {25, 50, 75, 100},
                .defaultValue = 100});
+  // NOREG=1 compiles what REG*=0 does on CUDA, where 0 leaves the registers to the compiler, and on AMD only lifts the
+  // Vega middle kernels' default that -1 on REGMI*/REGMO* already offers per kernel.  Set by hand it still closes REG*.
   t.push_back({.key = "NOREG",
                .scope = Scope::Device,
                .group = Group::Cuda,
                .touches = KG_GLOBAL,
                .structural = true,
-               .applies = cudaBackend,
+               .applies = [](const Env&, const FFTConfig&, const UseConfig&) { return false; },
                .values = {0, 1},
                .defaultValue = 0});
   addRegOptions(t);

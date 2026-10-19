@@ -227,13 +227,14 @@ TEST(a_stage_is_listed_a_window_at_a_time_in_the_order_it_is_listed_whole) {
 
 TEST(a_register_cap_is_searched_a_key_at_a_time) {
   // FFT6431 on a P100 under CUDA: GRAPHS and L1CUDA, and seven 14-valued register caps, each of one kernel.  Permuted
-  // together they were 2 x 4 x 14^7 points; searched a key at a time they are GRAPHS x L1CUDA and 13 moves each.
+  // together they were 2 x 4 x 14^7 points; searched a key at a time they are GRAPHS x L1CUDA and 13 moves each.  NOREG,
+  // which compiles what the defaults do, is not among them.
   Env const p100{.isNvidia = true, .cudaBackend = true, .computeCapability = 600, .pdlLaunch = true};
   FFTConfig const fft{"51:1K:4:256:212"};
   Strategy const lifted{.maxPermute = NO_LIMIT, .maxPoints = NO_LIMIT};
   ProbeList const list = probesOf(p100, fft, {}, lifted, {}, true, PROBE_WINDOW);
   std::map<std::string, size_t> const stages = stagesOf(list);
-  CHECK_EQ(stages.at("Cuda"), size_t(2 * 4 - 1 + 7 * 13 + 1));
+  CHECK_EQ(stages.at("Cuda"), size_t(2 * 4 - 1 + 7 * 13));
   for (const Probe& p : list.probes) {
     size_t regs = 0;
     for (const auto& [axis, position] : p.moves) { regs += list.axes[axis].option->alone; }

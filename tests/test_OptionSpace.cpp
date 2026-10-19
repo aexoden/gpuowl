@@ -387,6 +387,9 @@ TEST(arith_and_cuda_gates) {
   Env const cuda = nvidia(806, true);
   CHECK(applicable(cuda, "512:15:512:101", {}, "REGCF64"));
   CHECK(!applicable(cuda, "512:15:512:101", {{"NOREG", "1"}}, "REGCF64"));
+  // REG*=0 leaves the registers to the compiler, so NOREG=1 would be a second name for the defaults.
+  CHECK(!applicable(cuda, "512:15:512:101", {}, "NOREG"));
+  CHECK_EQ(defaultOf(cuda, "512:15:512:101", {}, "REGCF64"), 0);
   CHECK(!applicable(nvidia(806), "512:15:512:101", {}, "REGCF64"));
   // Exactly one carryFused budget per FFT type.
   int regcf = 0;
