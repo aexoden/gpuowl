@@ -86,10 +86,10 @@ std::string kernelKey(const FFTShape& shape, u32 v, CARRY_KIND carry) {
     return std::to_string(digit);
   };
 
-  std::string key = pass(shape.width, shape.nW(), variant_W(v)) + "/";
+  std::string key = pass(shape.width, shape.nW(false), variant_W(v)) + "/";
   bool const chainsRead = (parts.FFT_FP64 || parts.FFT_FP32) && shape.middle != 2 && !shape.isPfa();
   key += chainsRead ? std::to_string(variant_M(v)) : "-";
-  key += "/" + pass(shape.height, shape.nH(), variant_H(v)) + "/";
+  key += "/" + pass(shape.height, shape.nH(false), variant_H(v)) + "/";
 
   if (!carryTypedTypes().contains(shape.fft_type)) { return key + "-"; }
   if (carry == CARRY_64) { return key + "64"; }
@@ -133,7 +133,7 @@ TEST(kernel_facts_are_found) {
   // Guards the parsers above: were they to find nothing, every key would collapse and the main test would prove little.
   // (256, 4) is a radix-4 1024 body that no shape has produced since 1024 became radix 8.
   CHECK(fp64Variant2Bodies() == (std::set<std::pair<u32, u32>>{{64, 4}, {64, 8}, {128, 8}, {256, 4}, {512, 8}}));
-  CHECK(carryTypedTypes() == (std::set<int>{FFT64, FFT32, FFT31, FFT61, FFT3231}));
+  CHECK(carryTypedTypes() == (std::set<int>{FFT64, FFT32, FFT31, FFT61, FFT3231, FFT323161}));
   for (int t = 0; t < 60; ++t) { CHECK_EQ(carryAffectsKernels(FFT_TYPES(t)), carryTypedTypes().contains(t)); }
 
   // The middle digit reaches the kernels only as the MM_CHAIN / MM2_CHAIN defaults.
@@ -249,8 +249,11 @@ TEST(variant_folds) {
 
 TEST(carry_folds) {
   // The hybrids whose carryFused has fixed carry types.
-  CHECK_EQ(canonicalSpec("4:1K:8:256:202:1"), std::string{"4:1K:8:256:202"});
+  CHECK_EQ(canonicalSpec("1:1K:8:256:202:1"), std::string{"1:1K:8:256:202"});
   CHECK_EQ(canonicalSpec("51:512:8:512:101:0"), std::string{"51:512:8:512:101"});
+
+  // FFT323161's carries are 64 or 96 bits, so its wide carry stays a spelling of its own.
+  CHECK_EQ(canonicalSpec("4:1K:8:256:202:1"), std::string{"4:1K:8:256:202:1"});
 
   // FFT3231's carryFused takes its carry type from CARRY64 like the single-arithmetic types, so its
   // spellings no longer fold: the 32-bit carry caps 256:2:256 below the reach CARRY_AUTO has there.
@@ -258,9 +261,10 @@ TEST(carry_folds) {
   CHECK(FFTConfig{"50:256:2:256:202:0"}.maxBpw() < FFTConfig{"50:256:2:256:202"}.maxBpw());
   CHECK_EQ(canonicalSpec("50:256:2:256:202:1"), std::string{"50:256:2:256:202:1"});
 
-  // FP64: the 32-bit carry caps 256:2:256 below its table reach, but not 1K:5:256.
-  CHECK_EQ(canonicalSpec("256:2:256:202:0"), std::string{"256:2:256:202:0"});
-  CHECK(FFTConfig{"256:2:256:202:0"}.maxBpw() < FFTConfig{"256:2:256:202"}.maxBpw());
+  // FP64: the 32-bit carry caps 1K:8:1K below its table reach, but not 1K:5:256 or 256:2:256 (20 bits per word).
+  CHECK_EQ(canonicalSpec("1K:8:1K:202:0"), std::string{"1K:8:1K:202:0"});
+  CHECK(FFTConfig{"1K:8:1K:202:0"}.maxBpw() < FFTConfig{"1K:8:1K:202"}.maxBpw());
+  CHECK_EQ(canonicalSpec("256:2:256:202:0"), std::string{"256:2:256:202"});
   CHECK_EQ(canonicalSpec("1K:5:256:202:0"), std::string{"1K:5:256:202"});
   CHECK_EQ(canonicalSpec("1K:5:256:202:1"), std::string{"1K:5:256:202:1"});
 

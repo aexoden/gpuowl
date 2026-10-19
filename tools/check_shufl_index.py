@@ -575,28 +575,35 @@ def shape_space(fftconfig_cpp: str, fftconfig_h: str) -> list[Shape]:
             msg = f"cannot read the {dimension} list in FFTConfig.cpp as integer literals: {{{sizes.group(1).strip()}}}"
             raise SourceError(msg)
 
+        # Either '(width == n || ...) ? a : b', or with a flag that keeps the large radix at those sizes too:
+        # 'width == n && !flag ? a : b', where both radices are compiled at the sizes named.
         rule = re.search(
-            rf"\b{radix_fn}\(\)\s*const\s*\{{\s*return\s*\((.*?)\)\s*\?\s*(\d+)\s*:\s*(\d+)\s*;",
+            rf"\b{radix_fn}\((?:bool\s+(\w+))?\)\s*const\s*\{{\s*return\s*\(?(.*?)\)?\s*\?\s*(\d+)\s*:\s*(\d+)\s*;",
             fftconfig_h,
             re.DOTALL,
         )
 
         size_test = rf"\b{dimension}\s*==\s*(\d+)"
-        if rule is None or re.sub(rf"{size_test}|\|\||\s", "", rule.group(1)):
+        condition = "" if rule is None else rule.group(2)
+        flag = None if rule is None else rule.group(1)
+        if flag is not None:
+            condition = re.sub(rf"\s*&&\s*!\s*{flag}\s*$", "", condition)
+        if rule is None or re.sub(rf"{size_test}|\|\||[()\s]", "", condition):
             msg = f"cannot read {radix_fn}() in FFTConfig.h as '({dimension} == n || ...) ? a : b'"
             raise SourceError(msg)
 
-        small_sizes = {int(size) for size in re.findall(size_test, rule.group(1))}
-        small, large = int(rule.group(2)), int(rule.group(3))
+        small_sizes = {int(size) for size in re.findall(size_test, condition)}
+        small, large = int(rule.group(3)), int(rule.group(4))
 
         for size in map(int, entries):
-            radix = small if size in small_sizes else large
+            radices = ({small, large} if flag is not None else {small}) if size in small_sizes else {large}
 
-            if radix < 2 or size < radix or size % radix:
-                msg = f"{dimension} {size} with {radix_fn}() = {radix} is not a whole number of workgroups"
-                raise SourceError(msg)
+            for radix in sorted(radices):
+                if radix < 2 or size < radix or size % radix:
+                    msg = f"{dimension} {size} with {radix_fn}() = {radix} is not a whole number of workgroups"
+                    raise SourceError(msg)
 
-            shapes.add(Shape(radix, size // radix))
+                shapes.add(Shape(radix, size // radix))
 
     return sorted(shapes)
 

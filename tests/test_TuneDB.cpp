@@ -368,7 +368,8 @@ TEST(a_malformed_spec_is_refused_rather_than_built) {
   CHECK(!parseFft("512:8:4K"));      // nor this one, which is only a width
   CHECK(!parseFft("1:256:15:256"));  // an NTT middle that is neither a power of two nor a prime-factor one
   CHECK(!parseFft("1:256:5:256"));
-  CHECK(!parseFft("2:256:10:256"));
+  CHECK(!parseFft("1:256:10:256"));  // 5 and 15 need GF61 without GF31
+  CHECK(parseFft("2:256:10:256"));
   CHECK_EQ(parseFft("1:1K:6:256")->spec(), std::string{"1:1K:6:256:202"});
   CHECK(parseFft("3:1K:11:256:202"));
   CHECK(parseFft("51:1K:7:256:212"));

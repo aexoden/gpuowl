@@ -821,10 +821,10 @@ TEST(an_excluded_configuration_with_nothing_past_it_is_not_run) {
   WorkingDirectory const here{dir};
 
   Args const args = configured({});
-  FFTConfig top = FFTConfig::bestFit(args, 1'000'000'000, "", true);
+  FFTConfig top = FFTConfig::bestFit(args, 1'000'000'000, "", nullptr, true);
   for (bool larger = true; larger;) {
     try {
-      top = FFTConfig::bestFit(args, maxExp(top) + 1, "", true);
+      top = FFTConfig::bestFit(args, maxExp(top) + 1, "", nullptr, true);
     } catch (...) { larger = false; }
   }
   u64 const E = maxExp(top) - 1000;

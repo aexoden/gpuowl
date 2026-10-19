@@ -21,6 +21,7 @@
 #include <algorithm>
 #include <limits>
 #include <iomanip>
+#include <sstream>
 #include <array>
 #include <cinttypes>
 #include <cstring>
@@ -271,16 +272,15 @@ CARRY_SIZE = 100000
 };
 
 // Any setting adjusted here for this FFT or device (INPLACE, TAIL_KERNELS, WMUL, LDSPAD_W, L2_STRIPING, MULTI_Q, GRAPHS...) is changed
-// only in this Gpu's own copy of args and in the out-parameters.
-string clDefines(Args& args, cl_device_id id, FFTConfig fft, tune::TestKind kind, const vector<KeyVal>& extraConf, u64 E, bool doLog,
+// only in this Gpu's own copy of args and in the out-parameters.  args holds this FFT's resolved options (see resolvedArgs).
+string clDefines(Args& args, cl_device_id id, FFTConfig fft, u32 nW, u32 nH, u64 E, bool doLog,
                  bool &tail_single_wide, bool &tail_single_kernel, u32 &in_place, u32 &pad_size, u32 &wmul,
-                 u32 &multi_q, u32 &l2_striping, bool &graphs) {
-  // Resolve this FFT's options
-  tune::resolveInto(args, fft, kind, extraConf);
+                 u32 &multi_q, u32 &l2_striping, bool &graphs, bool &zero_q) {
   map<string, string>& config = args.flags;
 
   // Default value for -use options that must also be parsed in C++ code
   tail_single_wide = false, tail_single_kernel = true;         // Default tailSquare is double-wide in one kernel
+  zero_q = false;
   in_place = isNvidiaGpu(id) ? 1 : 0;                   // Default is in-place for nVidia, not in-place for others (must match base.cl)
   wmul = 2;                                             // Default is carryFused processes two lines at a time
   pad_size = isAmdGpu(id) ? 256 : 0;                    // Default is 256 bytes for AMD, 0 for others
@@ -292,7 +292,9 @@ string clDefines(Args& args, cl_device_id id, FFTConfig fft, tune::TestKind kind
                               "L1CUDA",
                               "L2PERSIST",              // CUDA: bitmask of buffers to mark for persisting L2 (1=buf1, 2=trig, 4=carryShuttle)
                               "L2PERSISTPCT",           // CUDA: % (0-100) of device's max persisting L2 cache size to reserve, default 100
-                              "PDL"                     // CUDA, sm_90+: programmatic dependent launch
+                              "PDL",                    // CUDA, sm_90+: programmatic dependent launch
+                              "PTX_VERSION",            // CUDA, undocumented: relabel the PTX for an older driver's JIT (see clwrap_cuda.cpp)
+                              "SMEM_SPILL"              // CUDA, sm_75+: register limits spill to shared memory
                             };
   for (const auto& [k, v] : config) {
     [[maybe_unused]] bool const isCudaOnly = isInList(k, cudaOnlyKeys);
@@ -320,16 +322,17 @@ string clDefines(Args& args, cl_device_id id, FFTConfig fft, tune::TestKind kind
     }
 
     // Some -use options are needed in both OpenCL code and C++ initialization code
+    // TAIL_KERNELS 11 and 13 are 1 and 3 with the tail*Zero kernels in queues of their own (zero_q, see Gpu::replay_one).  Only the C++
+    // code sees the tens digit: the kernels get TAIL_KERNELS % 10 (fixed up after this loop).
     if (k == "TAIL_KERNELS") {
       int const tailKernels = atoi(v.c_str());
-      if (tailKernels < 0 || tailKernels > 3) {
-        log("Invalid TAIL_KERNELS=%d, must be 0..3\n", tailKernels);
+      if (tailKernels < 0 || (tailKernels > 3 && tailKernels != 11 && tailKernels != 13)) {
+        log("Invalid TAIL_KERNELS=%d, must be 0, 1, 2, 3, 11 or 13\n", tailKernels);
         throw "invalid TAIL_KERNELS";
       }
-      if (tailKernels == 0) tail_single_wide = true, tail_single_kernel = true;
-      if (tailKernels == 1) tail_single_wide = true, tail_single_kernel = false;
-      if (tailKernels == 2) tail_single_wide = false, tail_single_kernel = true;
-      if (tailKernels == 3) tail_single_wide = false, tail_single_kernel = false;
+      tail_single_wide = tailKernels % 10 < 2;
+      tail_single_kernel = tailKernels % 2 == 0;
+      zero_q = tailKernels >= 10;
     }
     if (k == "INPLACE") in_place = atoi(v.c_str());
     if (k == "WMUL") wmul = atoi(v.c_str());
@@ -364,10 +367,17 @@ string clDefines(Args& args, cl_device_id id, FFTConfig fft, tune::TestKind kind
           shufl_bytes_w, fft.shape.width * shufl_bytes_w, fft.shape.width, u32(getLocalMemSize(id)));
       throw "SHUFL_BYTES_W too large";
     }
+    // A line narrower than a wavefront (radix 8 at WIDTH 256 is 32 threads) leaves part of every wavefront idle with WMUL=1, and the
+    // global WMUL in config.txt is chosen for wider FFTs.  So on 64-lane AMD wavefronts carryFused uses WMUL = WAVEFRONT / G_W.
+    if (u32 const wavefront = getAmdWavefrontWidth(id), g_w = fft.shape.width / nW; wavefront && g_w < wavefront && wmul != wavefront / g_w) {
+      if (doLog) { log("WMUL=%u changed to %u: a %u-thread line is narrower than a %u-lane wavefront\n", wmul, wavefront / g_w, g_w, wavefront); }
+      wmul = wavefront / g_w;
+      config["WMUL"] = to_string(wmul);
+    }
     u32 max_wmul = lds_limit / (fft.shape.width * shufl_bytes_w);
     if (max_wmul > 2 && fft.shape.width >= 1024) max_wmul = 2;
     if (max_wmul > 1 && fft.shape.width >= 4096) max_wmul = 1;
-    max_wmul = std::min(max_wmul, getMaxWorkGroupSize(id) / (fft.shape.width / fft.shape.nW()));
+    max_wmul = std::min(max_wmul, getMaxWorkGroupSize(id) / (fft.shape.width / nW));
     max_wmul = std::max(max_wmul, 1u);
     u32 const requested = wmul;
     if (wmul > max_wmul) wmul = max_wmul;
@@ -375,12 +385,12 @@ string clDefines(Args& args, cl_device_id id, FFTConfig fft, tune::TestKind kind
     while (big_h % wmul) --wmul;
     if (wmul != requested) {
       config["WMUL"] = to_string(wmul);
-      log("WMUL=%u is not usable for this FFT on this device.  Changing to WMUL=%u\n", requested, wmul);
+      if (doLog) { log("WMUL=%u is not usable for this FFT on this device.  Changing to WMUL=%u\n", requested, wmul); }
     }
     auto const ldsPad = config.find("LDSPAD_W");
     bool const padded = ldsPad == config.end() || atoi(ldsPad->second.c_str()) != 0;
     if (padded && fft.shape.width * shufl_bytes_w * wmul >= lds_limit) {
-      log("Local shared memory limit of %uKB exceeded.  Changing to LDSPAD_W=0\n", lds_limit / 1024);
+      if (doLog) { log("Local shared memory limit of %uKB exceeded.  Changing to LDSPAD_W=0\n", lds_limit / 1024); }
       config["LDSPAD_W"] = to_string(0);
     }
   }
@@ -392,7 +402,7 @@ string clDefines(Args& args, cl_device_id id, FFTConfig fft, tune::TestKind kind
   };
   if (args.profile && configValue("MULTI_Q", 0)) {
     config["MULTI_Q"] = to_string(0);
-    log("MULTI_Q is disabled when profiling with -time.\n");
+    if (doLog) { log("MULTI_Q is disabled when profiling with -time.\n"); }     // Not for -tune regs, which profiles every timing
   }
   // The !OLD_FENCE carry hand-off in carryFused coordinates the lanes of a wavefront with sync() and nothing
   // else, from inside a divergent branch, so a workgroup barrier is not a substitute.  sync() is bar.warp.sync
@@ -415,7 +425,7 @@ string clDefines(Args& args, cl_device_id id, FFTConfig fft, tune::TestKind kind
 #if CUDA_BACKEND
   if (args.profile && graphs) {
     graphs = false;
-    log("GRAPHS are disabled when profiling with -time.\n");
+    if (doLog) { log("GRAPHS are disabled when profiling with -time.\n"); }
   }
 #endif
 
@@ -461,7 +471,14 @@ string clDefines(Args& args, cl_device_id id, FFTConfig fft, tune::TestKind kind
     }
   }
 
-  string defines = toDefine(config);
+  // config is this Gpu's args, which name what ran: the define-only adjustments below go to a copy.
+  map<string, string> defined = config;
+  if (zero_q) { defined["TAIL_KERNELS"] = to_string(configValue("TAIL_KERNELS", 2) % 10); }
+  // The register limits are applied per kernel (numRegisters), not as defines: as defines they would change every kernel's
+  // compile options, and so its kernel cache entry, whenever one kernel's limit changed.
+  // Nor can the radix keys be defines (a macro name cannot start with a digit); the .cl code sees NW and NH.
+  std::erase_if(defined, [](const auto& kv) { return Args::isRegisterKey(kv.first) || Args::isRadixKey(kv.first) || kv.first == "SMEM_SPILL"; });
+  string defines = toDefine(defined);
   if (doLog) { log("config: %s\n", defines.c_str()); }
 
   defines += toDefine("EXP", E);
@@ -470,8 +487,8 @@ string clDefines(Args& args, cl_device_id id, FFTConfig fft, tune::TestKind kind
                     {"SMALL_HEIGHT", fft.shape.height},
                     {"MIDDLE", fft.shape.middle},
                     {"CARRY_LEN", CARRY_LEN},
-                    {"NW", fft.shape.nW()},
-                    {"NH", fft.shape.nH()}
+                    {"NW", nW},
+                    {"NH", nH}
                   });
 
   if (isAmdGpu(id)) {
@@ -490,9 +507,21 @@ string clDefines(Args& args, cl_device_id id, FFTConfig fft, tune::TestKind kind
   if (isNvidiaGpu(id)) { defines += toDefine("CC", getNvidiaComputeCapability(id)); }
   if (!hasFP64(id)) { defines += toDefine("NO_FP64", 1); }
 
-  if ((fft.carry == CARRY_AUTO && fft.shape.needsLargeCarry(E)) || (fft.carry == CARRY_64)) {
-    if (doLog) { log("Using CARRY64\n"); }
-    defines += toDefine("CARRY64", 1);
+  // carryFused's carry width: CARRY32 or CARRY64, or for FFT323161 CARRY64 or CARRY96.  The MUL3 kernels triple the carries, so they
+  // need the wider carry at a lower bpw (MUL3_CARRY64, MUL3_CARRY96).  An explicit :0 or :1 picks the narrower or wider carry; :0 limits
+  // only the non-MUL3 kernels.
+  bool const largeCarry = (fft.carry == CARRY_AUTO && fft.shape.needsLargeCarry(E)) || fft.carry == CARRY_64;
+  bool const largeCarryMul3 = fft.carry == CARRY_64 || fft.shape.needsLargeCarry(E, true);
+  if (fft.shape.fft_type == FFT323161) {
+    if (doLog && largeCarry) { log("Using CARRY96\n"); }
+    defines += toDefine(largeCarry ? "CARRY96" : "CARRY64", 1);
+    if (largeCarryMul3) { defines += toDefine("MUL3_CARRY96", 1); }
+    // Carries below 2^63 - 2^61 - 2^22 (0.42 bits less, so 0.42 bpw) can be subtracted from an i64 in weightAndCarryOne (crtPlusCarry)
+    if (!largeCarry && E / double(fft.shape.size()) <= fft.shape.carry64BPW() - 0.42) { defines += toDefine("CARRY_SUB_X", 1); }
+  } else {
+    if (doLog && largeCarry) { log("Using CARRY64\n"); }
+    if (largeCarry) { defines += toDefine("CARRY64", 1); }
+    if (largeCarryMul3) { defines += toDefine("MUL3_CARRY64", 1); }
   }
 
   u32 const N = fft.shape.size();
@@ -501,8 +530,17 @@ string clDefines(Args& args, cl_device_id id, FFTConfig fft, tune::TestKind kind
   defines += toDefine("STATS_SIZE", u32(std::min<u32>(ROE_SIZE, CARRY_SIZE)));
 
   if (fft.FFT_FP64 || fft.FFT_FP32) {
-    defines += toDefine("WEIGHT_STEP", weightM1(N, E, fft.shape.height * fft.shape.middle, 0, 0, 1));
-    defines += toDefine("IWEIGHT_STEP", invWeightM1(N, E, fft.shape.height * fft.shape.middle, 0, 0, 1));
+    double const weightStep = weightM1(N, E, fft.shape.height * fft.shape.middle, 0, 0, 1);
+    double const iweightStep = invWeightM1(N, E, fft.shape.height * fft.shape.middle, 0, 0, 1);
+    if (fft.FFT_FP64) {
+      defines += toDefine("WEIGHT_STEP", weightStep);
+      defines += toDefine("IWEIGHT_STEP", iweightStep);
+    } else {
+      // FP32 only: pass float literals.  The kernels would round a double literal to float anyway, but on a device without
+      // cl_khr_fp64 (e.g. Intel Arc) every double literal is a "double precision constant requires cl_khr_fp64" warning.
+      defines += toDefine("WEIGHT_STEP", float(weightStep));
+      defines += toDefine("IWEIGHT_STEP", float(iweightStep));
+    }
     if (fft.FFT_FP64) defines += toDefine("TAILT", root1Fancy(fft.shape.height * 2, 1));
     else defines += toDefine("TAILT", root1FancyFP32(fft.shape.height * 2, 1));
 
@@ -515,7 +553,7 @@ string clDefines(Args& args, cl_device_id id, FFTConfig fft, tune::TestKind kind
       TrigCoefsFP32 const coefs = trigCoefsFP32(fft.shape.size() / 4);
       auto lit = [](double v) { char buf[48]; snprintf(buf, sizeof(buf), "%#.9gf", (double) (float) v); return string(buf); };
       string sinCoefs = "{", cosCoefs = "{";
-      for (u32 i = 0; i < 8; ++i) { sinCoefs += lit(coefs.sinCoefs[i]) + ','; cosCoefs += lit(coefs.cosCoefs[i]) + ','; }
+      for (u32 i = 0; i < coefs.sinCoefs.size(); ++i) { sinCoefs += lit(coefs.sinCoefs[i]) + ','; cosCoefs += lit(coefs.cosCoefs[i]) + ','; }
       defines += toDefine("TRIG_SCALE", lit(coefs.scale));
       defines += toDefine("TRIG_SIN", sinCoefs + '}');
       defines += toDefine("TRIG_COS", cosCoefs + '}');
@@ -536,41 +574,16 @@ string clDefines(Args& args, cl_device_id id, FFTConfig fft, tune::TestKind kind
     defines += toDefine("PFA", R);
     defines += toDefine("PFA_LINV", invModR(rowL));
     defines += toDefine("PFA_BHINV", invModR(rowBH));
-    // For each prime: R^-1 mod q (weights), R^-1 mod p (normalization), the powers of the root w of the radix-R, and for R = 7 and 11
-    // the coefficients (w^m + w^-m) / 2 and (w^m - w^-m) / 2 of the folded DFT
+    // For each prime: R^-1 mod q (weights) and the root w of the radix-R (R^-1 mod p, the normalization, is folded into the middle
+    // trig table).  The radix-R DFTs (the GF sections of fftN.cl) hardwire their constants from this same root and #error if
+    // PFA_W31 / PFA_W61 differs.
     for (u32 q : {31u, 61u}) {
       if ((q == 31 && !fft.NTT_GF31) || (q == 61 && !fft.NTT_GF61)) { continue; }
-      u64 const p = (u64(1) << q) - 1;
       string const suffix = q == 61 ? "ull" : "u";
-      u64 const w = pfaRootOfUnity(q, R), half = pfaPowMod(q, 2, q - 1);         // 2^-1 = 2^(q-1) mod p
-      string wpow, c, s;
-      for (u32 m = 0; m < R; ++m) {
-        u64 const wm = pfaPowMod(q, w, m), wmi = pfaPowMod(q, w, (R - m) % R);
-        wpow += (m ? "," : "") + to_string(wm) + suffix;
-        c += (m ? "," : "") + to_string(pfaMulMod(q, (wm + wmi) % p, half)) + suffix;
-        s += (m ? "," : "") + to_string(pfaMulMod(q, (wm + p - wmi) % p, half)) + suffix;
-      }
       defines += toDefine("PFA_RINV" + to_string(q), [&]{ for (u32 x = 1; x < q; ++x) { if (R * x % q == 1) { return x; } } return 0u; }());
-      defines += toDefine("PFA_INVR_" + to_string(q), to_string(pfaPowMod(q, R, p - 2)) + suffix);
-      defines += toDefine("PFA_WPOW" + to_string(q), wpow);
-      defines += toDefine("PFA_C" + to_string(q), c);
-      defines += toDefine("PFA_S" + to_string(q), s);
+      defines += toDefine("PFA_W" + to_string(q), to_string(pfaRootOfUnity(q, R)) + suffix);
     }
-    // The FP side of a hybrid uses the complex root w = e^(2*pi*i/R) (root1's sign convention) with the coefficients cos(2*pi*m/R)
-    // and sin(2*pi*m/R) of its folded DFT
-    if (fft.FFT_FP64 || fft.FFT_FP32) {
-      string cd, sd, cf, sf;
-      for (u32 m = 0; m < R; ++m) {
-        long double const angle = 2 * M_PIl * m / R;
-        char buf[64];
-        snprintf(buf, sizeof(buf), "%#.20Lg", cosl(angle)); cd += (m ? "," : "") + string(buf); cf += (m ? "," : "") + string(buf) + "f";
-        snprintf(buf, sizeof(buf), "%#.20Lg", sinl(angle)); sd += (m ? "," : "") + string(buf); sf += (m ? "," : "") + string(buf) + "f";
-      }
-      defines += toDefine("PFA_COS", cd);
-      defines += toDefine("PFA_SIN", sd);
-      defines += toDefine("PFA_COSF", cf);
-      defines += toDefine("PFA_SINF", sf);
-    }
+    // The FP side of a hybrid needs no constants from here: its radix-PFA is the hand-tuned fftN (fft-middle.cl pfaDftR)
   }
 
   // Send the FFT/NTT type and booleans that enable/disable code for each possible FP and NTT
@@ -582,35 +595,35 @@ string clDefines(Args& args, cl_device_id id, FFTConfig fft, tune::TestKind kind
   if (fft.FFT_FP64 && fft.NTT_GF31) {
     // GF31 data is located after the FP64 data.  Compute size of the FP64 data and trigs.
     defines += toDefine("DISTGF31",      FP64_DATA_SIZE(fft.shape.width, fft.shape.middle, fft.shape.height, in_place, pad_size) / 2);
-    defines += toDefine("DISTWTRIGGF31", SMALLTRIG_FP64_DIST(fft.shape.width, fft.shape.middle, fft.shape.height, fft.shape.nH()));
+    defines += toDefine("DISTWTRIGGF31", SMALLTRIG_FP64_DIST(fft.shape.width, fft.shape.middle, fft.shape.height, nH));
     defines += toDefine("DISTMTRIGGF31", MIDDLETRIG_FP64_DIST(fft.shape.width, fft.shape.middle, fft.shape.height));
-    defines += toDefine("DISTHTRIGGF31", SMALLTRIGCOMBO_FP64_DIST(fft.shape.width, fft.shape.middle, fft.shape.height, fft.shape.nH()));
+    defines += toDefine("DISTHTRIGGF31", SMALLTRIGCOMBO_FP64_DIST(fft.shape.width, fft.shape.middle, fft.shape.height, nH));
   }
   else if (fft.FFT_FP32 && fft.NTT_GF31 && fft.NTT_GF61) {
     // GF31 and GF61 data is located after the FP32 data.  Compute size of the FP32 data and trigs.
     u32 sz1, sz2, sz3, sz4;
     defines += toDefine("DISTGF31",      sz1 = FP32_DATA_SIZE(fft.shape.width, fft.shape.middle, fft.shape.height, in_place, pad_size) / 2);
-    defines += toDefine("DISTWTRIGGF31", sz2 = SMALLTRIG_FP32_DIST(fft.shape.width, fft.shape.middle, fft.shape.height, fft.shape.nH()));
+    defines += toDefine("DISTWTRIGGF31", sz2 = SMALLTRIG_FP32_DIST(fft.shape.width, fft.shape.middle, fft.shape.height, nH));
     defines += toDefine("DISTMTRIGGF31", sz3 = MIDDLETRIG_FP32_DIST(fft.shape.width, fft.shape.middle, fft.shape.height));
-    defines += toDefine("DISTHTRIGGF31", sz4 = SMALLTRIGCOMBO_FP32_DIST(fft.shape.width, fft.shape.middle, fft.shape.height, fft.shape.nH()));
+    defines += toDefine("DISTHTRIGGF31", sz4 = SMALLTRIGCOMBO_FP32_DIST(fft.shape.width, fft.shape.middle, fft.shape.height, nH));
     defines += toDefine("DISTGF61",      sz1 + GF31_DATA_SIZE(fft.shape.width, fft.shape.middle, fft.shape.height, in_place, pad_size) / 2);
-    defines += toDefine("DISTWTRIGGF61", sz2 + SMALLTRIG_GF31_DIST(fft.shape.width, fft.shape.middle, fft.shape.height, fft.shape.nH()));
+    defines += toDefine("DISTWTRIGGF61", sz2 + SMALLTRIG_GF31_DIST(fft.shape.width, fft.shape.middle, fft.shape.height, nH));
     defines += toDefine("DISTMTRIGGF61", sz3 + MIDDLETRIG_GF31_DIST(fft.shape.width, fft.shape.middle, fft.shape.height));
-    defines += toDefine("DISTHTRIGGF61", sz4 + SMALLTRIGCOMBO_GF31_DIST(fft.shape.width, fft.shape.middle, fft.shape.height, fft.shape.nH()));
+    defines += toDefine("DISTHTRIGGF61", sz4 + SMALLTRIGCOMBO_GF31_DIST(fft.shape.width, fft.shape.middle, fft.shape.height, nH));
   }
   else if (fft.FFT_FP32 && fft.NTT_GF31) {
     // GF31 data is located after the FP32 data.  Compute size of the FP32 data and trigs.
     defines += toDefine("DISTGF31",      FP32_DATA_SIZE(fft.shape.width, fft.shape.middle, fft.shape.height, in_place, pad_size) / 2);
-    defines += toDefine("DISTWTRIGGF31", SMALLTRIG_FP32_DIST(fft.shape.width, fft.shape.middle, fft.shape.height, fft.shape.nH()));
+    defines += toDefine("DISTWTRIGGF31", SMALLTRIG_FP32_DIST(fft.shape.width, fft.shape.middle, fft.shape.height, nH));
     defines += toDefine("DISTMTRIGGF31", MIDDLETRIG_FP32_DIST(fft.shape.width, fft.shape.middle, fft.shape.height));
-    defines += toDefine("DISTHTRIGGF31", SMALLTRIGCOMBO_FP32_DIST(fft.shape.width, fft.shape.middle, fft.shape.height, fft.shape.nH()));
+    defines += toDefine("DISTHTRIGGF31", SMALLTRIGCOMBO_FP32_DIST(fft.shape.width, fft.shape.middle, fft.shape.height, nH));
   }
   else if (fft.FFT_FP32 && fft.NTT_GF61) {
     // GF61 data is located after the FP32 data.  Compute size of the FP32 data and trigs.
     defines += toDefine("DISTGF61",      FP32_DATA_SIZE(fft.shape.width, fft.shape.middle, fft.shape.height, in_place, pad_size) / 2);
-    defines += toDefine("DISTWTRIGGF61", SMALLTRIG_FP32_DIST(fft.shape.width, fft.shape.middle, fft.shape.height, fft.shape.nH()));
+    defines += toDefine("DISTWTRIGGF61", SMALLTRIG_FP32_DIST(fft.shape.width, fft.shape.middle, fft.shape.height, nH));
     defines += toDefine("DISTMTRIGGF61", MIDDLETRIG_FP32_DIST(fft.shape.width, fft.shape.middle, fft.shape.height));
-    defines += toDefine("DISTHTRIGGF61", SMALLTRIGCOMBO_FP32_DIST(fft.shape.width, fft.shape.middle, fft.shape.height, fft.shape.nH()));
+    defines += toDefine("DISTHTRIGGF61", SMALLTRIGCOMBO_FP32_DIST(fft.shape.width, fft.shape.middle, fft.shape.height, nH));
   }
   else if (fft.NTT_GF31 && fft.NTT_GF61) {
     defines += toDefine("DISTGF31",      0);
@@ -619,9 +632,9 @@ string clDefines(Args& args, cl_device_id id, FFTConfig fft, tune::TestKind kind
     defines += toDefine("DISTHTRIGGF31", 0);
     // GF61 data is located after the GF31 data.  Compute size of the GF31 data and trigs.
     defines += toDefine("DISTGF61",      GF31_DATA_SIZE(fft.shape.width, fft.shape.middle, fft.shape.height, in_place, pad_size) / 2);
-    defines += toDefine("DISTWTRIGGF61", SMALLTRIG_GF31_DIST(fft.shape.width, fft.shape.middle, fft.shape.height, fft.shape.nH()));
+    defines += toDefine("DISTWTRIGGF61", SMALLTRIG_GF31_DIST(fft.shape.width, fft.shape.middle, fft.shape.height, nH));
     defines += toDefine("DISTMTRIGGF61", MIDDLETRIG_GF31_DIST(fft.shape.width, fft.shape.middle, fft.shape.height));
-    defines += toDefine("DISTHTRIGGF61", SMALLTRIGCOMBO_GF31_DIST(fft.shape.width, fft.shape.middle, fft.shape.height, fft.shape.nH()));
+    defines += toDefine("DISTHTRIGGF61", SMALLTRIGCOMBO_GF31_DIST(fft.shape.width, fft.shape.middle, fft.shape.height, nH));
   }
   else if (fft.NTT_GF31) {
     defines += toDefine("DISTGF31",      0);
@@ -762,8 +775,17 @@ string formatSecsPerIter(float secsPerIter) {
 
 // --------
 
+// A Gpu's own args: every source of options resolved for this FFT and kind (see tune::resolveConfig), with extraConf over everything
+static Args resolvedArgs(const Args& shared, FFTConfig fft, tune::TestKind kind, const vector<KeyVal>& fftUses,
+                         const vector<KeyVal>& extraConf, bool doLog) {
+  Args ret{shared};
+  tune::resolveInto(ret, fft, kind, extraConf, fftUses);
+  if (doLog && !fftUses.empty()) { tune::logFftUses(shared, fft.spec(), fftUses); }
+  return ret;
+}
+
 unique_ptr<Gpu> Gpu::make(u64 E, GpuCommon shared, FFTConfig fftConfig, const vector<KeyVal>& extraConf, bool logFftSize,
-                          tune::TestKind kind) {
+                          const vector<KeyVal>& fftUses, tune::TestKind kind) {
   if (fftConfig.FFT_FP64 && !hasFP64(shared.context->deviceId())) {
     log("FFT %s needs FP64, which this device does not support.  Use an FFT type without FP64 (e.g. 1 = M31+M61).\n", fftConfig.spec().c_str());
     throw "FP64 not supported";
@@ -780,7 +802,20 @@ unique_ptr<Gpu> Gpu::make(u64 E, GpuCommon shared, FFTConfig fftConfig, const ve
     log("%s: this OpenCL compiler lacks what FFT variant 0 needs, using %s\n", fftConfig.spec().c_str(), fallback.spec().c_str());
     fftConfig = fallback;
   }
-  return make_unique<Gpu>(shared, fftConfig, E, extraConf, logFftSize, kind);
+  // No variant 0 for radix 8 at 256: an explicit one (with -use 256RADIX8_W on the command line, say) becomes variant 1
+  if (fftConfig.FFT_FP64) {
+    Args const args = resolvedArgs(*shared.args, fftConfig, kind, fftUses, extraConf, false);
+    string const shapeSpec = fftConfig.shape.spec();
+    u32 const vw = variant_W(fftConfig.variant), vh = variant_H(fftConfig.variant);
+    bool const noW0 = vw == 0 && !fftConfig.shape.hasVariant0W(args.radix8At256(shapeSpec, false));
+    bool const noH0 = vh == 0 && !fftConfig.shape.hasVariant0H(args.radix8At256(shapeSpec, true));
+    if (noW0 || noH0) {
+      FFTConfig const fallback{fftConfig.shape, variant_WMH(noW0 ? 1 : vw, variant_M(fftConfig.variant), noH0 ? 1 : vh), fftConfig.carry};
+      log("%s: there is no variant 0 for radix 8 at 256, using %s\n", fftConfig.spec().c_str(), fallback.spec().c_str());
+      fftConfig = fallback;
+    }
+  }
+  return make_unique<Gpu>(shared, fftConfig, E, extraConf, logFftSize, fftUses, kind);
 }
 
 Gpu::~Gpu() {
@@ -792,9 +827,9 @@ Gpu::~Gpu() {
 #endif
 }
 
-// Part of GPU initialization is to compute the default number of registers each kernel should target during compilation.
-// Kernel register usage is critical for maximizing GPU occupancy.  The default values can be overrriden with command line arguments.
-// On CUDA this sets --maxrregcount (or launch bounds).  On AMD the same REGxxxx options select waves per SIMD or a VGPR count, see amdRegisterOption below.
+// Each important kernel's register usage can be limited with a REGxxxx -use option, normally set per FFT on its tune.txt line.
+// Kernel register usage is critical for maximizing GPU occupancy.  Unless a REGxxxx option is given, the compiler chooses.
+// On CUDA this sets a maximum register count (or launch bounds).  On AMD the same REGxxxx options select waves per SIMD or a VGPR count, see amdRegisterOption below.
 // Most kernels have occupancy limited by register usage.  For reference, the following guidelines dictate where an "uptick" in occupancy occurs.
 //
 // CUDA: the register file is 65536 32-bit regs/SM, split into 4 independent 16384-reg partitions (true from Volta through at least
@@ -815,158 +850,76 @@ Gpu::~Gpu() {
 // AMD CDNA2 (MI200, gfx90a): 4 EUs/CU, max 8 wavefronts/EU (32/CU total, vs GCN's 10/SIMD).
 // Table taken from AMD's own article (rocm.blogs.amd.com/software-tools-optimization/register-pressure):
 //   max VGPRs for 1..8 waves/EU = 512, 256, 168, 128, 96, 80, 72, 64
+// The REGxxxx option that limits a kernel's registers.  It's needed on AMD too (see amdRegisterOption).
+string Gpu::regKey(enum WHICH_KERNEL which_kernel) const {
+  string fftTypeName;
+  switch (fft.shape.fft_type) {
+  case FFT64:     fftTypeName = "64"; break;
+  case FFT3161:   fftTypeName = "3161"; break;
+  case FFT3261:   fftTypeName = "3261"; break;
+  case FFT61:     fftTypeName = "61"; break;
+  case FFT323161: fftTypeName = "323161"; break;
+  case FFT3231:   fftTypeName = "3231"; break;
+  case FFT6431:   fftTypeName = "6431"; break;
+  case FFT31:     fftTypeName = "31"; break;
+  case FFT32:     fftTypeName = "32"; break;
+  }
+  string const fpName = fft.FFT_FP64 ? "64" : "32";
+  switch (which_kernel) {
+  case CARRYFUSED: return "REGCF" + fftTypeName;   // Register usage depends on NW, WMUL, the FFT/NTT type, and perhaps the long carry setting
+  case MIDIN:      return "REGMI" + fpName;        // Register usage depends on MIDDLE, PFA, and FP32/FP64
+  case MIDIN31:    return "REGMI31";
+  case MIDIN61:    return "REGMI61";
+  case TAIL:       return "REGTS" + fpName;        // Register usage depends on NH and FP32/FP64
+  case TAIL31:     return "REGTS31";
+  case TAIL61:     return "REGTS61";
+  case MIDOUT:     return "REGMO" + fpName;
+  case MIDOUT31:   return "REGMO31";
+  case MIDOUT61:   return "REGMO61";
+  }
+  return "";
+}
+
 string Gpu::numRegisters(enum WHICH_KERNEL which_kernel) {
-  [[maybe_unused]] int regs = 0;         // Default CUDA maximum register count (the AMD path only uses the override value)
-  const char *use_override = "";
   // Allow command line to prefer the compiler's default number of registers
   if (args.value("NOREG", 0)) return string("");
-  // Determine a CUDA kernel specific default maximum number of GPU registers (values set to -1 have not been tuned for best default value).
-  // This switch also selects which REGxxxx option applies to the kernel, and that selection is needed on AMD too (see amdRegisterOption),
-  // so it must not be compiled out for non-CUDA backends.  The default register counts below are only used by CUDA.
-  switch (which_kernel) {
-  case CARRYFUSED:         // Register usage depends on NW, the FFT/NTT type, and perhaps the long carry setting
-    switch (fft.shape.fft_type) {
-    case FFT64:
-      regs = nW == 8 ? 64 : 56;                        // Tested on TitanV, CUDA 13.0, nW=8 nvrtc default is 64.
-      use_override = "REGCF64";
-      break;
-    case FFT3161:
-      regs = nW == 8 ? 96 : 64;                        // Tested on 5070Ti, CUDA 13.2, nW=8 nvrtc default is 84.
-      use_override = "REGCF3161";
-      break;
-    case FFT3261:
-      regs = nW == 8 ? 96 : 64;
-      use_override = "REGCF3261";
-      break;
-    case FFT61:
-      regs = nW == 8 ? 80 : 64;
-      use_override = "REGCF61";
-      break;
-    case FFT323161:
-      regs = nW == 8 ? 128 : 80;
-      use_override = "REGCF323161";
-      break;
-    case FFT3231:
-      regs = -1;
-      use_override = "REGCF3231";
-      break;
-    case FFT6431:
-      regs = nW == 8 ? -1 : -1;                        // (not checked recently) Tested on TitanV, NW=8, CUDA 13.0.  NW=4 not tested.
-      use_override = "REGCF6431";
-      break;
-    case FFT31:
-      regs = -1;
-      use_override = "REGCF31";
-      break;
-    case FFT32:
-      regs = -1;
-      use_override = "REGCF32";
-      break;
-    }
-    break;
-  case MIDIN:              // Register usage depends on MIDDLE and the FP32/FP64
-    if (fft.FFT_FP64) {
-      if (fft.shape.middle >= 16) regs = 96;
-      else if (fft.shape.middle >= 14) regs = 88;
-      else if (fft.shape.middle >= 13) regs = 80;
-      else if (fft.shape.middle >= 10) regs = 72;
-      else if (fft.shape.middle >= 7) regs = 64;
-      else if (fft.shape.middle >= 5) regs = 56;
-      else if (fft.shape.middle >= 4) regs = 48;
-      else regs = -1;
-      use_override = "REGMI64";
-    } else {
-      if (fft.shape.middle == 16) regs = 56;
-      else if (fft.shape.middle == 8) regs = 40;
-      else if (fft.shape.middle == 4) regs = 32;
-      else regs = -1;
-      use_override = "REGMI32";
-    }
-    break;
-  case MIDIN31:            // Register usage depends on MIDDLE
-    if (fft.shape.middle == 16) regs = 56;
-    else if (fft.shape.middle == 8) regs = 48;         // Tested on 5070Ti, CUDA 13.2, nvrtc default is 44.
-    else if (fft.shape.middle == 4) regs = 32;         // (not checked recently) Tested on 5070Ti, CUDA 13.2.
-    else regs = -1;  
-    use_override = "REGMI31";
-    break;
-  case MIDIN61:            // Register usage depends on MIDDLE
-    if (fft.shape.middle == 16) regs = 96;
-    else if (fft.shape.middle == 8) regs = -1;         // Tested on 5070Ti, CUDA 13.2, nvrtc default is 68.
-    else if (fft.shape.middle == 4) regs = -1;         // (not checked recently) Tested on 5070Ti, CUDA 13.2 (48 regs is possible without spilling but is slower), best is -1.
-    else regs = -1;  
-    use_override = "REGMI61";
-    break;
-  case TAIL:               // Register usage depends on NH and the FP32/FP64 (assumes double-wide kernel)
-    if (fft.FFT_FP64) {
-      regs = nH == 8 ? 72 : 56;                        // Tested on TitanV, CUDA 13.0, nH=8 nvrtc default is 70.
-      use_override = "REGTS64";
-    } else {
-      regs = nH == 8 ? 64 : 48;
-      use_override = "REGTS32";
-    }
-    break;
-  case TAIL31:             // Register usage depends on NH (assumes double-wide kernel)
-    regs = nH == 8 ? -1 : 48;                          // Tested on 5070Ti, CUDA 13.2, nH=8 nvrtc default is 64.
-    use_override = "REGTS31";
-    break;
-  case TAIL61:             // Register usage depends on NH (assumes double-wide kernel)
-    regs = nH == 8 ? -1 : 64;                          // Tested on 5070Ti, CUDA 13.2, nH=8 nvrtc default is 80.
-    use_override = "REGTS61";
-    break;
-  case MIDOUT:             // Register usage depends on MIDDLE and the FFT/NTT type
-    if (fft.FFT_FP64) {
-      if (fft.shape.middle >= 15) regs = 96;
-      else if (fft.shape.middle >= 14) regs = 88;
-      else if (fft.shape.middle >= 11) regs = 80;
-      else if (fft.shape.middle >= 10) regs = 72;
-      else if (fft.shape.middle >= 7) regs = 64;
-      else if (fft.shape.middle >= 5) regs = 56;
-      else if (fft.shape.middle >= 4) regs = 48;
-      else regs = -1;
-      use_override = "REGMO64";
-    } else {
-      if (fft.shape.middle == 16) regs = 56;
-      else if (fft.shape.middle == 8) regs = 40;
-      else if (fft.shape.middle == 4) regs = 32;
-      else regs = -1;
-      use_override = "REGMO32";
-    }
-    break;
-  case MIDOUT31:           // Register usage depends on MIDDLE
-    if (fft.shape.middle == 16) regs = 48;
-    else if (fft.shape.middle == 8) regs = 48;         // Tested on 5070Ti, CUDA 13.2, nvrtc default is 44.
-    else if (fft.shape.middle == 4) regs = -1;         // (not checked recently) Tested on 5070Ti, CUDA 13.2 (32 regs is possible without spilling but is slower), best is -1.
-    else regs = -1;
-    use_override = "REGMO31";
-    break;
-  case MIDOUT61:           // Register usage depends on MIDDLE
-    if (fft.shape.middle == 16) regs = 96;
-    else if (fft.shape.middle == 8) regs = -1;         // Tested on 5070Ti, CUDA 13.2, nvrtc default is 64.
-    else if (fft.shape.middle == 4) regs = 64;         // (not checked recently) Tested on 5070Ti, CUDA 13.2 (48 regs is possible without spilling but is slower), best is 64.
-    else regs = -1;
-    use_override = "REGMO61";
-    break;
-  }
-  // Get the optional override register count
-  int const override_regs = args.value(use_override, 0);
+  string const use_override = regKey(which_kernel);
 #if CUDA_BACKEND
-  // If a specified override is small, use the count as a CUDA launch_bounds rather than a maximum register count
-  if (override_regs && (override_regs > 0 && override_regs <= 16)) return string("-DCUDA_MIN_BLOCKS=") + to_string(override_regs) + " ";
-  // If specified, override the default maximum register count
-  if (override_regs) regs = override_regs;
-  // Sometimes the results using CUDA compiler's default launch_bounds without setting an explicit launch bounds or maxrrregcount can't be beat
-  if (regs == -1) return string("");
-  // Format an explicit register count setting
-  return string("--maxrregcount=") + to_string(regs) + " ";
+  // 0 or -1 = compiler default, 1..20 = launch bounds minimum blocks per SM, more than 20 = maximum register count (REG_MAX_OCCUPANCY).
+  // These are not NVRTC options: KernelCompiler applies them to the compiled PTX (see cudaSetKernelRegLimit).
+  int const regs = args.value(use_override, -1);
+  if (regs <= 0) return string("");
+  // SMEM_SPILL=1: the registers the limit spills go to shared memory (sm_75 and up), see cudaSetKernelRegLimit.  Off by default
+  // until its effect is understood: spilling is extra work, which may cost more than it saves when queues overlap (MULTI_Q).
+  bool const smemSpill = args.value("SMEM_SPILL", 0) && getNvidiaComputeCapability(shared.context->deviceId()) >= 750;
+  return string(regs <= REG_MAX_OCCUPANCY ? "--minblocks=" : "--maxrregcount=") + to_string(regs) + (smemSpill ? " --smemspill " : " ");
 #else
-  return amdRegisterOption(which_kernel, override_regs);
+  return amdRegisterOption(which_kernel, args.value(use_override, 0));
 #endif
+}
+
+vector<Gpu::RegTunable> Gpu::regTunables() {
+  vector<RegTunable> ret;
+  for (auto [which, kernel] : initializer_list<pair<WHICH_KERNEL, const Kernel*>>{
+         {CARRYFUSED, &kCarryFused},
+         {MIDIN, &kfftMidIn}, {MIDIN31, &kfftMidInGF31}, {MIDIN61, &kfftMidInGF61},
+         {TAIL, &ktailSquare}, {TAIL31, &ktailSquareGF31}, {TAIL61, &ktailSquareGF61},
+         {MIDOUT, &kfftMidOut}, {MIDOUT31, &kfftMidOutGF31}, {MIDOUT61, &kfftMidOutGF61}}) {
+    const TimeInfo* t = kernel->getTimeInfo();
+    if (!kernel->isLoaded() || !t->n) { continue; }
+#ifdef CUDA_BACKEND
+    ret.push_back({regKey(which), t->name, t->times[2] * 1e-3 / t->n, cudaKernelResources(kernel->handle()), false});
+#else
+    ret.push_back({regKey(which), t->name, t->times[2] * 1e-3 / t->n, amdKernelResources(kernel->handle(), shared.context->deviceId()),
+                   !amdRegisterOption(which, 0).empty()});
+#endif
+  }
+  return ret;
 }
 
 // AMD analog of the CUDA register cap, driven by the same REGxxxx options.  override_regs is the value of the kernel's option:
 //    0 = not specified (use the default below),  -1 = compiler default (no cap),
-//    1..10 = minimum waves per SIMD (like CUDA's launch bounds; 10 is the GCN maximum), more than 10 = explicit VGPR count.
+//    1..20 = minimum waves per SIMD (like CUDA's launch bounds; GCN allows 10, RDNA up to 20), more than 20 = explicit VGPR count.
 // A minimum-waves request caps VGPR usage.  On gfx9 (256 VGPRs per lane, allocated in units of 4) the occupancy crossovers are:
 // 128 VGPRs for 2 waves, 84 for 3, 64 for 4, 48 for 5.  A kernel a few VGPRs above the 128 boundary runs with one wave per SIMD;
 // capping it costs a few spills but doubles occupancy.  Only that one-wave cliff is worth a default: on a Radeon VII / MI50 the in-place
@@ -976,7 +929,7 @@ string Gpu::amdRegisterOption([[maybe_unused]] enum WHICH_KERNEL which_kernel, i
   cl_device_id const id = shared.context->deviceId();
   if (!isAmdGpu(id)) return string("");
   if (override_regs < 0) return string("");
-  if (override_regs > 10) return string("-DAMD_NUM_VGPR=") + to_string(override_regs) + " ";
+  if (override_regs > REG_MAX_OCCUPANCY) return string("-DAMD_NUM_VGPR=") + to_string(override_regs) + " ";
   if (override_regs > 0) return string("-DAMD_WAVES_PER_EU=") + to_string(override_regs) + " ";
   // Default: 2 waves per SIMD for the in-place middle kernels on Vega class GPUs (gfx900/902/904/906/909/90c: 256 VGPRs per lane).
   // Other architectures are untested.
@@ -1022,10 +975,11 @@ string Gpu::kernelDefines(enum WHICH_KERNEL_TYPE which_kernel) {
 }
 
 
-Gpu::Gpu(GpuCommon s, FFTConfig fft, u64 E, const vector<KeyVal>& extraConf, bool logFftSize, tune::TestKind kind) :
+Gpu::Gpu(GpuCommon s, FFTConfig fft, u64 E, const vector<KeyVal>& extraConf, bool logFftSize, const vector<KeyVal>& fftUses,
+         tune::TestKind kind) :
   shared(s),
   background{shared.background},
-  args{*shared.args},
+  args{resolvedArgs(*shared.args, fft, kind, fftUses, extraConf, logFftSize)},
   E(E),
   N(fft.shape.size()),
   fft(fft),
@@ -1033,13 +987,13 @@ Gpu::Gpu(GpuCommon s, FFTConfig fft, u64 E, const vector<KeyVal>& extraConf, boo
   SMALL_H(fft.shape.height),
   BIG_H(SMALL_H * fft.shape.middle),
   hN(N / 2),
-  nW(fft.shape.nW()),
-  nH(fft.shape.nH()),
+  nW(fft.shape.nW(args.radix8At256(fft.shape.spec(), false))),
+  nH(fft.shape.nH(args.radix8At256(fft.shape.spec(), true))),
   useLongCarry{args.carry == CARRY_64},
   queue{*shared.context, args.profile},
       
-  compiler{args, shared.context, clDefines(args, shared.context->deviceId(), fft, kind, extraConf, E, logFftSize, tail_single_wide, tail_single_kernel, in_place, pad_size, wmul,
-                               multi_q, l2_striping, graphs)},
+  compiler{args, shared.context, clDefines(args, shared.context->deviceId(), fft, nW, nH, E, logFftSize, tail_single_wide, tail_single_kernel, in_place, pad_size, wmul,
+                               multi_q, l2_striping, graphs, zero_q)},
 
 #define K(name, ...) name(#name, &compiler, profile.make(#name), &queue, __VA_ARGS__)
 
@@ -1172,7 +1126,8 @@ Gpu::Gpu(GpuCommon s, FFTConfig fft, u64 E, const vector<KeyVal>& extraConf, boo
   BUF(bufAux, N * fft.WordSize / sizeof(Word)),
   BUF(bufCheck, N * fft.WordSize / sizeof(Word)),
   // Every double-word (i.e. N/2) produces one carry. In addition we may have one extra group thus WIDTH more carries.
-  BUF(bufCarry, N / 2 + WIDTH),
+  // FFT323161's 96-bit carries add a second plane of i32s (see csStore in carryfused.cl)
+  BUF(bufCarry, (N / 2 + WIDTH) * (fft.shape.fft_type == FFT323161 ? 3 : 2) / 2),
   BUF(bufReady, (N / 2 + WIDTH) / 32), // Every wavefront (32 or 64 lanes) needs to signal "carry is ready"
 
   BUF(bufSmallOut, 256),
@@ -1298,6 +1253,9 @@ Gpu::Gpu(GpuCommon s, FFTConfig fft, u64 E, const vector<KeyVal>& extraConf, boo
   if (multi_q) {
     auxQueues.push_back(Queue{*shared.context, args.profile, true});
   }
+  if (zero_q) {
+    for (size_t i = 0; i <= auxQueues.size(); ++i) { zeroQueues.push_back(Queue{*shared.context, args.profile, true}); }
+  }
 
   // Set flag indicating we're going to use CUDA graphs.
   use_graphs = graph_square[0].isSupported(shared.context->deviceId()) && graphs;
@@ -1325,6 +1283,7 @@ Gpu::Gpu(GpuCommon s, FFTConfig fft, u64 E, const vector<KeyVal>& extraConf, boo
       // it must get the same window too, or its buf1 traffic gets no persisting treatment at all.
       cudaSetL2Persistent(queue.get(), l2bufs);
       for (auto& auxQueue : auxQueues) { cudaSetL2Persistent(auxQueue.get(), l2bufs); }
+      for (auto& zeroQueue : zeroQueues) { cudaSetL2Persistent(zeroQueue.get(), l2bufs); }
     }
 #endif
 
@@ -1735,9 +1694,31 @@ void Gpu::replay() {
   recorded_kernel_args.clear();
 }
 
+Queue* Gpu::zeroQueueFor(const Queue* q) {
+  for (size_t i = 0; i < auxQueues.size(); ++i) { if (q == &auxQueues[i]) { return &zeroQueues[1 + i]; } }
+  return &zeroQueues[0];
+}
+
 // Replay one recorded kernel on the specified queue, with specified base and kernelsToExecute.  Two dimensional work groups are supported for some kernels.
 // A kernelsToExecuteX of zero is permitted - used for the default kernelsToExecute (a.k.a. workSize) set at kernel creation that operates on all the FFT data.
 void Gpu::replay_one(enum BOTTOM_HALF_KERNELS kern, int cache_group, int arg, Queue *q, int base, int kernelsToExecuteX, int kernelsToExecuteY) {
+  Queue* const tailQ = q ? q : &queue;
+
+  // The tail kernels: with two tail kernels (TAIL_KERNELS 1 or 3) the tail*Zero kernel does the self-paired lines.  With 11 or 13 it runs
+  // in its own queue, forked from the tail queue and joined back before the next kernel there, and the tail kernel, which has more work,
+  // is queued first.  Measured 2-7% faster for NTTs on a TITAN V but 3% slower for FP64, and 60-70% slower on a Radeon VII (ROCm).
+  auto tailWithZero = [&](auto runTail, auto runZero) {
+    if (tail_single_kernel || base != 0) { runTail(tailQ); return; }
+    if (kernelsToExecuteX) kernelsToExecuteX--;
+    if (!zero_q) { runZero(tailQ); runTail(tailQ); return; }
+    Queue* const zeroQ = zeroQueueFor(tailQ);
+    EventHolder ready = tailQ->createSyncEvent();
+    zeroQ->waitForSyncEvent(&ready);
+    runTail(tailQ);
+    runZero(zeroQ);
+    EventHolder done = zeroQ->createSyncEvent();
+    tailQ->waitForSyncEvent(&done);
+  };
 
   // Call the appropriate kernel
   if (kern == KMIDIN) {
@@ -1763,15 +1744,15 @@ void Gpu::replay_one(enum BOTTOM_HALF_KERNELS kern, int cache_group, int arg, Qu
     // If not in place, the output is to the scratch buffer
     Buffer<double> const *in = buf;
     Buffer<double> const *out = in_place ? buf : &buf3;
-    if (!tail_single_kernel && base == 0) {
-      if (cache_group == 1) { ktailSquareZero.setQueue(q); ktailSquareZero(*out, *in); }
-      if (cache_group == 2) { ktailSquareZeroGF31.setQueue(q); ktailSquareZeroGF31(*out, *in); }
-      if (cache_group == 3) { ktailSquareZeroGF61.setQueue(q); ktailSquareZeroGF61(*out, *in); }
-      if (kernelsToExecuteX) kernelsToExecuteX--;
-    }
-    if (cache_group == 1) { ktailSquare.setQueue(q); ktailSquare.setKernelsToExecute(kernelsToExecuteX, kernelsToExecuteY); ktailSquare(*out, *in, base); }
-    if (cache_group == 2) { ktailSquareGF31.setQueue(q); ktailSquareGF31.setKernelsToExecute(kernelsToExecuteX, kernelsToExecuteY); ktailSquareGF31(*out, *in, base); }
-    if (cache_group == 3) { ktailSquareGF61.setQueue(q); ktailSquareGF61.setKernelsToExecute(kernelsToExecuteX, kernelsToExecuteY); ktailSquareGF61(*out, *in, base); }
+    tailWithZero([&](Queue* tq) {
+      if (cache_group == 1) { ktailSquare.setQueue(tq); ktailSquare.setKernelsToExecute(kernelsToExecuteX, kernelsToExecuteY); ktailSquare(*out, *in, base); }
+      if (cache_group == 2) { ktailSquareGF31.setQueue(tq); ktailSquareGF31.setKernelsToExecute(kernelsToExecuteX, kernelsToExecuteY); ktailSquareGF31(*out, *in, base); }
+      if (cache_group == 3) { ktailSquareGF61.setQueue(tq); ktailSquareGF61.setKernelsToExecute(kernelsToExecuteX, kernelsToExecuteY); ktailSquareGF61(*out, *in, base); }
+    }, [&](Queue* zq) {
+      if (cache_group == 1) { ktailSquareZero.setQueue(zq); ktailSquareZero(*out, *in); }
+      if (cache_group == 2) { ktailSquareZeroGF31.setQueue(zq); ktailSquareZeroGF31(*out, *in); }
+      if (cache_group == 3) { ktailSquareZeroGF61.setQueue(zq); ktailSquareZeroGF61(*out, *in); }
+    });
   }
 
   if (kern == KTAILMUL) {
@@ -1780,15 +1761,15 @@ void Gpu::replay_one(enum BOTTOM_HALF_KERNELS kern, int cache_group, int arg, Qu
     // If not in place, the output is to the scratch buffer
     Buffer<double> const *in1 = buf;
     Buffer<double> const *out = in_place ? buf : &buf3;
-    if (!tail_single_kernel && base == 0) {
-      if (cache_group == 1) { ktailMulZero.setQueue(q); ktailMulZero(*out, *in1, *in2); }
-      if (cache_group == 2) { ktailMulZeroGF31.setQueue(q); ktailMulZeroGF31(*out, *in1, *in2); }
-      if (cache_group == 3) { ktailMulZeroGF61.setQueue(q); ktailMulZeroGF61(*out, *in1, *in2); }
-      if (kernelsToExecuteX) kernelsToExecuteX--;
-    }
-    if (cache_group == 1) { ktailMul.setQueue(q); ktailMul.setKernelsToExecute(kernelsToExecuteX, kernelsToExecuteY); ktailMul(*out, *in1, *in2, base); }
-    if (cache_group == 2) { ktailMulGF31.setQueue(q); ktailMulGF31.setKernelsToExecute(kernelsToExecuteX, kernelsToExecuteY); ktailMulGF31(*out, *in1, *in2, base); }
-    if (cache_group == 3) { ktailMulGF61.setQueue(q); ktailMulGF61.setKernelsToExecute(kernelsToExecuteX, kernelsToExecuteY); ktailMulGF61(*out, *in1, *in2, base); }
+    tailWithZero([&](Queue* tq) {
+      if (cache_group == 1) { ktailMul.setQueue(tq); ktailMul.setKernelsToExecute(kernelsToExecuteX, kernelsToExecuteY); ktailMul(*out, *in1, *in2, base); }
+      if (cache_group == 2) { ktailMulGF31.setQueue(tq); ktailMulGF31.setKernelsToExecute(kernelsToExecuteX, kernelsToExecuteY); ktailMulGF31(*out, *in1, *in2, base); }
+      if (cache_group == 3) { ktailMulGF61.setQueue(tq); ktailMulGF61.setKernelsToExecute(kernelsToExecuteX, kernelsToExecuteY); ktailMulGF61(*out, *in1, *in2, base); }
+    }, [&](Queue* zq) {
+      if (cache_group == 1) { ktailMulZero.setQueue(zq); ktailMulZero(*out, *in1, *in2); }
+      if (cache_group == 2) { ktailMulZeroGF31.setQueue(zq); ktailMulZeroGF31(*out, *in1, *in2); }
+      if (cache_group == 3) { ktailMulZeroGF61.setQueue(zq); ktailMulZeroGF61(*out, *in1, *in2); }
+    });
   }
 
   if (kern == KTAILMULLOW) {
@@ -1797,15 +1778,15 @@ void Gpu::replay_one(enum BOTTOM_HALF_KERNELS kern, int cache_group, int arg, Qu
     // If not in place, the output is to the scratch buffer
     Buffer<double> const *in1 = buf;
     Buffer<double> const *out = in_place ? buf : &buf3;
-    if (!tail_single_kernel && base == 0) {
-      if (cache_group == 1) { ktailMulLowZero.setQueue(q); ktailMulLowZero(*out, *in1, *in2); }
-      if (cache_group == 2) { ktailMulLowZeroGF31.setQueue(q); ktailMulLowZeroGF31(*out, *in1, *in2); }
-      if (cache_group == 3) { ktailMulLowZeroGF61.setQueue(q); ktailMulLowZeroGF61(*out, *in1, *in2); }
-      if (kernelsToExecuteX) kernelsToExecuteX--;
-    }
-    if (cache_group == 1) { ktailMulLow.setQueue(q); ktailMulLow.setKernelsToExecute(kernelsToExecuteX, kernelsToExecuteY); ktailMulLow(*out, *in1, *in2, base); }
-    if (cache_group == 2) { ktailMulLowGF31.setQueue(q); ktailMulLowGF31.setKernelsToExecute(kernelsToExecuteX, kernelsToExecuteY); ktailMulLowGF31(*out, *in1, *in2, base); }
-    if (cache_group == 3) { ktailMulLowGF61.setQueue(q); ktailMulLowGF61.setKernelsToExecute(kernelsToExecuteX, kernelsToExecuteY); ktailMulLowGF61(*out, *in1, *in2, base); }
+    tailWithZero([&](Queue* tq) {
+      if (cache_group == 1) { ktailMulLow.setQueue(tq); ktailMulLow.setKernelsToExecute(kernelsToExecuteX, kernelsToExecuteY); ktailMulLow(*out, *in1, *in2, base); }
+      if (cache_group == 2) { ktailMulLowGF31.setQueue(tq); ktailMulLowGF31.setKernelsToExecute(kernelsToExecuteX, kernelsToExecuteY); ktailMulLowGF31(*out, *in1, *in2, base); }
+      if (cache_group == 3) { ktailMulLowGF61.setQueue(tq); ktailMulLowGF61.setKernelsToExecute(kernelsToExecuteX, kernelsToExecuteY); ktailMulLowGF61(*out, *in1, *in2, base); }
+    }, [&](Queue* zq) {
+      if (cache_group == 1) { ktailMulLowZero.setQueue(zq); ktailMulLowZero(*out, *in1, *in2); }
+      if (cache_group == 2) { ktailMulLowZeroGF31.setQueue(zq); ktailMulLowZeroGF31(*out, *in1, *in2); }
+      if (cache_group == 3) { ktailMulLowZeroGF61.setQueue(zq); ktailMulLowZeroGF61(*out, *in1, *in2); }
+    });
   }
 
   if (kern == KMIDOUT) {
@@ -2344,7 +2325,8 @@ void Gpu::square(Buffer<Word>& out, Buffer<Word>& in, enum LEAD_TYPE leadIn, enu
     if (graph->isRecorded()) {
       graph->launch(&queue);
       queue.incSquareCount();
-      if (roe) roePos++;   // WARNING: If we ever graph Gpu::Mul, we'll need to also maintain mulRoePos vector.
+      // Keep the host's sample counts in step with the kernels' (carryFused below): the GPU records a sample on every launch
+      if (roe) { roePos++; } else { updateCarryPos(1 << 0); }   // WARNING: If we ever graph Gpu::Mul, we'll need to also maintain mulRoePos vector.
       return;
     }
     // Otherwise, record a new graph
@@ -2378,9 +2360,10 @@ void Gpu::square(Buffer<Word>& out, Buffer<Word>& in, enum LEAD_TYPE leadIn, enu
   // Use CarryFused
   else {
     assert(!useLongCarry);
-    assert(!doMul3);
     if (doLL) {
       carryFusedLL(buf1);
+    } else if (doMul3) {
+      carryFusedMul(buf1);
     } else {
       carryFused(buf1);
     }
@@ -2730,7 +2713,9 @@ u32 Gpu::getProofPower(u64 k) {
   return power;
 }
 
-tuple<bool, RoeInfo> Gpu::measureCarry() {
+// mul3: measure the MUL3 carries (carryFusedMul, STATS bit 1) by tripling every squaring.  The result is then not a PRP
+// residue, so the returned ok is only meaningful without mul3.
+tuple<bool, RoeInfo> Gpu::measureCarry(bool mul3) {
   u32 blockSize{}, iters{}, warmup{};
 
   blockSize = 200;
@@ -2755,12 +2740,12 @@ tuple<bool, RoeInfo> Gpu::measureCarry() {
   leadIn = LEAD_MIDDLE;
 
   enum LEAD_TYPE const leadOut = useLongCarry ? LEAD_NONE : LEAD_WIDTH;
-  square(bufData, bufData, leadIn, leadOut);
+  square(bufData, bufData, leadIn, leadOut, mul3);
   leadIn = leadOut;
   ++k;
 
   while (k < warmup) {
-    square(bufData, bufData, leadIn, leadOut);
+    square(bufData, bufData, leadIn, leadOut, mul3);
     leadIn = leadOut;
     ++k;
   }
@@ -2771,11 +2756,11 @@ tuple<bool, RoeInfo> Gpu::measureCarry() {
 
   while (true) {
     while (k % blockSize < blockSize-1) {
-      square(bufData, bufData, leadIn, leadOut);
+      square(bufData, bufData, leadIn, leadOut, mul3);
       leadIn = leadOut;
       ++k;
     }
-    square(bufData, bufData, leadIn, LEAD_NONE);
+    square(bufData, bufData, leadIn, LEAD_NONE, mul3);
     leadIn = LEAD_NONE;
     ++k;
 
@@ -2789,7 +2774,7 @@ tuple<bool, RoeInfo> Gpu::measureCarry() {
   [[maybe_unused]] u64 const res = dataResidue();
   if (Signal::stopRequested()) { throw "stop requested"; }
 
-  bool const ok = doCheck(blockSize);
+  bool const ok = mul3 || doCheck(blockSize);
   auto stats = readCarryStats();
 
   // log("%s %016" PRIx64 " %s\n", ok ? "OK" : "EE", res, roe.toString(statsBits).c_str());
@@ -3002,7 +2987,12 @@ double Gpu::timePRP(int quick) {        // Quick varies from 1 (slowest, longest
   u32 k = 0;
   PRPState const state{.exponent=E, .k=0, .blockSize=blockSize, .res64=3, .check=makeWords(E, 1), .nErrors=0};
   writeState(state.k, state.check, state.blockSize);
-  assert(dataResidue() == state.res64);
+  // A setting that computes wrongly on this GPU (or driver) can already fail here, on the first modMul.  Treat it like a failed check
+  // at the end: the timing never wins, and -tune moves on instead of aborting.
+  if (u64 const res = dataResidue(); res != state.res64) {
+    log("Error on load: %016" PRIx64 " vs. %016" PRIx64 "\n", res, state.res64);
+    return std::numeric_limits<double>::infinity();
+  }
 
   enum LEAD_TYPE leadIn = LEAD_NONE;
   modMul(bufCheck, bufData, leadIn);
@@ -3020,6 +3010,9 @@ double Gpu::timePRP(int quick) {        // Quick varies from 1 (slowest, longest
   }
   queue.finish();
   if (Signal::stopRequested()) { throw "stop requested"; }
+  // Per-kernel times (with profiling, as -tune regs uses) count only the timed iterations: the warmup holds each kernel's first launch,
+  // whose one-time costs would otherwise add several percent to a short timing
+  profile.reset();
 
   Timer t;
   queue.setSquareTime(0);     // Busy wait on nVidia to get the most accurate timings while tuning
@@ -3086,13 +3079,13 @@ PRPResult Gpu::isPrimePRP([[maybe_unused]] const Task& task) {
   // rolling "unverified" savefile instead.  When checkStep exceeds the exponent that condition is
   // never met, so the only durable savefile is the one from the very first check at k = 2 * blockSize
   // and one error costs the whole run.  Scale the step down so a short run still gets several
-  // checkpoints.  Staying on a multiple of logStep preserves both invariants asserted here, because
-  // logStep % blockSize == 0 was asserted just above.
+  // checkpoints.  It stays on a multiple of logStep, so a multiple of blockSize (logStep % blockSize == 0 was asserted just above).
+  // checkStep need not be a multiple of logStep: after an error it is halved (e.g. 500000 with -log 1000000), and a check that is
+  // not at a log point still logs and writes its verified savefile.
   if (checkStep > E / 8) {
     checkStep = std::max(logStep, u32(std::min<u64>(checkStep, E / 8) / logStep) * logStep);
   }
 
-  assert(checkStep % logStep == 0);
   assert(checkStep % blockSize == 0);
 
   u32 const power = getProofPower(k);

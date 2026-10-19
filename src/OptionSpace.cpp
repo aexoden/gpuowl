@@ -107,12 +107,16 @@ u32 numDataTypes(const FFTConfig& f) {
 u32 shuflBytesW(const UseConfig& d) { return u32(useValue(d, "SHUFL_BYTES_W", 8)); }
 u32 shuflBytesH(const UseConfig& d) { return u32(useValue(d, "SHUFL_BYTES_H", 8)); }
 
+// The width and height radices, which 256RADIX8_W / 256RADIX8_H raise from 4 to 8 at 256.
+u32 radixW(const FFTConfig& f, const UseConfig& d) { return f.shape.nW(useValue(d, "256RADIX8_W", 0) != 0); }
+u32 radixH(const FFTConfig& f, const UseConfig& d) { return f.shape.nH(useValue(d, "256RADIX8_H", 0) != 0); }
+
 // carryFused's workgroup is width / nW threads per WMUL line, and clDefines() lowers WMUL until that fits the device.
 u32 maxWmul(const Env& e, const FFTConfig& f, const UseConfig& d) {
   u32 m = LDS_BUDGET / (f.shape.width * shuflBytesW(d));
   if (m > 2 && f.shape.width >= 1024) { m = 2; }
   if (m > 1 && f.shape.width >= 4096) { m = 1; }
-  m = std::min(m, e.maxWorkGroupSize / (f.shape.width / f.shape.nW()));
+  m = std::min(m, e.maxWorkGroupSize / (f.shape.width / radixW(f, d)));
   return std::max(m, 1u);
 }
 
@@ -185,10 +189,10 @@ bool swizRecomputeReached(const FFTConfig& f, u32 size, u32 radix, u32 shuflByte
 
 u32 swizRecomputeTouches(const Env& e, const FFTConfig& f, const UseConfig& d) {
   u32 touches = 0;
-  if (swizRecomputeReached(f, f.shape.width, f.shape.nW(), shuflBytesW(d), effectiveLdsSwizW(e, f, d))) {
+  if (swizRecomputeReached(f, f.shape.width, radixW(f, d), shuflBytesW(d), effectiveLdsSwizW(e, f, d))) {
     touches |= KG_WIDTH | KG_CARRY;
   }
-  if (swizRecomputeReached(f, f.shape.height, f.shape.nH(), shuflBytesH(d), effectiveLdsSwizH(d))) {
+  if (swizRecomputeReached(f, f.shape.height, radixH(f, d), shuflBytesH(d), effectiveLdsSwizH(d))) {
     touches |= KG_HEIGHT | KG_TAIL;
   }
   return touches;
@@ -797,6 +801,7 @@ vector<Option> buildTable() {
          "LDSMUL_W", "LDSMUL_H",   // Shared LDS: slower where tried upstream, and unsafe with variant 2
          "ENABLE_FP32_VARIANT_2",  // Would widen the FP32 variant space
          "NO_INT128",              // For drivers without 128-bit integers; rusticl is detected without it
+         "CARRY96", "CARRY_SUB_X", "M61_SM120", "MIDDLE_CHAIN31", "MIDDLE_CHAIN61", "SMEM_SPILL",
        }) {
     t.push_back({.key = key, .kind = Kind::Fixed});
   }

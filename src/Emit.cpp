@@ -387,7 +387,7 @@ std::vector<TuneEntry> compatibilityView(const SelectionFile& file, const Env& e
       if (e.regime != regimeOf(*fft, maxExp(*fft))) { continue; }
     }
 
-    auto const [at, fresh] = cheapest.try_emplace(fft->spec(), TuneEntry{e.cost, *fft});
+    auto const [at, fresh] = cheapest.try_emplace(fft->spec(), TuneEntry{e.cost, *fft, {}});
     if (!fresh) { at->second.cost = std::min(at->second.cost, e.cost); }
   }
 

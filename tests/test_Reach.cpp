@@ -284,12 +284,18 @@ TEST(a_pinned_32_bit_carry_is_the_only_ceiling_on_a_reach) {
   FFTConfig const& pinned = *found;
   u64 const ceiling = carryCeiling(pinned);
   CHECK_EQ(ceiling, u64(double(pinned.shape.carry32BPW()) * double(pinned.size())));
-  CHECK(ceiling < 19 * pinned.size());
+  CHECK(ceiling < 20 * pinned.size());
 
-  // Where carry32BPW() reaches its hard limit, the ceiling stays under 19 bits per word.
-  FFTConfig const small{"256:2:256:202:0"};
-  CHECK_EQ(small.shape.carry32BPW(), 19.0f);
-  CHECK_EQ(carryCeiling(small), 19 * small.size() - 1);
+  // Where carry32BPW() reaches its hard limit, the ceiling stays under 20 bits per word.  FP64 never reaches it, M61 does.
+  FFTConfig const small{"3:256:2:256:202:0"};
+  CHECK_EQ(small.carry, CARRY_32);
+  CHECK_EQ(small.shape.carry32BPW(), 20.0f);
+  CHECK_EQ(carryCeiling(small), 20 * small.size() - 1);
+
+  // FFT323161's narrow carry is 64-bit, with no hard limit of its own.  It caps only the largest shapes.
+  FFTConfig const wide{"4:4K:8:2K:202:0"};
+  CHECK_EQ(wide.carry, CARRY_32);
+  CHECK_EQ(carryCeiling(wide), u64(double(wide.shape.carry64BPW()) * double(wide.size())));
 
   // A hybrid's carry is not the kernel CARRY_32 pins.
   CHECK_EQ(carryCeiling(FFTConfig{"2:512:8:512:202:0"}), std::numeric_limits<u64>::max());

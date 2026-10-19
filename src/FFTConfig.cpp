@@ -93,8 +93,9 @@ vector<FFTShape> FFTShape::allShapes(u32 sizeFrom, u32 sizeTo) {
   for (enum FFT_TYPES const type : {FFT64, FFT6431, FFT3161, FFT3261, FFT61, FFT323161}) {
     for (u32 const width : {256, 512, 1024, 2048, 4096}) {
       for (u32 const height : {256, 512, 1024, 2048}) {
-        for (u32 const middle : {2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16}) {
-          if (type != FFT64 && type != FFT32 && (middle & (middle - 1)) && !(pfaMiddle(middle) && pfaType(type))) continue;  // Reject unsupported middles in NTTs and hybrid FFTs
+        for (u32 const middle : {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16}) {
+          if (middle == 1 && (width != 256 || height != 256)) continue;  // MIDDLE=1 only for the 128K FFT; larger sizes are better with MIDDLE > 1
+          if (type != FFT64 && type != FFT32 && (middle & (middle - 1)) && !(pfaMiddle(middle, type) && pfaType(type))) continue;  // Reject unsupported middles in NTTs and hybrid FFTs
           u32 const sz = width * height * middle * 2;
           if (sizeFrom <= sz && sz <= sizeTo) {
             configs.emplace_back(type, width, middle, height);
@@ -141,14 +142,25 @@ FFTShape::FFTShape(enum FFT_TYPES t, u32 w, u32 m, u32 h) :
 
   // Same limits FFTConfig applies to a full spec.  Shapes can also arrive here from -tune / -info / size ranges, and a
   // too-small one (e.g. 128:2:128) drives middle to 0 in the fallback below and then loops forever.
-  if ((w != 256 && w != 512 && w != 1024 && w != 2048 && w != 4096) || m < 2 || m > 16 || (h != 256 && h != 512 && h != 1024 && h != 2048)) {
-    log("Invalid FFT shape %u:%u:%u (width 256/512/1024/2048/4096, middle 2..16, height 256/512/1024/2048)\n", w, m, h);
+  if ((w != 256 && w != 512 && w != 1024 && w != 2048 && w != 4096) || m < 1 || m > 16 || (h != 256 && h != 512 && h != 1024 && h != 2048)) {
+    log("Invalid FFT shape %u:%u:%u (width 256/512/1024/2048/4096, middle 1..16, height 256/512/1024/2048)\n", w, m, h);
     throw "Invalid FFT shape";
   }
 
   string const s = spec();
   if (auto it = BPW.find(s); it != BPW.end()) {
     bpw = it->second;
+    // FFT6431's table was measured with variant 202 alone and repeats that value for every variant (see fftbpw.h).  The round-off
+    // of its FP64 part depends on the variant as FFT64's does (variant 0, for one, computes its trig values less accurately), so
+    // adjust each variant by FFT64's difference from 202 for the same shape.  Without this variant 000 fails at its max exponent.
+    // A middle variant 0 is only ever lowered.  A middle variant 1 (entries 3..5) also gets FFT64's gain: on a TITAN V
+    // 51:512:8:512:111 and 212 had the round-off of 202 (ROEmax 0.35) at the max exponents this gives.
+    if (t == FFT6431) {
+      if (auto it64 = BPW.find(s.substr(s.find(':') + 1)); it64 != BPW.end()) {
+        auto const& b64 = it64->second;
+        for (u32 j = 0; j < NUM_BPW_ENTRIES; ++j) { bpw[j] += j < 3 ? std::min(0.0f, b64[j] - b64[2]) : b64[j] - b64[2]; }
+      }
+    }
   } else if (isPfa()) {
     // An NTT has no roundoff, so its BPW depends only on its size.  Interpolate in log2(size) between the W:M0:H and
     // W:2*M0:H shapes of the same type, M0 the largest power of two below MIDDLE.
@@ -191,7 +203,7 @@ FFTShape::FFTShape(enum FFT_TYPES t, u32 w, u32 m, u32 h) :
   }
 }
 
-float FFTShape::carry32BPW() const {
+float FFTShape::carry32BPW(bool mul3) const {
   // The formula below was validated empirically with -carryTune
 
   // We observe that FFT 6.5M (1024:13:256) has safe carry32 up to 18.35 BPW
@@ -199,26 +211,36 @@ float FFTShape::carry32BPW() const {
   // We model carry with a Gumbel distrib similar to the one used for ROE, and measure carry with
   // -use STATS=1. See -carryTune
 
-  // The 19.0 cap is a hard limit of the CARRY32 code, not an empirical one, which is why the formula
-  // above must be clamped for the smaller FFTs (without it, -tune failed on FFT sizes from 256K to 1M).
+  // The 20.0 cap is a hard limit of the CARRY32 code, not an empirical one, which is why the formula
+  // above must be clamped for the smaller FFTs.
   //
   // In the CARRY32 case weightAndCarryOne() returns the raw bits of RNDVAL + value rather than stripping
-  // RNDVAL off (carryutil.cl:217-219), so bit 51 is set iff value >= 0 and bits 52+ hold the exponent.
+  // RNDVAL off, so bits 52+ hold the exponent (at 19 bpw it flips bit 51, making it the value's sign bit).
   // carryStep(i64, i32*) then takes the carry as xtract32(x, nBits), i.e. bits [nBits, nBits+32).  That
-  // window must stay strictly below bit 51 for the sign fill to work, so nBits <= 19, and since a big word
-  // has nBits = EXP / NWORDS + 1 that means EXP / NWORDS <= 18, i.e. bpw < 19.0.  At nBits = 20 the window
-  // includes bit 51 and every big word with a non-negative value yields a large negative carry.
-  if (18.35 + 0.5 * (log2(13 * 1024 * 512) - log2(size())) > 19.0) return 19.0f;
-
-  return float(18.35 + 0.5 * (log2(13 * 1024 * 512) - log2(size())));
+  // window must stay below bit 52, so nBits <= 20, and since a big word has nBits = EXP / NWORDS + 1 that
+  // means EXP / NWORDS <= 19, i.e. bpw < 20.0.
+  //
+  // MUL3 triples the value before the carry is split off.  At a given FFT size the carries double with each
+  // bpw, so the MUL3 kernels run out of 32-bit carry log2(3) bpw sooner.
+  double const bpw = 18.35 + 0.5 * (log2(13 * 1024 * 512) - log2(size())) - (mul3 ? log2(3.0) : 0.0);
+  return float(std::min(bpw, 20.0));
 }
 
-bool FFTShape::needsLargeCarry(u64 E) const {
-  // carry32BPW() caps at 19.0 and the comparison below is a strict >, so E == 19 * size() would still
-  // select CARRY32 with EXP / NWORDS == 19, which the CARRY32 code cannot handle (see carry32BPW()).
+float FFTShape::carry64BPW(bool mul3) const {
+  // FFT323161's 64-bit carries, measured with -carryTune (STATS: 2^63 maps to 0.5) for the same Z as carry32BPW() (Z ~27 at 4M, 8M
+  // and 16M words).  FFT323161 never uses sloppy signed carries, which would make the carries up to 2.8x larger (1.5 bpw).
+  // MUL3 triples the carries (log2(3) bpw).
+  double const plain = 50.2 - 0.5 * (log2(size()) - 23);
+  return float(mul3 ? plain - log2(3.0) : plain);
+}
+
+bool FFTShape::needsLargeCarry(u64 E, bool mul3) const {
+  if (fft_type == FFT323161) { return E / double(size()) > carry64BPW(mul3); }
+  // carry32BPW() caps at 20.0 and the comparison below is a strict >, so E == 20 * size() would still
+  // select CARRY32 with EXP / NWORDS == 20, which the CARRY32 code cannot handle (see carry32BPW()).
   // Test the kernel's own EXP / NWORDS expression to close that off-by-one.
-  if (E / size() >= 19) { return true; }
-  return E / double(size()) > carry32BPW();
+  if (E / size() >= 20) { return true; }
+  return E / double(size()) > carry32BPW(mul3);
 }
 
 // Return TRUE for "favored" shapes.  That is, those that are most likely to be useful.  To save time in generating bpw data, only these favored
@@ -256,16 +278,16 @@ FFTConfig::FFTConfig(const string& spec) {
       log("Width must be 256, 512, 1024, 2048, or 4096.\n");
       throw "Invalid FFT spec";
     }
-    if (m < 2 || m > 16) {
-      log("Middle must be between 2 and 16.\n");
+    if (m < 1 || m > 16) {
+      log("Middle must be between 1 and 16.\n");
       throw "Invalid FFT spec";
     }
     if (h != 256 && h != 512 && h != 1024 && h != 2048) {
       log("Height must be 256, 512, 1024, or 2048.\n");
       throw "Invalid FFT spec";
     }
-    if (fft_type != FFT64 && fft_type != FFT32 && (m & (m - 1)) && !(FFTShape::pfaMiddle(m) && FFTShape::pfaType(fft_type))) {
-      log("NTT and hybrid FFT middle must be 2, 3, 4, 6, 7, 8, 9, 11, 12, or 14.\n");
+    if (fft_type != FFT64 && fft_type != FFT32 && (m & (m - 1)) && !(FFTShape::pfaMiddle(m, fft_type) && FFTShape::pfaType(fft_type))) {
+      log("NTT and hybrid FFT middle must be 1, 2, 3, 4, 6, 7, 8, 9, 11, 12, 14 or 16 (also 5, 10 and 15 for the types with GF61 but no GF31).\n");
       throw "Invalid FFT spec";
     }
   }
@@ -340,21 +362,30 @@ float FFTConfig::maxBpw() const {
     float const b2 = shape.bpw[variant_M(variant) * 3 + variant_H(variant)];
     b = (b1 + b2) / 2.0f;
   }
-  // A pinned 32-bit carry caps the single-arithmetic FFTs, whose carryFused takes its carry type from CARRY64, and
-  // FFT3231, whose carries are always 32-bit.
-  bool const carry32Caps = shape.fft_type == FFT64 || shape.fft_type == FFT3231 || shape.fft_type == FFT61 ||
-                           shape.fft_type == FFT31 || shape.fft_type == FFT32;
-  return (carry == CARRY_32 && carry32Caps) ? std::min(shape.carry32BPW(), b) : b;
+  // A pinned narrow carry caps the single-arithmetic FFTs, whose carryFused takes its carry type from CARRY64, FFT3231
+  // (32 or 64 bits) and FFT323161 (64 or 96 bits).
+  bool const narrowCaps = shape.fft_type == FFT64 || shape.fft_type == FFT3231 || shape.fft_type == FFT323161 ||
+                          shape.fft_type == FFT61 || shape.fft_type == FFT31 || shape.fft_type == FFT32;
+  return (carry == CARRY_32 && narrowCaps) ? std::min(shape.narrowCarryBPW(), b) : b;
 }
 
-FFTConfig FFTConfig::bestFit(const Args& args, u64 E, const string& spec, std::optional<bool> fp64, bool quiet) {
+FFTConfig FFTConfig::bestFit(const Args& args, u64 E, const string& spec, vector<KeyVal>* uses, std::optional<bool> fp64,
+                             bool quiet) {
+  return bestFits(args, E, spec, uses, fp64, quiet).front();
+}
+
+vector<FFTConfig> FFTConfig::bestFits(const Args& args, u64 E, const string& spec, vector<KeyVal>* uses,
+                                      std::optional<bool> fp64, bool quiet) {
+  if (uses) { uses->clear(); }
+
   // A FFT-spec was given, simply take the first FFT from the spec that can handle E
   if (!spec.empty()) {
     FFTConfig fft{spec};
     if (fft.maxExp() * args.fftOverdrive < E) {
       log("Warning: %s (max %" PRIu64 ") may be too small for %" PRIu64 "\n", fft.spec().c_str(), fft.maxExp(), E);
     }
-    return fft;
+    if (uses) { *uses = TuneEntry::usesFor(args, fft); }
+    return {fft};
   }
 
   // Devices without FP64 can only use the FFT types that have no FP64 data
@@ -367,26 +398,33 @@ FFTConfig FFTConfig::bestFit(const Args& args, u64 E, const string& spec, std::o
   vector<TuneEntry> const tunes = TuneEntry::readTuneFile(args);
   for (const TuneEntry& e : tunes) {
     // The first acceptable is the best as they're sorted by cost
-    if (fits(e.fft) && (*fp64 || !e.fft.FFT_FP64)) { return e.fft; }
+    if (fits(e.fft) && (*fp64 || !e.fft.FFT_FP64)) {
+      if (uses) { *uses = e.uses; }
+      return {e.fft};
+    }
   }
 
   if (!quiet) { log("No FFTs found in tune.txt that can handle %" PRIu64 ". Consider tuning with -tune\n", E); }
 
-  // Take the smallest FFT that can handle E.  allShapes() sorts by size alone, which lets an FP32 hybrid (e.g. FP32+M31+M61) win
-  // without any timing, and some OpenCL compilers can't build the FP32 code (hence -tune nofp32).  Prefer FP64 and M31+M61
-  // (the two types -tune compares by default), FP64 at equal size, and use the other types only for an E beyond both.
+  // Untuned:  the smallest FFT of any type that can handle E, FP64 then M31+M61 then the others at equal size.  The FP32 hybrids are
+  // often the smallest (e.g. FP32+M31+M61 2M against M31+M61 2.25M) and usually the fastest on consumer GPUs, but some OpenCL compilers
+  // can't build the FP32 code, so the smallest fitting FFT of up to six types is returned in this order:  Task::execute moves on to the next when
+  // a GPU can't be built for one.
   auto const rank = [](const FFTShape& s) { return s.fft_type == FFT64 ? 0 : s.fft_type == FFT3161 ? 1 : 2; };
   vector<FFTShape> shapes = FFTShape::allShapes();
   std::ranges::stable_sort(shapes, [&](const FFTShape& a, const FFTShape& b) {
-    if ((rank(a) < 2) != (rank(b) < 2)) { return rank(a) < 2; }
     if (a.size() != b.size()) { return a.size() < b.size(); }
     return rank(a) < rank(b);
   });
+  vector<FFTConfig> candidates;
   for (const FFTShape& shape : shapes) {
+    if (std::ranges::any_of(candidates, [&](const FFTConfig& c) { return c.shape.fft_type == shape.fft_type; })) { continue; }
     for (u32 const v : {101, 202}) {
-      if (FFTConfig fft{shape, v, CARRY_AUTO}; fits(fft) && (*fp64 || !fft.FFT_FP64)) { return fft; }
+      if (FFTConfig fft{shape, v, CARRY_AUTO}; fits(fft) && (*fp64 || !fft.FFT_FP64)) { candidates.push_back(fft); break; }
     }
+    if (candidates.size() == 6) { break; }     // enough fallbacks
   }
+  if (!candidates.empty()) { return candidates; }
 
   log("No FFT found for %" PRIu64 "\n", E);
   throw "No FFT";

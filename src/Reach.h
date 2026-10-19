@@ -97,8 +97,8 @@ using ReadingAt = std::function<std::optional<ZReading>(u64 exponent)>;
 // direction: down from a reading that falls short of the standard, up from one that clears it.  Pure.
 [[nodiscard]] ReachOutcome deriveReach(const ReachProblem& problem, const ZReading& first, const ReadingAt& at);
 
-// The largest exponent the carry `fft` runs with can take at all: a pinned 32-bit carry stops where carry32BPW() says,
-// and in any case below 19 bits per word, where the CARRY32 code breaks.  No limit otherwise.
+// The largest exponent the carry `fft` runs with can take at all: a pinned narrow carry stops where narrowCarryBPW()
+// says, and a 32-bit one in any case below 20 bits per word, where the CARRY32 code breaks.  No limit otherwise.
 [[nodiscard]] u64 carryCeiling(const FFTConfig& fft);
 
 // How far above the fitted table a reach may be raised, in bits per word.  A sanity bound rather than a measured one:

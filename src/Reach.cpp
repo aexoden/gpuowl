@@ -132,16 +132,20 @@ ReachOutcome deriveReach(const ReachProblem& p, const ZReading& first, const Rea
 }
 
 u64 carryCeiling(const FFTConfig& fft) {
-  // As FFTConfig::maxBpw() has it: the single-arithmetic FFTs take their carry type from CARRY64, and FFT3231's
-  // carries are always 32-bit.
+  // As FFTConfig::maxBpw() has it: the single-arithmetic FFTs take their carry type from CARRY64, FFT3231's narrow carry
+  // is 32-bit, and FFT323161's is 64-bit.
   enum FFT_TYPES const type = fft.shape.fft_type;
-  bool const pinned32 =
-    fft.carry == CARRY_32 && (type == FFT64 || type == FFT3231 || type == FFT61 || type == FFT31 || type == FFT32);
-  if (!pinned32) { return std::numeric_limits<u64>::max(); }
+  bool const pinned = fft.carry == CARRY_32 && (type == FFT64 || type == FFT3231 || type == FFT323161 || type == FFT61 ||
+                                                type == FFT31 || type == FFT32);
+  if (!pinned) { return std::numeric_limits<u64>::max(); }
 
   u64 const words = fft.size();
-  u64 const below19 = 19 * words - 1;
-  return std::min(u64(double(fft.shape.carry32BPW()) * double(words)), below19);
+  u64 const ceiling = u64(double(fft.shape.narrowCarryBPW()) * double(words));
+  if (type == FFT323161) { return ceiling; }
+
+  // The 32-bit carry's hard limit, which the kernel tests as EXP / NWORDS (see FFTShape::needsLargeCarry).
+  u64 const below20 = 20 * words - 1;
+  return std::min(ceiling, below20);
 }
 
 u64 raiseCeiling(const FFTConfig& fft) {

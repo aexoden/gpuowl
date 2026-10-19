@@ -245,9 +245,34 @@ void Task::execute(GpuCommon shared, u32 instance) {
 
   tune::TestKind const testKind = kind == LL ? tune::TestKind::LL : tune::TestKind::PRP;
   tune::Choice const choice = tune::choose(*shared.args, tune::detectEnv(*shared.context, *shared.args), exponent, testKind);
-  FFTConfig const fft = choice.fft;
+  vector<const tune::Choice*> choices{&choice};
+  for (const tune::Choice& c : choice.fallbacks) { choices.push_back(&c); }
 
-  auto gpu = Gpu::make(exponent, shared, fft, {choice.options.begin(), choice.options.end()}, true, testKind);
+  // Without -fft, a selection entry or a tune.txt line there are several untuned candidates.  If the kernels of one can't be built (e.g. an OpenCL
+  // compiler that can't build the FP32 code), move on to the next.  Kernels compile on first use, so this can surface after the
+  // work has started; the savefiles hold plain residues, so the next FFT resumes from them.  Other errors are not retried.
+  auto const buildFailure = [](const string& mes) {
+    return mes.starts_with("Can't compile") || mes.starts_with("OpenCL kernel ") || mes.starts_with("workgroup size too large");
+  };
+  for (size_t i = 0; ; ++i) {
+    bool const last = i + 1 == choices.size();
+    FFTConfig const fft = choices[i]->fft;
+    try {
+      executeWith(shared, instance, fft, {choices[i]->options.begin(), choices[i]->options.end()});
+      return;
+    } catch (const string& mes) {
+      if (last || !buildFailure(mes)) { throw; }
+      log("Can't build FFT %s (%s), trying the next untuned FFT\n", fft.spec().c_str(), mes.c_str());
+    } catch (const std::exception& e) {
+      if (last || !buildFailure(e.what())) { throw; }
+      log("Can't build FFT %s (%s), trying the next untuned FFT\n", fft.spec().c_str(), e.what());
+    }
+  }
+}
+
+void Task::executeWith(GpuCommon shared, u32 instance, FFTConfig fft, const vector<KeyVal>& options) {
+  tune::TestKind const testKind = kind == LL ? tune::TestKind::LL : tune::TestKind::PRP;
+  auto gpu = Gpu::make(exponent, shared, fft, options, true, {}, testKind);
 
   if (kind == VERIFY) {
     Proof const proof{Proof::load(verifyPath)};

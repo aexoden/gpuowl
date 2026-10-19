@@ -94,7 +94,7 @@ u32 i96_hi32(i96 val) { return val.hi32; }
 u32 i96_mid32(i96 val) { return hi32(val.lo64); }
 u32 i96_lo32(i96 val) { return val.lo64; }
 u64 i96_lo64(i96 val) { return val.lo64; }
-u64 i96_hi64(i96 val) { return make_64(val.hi32, i96_mid32(val)); }
+u64 i96_hi64(i96 val) { return make_u64(val.hi32, i96_mid32(val)); }
 i96 OVERLOAD add(i96 a, i96 b) { i96 val; val.lo64 = a.lo64 + b.lo64; val.hi32 = a.hi32 + b.hi32 + (val.lo64 < a.lo64); return val; }
 i96 OVERLOAD add(i96 a, i64 b) { return add(a, make_i96(b)); }
 i96 OVERLOAD sub(i96 a, i96 b) { i96 val; val.lo64 = a.lo64 - b.lo64; val.hi32 = a.hi32 - b.hi32 - (val.lo64 > a.lo64); return val; }
@@ -109,7 +109,9 @@ typedef struct { unsigned __int128 x; } u128;
 i128 OVERLOAD make_i128(i64 hi, u64 lo) { i128 val; val.x = ((__int128)hi << 64) | lo; return val; }
 i128 OVERLOAD make_i128(u64 hi, u64 lo) { i128 val; val.x = ((__int128)hi << 64) | lo; return val; }
 u64 i128_lo64(i128 val) { return val.x; }
+u64 i128_hi64(i128 val) { return val.x >> 64; }
 u64 i128_shrlo64(i128 val, u32 bits) { return val.x >> bits; }
+i96 i128_shr96(i128 val, u32 bits) { __int128 v = val.x >> bits; return make_i96((i32) (v >> 64), (u64) v); }
 i128 OVERLOAD i128_masklo64(i128 a, u64 m) { i128 val; val.x = a.x & (((__int128)0xFFFFFFFFFFFFFFFFULL << 64) | m); return val; }
 i128 OVERLOAD add(i128 a, i128 b) { i128 val; val.x = a.x + b.x; return val; }
 i128 OVERLOAD add(i128 a, u64 b) { i128 val; val.x = a.x + (__int128)b; return val; }
@@ -127,7 +129,9 @@ typedef struct { u64 hi64; u64 lo64; } u128;
 i128 OVERLOAD make_i128(i64 hi, u64 lo) { i128 val; val.hi64 = hi; val.lo64 = lo; return val; }
 i128 OVERLOAD make_i128(u64 hi, u64 lo) { i128 val; val.hi64 = hi; val.lo64 = lo; return val; }
 u64 i128_lo64(i128 val) { return val.lo64; }
+u64 i128_hi64(i128 val) { return val.hi64; }
 u64 i128_shrlo64(i128 val, u32 bits) { return (val.hi64 << (64 - bits)) | (val.lo64 >> bits); }
+i96 i128_shr96(i128 val, u32 bits) { return make_i96((i32) (val.hi64 >> bits), i128_shrlo64(val, bits)); }
 i128 OVERLOAD i128_masklo64(i128 a, u64 m) { i128 val; val.lo64 = a.lo64 & m; val.hi64 = a.hi64; return val; }
 i128 OVERLOAD add(i128 a, i128 b) { i128 val; val.lo64 = a.lo64 + b.lo64; val.hi64 = a.hi64 + b.hi64 + (val.lo64 < a.lo64); return val; }
 i128 OVERLOAD add(i128 a, u64 b) { i128 val; val.lo64 = a.lo64 + b; val.hi64 = a.hi64 + (val.lo64 < a.lo64); return val; }
@@ -140,6 +144,10 @@ u64 u128_hi64(u128 val) { return val.hi64; }
 u64 u128_shrlo64(u128 val, u32 bits) { return (val.hi64 << (64 - bits)) | (val.lo64 >> bits); }
 u128 OVERLOAD add(u128 a, u128 b) { u128 val; val.lo64 = a.lo64 + b.lo64; val.hi64 = a.hi64 + b.hi64 + (val.lo64 < a.lo64); return val; }
 #endif
+
+// Widen an i96 to i128 (used for 96-bit carries)
+i128 OVERLOAD make_i128(i96 v) { return make_i128((i64) (i32) i96_hi32(v), i96_lo64(v)); }
+i128 OVERLOAD add(i128 a, i96 b) { return add(a, make_i128(b)); }
 
 // Select based on sign of first argument.  This generates less PTX code, but is no faster on 5xxx GPUs
 i32 select32(i32 a, i32 b, i32 c) {
@@ -192,6 +200,14 @@ i32 OVERLOAD optional_mod(i32 a, const i32 b) {
 }
 
 #define M61 ((((Z61) 1) << 61) - 1)
+
+// M61_SM120: M61 reductions shaped for sm_120 (RTX 50x0), whose native 64-bit add ptxas uses even where an operand must first be zero-filled
+// into a register pair.  modM61 adds its top 3 bits with a 32-bit carry chain, and weakModM61 uses plain 64-bit code instead of 32-bit asm
+// pieces.  On an RTX 5080 that removes nearly all the zero-filling moves (8% of carryFused's instructions, 11% of tailSquareGF61's) and
+// makes iterations 2-4% faster (types 1, 3, 4).  Older GPUs and sm_100 compile modM61 identically either way.  -use M61_SM120=0/1 overrides.
+#if !defined(M61_SM120)
+#define M61_SM120 (HAS_PTX >= 1200)
+#endif
 
 // Optionally add a constant value if first arg is negative.
 i64 OVERLOAD optional_addM61(i64 a) {
@@ -624,16 +640,16 @@ F2 OVERLOAD mul_t4(F2 a)  { return U2(-a.y, a.x); } // i.e. a * i
 
 F2 OVERLOAD mul_t8(F2 a)  { // mul(a, U2(1, 1)) * (F)(M_SQRT1_2); }
   // One mul, two FMAs
-  F ay = a.y * (float) M_SQRT1_2;
-  return U2(fma(a.x, (float) M_SQRT1_2, -ay), fma(a.x, (float) M_SQRT1_2, ay));
+  F ay = a.y * M_SQRT1_2_F;
+  return U2(fma(a.x, M_SQRT1_2_F, -ay), fma(a.x, M_SQRT1_2_F, ay));
 // Two adds, two muls
 //  return U2(a.x - a.y, a.x + a.y) * M_SQRT1_2;
 }
 
 F2 OVERLOAD mul_3t8(F2 a) { // mul(a, U2(-1, 1)) * (F)(M_SQRT1_2); }
   // One mul, two FMAs
-  F ay = a.y * (float) M_SQRT1_2;
-  return U2(fma(-a.x, (float) M_SQRT1_2, -ay), fma(a.x, (float) M_SQRT1_2, -ay));
+  F ay = a.y * M_SQRT1_2_F;
+  return U2(fma(-a.x, M_SQRT1_2_F, -ay), fma(a.x, M_SQRT1_2_F, -ay));
 // Two adds, two muls
 //  return U2(-(a.x + a.y), a.x - a.y) * M_SQRT1_2;
 }
@@ -703,102 +719,10 @@ F2 OVERLOAD subq(F2 a, F2 b) { return sub(a, b); }
 /*          Similar to above, but for an NTT based on GF(M31^2)           */
 /**************************************************************************/
 
-#if NTT_GF31
+#if NTT_GF31                                                                          // This version is a little sloppy.  Returns values in 0..M31 range.
 
 // bits in reduced mod M.
 #define M31 ((((Z31) 1) << 31) - 1)
-
-#if 0          // Version that keeps results strictly in the 0..M31-1 range
-
-Z31 OVERLOAD mod(Z31 a) { return (a & M31) + (a >> 31); }            // GWBUG: This could be larger than M31 (unless a is result of an add), need a wesk and strong mod
-
-Z31 OVERLOAD add(Z31 a, Z31 b) { Z31 t = a + b; return t - (t >= M31 ? M31 : 0); }     //GWBUG - an if stmt may be faster
-GF31 OVERLOAD add(GF31 a, GF31 b) { return U2(add(a.x, b.x), add(a.y, b.y)); }
-
-Z31 OVERLOAD sub(Z31 a, Z31 b) { Z31 t = a - b; return t + (t >= M31 ? M31 : 0); }     //GWBUG - an if stmt may be faster.  So might "(i64) t < 0".
-GF31 OVERLOAD sub(GF31 a, GF31 b) { return U2(sub(a.x, b.x), sub(a.y, b.y)); }
-
-Z31 OVERLOAD neg(Z31 a) { return a == 0 ? 0 : M31 - a; }                // GWBUG: Examine all callers to see if neg call can be avoided
-GF31 OVERLOAD neg(GF31 a) { return U2(neg(a.x), neg(a.y)); }
-
-Z31 OVERLOAD make_Z31(i32 a) { return (Z31) (a < 0 ? a + M31 : a); }              // Handles signed values of a
-Z31 OVERLOAD make_Z31(u32 a) { return (Z31) (a); }                                // a must be in range of 0 .. M31-1
-Z31 OVERLOAD make_Z31(i64 a) { if (a < 0) a += (((i64) M31 << 31) + M31); return add((Z31) (a & M31), (Z31) (a >> 31)); } // Handles 62-bit a values
-
-u32 get_Z31(Z31 a) { return a; }  // Get balanced value in range 0 to M31-1
-i32 get_balanced_Z31(Z31 a) { return (a & 0xC0000000) ? (i32) a - M31 : (i32) a; }  // Get balanced value in range -M31/2 to M31/2
-
-// Assumes k reduced mod 31.
-Z31 OVERLOAD shl(Z31 a, u32 k) { return ((a << k) + (a >> (31 - k))) & M31; }
-GF31 OVERLOAD shl(GF31 a, u32 k) { return U2(shl(a.x, k), shl(a.y, k)); }
-Z31 OVERLOAD shr(Z31 a, u32 k) { return ((a >> k) + (a << (31 - k))) & M31; }
-GF31 OVERLOAD shr(GF31 a, u32 k) { return U2(shr(a.x, k), shr(a.y, k)); }
-
-Z31 OVERLOAD mul(Z31 a, Z31 b) { u64 t = a * (u64) b; return add((Z31) (t & M31), (Z31) (t >> 31)); }
-
-// Multiply by 2
-Z31 OVERLOAD mul2(Z31 a) { return add(a, a); }
-GF31 OVERLOAD mul2(GF31 a) { return U2(mul2(a.x), mul2(a.y)); }
-
-// Return conjugate of a
-GF31 OVERLOAD conjugate(GF31 a) { return U2(a.x, neg(a.y)); }
-
-// Complex square.  input, output 31 bits. Uses (a + i*b)^2 == ((a+b)*(a-b) + i*2*a*b).
-GF31 OVERLOAD csq(GF31 a) { return U2(mul(add(a.x, a.y), sub(a.x, a.y)), mul2(mul(a.x, a.y))); }        //GWBUG: Probably faster to double a.y and have a mul that takes non-normalized inputs
-
-// a^2 + c
-GF31 OVERLOAD csqa(GF31 a, GF31 c) { return add(csq(a), c); }                                           // GWBUG: inline csq so we only "mod" after adding c??  Find a way to use fma instructions
-
-// Complex mul
-//GF31 OVERLOAD cmul(GF31 a, GF31 b) { return U2(sub(mul(a.x, b.x), mul(a.y, b.y)), add(mul(a.x, b.y), mul(a.y, b.x)));}   // GWBUG:  Is a 3 multiply complex mul faster?  See above
-GF31 OVERLOAD cmul(GF31 a, GF31 b) {
-  Z31 k1 = mul(b.x, add(a.x, a.y));
-  Z31 k2 = mul(a.x, sub(b.y, b.x));
-  Z31 k3 = mul(a.y, add(b.y, b.x));
-  return U2(sub(k1, k3), add(k1, k2));
-}
-
-// mul with (0, 1). (twiddle of tau/4, sqrt(-1) aka "i").
-GF31 OVERLOAD mul_t4(GF31 a) { return U2(neg(a.y), a.x); }                                              // GWBUG:  Can caller use a version that does not negate real?
-
-// mul with (2^15, 2^15). (twiddle of tau/8 aka sqrt(i)). Note: 2 * (+/-2^15)^2 == 1 (mod M31).
-GF31 OVERLOAD mul_t8(GF31 a) { return U2(shl(sub(a.x, a.y), 15), shl(add(a.x, a.y), 15)); }       // GWBUG:  Can caller use a version that does not negate real?  is shl(neg) same as shr???
-
-// mul with (-2^15, 2^15). (twiddle of 3*tau/8).
-GF31 OVERLOAD mul_3t8(GF31 a) { return U2(shl(neg(add(a.x, a.y)), 15), shl(sub(a.x, a.y), 15)); }
-
-// Return a+b and a-b
-void OVERLOAD X2_internal(GF31 *a, GF31 *b) { GF31 t = *a; *a = add(t, *b); *b = sub(t, *b); }
-
-// Same as X2(a, mul_t4(b))
-void OVERLOAD X2t4_internal(GF31 *a, GF31 *b) { Z31 by = b->y; b->y = sub(a->y, b->x); a->y = add(a->y, b->x); b->x = add(a->x, by); a->x = sub(a->x, by); }
-
-// Same as X2(a, conjugate(b))
-void OVERLOAD X2conjb_internal(GF31 *a, GF31 *b) { GF31 t = *a; a->x = add(a->x, b->x); a->y = sub(a->y, b->y); b->x = sub(t.x, b->x); b->y = add(t.y, b->y); }
-
-// Same as X2(a, b), b = mul_t4(b)
-void OVERLOAD X2_mul_t4_internal(GF31 *a, GF31 *b) { Z31 by = b->y; b->y = sub(a->x, b->x); a->x = add(a->x, b->x); b->x = sub(by, a->y); a->y = add(a->y, by); }
-
-// Same as X2(a, b), b = mul_t8(b)
-void OVERLOAD X2_mul_t8_internal(GF31 *a, GF31 *b) { X2(*a, *b); *b = mul_t8(*b); }
-
-// Same as X2(a, b), b = mul_3t8(b)
-void OVERLOAD X2_mul_3t8_internal(GF31 *a, GF31 *b) { X2(*a, *b); *b = mul_3t8(*b); }           //GWBUG: can we do better (elim a negate)?
-
-// Same as X2(a, b), b = conjugate(b)
-void OVERLOAD X2_conjb_internal(GF31 *a, GF31 *b) { GF31 t = *a; *a = add(t, *b); b->x = sub(t.x, b->x); b->y = sub(b->y, t.y); }
-
-void OVERLOAD SWAP_internal(GF31 *a, GF31 *b) { GF31 t = *a; *a = *b; *b = t; }
-
-GF31 OVERLOAD addsub(GF31 a) { return U2(add(a.x, a.y), sub(a.x, a.y)); }
-GF31 OVERLOAD foo2(GF31 a, GF31 b) { a = addsub(a); b = addsub(b); return addsub(U2(mul(RE(a), RE(b)), mul(IM(a), IM(b)))); }
-GF31 OVERLOAD foo(GF31 a) { return foo2(a, a); }
-
-
-
-
-
-#elif 1                                                               // This version is a little sloppy.  Returns values in 0..M31 range.
 
 // Internal routines to return value in 0..M31 range
 #if MODM31 == 0
@@ -866,6 +790,7 @@ Z31 OVERLOAD shl(Z31 a, u32 k) { return shr(a, 31 - k); }
 GF31 OVERLOAD shl(GF31 a, u32 k) { return U2(shl(a.x, k), shl(a.y, k)); }
 
 Z31 OVERLOAD mul(Z31 a, Z31 b) { u64 t = a * (u64) b; return modM31(t, 62); }
+GF31 OVERLOAD mul(GF31 a, Z31 b) { return U2(mul(a.x, b), mul(a.y, b)); }    // Both components times a scalar
 
 // Multiply by 2
 Z31 OVERLOAD mul2(Z31 a) { return add(a, a); }
@@ -996,6 +921,15 @@ GF31 OVERLOAD csqTrig(GF31 a) { u32 two_ay = a.y + a.y; return U2(modM31(mad32(t
 // Cube w, a root of unity complex number, given w^2 and w
 GF31 OVERLOAD ccubeTrig(GF31 sq, GF31 w) { u32 tmp = sq.y + sq.y; return U2(modM31(mad32(tmp, neg(w.y), w.x)), modM31(mad32(tmp, w.x, neg(w.y)))); }
 
+// res1 = a * b and res2 = a * conjugate(b) from the same four products.  For b a root of unity, conjugate(b) is 1/b, so a = w^k gives w^(k+1)
+// and w^(k-1).  M31^2 (a multiple of M31) keeps the differences positive; each product is at most M31^2, so every sum is below 2^63.
+void OVERLOAD cmul_a_by_b_and_conjb(GF31 *res1, GF31 *res2, GF31 a, GF31 b) {
+  const u64 M31SQ = (u64) M31 * M31;
+  u64 axbx = (u64) a.x * b.x, ayby = (u64) a.y * b.y, axby = (u64) a.x * b.y, aybx = (u64) a.y * b.x;
+  *res1 = U2(modM31(axbx + M31SQ - ayby, 63), modM31(axby + aybx, 63));
+  *res2 = U2(modM31(axbx + ayby, 63), modM31(aybx + M31SQ - axby, 63));
+}
+
 // mul with (0, 1). (twiddle of tau/4, sqrt(-1) aka "i").
 GF31 OVERLOAD mul_t4(GF31 a) { return U2(neg(a.y), a.x); }                                              // GWBUG:  Can caller use a version that does not negate real?
 
@@ -1032,14 +966,47 @@ GF31 OVERLOAD addsub(GF31 a) { return U2(add(a.x, a.y), sub(a.x, a.y)); }
 GF31 OVERLOAD foo2(GF31 a, GF31 b) { a = addsub(a); b = addsub(b); return addsub(U2(mul(RE(a), RE(b)), mul(IM(a), IM(b)))); }
 GF31 OVERLOAD foo(GF31 a) { return foo2(a, a); }
 
-#endif
-
 // Create "quick" routines for compatibility with shufl_and_fft2 and the GF61 data type.
 
 Z31 OVERLOAD addq(Z31 a, Z31 b) { return add(a, b); }
 Z31 OVERLOAD subq(Z31 a, Z31 b) { return sub(a, b); }
 GF31 OVERLOAD addq(GF31 a, GF31 b) { return add(a, b); }
 GF31 OVERLOAD subq(GF31 a, GF31 b) { return sub(a, b); }
+
+// Quick (unreduced) GF31 arithmetic for the radix-PFA DFTs (fftN.cl).  A Z31q holds a sum of products below 0xFFFFFFFF7FFFFFFF, modM31(u64)'s
+// limit, reduced once by modM31.  Structs, so these overloads cannot collide with Z61's / GF61's u64 / ulong2 ones.
+typedef struct { u64 v; } Z31q;
+typedef struct { Z31q x, y; } GF31q;
+
+Z31q OVERLOAD makeZ31q(u64 v) { Z31q r; r.v = v; return r; }
+GF31q OVERLOAD makeGF31q(Z31q x, Z31q y) { GF31q r; r.x = x; r.y = y; return r; }
+
+// x * c for a constant c (x in 0..M31).  A c above negAbove is folded to (M31 - x) * (M31 - c), which costs a subtract but keeps the product
+// below M31 * (M31 - c); otherwise the product is below M31 * c.  The default negAbove of M31/2 keeps every product below M31 * M31/2 < 2^61.
+// A caller whose row sums have room passes a larger negAbove (M31 = never fold) to save the subtracts.  The branch is resolved at compile time.
+Z31q OVERLOAD mulq(Z31 x, Z31 c, Z31 negAbove) { return makeZ31q(c > negAbove ? (u64)(M31 - x) * (M31 - c) : (u64) x * c); }
+Z31q OVERLOAD mulq(Z31 x, Z31 c) { return mulq(x, c, M31 / 2); }
+GF31q OVERLOAD mulq(GF31 a, Z31 c, Z31 negAbove) { return makeGF31q(mulq(a.x, c, negAbove), mulq(a.y, c, negAbove)); }
+GF31q OVERLOAD mulq(GF31 a, Z31 c) { return mulq(a, c, M31 / 2); }
+
+// acc + x * c, acc unreduced or a Z31.  negAbove as in mulq.
+Z31q OVERLOAD madq(Z31 x, Z31 c, Z31q acc, Z31 negAbove) { return makeZ31q(acc.v + mulq(x, c, negAbove).v); }
+Z31q OVERLOAD madq(Z31 x, Z31 c, Z31 acc, Z31 negAbove) { return makeZ31q(acc + mulq(x, c, negAbove).v); }
+GF31q OVERLOAD madq(GF31 a, Z31 c, GF31q acc, Z31 negAbove) { return makeGF31q(madq(a.x, c, acc.x, negAbove), madq(a.y, c, acc.y, negAbove)); }
+GF31q OVERLOAD madq(GF31 a, Z31 c, GF31 acc, Z31 negAbove) { return makeGF31q(madq(a.x, c, acc.x, negAbove), madq(a.y, c, acc.y, negAbove)); }
+Z31q OVERLOAD madq(Z31 x, Z31 c, Z31q acc) { return madq(x, c, acc, M31 / 2); }
+Z31q OVERLOAD madq(Z31 x, Z31 c, Z31 acc) { return madq(x, c, acc, M31 / 2); }
+GF31q OVERLOAD madq(GF31 a, Z31 c, GF31q acc) { return madq(a, c, acc, M31 / 2); }
+GF31q OVERLOAD madq(GF31 a, Z31 c, GF31 acc) { return madq(a, c, acc, M31 / 2); }
+
+// a + b and a - b.  subq adds M31 * 2^32, a multiple of M31:  the caller keeps b <= M31 * 2^32 and both results below 0xFFFFFFFF7FFFFFFF.
+Z31q OVERLOAD addq(Z31q a, Z31q b) { return makeZ31q(a.v + b.v); }
+Z31q OVERLOAD subq(Z31q a, Z31q b) { return makeZ31q(a.v + ((u64) M31 << 32) - b.v); }
+GF31q OVERLOAD addq(GF31q a, GF31q b) { return makeGF31q(addq(a.x, b.x), addq(a.y, b.y)); }
+GF31q OVERLOAD subq(GF31q a, GF31q b) { return makeGF31q(subq(a.x, b.x), subq(a.y, b.y)); }
+
+Z31 OVERLOAD modM31(Z31q a) { return modM31(a.v); }
+GF31 OVERLOAD modM31(GF31q a) { return U2(modM31(a.x), modM31(a.y)); }
 
 #endif
 
@@ -1064,7 +1031,19 @@ u64 OVERLOAD get_Z61(Z61 a) { Z61 m = a - M61; return (m & 0x8000000000000000ULL
 i64 OVERLOAD get_balanced_Z61(Z61 a) { return (hi32(a) >= 0x10000000) ? (i64)(a - M61) : (i64)a; }  // Get balanced value in range -M61/2 to M61/2
 
 // Internal routine to bring Z61 value into the range 0..M61+epsilon
-Z61 OVERLOAD modM61(Z61 a) { return (a & M61) + (a >> 61); }
+Z61 OVERLOAD modM61(Z61 a) {
+#if M61_SM120 && HAS_PTX >= 200
+  uint2 r = as_uint2(a);
+  u32 top;
+  __asm("shr.b32    %2, %1, 29;\n\t"           // The top 3 bits
+        "and.b32    %1, %1, 536870911;\n\t"     // a & M61
+        "add.cc.u32 %0, %0, %2;\n\t"
+        "addc.u32   %1, %1, 0;" : "+r"(r.x), "+r"(r.y), "=r"(top));
+  return as_ulong(r);
+#else
+  return (a & M61) + (a >> 61);
+#endif
+}
 GF61 OVERLOAD modM61(GF61 a) { return U2(modM61(a.x), modM61(a.y)); }
 // Internal routine to negate a value by adding the specified number of M61s -- no mod M61 reduction
 Z61 OVERLOAD neg(Z61 a, const u32 m61_count) { return m61_count * M61 - a; }
@@ -1078,6 +1057,14 @@ GF61 OVERLOAD sub(GF61 a, GF61 b) { return U2(sub(a.x, b.x), sub(a.y, b.y)); }
 
 Z61 OVERLOAD neg(Z61 a) { return modM61(neg(a, 2)); }                // GWBUG: Examine all callers to see if neg call can be avoided
 GF61 OVERLOAD neg(GF61 a) { return U2(neg(a.x), neg(a.y)); }
+
+// Make a value less negative.  Caller uses this to allow future "quick" calls.  This routine either adds m61_count*M61 to a if it is negative
+// or does modM61 if that's cheaper.  On TitanV, modM61 is cheaper.  On RTX 5080, optional_add is cheaper.
+// fft8_16a and fft8_16b call this on -2-..2+ values with a m61_count of 2 -- expecting a return in the range 0-..2+.  modM61 needs to add
+// (m61_count+1)*M61 to guarantee a positive value to reduce (and the input's upper bound plus m61_count+1 must stay below 8 M61s).  The 0..1+
+// returned range is a subset of the range the caller is expecting.
+Z61 OVERLOAD lessneg(Z61 a, const u32 m61_count) { return M61_SM120 ? (Z61) optional_add((i64) a, m61_count * M61) : modM61(a + (m61_count + 1) * M61); }
+GF61 OVERLOAD lessneg(GF61 a, const u32 m61_count) { return U2(lessneg(a.x, m61_count), lessneg(a.y, m61_count)); }
 
 // Assumes k reduced mod 61.
 Z61 OVERLOAD shr(Z61 a, u32 k) { return (a >> k) + ((a << (61 - k)) & M61); }         // Return range 0..M61+2^(61-k), can handle 64-bit inputs but small k is big epsilon
@@ -1130,8 +1117,8 @@ Z61 OVERLOAD shl31(Z61 a) {
 GF61 OVERLOAD shl31(GF61 a) { return U2(shl31(a.x), shl31(a.y)); }
 
 u64 OVERLOAD weakModM61(u128 a, u32 num_bits) {
-// This is faster on TitanV, CUDA 13.0.  No difference on 5070Ti.
-#if HAS_PTX >= 320        // shf instruction requires sm_32 support or higher
+// This is faster on TitanV, CUDA 13.0.  On sm_120 the plain code below is shorter (see M61_SM120).
+#if HAS_PTX >= 320 && !M61_SM120        // shf instruction requires sm_32 support or higher
   uint2 alo = as_uint2(u128_lo64(a));
   uint2 ahi = as_uint2(u128_hi64(a));
   if (num_bits <= 125) {
@@ -1195,6 +1182,7 @@ Z61 OVERLOAD weakMulAdd(Z61 a, Z61 b, u128 c, const u32 a_m61_count, const u32 b
 }
 
 Z61 OVERLOAD mul(Z61 a, Z61 b) { return modM61(weakMul(a, b, 2, 2)); }
+GF61 OVERLOAD mul(GF61 a, Z61 b) { return U2(mul(a.x, b), mul(a.y, b)); }    // Both components times a scalar
 
 // Not named fma(): declaring a user overload of fma() hides the OpenCL builtin
 // fma(float,float,float), so in a build with both FFT_FP32 and NTT_GF61 the float call sites
@@ -1232,6 +1220,16 @@ GF61 OVERLOAD csqaq(GF61 a, GF61 c, u32 x_m61_count, u32 y_m61_count) {
   return U2(re, im);
 }
 GF61 OVERLOAD csqaq(GF61 a, GF61 c, const u32 m61_count) { return csqaq(a, c, m61_count, m61_count); }
+
+// -a^2 + c, quick.  -(x + i*y)^2 = (y + x)*(y - x) - i*2xy: one neg(x) serves both products, so this costs what csqaq does.
+GF61 OVERLOAD csqnaq(GF61 a, GF61 c, u32 x_m61_count, u32 y_m61_count) {
+  if (x_m61_count + y_m61_count >= 9) { a = modM61(a), x_m61_count = 2, y_m61_count = 2; }
+  Z61 negx = neg(a.x, x_m61_count);                                   // M61-..x_m61_count*M61
+  Z61 re = weakMulAdd(a.y + a.x, a.y + negx, c.x, x_m61_count + y_m61_count - 1, x_m61_count + y_m61_count);
+  Z61 im = weakMulAdd(negx, a.y + a.y, c.y, x_m61_count + 1, y_m61_count + y_m61_count - 1);
+  return U2(re, im);
+}
+GF61 OVERLOAD csqnaq(GF61 a, GF61 c, const u32 m61_count) { return csqnaq(a, c, m61_count, m61_count); }
 GF61 OVERLOAD csqa(GF61 a, GF61 c, const u32 x_m61_count, const u32 y_m61_count) { return modM61(csqaq(a, c, x_m61_count, y_m61_count)); }
 GF61 OVERLOAD csqa(GF61 a, GF61 c, const u32 m61_count) { return csqa(a, c, m61_count, m61_count); }
 GF61 OVERLOAD csqa(GF61 a, GF61 c) { return csqa(a, c, 2); }
@@ -1257,6 +1255,14 @@ GF61 OVERLOAD cmul(GF61 a, GF61 b) {
 // Square a root of unity complex number (the second version may be faster if the compiler optimizes the u128 squaring).
 //GF61 OVERLOAD csqTrig(GF61 a) { Z61 two_ay = a.y + a.y; return U2(modM61(1 + weakMul(two_ay, neg(a.y, 2))), mul(a.x, two_ay)); }
 GF61 OVERLOAD csqTrig(GF61 a) { Z61 ay_sq = weakMul(a.y, a.y, 2, 2); return U2(modM61(1 + neg(ay_sq + ay_sq, 4)), mul2(weakMul(a.x, a.y, 2, 2))); }
+
+// res1 = a * b and res2 = a * conjugate(b) from the same four products (Karatsuba cmul needs three each).  For b a root of unity, conjugate(b)
+// is 1/b, so a = w^k gives w^(k+1) and w^(k-1).  Each weakMul is 0..2+, so the sums and the 3*M61 - x differences stay below 5*M61.
+void OVERLOAD cmul_a_by_b_and_conjb(GF61 *res1, GF61 *res2, GF61 a, GF61 b) {
+  Z61 axbx = weakMul(a.x, b.x, 2, 2), ayby = weakMul(a.y, b.y, 2, 2), axby = weakMul(a.x, b.y, 2, 2), aybx = weakMul(a.y, b.x, 2, 2);
+  *res1 = U2(modM61(axbx + neg(ayby, 3)), modM61(axby + aybx));
+  *res2 = U2(modM61(axbx + ayby), modM61(aybx + neg(axby, 3)));
+}
 
 // Cube w, a root of unity complex number, given w^2 and w
 GF61 OVERLOAD ccubeTrig(GF61 sq, GF61 w) { Z61 tmp = sq.y + sq.y; return U2(modM61(weakMul(tmp, neg(w.y, 2), 3, 3) + w.x), modM61(weakMul(tmp, w.x, 3, 2) + neg(w.y, 2))); }
@@ -1327,6 +1333,16 @@ GF61 OVERLOAD mul_7t16(GF61 a) { return cmul(a, U2(M61 - 22027337052962166ULL, 1
 GF61 OVERLOAD mul_9t16(GF61 a) { return cmul(a, U2(M61 - 22027337052962166ULL, M61 - 1693317751237720973ULL)); }
 #endif
 
+// Quick (no final modM61) multiply by the 16th root of unity w = (C1, S1), for fft8_16b (which gets w^3 and w^9 from it too).  Karatsuba's
+// shared product k1 = C1 * (a.x + a.y) is tiny because C1 is (0.0096 M61), and the other constants come out non-negative (M61 - S1 - C1 =
+// 0.256 M61, S1 - C1 = 0.725 M61), so the outputs need no modM61.  Inputs 0..1+; outputs 0..1.28+, 0..1.74+.
+#define T16C1  22027337052962166ULL
+#define T16S1  1693317751237720973ULL
+GF61 OVERLOAD mul_t16q(GF61 a) {         // k1 = C1 * (ax + ay):  re = k1 + ay * (M61 - S1 - C1) is 0..1.28+,  im = k1 + ax * (S1 - C1) is 0..1.74+
+  u128 k1 = mul64(T16C1, a.x + a.y);
+  return U2(weakModM61(mad64(a.y, M61 - T16S1 - T16C1, k1), 125), weakModM61(mad64(a.x, T16S1 - T16C1, k1), 125));
+}
+
 // Return a+b and a-b
 void OVERLOAD X2_internal(GF61 *a, GF61 *b) { GF61 t = *a; *a = add(t, *b); *b = sub(t, *b); }
 
@@ -1366,10 +1382,14 @@ GF61 OVERLOAD addiq(GF61 a, GF61 b) { return U2(a.x - b.y, a.y + b.x); }
 GF61 OVERLOAD subiq(GF61 a, GF61 b) { return U2(a.x + b.y, a.y - b.x); }
 
 void OVERLOAD X2q(GF61 *a, GF61 *b) { GF61 t = *a; *a = t + *b; *b = t - *b; }
+void OVERLOAD X2qp(GF61 *a, GF61 *b) { GF61 t = *a; *a = t + *b; *b = t + neg(*b, 2); }   // X2q with the difference + 2 M61, positive for future multiplies
 void OVERLOAD X2qt4(GF61 *a, GF61 *b) { Z61 by = b->y; b->y = a->y - b->x; a->y = a->y + b->x; b->x = a->x + by; a->x = a->x - by; }
 void OVERLOAD X2qconjb(GF61 *a, GF61 *b) { GF61 t = *a; a->x += b->x; a->y -= b->y; b->x = t.x - b->x; b->y = t.y + b->y; }
 void OVERLOAD X2q_mul_t4(GF61 *a, GF61 *b) { Z61 by = b->y; b->y = a->x - b->x; a->x = a->x + b->x; b->x = by - a->y; a->y = a->y + by; }
 void OVERLOAD X2q_conjb(GF61 *a, GF61 *b) { GF61 t = *a; *a = t + *b; b->x = t.x - b->x; b->y = b->y - t.y; }
+// X2q(a, -b), then b = conjugate(b):  a = a - b, b = conjugate(a + b).  ("t2": b times the 2nd root of unity, -1, before the X2.)
+// b.y comes out negated (u64 wraps); the caller's modM61q count covers it.
+void OVERLOAD X2qt2_conjb(GF61 *a, GF61 *b) { GF61 t = *a; *a = t - *b; b->x = t.x + b->x; b->y = -(t.y + b->y); }
 
 GF61 OVERLOAD mul_t8q(GF61 a, const u32 m61_count) { return shl30(U2(m61_count * M61 + (a.y - a.x), m61_count * M61 - (a.x + a.y))); }
 GF61 OVERLOAD mul_3t8q(GF61 a, const u32 m61_count) { return shl30(U2(m61_count * M61 + a.x + a.y, m61_count * M61 + (a.y - a.x))); }
@@ -1378,7 +1398,31 @@ Z61 OVERLOAD optsubqu(Z61 a, const u32 m61_limit, const u32 m61_count) { return 
 GF61 OVERLOAD optsubqu(GF61 a, const u32 m61_limit, const u32 m61_count) { return U2(optsubqu(a.x, m61_limit, m61_count), optsubqu(a.y, m61_limit, m61_count)); }
 Z61 OVERLOAD optsubqs(Z61 a, const u32 m61_limit, const u32 m61_count) { return optional_sub((i64)a, (i32)(m61_limit << (61 - 32)), (i64)(m61_count * M61)); }
 GF61 OVERLOAD optsubqs(GF61 a, const u32 m61_limit, const u32 m61_count) { return U2(optsubqs(a.x, m61_limit, m61_count), optsubqs(a.y, m61_limit, m61_count)); }
-GF61 OVERLOAD modM61q(GF61 a, const u32 m61_count) { if (m61_count) { a.x += m61_count * M61; a.y += m61_count * M61; } return modM61(a); }
+// m61_count may be negative when the caller knows the true value of a + m61_count * M61 is in 0..2^64 (the u64 additions wrap harmlessly)
+GF61 OVERLOAD modM61q(GF61 a, const i32 m61_count) { if (m61_count) { a.x += m61_count * M61; a.y += m61_count * M61; } return modM61(a); }
 GF61 OVERLOAD modM61q(GF61 a, const u32 m61_count_x, const u32 m61_count_y) { if (m61_count_x) a.x += m61_count_x * M61; if (m61_count_y) a.y += m61_count_y * M61; return modM61(a); }
+
+// Quick (unreduced) GF61 arithmetic for the radix-PFA DFTs (fftN.cl), as GF31's above.  A Z61q holds a 128-bit sum of products of quick Z61s
+// (each below 2^64) and constants, reduced once by weakModM61q.  Structs, so these overloads cannot collide with other u128 ones.
+typedef struct { u128 v; } Z61q;
+typedef struct { Z61q x, y; } GF61q;
+
+Z61q OVERLOAD makeZ61q(u128 v) { Z61q r; r.v = v; return r; }
+GF61q OVERLOAD makeGF61q(Z61q x, Z61q y) { GF61q r; r.x = x; r.y = y; return r; }
+
+// x * c, x a quick Z61 (non-negative)
+Z61q OVERLOAD mulq(Z61 x, Z61 c) { return makeZ61q(mul64(x, c)); }
+GF61q OVERLOAD mulq(GF61 a, Z61 c) { return makeGF61q(mulq(a.x, c), mulq(a.y, c)); }
+
+// acc + x * c, acc unreduced or a Z61
+Z61q OVERLOAD madq(Z61 x, Z61 c, Z61q acc) { return makeZ61q(mad64(x, c, acc.v)); }
+Z61q OVERLOAD madq(Z61 x, Z61 c, Z61 acc) { return makeZ61q(mad64(x, c, acc)); }
+GF61q OVERLOAD madq(GF61 a, Z61 c, GF61q acc) { return makeGF61q(madq(a.x, c, acc.x), madq(a.y, c, acc.y)); }
+GF61q OVERLOAD madq(GF61 a, Z61 c, GF61 acc) { return makeGF61q(madq(a.x, c, acc.x), madq(a.y, c, acc.y)); }
+
+// The caller passes n with a below n * M61^2.  n <= 7 uses the cheaper 125-bit weakModM61, result below (n + 1) * M61; a larger n uses the
+// 128-bit one, result below 3 * M61.
+Z61 OVERLOAD weakModM61q(Z61q a, const u32 n) { return weakModM61(a.v, n <= 7 ? 125 : 128); }
+GF61 OVERLOAD weakModM61q(GF61q a, const u32 n) { return U2(weakModM61q(a.x, n), weakModM61q(a.y, n)); }
 
 #endif

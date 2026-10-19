@@ -98,8 +98,9 @@ u32 defaultVariant(const FFTShape& shape) {
 }
 
 bool carryAffectsKernels(enum FFT_TYPES type) {
-  // FFT3231 joined the single-arithmetic types when its carryFused stopped hard-coding i32 carries.
-  return type == FFT64 || type == FFT32 || type == FFT31 || type == FFT61 || type == FFT3231;
+  // FFT3231 joined the single-arithmetic types when its carryFused stopped hard-coding i32 carries, and FFT323161 when
+  // its carries became 64 or 96 bits.
+  return type == FFT64 || type == FFT32 || type == FFT31 || type == FFT61 || type == FFT3231 || type == FFT323161;
 }
 
 enum CARRY_KIND canonicalCarry(const FFTShape& shape, u32 variant, enum CARRY_KIND carry) {
@@ -107,7 +108,7 @@ enum CARRY_KIND canonicalCarry(const FFTShape& shape, u32 variant, enum CARRY_KI
   if (carry == CARRY_64) { return CARRY_64; }
 
   float const autoBpw = FFTConfig{shape, variant, CARRY_AUTO}.maxBpw();
-  return shape.carry32BPW() < autoBpw ? CARRY_32 : CARRY_AUTO;
+  return shape.narrowCarryBPW() < autoBpw ? CARRY_32 : CARRY_AUTO;
 }
 
 std::vector<u32> runnableVariants(const Env& env, const FFTShape& shape) {

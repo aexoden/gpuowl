@@ -177,7 +177,7 @@ std::optional<FFTConfig> parseFft(std::string_view spec) {
   if (*middle < 2 || *middle > 16) { return {}; }
   if (*height != 256 && *height != 512 && *height != 1024 && *height != 2048) { return {}; }
   if (type != FFT64 && type != FFT32 && (*middle & (*middle - 1)) &&
-      !(FFTShape::pfaMiddle(*middle) && FFTShape::pfaType(type))) {
+      !(FFTShape::pfaMiddle(*middle, type) && FFTShape::pfaType(type))) {
     return {};
   }
 

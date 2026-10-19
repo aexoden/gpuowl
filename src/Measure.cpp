@@ -102,7 +102,7 @@ Call summarize(const IterSamples& samples) {
 Call timeCall(GpuCommon shared, const Env& env, const FFTConfig& fft, TestKind kind, u64 exponent,
               const UseConfig& options, u32 nBlocks, u32 blockSize) {
   Timer t;
-  auto gpu = Gpu::make(exponent, shared, fft, asExtraConf(env, fft, options), false, kind);
+  auto gpu = Gpu::make(exponent, shared, fft, asExtraConf(env, fft, options), false, {}, kind);
   double const buildSec = t.reset();
 
   Call out = summarize(kind == TestKind::LL ? gpu->timeItersLL(nBlocks, blockSize, CALL_WARMUP_BLOCKS, CALL_HEAT_SEC)
@@ -132,7 +132,7 @@ RoeCheck roeCheck(GpuCommon shared, const Env& env, const FFTConfig& fft, const 
   if (exactArithmetic(fft)) { return out; }
   out.applicable = true;
 
-  auto gpu = Gpu::make(exponent, shared, fft, asExtraConf(env, fft, options), false, TestKind::PRP);
+  auto gpu = Gpu::make(exponent, shared, fft, asExtraConf(env, fft, options), false, {}, TestKind::PRP);
   auto [checkOk, res, roeSq, roeMul] = gpu->measureROE(false);
 
   out.checkOk = checkOk;
@@ -1013,7 +1013,7 @@ MeasureOutcome runMeasure(GpuCommon shared, const MeasureArgs& want) {
   // What draining at every block boundary costs.
   if (want.drain && !session.stopped()) {
     auto time = [&](u32 blocks, u32 size) {
-      auto gpu = Gpu::make(exponent, shared, fft, asExtraConf(session.env(), fft, options), false, TestKind::PRP);
+      auto gpu = Gpu::make(exponent, shared, fft, asExtraConf(session.env(), fft, options), false, {}, TestKind::PRP);
       return statsOf(gpu->timeIters(blocks, size, 5000 / size, CALL_HEAT_SEC).usPerIt).mean;
     };
 

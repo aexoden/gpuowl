@@ -37,6 +37,9 @@ struct Choice {
 
   // The largest exponent this choice is validated for, before -fftOverdrive is applied to it.
   u64 reach = 0;
+
+  // Untuned only: the choices to fall back on, in order, should this one's kernels fail to build.
+  std::vector<Choice> fallbacks{};
 };
 
 // The FFT an -fft argument names, resolved as production's own shape scan resolves it -- so a bare size, a shape with

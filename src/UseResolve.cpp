@@ -259,7 +259,8 @@ SelectionLayers fittedTo(const SelectionLayers& layers, const Env& env, const FF
   return {.global = {lines.begin(), lines.end()}, .family = {}, .entry = layers.entry};
 }
 
-UseConfig resolveConfig(const Args& args, const FFTConfig& fft, TestKind kind, const SelectionLayers& selection) {
+UseConfig resolveConfig(const Args& args, const FFTConfig& fft, TestKind kind, const SelectionLayers& selection,
+                        const std::vector<std::pair<std::string, std::string>>& fftUses) {
   UseConfig config;
 
   for (const auto& [k, v] : selection.global) { config[k] = v; }
@@ -269,6 +270,7 @@ UseConfig resolveConfig(const Args& args, const FFTConfig& fft, TestKind kind, c
   // args.flags merges the config files and the command line, in that order.
   for (const auto& [k, v] : args.flags) { config[k] = v; }
   applyLines(args.perFftConfig, fft, kind, config);
+  for (const auto& [k, v] : fftUses) { config[k] = v; }
   for (const std::string& k : args.cliKeys) {
     if (auto it = args.flags.find(k); it != args.flags.end()) { config[k] = it->second; }
   }
@@ -277,11 +279,28 @@ UseConfig resolveConfig(const Args& args, const FFTConfig& fft, TestKind kind, c
 }
 
 void resolveInto(Args& args, const FFTConfig& fft, TestKind kind,
-                 const std::vector<std::pair<std::string, std::string>>& extraConf) {
-  UseConfig resolved = resolveConfig(args, fft, kind);
+                 const std::vector<std::pair<std::string, std::string>>& extraConf,
+                 const std::vector<std::pair<std::string, std::string>>& fftUses) {
+  UseConfig resolved = resolveConfig(args, fft, kind, {}, fftUses);
   for (const auto& [k, v] : extraConf) { resolved[k] = v; }
   args.flags = std::move(resolved);
   args.perFftConfig.clear();
+}
+
+void logFftUses(const Args& args, const std::string& fftSpec,
+                const std::vector<std::pair<std::string, std::string>>& fftUses) {
+  std::string applied;
+  for (const auto& [key, val] : fftUses) {
+    if (args.cliKeys.contains(key)) {
+      if (std::string const cli = args.flags.at(key); cli != val) {
+        log("%s: tune.txt %s=%s overridden by command line %s=%s\n", fftSpec.c_str(), key.c_str(), val.c_str(), key.c_str(),
+            cli.c_str());
+      }
+      continue;
+    }
+    applied += (applied.empty() ? "" : ", ") + key + '=' + val;
+  }
+  if (!args.doTune && !applied.empty()) { log("%s: tune.txt sets %s\n", fftSpec.c_str(), applied.c_str()); }
 }
 
 Takeover takeOverConfig(Args& args) {

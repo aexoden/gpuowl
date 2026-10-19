@@ -228,6 +228,16 @@ class ShapeSpaceTest(unittest.TestCase):
         with self.assertRaises(csi.SourceError):
             self.shapes("256, 512 * 2")
 
+    def test_a_flagged_rule_compiles_both_radices_at_the_sizes_it_names(self) -> None:
+        h = (
+            "u32 nW(bool r8) const { return width == 256 && !r8 ? 4 : 8; }\n"
+            "u32 nH(bool r8) const { return height == 256 && !r8 ? 4 : 8; }\n"
+        )
+        self.assertEqual(
+            self.shapes("256, 1024,", h),
+            [csi.Shape(4, 64), csi.Shape(8, 32), csi.Shape(8, 64), csi.Shape(8, 128)],
+        )
+
     def test_rejects_sizes_that_are_not_whole_workgroups(self) -> None:
         for widths, h in (("256, 1001", self.H), ("256", self.H.replace("? 4", "? 1"))):
             with self.subTest(widths=widths), self.assertRaises(csi.SourceError):
@@ -286,7 +296,7 @@ class KernelTest(unittest.TestCase):
     def test_real_kernel_passes(self) -> None:
         report = csi.run_checks(self.sources)
         self.assertEqual(report.failures, ())
-        self.assertEqual((report.special_checked, report.plain_checked, report.cross_checked), (390, 341, 36))
+        self.assertEqual((report.special_checked, report.plain_checked, report.cross_checked), (406, 439, 42))
 
     def test_wrong_read_in_the_x_pass(self) -> None:
         # T_Z61 LDSPAD f == 8 && r == 8, WG != 64 read of .x; the .y pass is untouched.

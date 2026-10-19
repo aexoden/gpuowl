@@ -785,9 +785,7 @@ static vector<uint2> genSmallTrigComboGF31(Args *args, u32 width, u32 middle, u3
 
 static vector<uint2> genMiddleTrigGF31(u32 smallH, u32 middle, u32 width) {
   vector<uint2> tab;
-  if (middle == 1) {
-    tab.resize(1);
-  } else if (middle & (middle - 1)) {
+  if (middle & (middle - 1)) {
     // PFA, see genMiddleTrigGF61
     u32 const m2 = middle & (~middle + 1), bh = smallH * m2;     // m2: the power-of-two part of middle
     GF31 const root1wbh = GF31::root_one(width * bh);
@@ -796,6 +794,10 @@ static vector<uint2> genMiddleTrigGF31(u32 smallH, u32 middle, u32 width) {
     for (u32 k = 1; k < m2; ++k) {
       for (u32 y = 0; y < smallH; ++y) { tab.push_back(root1GF31(root1bh, y * k)); }
     }
+    // A copy of the first table times 1/PFA, for pfaMiddleOut (see pfaTwiddleInv), in the space up to smallH * (middle - 1)
+    u32 const R = middle / m2;
+    u64 const invR = pfaPowMod(31, R, (1u << 31) - 3);
+    for (u32 k = 0; k < bh; ++k) { tab.push_back(tab[k]); tab.back().first = pfaMulMod(31, tab[k].first, invR); tab.back().second = pfaMulMod(31, tab[k].second, invR); }
     tab.resize(smallH * (middle - 1));
     GF31 const root1w = GF31::root_one(width);
     for (u32 k = 0; k < width; ++k)  { tab.push_back(root1GF31(root1w, k)); }
@@ -971,7 +973,7 @@ static vector<ulong2> genSmallTrigComboGF61(Args *args, u32 width, u32 middle, u
 
   u32 const tail_trigs = args->value("TAIL_TRIGS61", 0);          // Default is reading all trigs from memory
 
-  // PFA (MIDDLE = R * 2^k on an NTT, R = 3, 7, 9, 11): with TW = width * middle/R the tail line kx + TW*k3 holds the frequencies
+  // PFA (MIDDLE = R * 2^k on an NTT, R = 3, 7, 9, 11, and 5, 15 without M31): with TW = width * middle/R the tail line kx + TW*k3 holds the frequencies
   // (k3, kx + TW*ky) and t^2 = w^k3 * v^(kx + TW*ky), w the R-th root of unity of the radix-R and v a root of order TW*height.
   // Each k3 gets the lines kx = 0..TW/2, mirroring the stock lines 0..H/2.
   if (middle & (middle - 1)) {
@@ -1033,12 +1035,10 @@ static vector<ulong2> genSmallTrigComboGF61(Args *args, u32 width, u32 middle, u
 
 static vector<ulong2> genMiddleTrigGF61(u32 smallH, u32 middle, u32 width) {
   vector<ulong2> tab;
-  if (middle == 1) {
-    tab.resize(1);
-  } else if (middle & (middle - 1)) {
+  if (middle & (middle - 1)) {
     // PFA, see pfaTwiddle.  A row has bh = smallH * m2 lines and w is a root of order width*bh:
     //   trig2[k] = w^k for k < bh, then the row's middleMul twiddles w^(width*y*k) for 0 < k < middle/R and y < smallH,
-    //   then at smallH * (middle - 1): trig1[k] = w^(bh*k) for k < width
+    //   then trig2 times 1/R (bh entries, for pfaMiddleOut), then at smallH * (middle - 1): trig1[k] = w^(bh*k) for k < width
     u32 const m2 = middle & (~middle + 1), bh = smallH * m2;     // m2: the power-of-two part of middle
     GF61 const root1wbh = GF61::root_one(width * bh);
     for (u32 k = 0; k < bh; ++k) { tab.push_back(root1GF61(root1wbh, k)); }
@@ -1046,6 +1046,10 @@ static vector<ulong2> genMiddleTrigGF61(u32 smallH, u32 middle, u32 width) {
     for (u32 k = 1; k < m2; ++k) {
       for (u32 y = 0; y < smallH; ++y) { tab.push_back(root1GF61(root1bh, y * k)); }
     }
+    // A copy of the first table times 1/PFA, for pfaMiddleOut (see pfaTwiddleInv), in the space up to smallH * (middle - 1)
+    u32 const R = middle / m2;
+    u64 const invR = pfaPowMod(61, R, (u64(1) << 61) - 3);
+    for (u32 k = 0; k < bh; ++k) { tab.push_back(tab[k]); tab.back().first = pfaMulMod(61, tab[k].first, invR); tab.back().second = pfaMulMod(61, tab[k].second, invR); }
     tab.resize(smallH * (middle - 1));
     GF61 const root1w = GF61::root_one(width);
     for (u32 k = 0; k < width; ++k)  { tab.push_back(root1GF61(root1w, k)); }

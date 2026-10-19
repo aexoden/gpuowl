@@ -2,12 +2,18 @@
 
 #pragma once
 
+#if defined(__clang__)
+// The out-of-line copy of a function with a fully unrolled loop whose bounds depend on a parameter (e.g. fft_common's on callnum)
+// cannot be unrolled; the inlined copies are.  Some ROCm versions warn about that copy on every compile.
+#pragma clang diagnostic ignored "-Wpass-failed"
+#endif
+
 /* Tunable paramaters for -ctune :
 
 IN_WG, OUT_WG: 64, 128, 256. Default: 128.
 IN_SIZEX, OUT_SIZEX: 4, 8, 16, 32. Default: 16.
-UNROLL_W: 0, 1.  1 = fully unroll fft_WIDTH's radix loop (variants 0 and 1, FP32, NTTs), 0 = never unroll it.  Default: 0 on AMD, 1 on Nvidia.
-UNROLL_H: 0, 1.  Same for fft_HEIGHT.  Default: 1 (0 on AMD for SMALL_HEIGHT >= 1024).
+UNROLL_W: 0, 1.  1 = fully unroll fft_WIDTH's radix loop (variants 0 and 1, FP32, NTTs), 0 = never unroll it.  Default: 1.
+UNROLL_H: 0, 1.  Same for fft_HEIGHT.  Default: 1.
 HOIST_W, HOIST_H: 0..3.  Limits how early the compiler may compute fft_WIDTH's / fft_HEIGHT's per-radix-step LDS addresses, twiddle loads
   and (variant 0) twiddle power chains.  Hoisting these to the start of the kernel can cost many VGPRs.  0 = compiler decides.
   1 = not before the start of their radix step (variant 2: their stage, i.e. after the previous shufl).
@@ -111,24 +117,16 @@ G_H        "group height" == SMALL_HEIGHT / NH
 #endif
 #endif
 
-// Nontemporal reads and writes might be a little bit faster on many GPUs by keeping more reusable data in the caches.
-// However, on those GPUs with large caches there should be a significant speed gain from keeping FFT data in the caches.
-// Default to the big win when caching is beneficial rather than the tiny gain when non-temporal is better.
-#if !defined(NONTEMPORAL)
-#define NONTEMPORAL 0
-#endif
-
-
 // FFT variant is in 3 parts.  One digit for WIDTH, one digit for MIDDLE, one digit for HEIGHT.
 // For WIDTH and HEIGHT there are 3 variants:
-// 0   compute one trig, bcast, chainmul                                        previously was :even/:odd BCAST=1
-// 1   if TABMUL_CHAIN, read one trig then chainmul                             previously was :0/:1
-//     if !TABMUL_CHAIN, read all trigs, no chainmul                            previously was :2/:3
-// 2   read all trigs in sin/cos format for more FMA                            previously was :2/:3 UNROLL_W=3
+// 0   compute one trig, bcast, chainmul
+// 1   if TABMUL_CHAIN, read one trig then chainmul
+//     if !TABMUL_CHAIN, read all trigs, no chainmul
+// 2   read all trigs in sin/cos format for more FMA
 // Note: smaller numbers above do more F64 and are less accurate, larger numbers have more memory accesses and are more accurate
 // For MIDDLE there are two variants:
 // 0   full length chainmul
-// 1   lots of computing trigs, very short chainmul for maximum accuracy        previously was :1/:3
+// 1   lots of computing trigs, very short chainmul for maximum accuracy
 #define FFT_VARIANT_W    (FFT_VARIANT / 100)
 #define FFT_VARIANT_M    (FFT_VARIANT % 100 / 10)
 #define FFT_VARIANT_H    (FFT_VARIANT % 10)
@@ -203,16 +201,19 @@ G_H        "group height" == SMALL_HEIGHT / NH
 #define MODM31 0
 #endif
 
-#if !defined(MIDDLE_CHAIN)
-#define MIDDLE_CHAIN 0
+#if !defined(MIDDLE_CHAIN31)
+#define MIDDLE_CHAIN31 0
+#endif
+#if !defined(MIDDLE_CHAIN61)
+#define MIDDLE_CHAIN61 0
 #endif
 
 #if !defined(UNROLL_W)
-#if AMDGPU
-#define UNROLL_W 0
-#else
 #define UNROLL_W 1
 #endif
+
+#if !defined(UNROLL_H)
+#define UNROLL_H 1
 #endif
 
 #if !defined(HOIST_W)
@@ -220,14 +221,6 @@ G_H        "group height" == SMALL_HEIGHT / NH
 #endif
 #if !defined(HOIST_H)
 #define HOIST_H 0
-#endif
-
-#if !defined(UNROLL_H)
-#if AMDGPU && (SMALL_HEIGHT >= 1024)
-#define UNROLL_H 0
-#else
-#define UNROLL_H 1
-#endif
 #endif
 
 #if !defined(ZEROHACK_W)
@@ -266,7 +259,7 @@ typedef uint u32;
 typedef long i64;
 typedef ulong u64;
 
-// PFA: MIDDLE = PFA * PFA_M2, with PFA = 3, 7, 9 or 11 and PFA_M2 a power of two, on an NTT or hybrid type is done as a Good-Thomas
+// PFA: MIDDLE = PFA * PFA_M2, with PFA = 3, 7, 9 or 11 (also 5 and 15 without GF31) and PFA_M2 a power of two, on an NTT or hybrid type is done as a Good-Thomas
 // prime-factor transform.  The ND pairs of words are split into PFA rows of PFA_L pairs by the Chinese remainder theorem: pair p is
 // in row p % PFA at binary index p % PFA_L.  Each row is an ordinary power-of-two transform of WIDTH * PFA_M2 * SMALL_HEIGHT pairs
 // (width, middle radix PFA_M2, height).  The radix-PFA between the rows (fftMiddleIn/Out) uses only a PFA-th root of unity, which
@@ -280,8 +273,11 @@ typedef ulong u64;
 #define PFA 0
 #endif
 #if PFA
-#if (PFA != 3 && PFA != 7 && PFA != 9 && PFA != 11) || MIDDLE % PFA || ((MIDDLE / PFA) & (MIDDLE / PFA - 1))
-#error PFA needs MIDDLE = 3, 7, 9 or 11 times a power of two
+#if (PFA != 3 && PFA != 5 && PFA != 7 && PFA != 9 && PFA != 11 && PFA != 15) || MIDDLE % PFA || ((MIDDLE / PFA) & (MIDDLE / PFA - 1))
+#error PFA needs MIDDLE = 3, 5, 7, 9, 11 or 15 times a power of two
+#endif
+#if NTT_GF31 && (PFA == 5 || PFA == 15)
+#error PFA 5 and 15 need a 5th root of unity, which GF(M31^2) does not have
 #endif
 #define PFA_M2 (MIDDLE / PFA)                   // The power-of-two part of MIDDLE
 #define PFA_BH (SMALL_HEIGHT * PFA_M2)          // The lines (BIG_HEIGHT) of a row
@@ -304,7 +300,7 @@ u32 pfaTailPartner(u32 line) { u32 kx = line % PFA_TW; return line - kx + (kx ? 
 u32 pfaTailTrigIndex(u32 line) { return line / PFA_TW * (PFA_TW / 2 + 1) + line % PFA_TW; }
 #define TAIL_PARTNER(line)      pfaTailPartner(line)
 #define TAIL_TRIG_LINE(line)    pfaTailTrigIndex(line)
-#define TAIL_SELF_PAIRED(line)  ((line) % PFA_TW == 0)
+#define TAIL_SELF_PAIRED(line)  (!((line) % PFA_TW))  // Not "== 0": in preprocessed source (-save-temps) clang warns about if (((x) == 0))
 
 // The FP side of a hybrid FFT/NTT (FP32 or FP64) uses the same layout, but its PFA-th root of unity is complex: the conjugate of
 // row frequency k3 is PFA - k3, so the tail pairs line kx + PFA_TW*k3 with ((PFA_TW - kx) % PFA_TW) + PFA_TW*((PFA - k3) % PFA).
@@ -330,7 +326,7 @@ u32 pfaFpTailTrigBase(u32 line) { return (line / PFA_TW * PFA_L + PFA * (line % 
 // Stock tail: line pairs with H - line, lines 0 and H/2 pair with themselves (H = WIDTH * MIDDLE)
 #define TAIL_PARTNER(line)      ((line) ? WIDTH * MIDDLE - (line) : WIDTH * MIDDLE / 2)
 #define TAIL_TRIG_LINE(line)    (line)
-#define TAIL_SELF_PAIRED(line)  ((line) == 0)
+#define TAIL_SELF_PAIRED(line)  (!(line))             // Not "== 0", see above
 #endif
 
 // 2 is a primitive q-th root of unity mod Mq, so the NWORDS-th root of two used by the IBDWT weights is 2^(NWORDS^-1 mod q).
@@ -343,7 +339,7 @@ u32 pfaFpTailTrigBase(u32 line) { return (line / PFA_TW * PFA_L + PFA * (line % 
 #define LOG2_ROOT_TWO61 ((u32) (((1ULL << 60) / NWORDS) % 61))
 #define LOG2_ROOT_TWO31 ((u32) (((1ULL << 30) / NWORDS) % 31))
 #endif
-// log2 of MIDDLE's share of the NTT's output scale.  With PFA the factor PFA is removed in fftMiddleOut, see PFA_INVR_*, leaving PFA_M2.
+// log2 of MIDDLE's share of the NTT's output scale.  With PFA the factor PFA is removed in fftMiddleOut, see pfaTwiddleInv, leaving PFA_M2.
 #define LOG2_MIDDLE_NTT (PFA ? (MIDDLE / PFA == 8 ? 3 : MIDDLE / PFA == 4 ? 2 : MIDDLE / PFA == 2 ? 1 : 0) : MIDDLE == 1 ? 0 : MIDDLE == 2 ? 1 : MIDDLE == 4 ? 2 : MIDDLE == 8 ? 3 : 4)
 
 // The host sets NO_FP64 for devices without cl_khr_fp64 (e.g. Mesa rusticl on AMD).  Such devices can still run the FFT types

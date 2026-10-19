@@ -154,6 +154,33 @@ int getEventInfo(cl_event event);
 
 cl_context getQueueContext(cl_command_queue q);
 
+// A compiled kernel's resource use, as it limits occupancy
+struct KernelResources {
+  int regs;            // registers per thread (AMD: VGPRs), -1 if unknown
+  int localBytes;      // local memory per thread, i.e. spilled registers (AMD: scratch)
+  int sharedBytes;     // static shared memory per block (AMD: LDS per workgroup)
+  int threads;         // threads per block
+};
+
+#ifndef CUDA_BACKEND
+// AMD: a kernel's resources from the runtime's clGetKernelInfoAMD.  regs is -1 if the runtime doesn't have it.
+KernelResources amdKernelResources(cl_kernel k, cl_device_id id);
+// Whether the runtime has clGetKernelInfoAMD
+bool amdHasKernelInfo(cl_device_id id);
+
+// AMD: what limits the waves per SIMD (EU) that a kernel's VGPRs and LDS allow
+struct AmdSimdLimits {
+  int vgprs;           // VGPRs per lane of a SIMD
+  int granule;         // VGPR allocation unit
+  int maxRegs;         // most VGPRs per lane for one wave
+  int maxWaves;        // waves per SIMD
+  int simdPerCU;
+  int waveSize;
+  int ldsPerCU;
+};
+AmdSimdLimits amdSimdLimits(cl_device_id id);
+#endif
+
 #ifdef CUDA_BACKEND
 // Set L1 cache configuration - 4 possibilities
 void cudaSetL1Config(int x);
@@ -172,6 +199,23 @@ void cudaSetL2PersistLimit(int pct);
 // context's limit. Both belong to the context rather than to the stream whose window marked the lines, so otherwise
 // they outlive the Gpu that asked for them and crowd whatever the next one runs out of the cache.
 void cudaReleaseL2Persist();
+// Limit the registers of one kernel of a built program: maxRegs > 0 is a maximum register count, otherwise minBlocks > 0 is the
+// launch bounds minimum blocks per SM.  smemSpill lets ptxas spill registers to shared memory.  The program's module is rebuilt from
+// its PTX.  Returns false on failure.
+bool cudaSetKernelRegLimit(cl_program prog, const char* kernelName, int maxRegs, int minBlocks, bool smemSpill);
+
+KernelResources cudaKernelResources(cl_kernel k);
+
+// The current device's per-SM limits
+struct CudaSmLimits {
+  int regsPerSM;
+  int regsPerBlock;
+  int maxThreadsPerSM;
+  int maxBlocksPerSM;
+  int sharedPerSM;
+  int reservedSharedPerBlock;
+};
+CudaSmLimits cudaSmLimits();
 #endif
 
 

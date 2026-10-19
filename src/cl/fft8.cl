@@ -59,8 +59,8 @@ void OVERLOAD fft8_skip1(T2 *u) {
 void OVERLOAD fft4CoreSpecial(F2 *u) {
   X2(u[0], u[2]);
   X2t4_mul_t4(u[1], u[3]);                                      // u[3] = mul_t4(u[3]); X2(u[1], u[3]); u[3] = mul_t4(u[3]);
-  X2ad(u[0], u[1], M_SQRT1_2);
-  X2ad(u[2], u[3], M_SQRT1_2);
+  X2ad(u[0], u[1], M_SQRT1_2_F);
+  X2ad(u[2], u[3], M_SQRT1_2_F);
 }
 
 void OVERLOAD fft8Core(F2 *u) {
@@ -242,10 +242,10 @@ void OVERLOAD fft8_16a(F2 *u) {
   fft8(u);
 }
 void OVERLOAD fft8_16b(F2 *u) {
-  const float C1 = 0.92387953251128674, // cos(tau/16)
-              S1 = 0.38268343236508978, // sin(tau/16)
-              S1_over_C1 = 0.4142135623730950488017,
-              C1_over_S1 = 2.4142135623730950488017;
+  const float C1 = 0.92387953251128674f, // cos(tau/16)
+              S1 = 0.38268343236508978f, // sin(tau/16)
+              S1_over_C1 = 0.4142135623730950488017f,
+              C1_over_S1 = 2.4142135623730950488017f;
 
   X2t4(u[0], u[4]);
   X2t4(u[1], u[5]);
@@ -255,7 +255,7 @@ void OVERLOAD fft8_16b(F2 *u) {
   u[1] = partial_cmul(u[1], S1_over_C1);  // delays a mul by C1
   u[2] = mul_t8_delayed(u[2]);            // delays a mul by M_SQRT1_2
   u[3] = partial_cmul(u[3], C1_over_S1);  // delays a mul by S1
-  X2ad(u[0], u[2], M_SQRT1_2);
+  X2ad(u[0], u[2], M_SQRT1_2_F);
   X2ad_mul_t4(u[1], u[3], S1_over_C1);    // mul by S1/C1, now both are delaying a mul by C1
   X2ad(u[0], u[1], C1);                   // apply delayed mul by C1
   X2ad(u[2], u[3], C1);                   // apply delayed mul by C1
@@ -263,7 +263,7 @@ void OVERLOAD fft8_16b(F2 *u) {
   u[5] = partial_cmul(u[5], C1_over_S1);  // delays a mul by S1
   u[6] = mul_t8_delayed(u[6]);            // delays a mul by i*M_SQRT1_2 (a negation cheaper than mul_3t8_delayed)
   u[7] = partial_cmul(u[7], S1_over_C1);  // delays a mul by -C1
-  X2t4ad(u[4], u[6], M_SQRT1_2);
+  X2t4ad(u[4], u[6], M_SQRT1_2_F);
   X2ad_mul_t4(u[5], u[7], -C1_over_S1);   // mul by -C1/S1, now both are delaying a mul by S1
   X2ad(u[4], u[5], S1);                   // apply delayed mul by S1
   X2ad(u[6], u[7], S1);                   // apply delayed mul by S1
@@ -298,19 +298,28 @@ void OVERLOAD fft8_16b(GF31 *u) {
   X2t4(u[2], u[6]);
   X2t4(u[3], u[7]);
 
-  u[1] = cmul_const(u[1], U2(C1, S1));
-  u[2] = mul_t8(u[2]);
-  u[3] = cmul_const(u[3], U2(S1, C1));
-  X2(u[0], u[2]);
-  X2_mul_t4(u[1], u[3]);
-  X2(u[0], u[1]);
-  X2(u[2], u[3]);
+  // cmul_const's products fit in 62 bits (a cheaper modM31) only for w^7 = (-C1, S1) and w^9 = (-C1, -S1).  So the twiddles are taken as
+  // w = -w^9 and w^3 = -i * w^7, and the -1 and -i folded into each fft4's first-stage add/sub.
 
-  u[5] = cmul_const(u[5], U2(S1, C1));
+  // First half: u1*w = -m1 and u3*w^3 = (m3.y, -m3.x) make fft4's first stage u1 + u3 = (p, -q) and i*(u1 - u3) = (r, -s).
+  GF31 m1 = cmul_const(u[1], U2(negC1, negS1));
+  u[2] = mul_t8(u[2]);
+  GF31 m3 = cmul_const(u[3], U2(negC1, S1));
+  X2(u[0], u[2]);
+  Z31 p = sub(m3.y, m1.x), q = add(m1.y, m3.x), r = sub(m1.y, m3.x), s = add(m1.x, m3.y);
+  u[1] = U2(sub(u[0].x, p), add(u[0].y, q));
+  u[0] = U2(add(u[0].x, p), sub(u[0].y, q));
+  u[3] = U2(sub(u[2].x, r), add(u[2].y, s));
+  u[2] = U2(add(u[2].x, r), sub(u[2].y, s));
+
+  // Second half: u5*w^3 = (m5.y, -m5.x) and u7*w^9 = m7 make fft4's first stage u5 + u7 = (m5.y + m7.x, m7.y - m5.x) and
+  // i*(u5 - u7) = (m5.x + m7.y, m5.y - m7.x).
+  GF31 m5 = cmul_const(u[5], U2(negC1, S1));
   u[6] = mul_3t8(u[6]);
-  u[7] = cmul_const(u[7], U2(negC1, negS1));
+  GF31 m7 = cmul_const(u[7], U2(negC1, negS1));
   X2(u[4], u[6]);
-  X2_mul_t4(u[5], u[7]);
+  u[5] = U2(add(m5.y, m7.x), sub(m7.y, m5.x));
+  u[7] = U2(add(m5.x, m7.y), sub(m5.y, m7.x));
   X2(u[4], u[5]);
   X2(u[6], u[7]);
 
@@ -340,10 +349,10 @@ void OVERLOAD fft8_16a(GF61 *u) {
   // Must normalize values.  The delayed mul_t8s can help with that (half of the complex number needs normalizing before mul_t8).
   for (u32 i = 0; i <= 3; ++i) u[i] = modM61q(u[i], 0);
   u[4] = modM61q(u[4], 3);
-  u[5].x = optional_add((i64)u[5].x, 2*M61);   // u[5] now 0-..2+, -2..2+
+  u[5].x = lessneg(u[5].x, 2);                 // u[5] now 0-..2+, -2..2+
   u[5] = mul_t8q(u[5], 5);                     // Perform delayed mul_t8 (count of 5 based on u[5].y - u[5].x range of -4-..2+
   u[6] = modM61q(u[6], 3);
-  u[7].x = optional_add((i64)u[7].x, 2*M61);   // u[7] now 0-..2+, -2..2+
+  u[7].x = lessneg(u[7].x, 2);                 // u[7] now 0-..2+, -2..2+
   u[7] = mul_t8q(u[7], 5);                     // Perform delayed mul_t8.
 
   fft4Core(u);
@@ -363,22 +372,50 @@ void OVERLOAD fft8_16b(GF61 *u) {
   // Must normalize values.  Some mul_t8s can help with that (only half of the complex number needs normalizing before mul_t8).
   u[0] = modM61q(u[0], 3);
   u[1] = modM61q(u[1], 3);
-  u[2].x = optional_add((i64)u[2].x, 2*M61);   // u[2] now 0-..2+, -2..2+
+  u[2].x = lessneg(u[2].x, 2);                 // u[2] now 0-..2+, -2..2+
   u[3] = modM61q(u[3], 3);
   u[4] = modM61q(u[4], 3);
   u[5] = modM61q(u[5], 3);
-  u[6].y = optional_add((i64)u[6].y, 2*M61);   // u[6] now -2-..2+, 0-..2+
+  u[6].y = lessneg(u[6].y, 2);                 // u[6] now -2-..2+, 0-..2+
   u[7] = modM61q(u[7], 3);
 
-  u[1] = mul_t16(u[1]);
-  u[2] = mul_t8q(u[2], 5);                     // Perform mul_t8 (count of 5 based on u[2].y - u[2].x range of -4-..2+, -(u[2].x + u[2].y) range of -4-..2+
-  u[3] = mul_3t16(u[3]);
-  fft4Core(u);
+  // The 16th-root twiddles are all quick mul_t16q's (w = (C1, S1)), with the signs they leave folded into the fft4s:  w^3 = (S1, C1) times
+  // a has re = -(w * (a.y, a.x)).x and im = (w * (a.y, a.x)).y, so u[3] and u[5] hold w^3 products with negated re;  w^9 = -w, so u[7]
+  // holds the negated w^9 product.  Each fft4's first stage is an X2q of the twiddled pair, then the second stage pairs components.
 
-  u[5] = mul_3t16(u[5]);
-  u[6] = mul_3t8q(u[6], 3);                    // Perform mul_3t8 (count of 5 based on u[6].y - u[6].x range of -2-..4+, u[6].y + u[6].x range of -2-..4+
-  u[7] = mul_9t16(u[7]);
-  fft4Core(u + 4);
+  // First half: u1*w and u3*w^3 = (-u3n.x, u3n.y) make fft4's first stage u1 + u3 = (d.x, s.y) and i*(u1 - u3) = (-d.y, s.x),
+  // s = u1n + u3n, d = u1n - u3n.
+  u[1] = mul_t16q(u[1]);                       // u[1] = 0..1.28+, 0..1.74+ (no final modM61)
+  u[2] = mul_t8q(u[2], 5);                     // Perform mul_t8 (count of 5 based on u[2].y - u[2].x range of -4-..2+, -(u[2].x + u[2].y) range of -4-..2+
+  u[3] = mul_t16q(U2(u[3].y, u[3].x));         // u[3] = 0..1.28+, 0..1.74+, the w^3 product with re negated
+  X2q(&u[0], &u[2]);                           // u[0] = 0..2+, u[2] = -1-..1+
+  X2q(&u[1], &u[3]);                           // u[1] = s = 0..2.56+, 0..3.48+; u[3] = d = -1.28-..1.28+, -1.74-..1.74+
+  GF61 s = u[1], d = u[3];
+  u[1] = U2(u[0].x - d.x, u[0].y - s.y);       // -1.28-..3.28+, -3.48-..2+
+  u[0] = U2(u[0].x + d.x, u[0].y + s.y);       // -1.28-..3.28+, 0..5.48+
+  u[3] = U2(u[2].x + d.y, u[2].y - s.x);       // -2.74-..2.74+, -3.56-..1+
+  u[2] = U2(u[2].x - d.y, u[2].y + s.x);       // -2.74-..2.74+, -1-..3.56+
+  u[0] = modM61q(u[0], 2, 0);
+  u[1] = modM61q(u[1], 2, 4);
+  u[2] = modM61q(u[2], 3, 2);
+  u[3] = modM61q(u[3], 3, 4);
+
+  // Second half: u5*w^3 = (-u5n.x, u5n.y) and u7*w^9 = -u7n make fft4's first stage u5 + u7 = (-s.x, d.y) and i*(u5 - u7) = (-s.y, -d.x),
+  // s = u5n + u7n, d = u5n - u7n.
+  u[5] = mul_t16q(U2(u[5].y, u[5].x));         // u[5] = 0..1.28+, 0..1.74+, the w^3 product with re negated
+  u[6] = mul_3t8q(u[6], 3);                    // Perform mul_3t8 (count of 3 based on u[6].y - u[6].x range of -2-..4+, u[6].y + u[6].x range of -2-..4+
+  u[7] = mul_t16q(u[7]);                       // u[7] = 0..1.28+, 0..1.74+, the w^9 product negated
+  X2q(&u[4], &u[6]);                           // u[4] = 0..2+, u[6] = -1-..1+
+  X2q(&u[5], &u[7]);                           // u[5] = s = 0..2.56+, 0..3.48+; u[7] = d = -1.28-..1.28+, -1.74-..1.74+
+  s = u[5]; d = u[7];
+  u[5] = U2(u[4].x + s.x, u[4].y - d.y);       // 0..4.56+, -1.74-..3.74+
+  u[4] = U2(u[4].x - s.x, u[4].y + d.y);       // -2.56-..2+, -1.74-..3.74+
+  u[7] = U2(u[6].x + s.y, u[6].y + d.x);       // -1-..4.48+, -2.28-..2.28+
+  u[6] = U2(u[6].x - s.y, u[6].y - d.x);       // -4.48-..1+, -2.28-..2.28+
+  u[4] = modM61q(u[4], 3, 2);
+  u[5] = modM61q(u[5], 0, 2);
+  u[6] = modM61q(u[6], 5, 3);
+  u[7] = modM61q(u[7], 2, 3);
 
   SWAP(u[1], u[4]);
   SWAP(u[3], u[6]);

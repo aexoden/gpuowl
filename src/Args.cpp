@@ -99,27 +99,82 @@ vector<KeyVal> Args::splitUses(string ss) { // pass by value is intentional
   return ret;
 }
 
+std::optional<u64> Args::parseExponent(const string& s) {
+  u64 mult = 1;
+  string digits = s;
+  if (!digits.empty()) {
+    char const c = char(toupper((unsigned char) digits.back()));
+    if (c == 'K' || c == 'M' || c == 'G') {
+      mult = c == 'K' ? 1'000 : c == 'M' ? 1'000'000 : 1'000'000'000;
+      digits.pop_back();
+    }
+  }
+  size_t const dot = digits.find('.');
+  string const whole = digits.substr(0, dot);
+  string const frac = dot == string::npos ? "" : digits.substr(dot + 1);
+  if (whole.empty() || (dot != string::npos && (frac.empty() || mult == 1))) { return {}; }
+  u64 n = 0;
+  auto [end, ec] = std::from_chars(whole.data(), whole.data() + whole.size(), n);
+  if (ec != std::errc{} || end != whole.data() + whole.size() || n > UINT64_MAX / mult) { return {}; }
+  n *= mult;
+  // The fraction must come out a whole number: at most as many digits as the suffix has zeros, e.g. 142.5M but not 142.5000001M
+  u64 scale = mult;
+  for (char ch : frac) {
+    if (!isdigit((unsigned char) ch) || scale < 10) { return {}; }
+    scale /= 10;
+    n += u64(ch - '0') * scale;
+  }
+  return n;
+}
+
 // Checks the comma separated -oldtune options up front: Tune::tune() silently skips anything it does not recognise,
 // so a typo such as "maxexponent=" would otherwise tune the default exponent range for hours without a word.
 static void checkTuneOptions(const string& options) {
   for (const string& s : split(options, ',')) {
-    if (s.empty() || s == "noconfig" || s == "fp64" || s == "ntt" || s == "fp6431" || s == "nofp32" || s == "inplace"
+    if (s.empty() || s == "noconfig" || s == "regs" || s == "variants" || s == "fine" || s == "fp64" || s == "ntt" || s == "fp6431" || s == "nofp32" || s == "fp32" || s == "inplace"
         || s == "1k256" || s == "m61" || s == "pfa") { continue; }
     auto pos = s.find('=');
     string const key = s.substr(0, pos);
-    bool const isGroup = key == "1k256" || key == "m61" || key == "pfa";
-    if (pos != string::npos && (key == "quick" || key == "minexp" || key == "maxexp" || isGroup)) {
-      string const val = s.substr(pos + 1);
-      u64 n = 0;
-      auto [end, ec] = std::from_chars(val.data(), val.data() + val.size(), n);
-      if (val.empty() || ec != std::errc{} || end != val.data() + val.size() || (key == "quick" && (n < 1 || n > 10)) || (isGroup && n > 2)) {
-        log("-oldtune %s expects %s (found '%s')\n", key.c_str(),
-            key == "quick" ? "a value from 1 to 10" : isGroup ? "0 or 1" : "a whole number, e.g. 5000000000", val.c_str());
+    bool const isGroup = key == "1k256" || key == "m61" || key == "pfa" || key == "fp6431" || key == "fp32";
+    if (pos != string::npos && (key == "minexp" || key == "maxexp")) {
+      if (!Args::parseExponent(s.substr(pos + 1))) {
+        log("-oldtune %s expects an exponent, e.g. 150000000 or 150M (found '%s')\n", key.c_str(), s.substr(pos + 1).c_str());
         throw "-oldtune option value";
       }
       continue;
     }
-    log("-oldtune option '%s' not understood; valid options are noconfig, inplace, fp64, ntt, nofp32, fp6431, 1k256, m61, pfa, minexp=<val>, maxexp=<val>, quick=<val>\n", s.c_str());
+    if (pos != string::npos && key == "tk") {
+      string const val = s.substr(pos + 1);
+      if (val != "auto" && val != "0" && val != "1" && val != "2" && val != "3" && val != "11" && val != "13") {
+        log("-oldtune tk expects auto, 0 (off) or a TAIL_KERNELS value: 1, 2, 3, 11 or 13 (found '%s')\n", val.c_str());
+        throw "-oldtune option value";
+      }
+      continue;
+    }
+    if (pos != string::npos && key == "exp") {
+      string const val = s.substr(pos + 1);
+      size_t const dash = val.find('-');
+      auto const lo = dash == string::npos ? std::nullopt : Args::parseExponent(val.substr(0, dash));
+      auto const hi = dash == string::npos ? std::nullopt : Args::parseExponent(val.substr(dash + 1));
+      if (!lo || !hi || *lo > *hi) {
+        log("-oldtune exp expects a range of exponents, e.g. exp=140M-142M (found '%s')\n", val.c_str());
+        throw "-oldtune option value";
+      }
+      continue;
+    }
+    if (pos != string::npos && (key == "quick" || key == "fine" || isGroup)) {
+      string const val = s.substr(pos + 1);
+      u64 n = 0;
+      auto [end, ec] = std::from_chars(val.data(), val.data() + val.size(), n);
+      if (val.empty() || ec != std::errc{} || end != val.data() + val.size() || (key == "quick" && (n < 1 || n > 10)) || (isGroup && n > 2)
+          || (key == "fine" && (n < 1 || n > 50))) {
+        log("-oldtune %s expects %s (found '%s')\n", key.c_str(),
+            key == "quick" ? "a value from 1 to 10" : isGroup ? "0, 1 or 2" : "a percentage from 1 to 50", val.c_str());
+        throw "-oldtune option value";
+      }
+      continue;
+    }
+    log("-oldtune option '%s' not understood; valid options are noconfig, regs, variants, fine, fine=<pct>, inplace, fp64, ntt, fp32=0, fp6431, 1k256, m61, pfa, minexp=<val>, maxexp=<val>, exp=<min>-<max>, tk=<val>, quick=<val>\n", s.c_str());
     throw "-oldtune option";
   }
 }
@@ -132,6 +187,26 @@ void Args::readConfig(const fs::path& path) {
       parse(line, true);
     }
   }
+}
+
+// Before a Gpu resolves its options (see tune::resolveConfig), the '!' config lines are not yet folded into flags.  The
+// shape is all there is to go on here, so a line naming a kind, variant or carry is taken as if it applied.
+bool Args::radix8At256(const string& fftShapeSpec, bool height) const {
+  string const key = height ? "256RADIX8_H" : "256RADIX8_W";
+  if (auto it = flags.find(key); it != flags.end()) { return atoi(it->second.c_str()) != 0; }
+
+  FFTShape const shape{fftShapeSpec};
+  const tune::UseLine* best = nullptr;
+  for (const tune::UseLine& line : perFftConfig) {
+    const tune::FFTSelector& sel = line.selector;
+    if (sel.type && *sel.type != shape.fft_type) { continue; }
+    if (sel.width && (sel.width != shape.width || sel.middle != shape.middle || sel.height != shape.height)) { continue; }
+    if (std::ranges::none_of(line.uses, [&](const KeyVal& kv) { return kv.first == key; })) { continue; }
+    if (!best || sel.rank() >= best->selector.rank()) { best = &line; }
+  }
+  if (!best) { return false; }
+  auto const it = std::ranges::find_if(best->uses, [&](const KeyVal& kv) { return kv.first == key; });
+  return atoi(it->second.c_str()) != 0;
 }
 
 u32 Args::getProofPow(u64 exponent) const {
@@ -191,6 +266,8 @@ its reach.
                      Multiple PRPLL instances, each in its own directory, can share a pool of assignments.
                      Results are still written locally, to results-<N>.txt in each instance's own directory.
 -verbose           : print more log, useful for developers
+-v 10              : also report the register, LDS/shared memory and spill use of the main kernels, and save their assembly (AMD)
+                     or PTX (CUDA) in the kernel-dump directory.  -v 11 does so for every kernel.
 -version           : print only the version and exit
 -user <name>       : specify the mersenne.org user name (for result reporting)
 -workers <N>       : specify the number of parallel PRP tests to run (default 1)
@@ -209,7 +286,8 @@ its reach.
                      extends the range by 1%% (and this would be quite too much WRT errors).
 
 -block <value>     : PRP block size, one of: 1000, 500, 200. Default 1000.
--carry long|short  : force carry type. Short carry may be faster, but requires high bits/word.
+-carry long|short  : long replaces carryFused with separate FFT and carry kernels, which is much slower (about 25%%).
+                     It is only needed at very low bits/word, which PRPLL detects and handles itself.  short is the default.
 -prp <exponent>    : run a single PRP test and exit, ignoring worktodo.txt
 -ll <exponent>     : run a single LL test and exit, ignoring worktodo.txt
 -verify <file>     : verify PRP-proof contained in <file>
@@ -242,6 +320,7 @@ its reach.
                      1 = single wide, two kernels
                      2 = double wide, single kernel
                      3 = double wide, two kernels
+                     11, 13 = 1, 3 with the second kernel (the self-paired lines) in a queue of its own
   -use TAIL_TRIGS=<val> : change how tailSquare computes final trig values according to <val>:
                      2 = calculate from scratch, no memory read
                      1 = calculate using one complex multiply from cached memory and uncached memory
@@ -255,6 +334,8 @@ its reach.
                      0 = All trig values are pre-computed and read from memory.
                      1 = Read one trig value and compute the next 3 or 7 (chained multiplies, slightly less accurate).
                      TABMUL_CHAIN31, TABMUL_CHAIN32 and TABMUL_CHAIN61 do the same for the M31, FP32 and M61 parts.
+  -use 256RADIX8_W, 256RADIX8_H : at a WIDTH (or HEIGHT) of 256 use the radix-8 code (32 threads per line, no
+                     variant 0) instead of radix 4.  Faster on Radeon VII, and for FP64 on TitanV; slower for NTTs on TitanV.
 
   -use DEBUG       : enable asserts in OpenCL kernels (slow, developers)
   -use STATS=<val> : enable carry statistics collection & logging (developers), for the kernel according to <val>:
@@ -343,17 +424,39 @@ selection.txt, which a normal run in the same directory (or its -pool) reads.  T
                          inplace      - Skip timings for not-in-place FFTs and NTTs.  All nVidia GPUs seem to prefer in-place FFTs and NTTs.
                          fp64         - Tune for settings that affect FP64 FFTs.  Time FP64 FFTs for tune.txt.
                          ntt          - Tune for settings that affect integer NTTs.  Time integer NTTs for tune.txt.
-                         nofp32       - Do not tune for settings that affect FP32 FFTs.  Some openCL compilers have trouble with FP32.
-                         minexp=<val> - Time FFTs to find the best one for exponents greater than <val>.  Default 75000000.
-                         maxexp=<val> - Time FFTs to find the best one for exponents less than <val>.  Default 350000000.
+                         fp32=0       - Do not time FFTs with an FP32 part, nor tune settings that affect them.  Some openCL compilers
+                                        have trouble with FP32.
+                         minexp=<val> - Time FFTs to find the best one for exponents greater than <val>.  Default 75M.
+                         maxexp=<val> - Time FFTs to find the best one for exponents less than <val>.  Default 350M.
+                                        Exponents can be whole numbers or use a K, M or G suffix: 150000000, 150M, 142.5M.
                                         Without an -fft <spec>, only FFTs in [minexp, maxexp] are timed, so tuning
                                         for a small exponent (e.g. PRP-CF at 18M) needs both ends set low, e.g.
-                                        -oldtune minexp=10000000,maxexp=20000000
+                                        -oldtune exp=10M-20M
+                         exp=<min>-<max> - Same as minexp=<min>,maxexp=<max>.
                          fp6431       - Time FP64+M31 FFTs for tune.txt.  Only GPUs with great FP64 performance will find this beneficial.
+                                        fp6431=2 times only them, e.g. to add them to a tune.txt made with -tune fp64.
                          1k256        - Also time the 1K:256 and 256:1K shapes.  512:512 is almost always better.
                          m61          - Also time M61-only NTTs (FFT type 3).
-                         pfa          - Also time hybrid FFTs (FP32 or FP64 with M31 and/or M61) with a non-power-of-two middle.
-                         quick=<val>  - Use higher values for a quicker, potentially less accurate tune.  Val ranges from 1 to 10.
+                         pfa=0        - Do not time hybrid FFTs (FP32 or FP64 with M31 and/or M61) with a non-power-of-two middle.  By default they are timed.
+                                        The groups fp32, fp6431, 1k256, m61 and pfa can be set to 2 (e.g. pfa=2) to time only their FFTs.
+                                        config.txt settings are then not tuned, and the FFTs already in tune.txt are kept.
+                         quick=<val>  - Use higher values for a quicker, potentially less accurate tune.  Val ranges from 1 to 10.  Default 7.
+                         regs         - (CUDA, AMD) Only tune the register limits of the FFTs already in tune.txt (of the -fft <spec> shapes,
+                                        if given, and of the entries used for exponents from minexp to maxexp, if either is given).
+                                        -tune does this after timing the FFTs.  Rerun it after a new CUDA driver/toolkit or
+                                        PRPLL version.  The best limits are added to each tune.txt line as REGxxxx=<val> settings.
+                         variants     - Time all the other variants of FFT shapes already in tune.txt.  Only FFTs with an FP64
+                                        part (FP64 and FP64+M31) have variants.  More accurate variants extend an entry's
+                                        max exponent a bit.  Variants that earn a tune.txt entry then get their register usage tuned (CUDA, AMD).
+                                        Only variants with a max exponent from minexp to maxexp (if given) are timed.  Warning: this
+                                        can take a long time, so a narrow minexp/maxexp range is recommended.
+                         tk=<val>     - (CUDA, AMD) tk=auto: the register tuning of a tune.txt entry also tries the other TAIL_KERNELS
+                                        choices of its width (one kernel vs. two kernels, two kernels with or without a queue of
+                                        their own).  tk=<N> only times TAIL_KERNELS=N, with the entry's register limits.  tk=0
+                                        (the default) tries neither.
+                         fine         - (CUDA, AMD) Time FFTs as -tune does, but an FFT within 2%% of earning a tune.txt entry gets its register
+                                        limits tuned, and is added if it then earns the entry.  config.txt settings are not tuned.
+                         fine=<pct>   - Like fine, for FFTs within <pct> percent of earning a tune.txt entry.
 -device <N>        : select the GPU at position N in the list of devices
 -uid    <UID>      : select the GPU with the given UID (on ROCm/AMDGPU, Linux)
 -pci    <BDF>      : select the GPU with the given PCI BDF, e.g. "0c:00.0"

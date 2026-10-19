@@ -65,8 +65,8 @@ TEST(regime_boundary_fixtures) {
   CHECK(regimeOf(fft, 10 * SMALL_SIZE - 1).longCarry);
   CHECK(!regimeOf(fft, 10 * SMALL_SIZE).longCarry);
 
-  CHECK(!regimeOf(fft, 19 * SMALL_SIZE - 1).carry64);
-  CHECK(regimeOf(fft, 19 * SMALL_SIZE).carry64);
+  CHECK(!regimeOf(fft, 20 * SMALL_SIZE - 1).carry64);
+  CHECK(regimeOf(fft, 20 * SMALL_SIZE).carry64);
 }
 
 // At 16M words the long carry is forced up to log2(N)/2 + 0.5 = 12.5 bits per word, above the 10 that holds for small
@@ -102,8 +102,8 @@ TEST(spanning_both_boundaries_yields_three_entries) {
 
   CHECK_EQ(split.size(), size_t(3));
   CHECK(split[0] == (Interval{3 * SMALL_SIZE, 10 * SMALL_SIZE - 1, {.longCarry = true}}));
-  CHECK(split[1] == (Interval{10 * SMALL_SIZE, 19 * SMALL_SIZE - 1, {}}));
-  CHECK(split[2] == (Interval{19 * SMALL_SIZE, 6'000'000, {.carry64 = true}}));
+  CHECK(split[1] == (Interval{10 * SMALL_SIZE, 20 * SMALL_SIZE - 1, {}}));
+  CHECK(split[2] == (Interval{20 * SMALL_SIZE, 6'000'000, {.carry64 = true}}));
 }
 
 // The done-when: the bottom of the range is excluded where it must be.

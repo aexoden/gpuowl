@@ -1,14 +1,25 @@
 // Copyright (C) Mihai Preda
 
-#if CARRY64
+// carryFused's carry, whose width the host picks: CARRY32 (the default) or CARRY64 for FFT64 and FFT3231, CARRY64 or CARRY96 for
+// FFT323161.  MUL3 triples the carries, so the MUL3 kernels switch to the wider carry at a lower bpw (MUL3_CARRY64, MUL3_CARRY96).
+// CFCARRY(v) makes a CFcarry from an int.
+#if CARRY96 || (MUL3 && MUL3_CARRY96)
+typedef i96 CFcarry;
+#define CFCARRY(v) make_i96((i32) (v))
+#elif CARRY64 || (MUL3 && MUL3_CARRY64)
 typedef i64 CFcarry;
+#define CFCARRY(v) ((i64) (v))
 #else
 typedef i32 CFcarry;
+#define CFCARRY(v) ((i32) (v))
+#define CFCARRY32 1
 #endif
 
 // The carry for the non-fused CarryA, CarryB, CarryM kernels.
 // Simply use largest possible carry always as the split kernels are slow anyway (and seldomly used normally).
-#if FFT_TYPE != FFT32 && FFT_TYPE != FFT31
+#if FFT_TYPE == FFT323161
+typedef i96 CarryABM;
+#elif FFT_TYPE != FFT32 && FFT_TYPE != FFT31
 typedef i64 CarryABM;
 #else
 typedef i32 CarryABM;
@@ -132,7 +143,16 @@ i32 RNDVALfloatToInt(float d) {
 // map abs(carry) to floats, with 2^32 corresponding to 1.0
 // So that the maximum CARRY32 abs(carry), 2^31, is mapped to 0.5 (the same as the maximum ROE)
 float OVERLOAD boundCarry(i32 c) { return ldexp(fabs((float) c), -32); }
-float OVERLOAD boundCarry(i64 c) { return ldexp(fabs((float) (i32) (c >> 8)), -24); }
+
+// A 64-bit carry.  The FFT types that can also run with 32-bit carries (FFT64, FFT3231) measure it against CARRY32's 2^31, for
+// -carryTune (valid while abs(carry) < 2^39).  The others only have 64-bit carries: there 2^63, their overflow, maps to 0.5.
+float OVERLOAD boundCarry(i64 c) {
+  if (FFT_TYPE == FFT64 || FFT_TYPE == FFT3231) { return ldexp(fabs((float) (i32) (c >> 8)), -24); }
+  return boundCarry((i32) (c >> 32));
+}
+
+// A 96-bit carry (FFT323161) is measured on the 64-bit carry's scale, 2^63 maps to 0.5, for -carryTune's CARRY64/CARRY96 crossover
+float OVERLOAD boundCarry(i96 c) { return ldexp(fabs((float) (i64) i96_hi64(c)), -32); }
 
 #if STATS || ROE
 void updateStats(local u32 *lds, u32 num_threads, u32 num_blocks, global uint *bufROE, u32 posROE, float roundMax) {
@@ -201,356 +221,37 @@ void ROUNDOFF_CHECK(double x) {
 #endif
 
 
-/***************************************************************************/
-/*  From the FFT data, construct a value to normalize and carry propagate  */
-/***************************************************************************/
-
-#if FFT_TYPE == FFT64
-
-// Apply inverse weight, add in optional carry, calculate roundoff error, convert to integer. Handle MUL3.
-i64 weightAndCarryOne(T u, T invWeight, i64 inCarry, float* maxROE, int sloppy_result_is_acceptable) {
-
-#if !MUL3
-
-  // Convert carry into RNDVAL + carry.
-  int2 tmp = as_int2(inCarry); tmp.y += as_int2(RNDVAL).y;
-  double RNDVALCarry = as_double(tmp);
-
-  // Apply inverse weight and RNDVAL+carry
-  double d = fma(u, invWeight, RNDVALCarry);
-
-  // Optionally calculate roundoff error
-  float roundoff = fabs((float) fma(u, invWeight, RNDVALCarry - d));
-  *maxROE = max(*maxROE, roundoff);
-
-  // Convert to long (for CARRY32 case we don't need to strip off the RNDVAL bits).
-  // Leaving RNDVAL in place is only safe while the carry extraction window stays below bit 51 -- see the
-  // #error below and FFTShape::carry32BPW.
-  if (sloppy_result_is_acceptable) return as_long(d);
-  else return RNDVALdoubleToLong(d);
-
-#else  // We cannot add in the carry until after the mul by 3
-
-  // Apply inverse weight and RNDVAL
-  double d = fma(u, invWeight, RNDVAL);
-
-  // Optionally calculate roundoff error
-  float roundoff = fabs((float) fma(u, -invWeight, d - RNDVAL));
-  *maxROE = max(*maxROE, roundoff);
-
-  // Convert to long, mul by 3, and add carry
-  return RNDVALdoubleToLong(d) * 3 + inCarry;
-
-#endif
-}
-
-/**************************************************************************/
-/*            Similar to above, but for an FFT based on FP32              */
-/**************************************************************************/
-
-#elif FFT_TYPE == FFT32
-
-// Apply inverse weight, add in optional carry, calculate roundoff error, convert to integer.  Handle MUL3.
-i32 weightAndCarryOne(F u, F invWeight, i32 inCarry, float* maxROE, int sloppy_result_is_acceptable) {
-
-#if !MUL3
-
-  // Convert carry into RNDVAL + carry.
-  float RNDVALCarry = as_float(as_int(RNDVAL) + inCarry);                       // GWBUG - just the float arithmetic?  s.b. fast
-
-  // Apply inverse weight and RNDVAL+carry
-  float d = fma(u, invWeight, RNDVALCarry);
-
-  // Optionally calculate roundoff error
-  float roundoff = fabs(fma(u, invWeight, RNDVALCarry - d));
-  *maxROE = max(*maxROE, roundoff);
-
-  // Convert to int
-  return RNDVALfloatToInt(d);
-
-#else  // We cannot add in the carry until after the mul by 3
-
-  // Apply inverse weight and RNDVAL
-  float d = fma(u, invWeight, RNDVAL);
-
-  // Optionally calculate roundoff error
-  float roundoff = fabs(fma(u, -invWeight, d - RNDVAL));
-  *maxROE = max(*maxROE, roundoff);
-
-  // Convert to int, mul by 3, and add carry
-  return RNDVALfloatToInt(d) * 3 + inCarry;
-
-#endif
-}
-
-/**************************************************************************/
-/*          Similar to above, but for an NTT based on GF(M31^2)           */
-/**************************************************************************/
-
-#elif FFT_TYPE == FFT31
-
-// Apply inverse weight, add in optional carry, calculate roundoff error, convert to integer. Handle MUL3.
-i64 weightAndCarryOne(Z61 u, u32 invWeight, i32 inCarry, u32* maxROE) {
-
-  // Apply inverse weight
-  u = shr(u, invWeight);
-
-  // Convert input to balanced representation
-  i32 value = get_balanced_Z31(u);
-
-  // Optionally calculate roundoff error as proximity to M31/2.
-  u32 roundoff = (u32) abs(value);
-  *maxROE = max(*maxROE, roundoff);
-
-  // Mul by 3 and add carry
-#if MUL3
-  return (i64)value * 3 + inCarry;
-#endif
-  return value + inCarry;
-}
-
-/**************************************************************************/
-/*          Similar to above, but for an NTT based on GF(M61^2)           */
-/**************************************************************************/
-
-#elif FFT_TYPE == FFT61
-
-// Apply inverse weight, add in optional carry, calculate roundoff error, convert to integer. Handle MUL3.
-i64 weightAndCarryOne(Z61 u, u32 invWeight, i64 inCarry, u32* maxROE) {
-
-  // Apply inverse weight
-  u = shr(u, invWeight);
-
-  // Convert input to balanced representation
-  i64 value = get_balanced_Z61(u);
-
-  // Optionally calculate roundoff error as proximity to M61/2.  28 bits of accuracy should be sufficient.
-  u32 roundoff = (u32) abs((i32) hi32(value));
-  *maxROE = max(*maxROE, roundoff);
-
-  // Mul by 3 and add carry
-#if MUL3
-  value *= 3;
-#endif
-  return value + inCarry;
-}
-
-/**************************************************************************/
-/*    Similar to above, but for a hybrid FFT based on FP64 & GF(M31^2)    */
-/**************************************************************************/
-
-#elif FFT_TYPE == FFT6431
-
-// Apply inverse weight, add in optional carry, calculate roundoff error, convert to integer. Handle MUL3.
-i96 weightAndCarryOne(T u, Z31 u31, T invWeight, u32 m31_invWeight, bool hasInCarry, i64 inCarry, float* maxROE) {
-
-  // Apply inverse weight and get the Z31 data
-  u31 = shr(u31, m31_invWeight);
-  u32 n31 = get_Z31(u31);
-
-  // The final result must be n31 mod M31.  Use FP64 data to calculate this value.
-  u = fma(u, invWeight, - (double) n31);                               // This should be close to a multiple of M31
-  double uInt = fma(u, 4.656612875245796924105750827168e-10, RNDVAL);  // Divide by M31 and round to int
-  i64 n64 = RNDVALdoubleToLong(uInt);
-
-  // Optionally calculate roundoff error
-  float roundoff = (float) fabs(fma(u, 4.656612875245796924105750827168e-10, RNDVAL - uInt));
-  *maxROE = max(*maxROE, roundoff);
-
-  // Compute the value using i96 math
-  i64 vhi = n64 >> 33;
-  u64 vlo = ((u64)n64 << 31) | n31;
-  i96 value = make_i96(vhi, vlo);                   // (n64 << 31) + n31
-  value = sub(value, n64);                          // n64 * M31 + n31
-
-  // Mul by 3 and add carry
-#if MUL3
-  value = add(value, add(value, value));
-#endif
-  if (hasInCarry) value = add(value, inCarry);
-  return value;
-}
-
-/**************************************************************************/
-/*    Similar to above, but for a hybrid FFT based on FP32 & GF(M31^2)    */
-/**************************************************************************/
-
-#elif FFT_TYPE == FFT3231
-
-// Apply inverse weight, add in optional carry, calculate roundoff error, convert to integer. Handle MUL3.
-i64 weightAndCarryOne(float uF2, Z31 u31, float F2_invWeight, u32 m31_invWeight, i32 inCarry, float* maxROE) {
-
-  // Apply inverse weight and get the Z31 data
-  u31 = shr(u31, m31_invWeight);
-  u32 n31 = get_Z31(u31);
-
-  // The final result must be n31 mod M31.  Use FP32 data to calculate this value.
-  uF2 = fma(uF2, F2_invWeight, - (float) n31);                           // This should be close to a multiple of M31
-  float uF2int = fma(uF2, 4.656612875245796924105750827168e-10f, RNDVAL);   // Divide by M31 and round to int
-  i32 nF2 = RNDVALfloatToInt(uF2int);
-
-  i64 v = (((i64) nF2 << 31) | n31) - nF2;         // nF2 * M31 + n31
-
-  // Optionally calculate roundoff error
-  float roundoff = fabs(fma(uF2, 4.656612875245796924105750827168e-10f, RNDVAL - uF2int));
-  *maxROE = max(*maxROE, roundoff);
-
-  // Mul by 3 and add carry
-#if MUL3
-  v = v * 3;
-#endif
-  return v + inCarry;
-}
-
-/**************************************************************************/
-/*    Similar to above, but for a hybrid FFT based on FP32 & GF(M61^2)    */
-/**************************************************************************/
-
-#elif FFT_TYPE == FFT3261
-
-// Apply inverse weight, add in optional carry, calculate roundoff error, convert to integer. Handle MUL3.
-i96 weightAndCarryOne(float uF2, Z61 u61, float F2_invWeight, u32 m61_invWeight, bool hasInCarry, i64 inCarry, float* maxROE) {
-
-  // Apply inverse weight and get the Z61 data
-  u61 = shr(u61, m61_invWeight);
-  u64 n61 = get_Z61(u61);
-
-  // The final result mod M61 must be n61.  Use FP32 data to calculate how many multiples of M61 need to be added to n61.
-  float n61f = (float)hi32(n61) * -4294967296.0f;                             // Estimate -n61 as a float.
-  uF2 = fma(uF2, F2_invWeight, n61f);                                         // This should be close to an integer multiple of M61
-  float uF2int = fma(uF2, 4.3368086899420177360298112034798e-19f, RNDVAL);    // Divide by M61 and round to int
-  i32 nF2 = RNDVALfloatToInt(uF2int);
-
-  // Optionally calculate roundoff error
-  float roundoff = fabs(fma(uF2, 4.3368086899420177360298112034798e-19f, RNDVAL - uF2int));
-  *maxROE = max(*maxROE, roundoff);
-
-  // Compute the value using i96 math
-  i32 vhi = nF2 >> 3;
-  u64 vlo = ((u64)nF2 << 61) | n61;
-  i96 value = make_i96(vhi, vlo);                // (nF2 << 61) + n61
-  value = sub(value, nF2);                       // nF2 * M61 + n61
-
-  // Mul by 3 and add carry
-#if MUL3
-  value = add(value, add(value, value));
-#endif
-  if (hasInCarry) value = add(value, inCarry);
-  return value;
-}
-
-/**************************************************************************/
-/*    Similar to above, but for an NTT based on GF(M31^2)*GF(M61^2)       */
-/**************************************************************************/
-
-#elif FFT_TYPE == FFT3161
-
-// Apply inverse weight, add in optional carry, calculate roundoff error, convert to integer. Handle MUL3.
-i96 weightAndCarryOne(Z31 u31, Z61 u61, u32 m31_invWeight, u32 m61_invWeight, bool hasInCarry, i64 inCarry, u32* maxROE) {
-
-  // Apply inverse weights
-  u31 = shr(u31, m31_invWeight);
-  u61 = shr(u61, m61_invWeight);
-
-  // Use chinese remainder theorem to create a 92-bit result.  Loosely copied from Yves Gallot's mersenne2 program.
-  u32 n31 = get_Z31(u31);
-  u61 += make_u64(hi32(M61), lo32(M61) - n31);   // u61 - u31
-  u61 += shl(u61, 31);                           // u61 + (u61 << 31)
-
-  // The resulting value will be get_Z61(u61) * M31 + n31 and if larger than ~M31*M61/2 return a negative value by subtracting M31 * M61.
-  // We can save a little work by determining if the result will be large using just u61 and returning (get_Z61(u61) - M61) * M31 + n31.
-  // This simplifies to get_balanced_Z61(u61) * M31 + n31.
-  i64 n61 = get_balanced_Z61(modM61(u61));
-
-  // Optionally calculate roundoff error as proximity to M61/2.  28 bits of accuracy should be sufficient.
-  u32 roundoff = (u32) abs((i32)hi32(n61));
-  *maxROE = max(*maxROE, roundoff);
-
-  // Compute the value using i96 math
-  i64 vhi = n61 >> 1;
-  u32 vlo = ((u32)n61 << 31) | n31;
-  i96 value = make_i96(vhi, vlo);                // (n61 << 31) + n31
-  value = sub(value, n61);                       // n61 * M31 + n31
-
-  // Mul by 3 and add carry
-#if MUL3
-  value = add(value, add(value, value));
-#endif
-  if (hasInCarry) value = add(value, inCarry);
-  return value;
-}
-
-/******************************************************************************/
-/*  Similar to above, but for a hybrid FFT based on FP32*GF(M31^2)*GF(M61^2)  */
-/******************************************************************************/
-
-#elif FFT_TYPE == FFT323161
-
-// Apply inverse weight, add in optional carry, calculate roundoff error, convert to integer. Handle MUL3.
-i128 weightAndCarryOne(float uF2, Z31 u31, Z61 u61, float F2_invWeight, u32 m31_invWeight, u32 m61_invWeight, bool hasInCarry, i64 inCarry, float* maxROE) {
-
-  // Apply inverse weights
-  u31 = shr(u31, m31_invWeight);
-  u61 = shr(u61, m61_invWeight);
-  // Use chinese remainder theorem to create a 92-bit result.  Loosely copied from Yves Gallot's mersenne2 program.
-  u32 n31 = get_Z31(u31);
-  u61 += make_u64(hi32(M61), lo32(M61) - n31);       // u61 - u31
-  u61 += shl(u61, 31);                               // u61 + (u61 << 31)
-  u64 n61 = get_Z61(modM61(u61));
-  // Let's call the 92-bit CRT result n3161.  At this point, n3161 = n61 * M31 + n31.
-
-  // The final result mod M31*M61 must be n3161.  Use FP32 data to calculate how many multiples of M31*M61 need to be added to n3161.
-  float n3161f = (float)hi32(n61) * -9223372036854775808.0f;                 // Estimate -n3161 as a float.  -n61 << 31 should be close enough.
-  uF2 = fma(uF2, F2_invWeight, n3161f);                                      // This should be close to an integer multiple of M31*M61
-  float uF2int = fma(uF2, 2.0194839183061857038255724444152e-28f, RNDVAL);   // Divide by M31*M61 and round to int
-  i32 nF2 = RNDVALfloatToInt(uF2int);
-
-  // The final result will be nF2 * M31*M61 + n3161.  Rearranging to use as few 128-bit and 64-bit ops as possible:
-  // = nF2 * M61 * M31 + n61 * M31 + n31
-  // = (nF2 * M61 + n61) * M31 + n31
-  // = ((nF2 << 61) - nF2 + n61) * M31 + n31
-  // = (((nF2 << 61) - nF2 + n61) << 31) - ((nF2 << 61) - nF2 + n61) + n31
-  // = (nF2 << 92) + ((n61 - nF2) << 31) - (nF2 << 61) - (n61 - nF2) + n31
-  // = (nF2 << 92) - (nF2 << 61) + ((n61 - nF2) << 31) - (n61 - nF2) + n31
-  // = (((nF2 << 31) - nF2) << 61) + ((n61 - nF2) << 31) - (n61 - nF2) + n31
-  // = (((nF2 << 32) - nF2*2) << 60) + ((n61 - nF2) << 31) - (n61 - nF2) + n31
-
-  // Compute x = (n61 - nF2)
-  i64 x = (i64)n61 - nF2;
-  // Compute y = ((n61 - nF2) << 31) + n31
-  i128 y = make_i128(x >> 33, (x << 31) | n31);
-  // Compute z = ((nF2 << 32) - nF2*2) << 60
-  i64 tmp = make_i64(nF2, 0) - (i64)(nF2 + nF2);
-  i128 z = make_i128(tmp >> 4, tmp << 60);
-
-  // Put the parts together
-  i128 v = sub(add(z, y), x);
-
-  // Optionally calculate roundoff error
-  float roundoff = fabs(fma(uF2, 2.0194839183061857038255724444152e-28f, RNDVAL - uF2int));
-  *maxROE = max(*maxROE, roundoff);
-
-  // Mul by 3 and add carry
-#if MUL3
-  v = add(v, add(v, v));
-#endif
-  if (hasInCarry) v = add(v, inCarry);
-  return v;
-}
-
-#else
-error - missing weightAndCarryOne implementation
-#endif
-
-
 /************************************************************************/
 /*   Split a value + carryIn into a big-or-little word and a carryOut   */
 /************************************************************************/
 
+// With words of 33 bits or more (FFT323161), the i128 carry steps work on 32-bit pieces: the word's high half is a bit field of the second
+// dword and the carry, bits [nBits, nBits + 64) or [nBits, nBits + 96), is funnel shifts of the higher dwords.
+#define I128_SHIFT_DWORDS(lo, hi, s)  as_long((uint2)(xtract32(as_long((uint2)(hi32(lo), lo32(hi))), s), xtract32((i64) (hi), s)))
+
 Word OVERLOAD carryStep(i128 x, i64 *outCarry, bool isBigWord) {
   u32 nBits = bitlen(isBigWord);
+  if (EXP / NWORDS >= 33) {
+    u64 lo = i128_lo64(x), hi = i128_hi64(x);
+    i32 whi = lowBits((i32) hi32(lo), nBits - 32);
+    *outCarry = I128_SHIFT_DWORDS(lo, hi, nBits - 32) + (whi < 0);
+    return as_long((int2)(lo32(lo), whi));
+  }
   i64 w = lowBits(i128_lo64(x), nBits);
   *outCarry = i128_shrlo64(x, nBits) + (w < 0);
+  return w;
+}
+
+Word OVERLOAD carryStep(i128 x, i96 *outCarry, bool isBigWord) {
+  u32 nBits = bitlen(isBigWord);
+  if (EXP / NWORDS >= 33) {
+    u64 lo = i128_lo64(x), hi = i128_hi64(x);
+    i32 whi = lowBits((i32) hi32(lo), nBits - 32);
+    *outCarry = add(make_i96((i32) hi32(hi) >> (nBits - 32), (u64) I128_SHIFT_DWORDS(lo, hi, nBits - 32)), (i64) (whi < 0));
+    return as_long((int2)(lo32(lo), whi));
+  }
+  i64 w = lowBits(i128_lo64(x), nBits);
+  *outCarry = add(i128_shr96(x, nBits), (i64) (w < 0));
   return w;
 }
 
@@ -561,7 +262,13 @@ Word OVERLOAD carryStep(i96 x, i64 *outCarry, bool isBigWord) {
 // This code can be tricky because we must not shift i32 or u32 variables by 32.
 #if EXP / NWORDS >= 33
   i32 whi = lowBits(i96_mid32(x), nBitsLess32);
-  *outCarry = ((i64)i96_hi64(x) - (i64)whi) >> nBitsLess32;
+  // For FFT3161 and FFT3261 the carry (hi64 - whi) >> nBitsLess32 is quicker as two 32-bit shifts, hi64 >> nBitsLess32 plus one if the word
+  // is negative (fewer SASS instructions on sm_70 and sm_120).  FFT6431 was 0.7% slower that way on a TitanV.
+  if (FFT_TYPE == FFT3161 || FFT_TYPE == FFT3261) {
+    *outCarry = as_long((int2)(xtract32(i96_hi64(x), nBitsLess32), (i32)i96_hi32(x) >> nBitsLess32)) + (whi < 0);
+  } else {
+    *outCarry = ((i64)i96_hi64(x) - (i64)whi) >> nBitsLess32;
+  }
   return as_ulong((uint2)(i96_lo32(x), (u32)whi));
 #elif EXP / NWORDS == 32
   i32 whi = xtract32(i96_lo64(x), nBitsLess32) >> 31;
@@ -648,7 +355,24 @@ Word OVERLOAD carryStepUnsignedSloppy(i128 x, i64 *outCarry, bool isBigWord) {
 // Return a Word using the big word size.  Big word size is a constant which allows for more optimization.
   u64 w = ulowFixedBits(i128_lo64(x), bigwordBits);
   x = i128_masklo64(x, ~((u64)1 << (bigwordBits - 1)));
+  if (EXP / NWORDS >= 33) { *outCarry = I128_SHIFT_DWORDS(i128_lo64(x), i128_hi64(x), nBits - 32); return w; }
   *outCarry = i128_shrlo64(x, nBits);
+  return w;
+}
+
+Word OVERLOAD carryStepUnsignedSloppy(i128 x, i96 *outCarry, bool isBigWord) {
+  const u32 bigwordBits = EXP / NWORDS + 1;
+  u32 nBits = bitlen(isBigWord);
+
+// Return a Word using the big word size.  Big word size is a constant which allows for more optimization.
+  u64 w = ulowFixedBits(i128_lo64(x), bigwordBits);
+  x = i128_masklo64(x, ~((u64)1 << (bigwordBits - 1)));
+  if (EXP / NWORDS >= 33) {
+    u64 lo = i128_lo64(x), hi = i128_hi64(x);
+    *outCarry = make_i96((i32) hi32(hi) >> (nBits - 32), (u64) I128_SHIFT_DWORDS(lo, hi, nBits - 32));
+    return w;
+  }
+  *outCarry = i128_shr96(x, nBits);
   return w;
 }
 
@@ -698,25 +422,21 @@ Word OVERLOAD carryStepUnsignedSloppy(i32 x, i32 *outCarry, bool isBigWord) {
 // We only allow sloppy results when not near the maximum bits-per-word.  For now, this is defined as 1.1 bits below maxbpw.
 // No studies have been done on reducing this 1,1 value since this is a rather minor optimization.  Since the preprocessor can't
 // handle floats, the MAXBPW value passed in is 100 * maxbpw.
-#define SLOPPY_MAXBPW   (MAXBPW - 110)
+// Never for FFT323161: its exact i128 carryStep is as cheap as the sloppy one, and the sloppy words would make its carries up to 2.8x
+// larger (see carry64BPW).  Its unsigned sloppy first word, which carryFinal balances exactly, is still used.
+#define SLOPPY_MAXBPW   (FFT_TYPE == FFT323161 ? 0 : MAXBPW - 110)
 #define ACTUAL_BPW      (EXP / (NWORDS / 100))
 
 Word OVERLOAD carryStepSignedSloppy(i128 x, i64 *outCarry, bool isBigWord) {
-#if ACTUAL_BPW > SLOPPY_MAXBPW
+  // A sloppy version (a word balanced to the big word size) is no cheaper than carryStep, whose word high half is one variable-width bit
+  // field extract and whose carry is funnel shifts: both take the same number of instructions.  FFT323161 does not use sloppy carries anyway.
   return carryStep(x, outCarry, isBigWord);
-#else
+}
 
-//GW:  Need to compare to simple carryStep
-  
-// Return a Word using the big word size.  Big word size is a constant which allows for more optimization.
-  const u32 bigwordBits = EXP / NWORDS + 1;
-  u32 nBits = bitlen(isBigWord);
-  u64 xlo = i128_lo64(x);
-  u64 xlo_topbit = xlo & ((u64)1 << (bigwordBits - 1));
-  i64 w = ulowFixedBits(xlo, bigwordBits - 1) - xlo_topbit;
-  *outCarry = i128_shrlo64(add(x, xlo_topbit), nBits);
-  return w;
-#endif
+Word OVERLOAD carryStepSignedSloppy(i128 x, i96 *outCarry, bool isBigWord) {
+  // A sloppy version (a word balanced to the big word size) is no cheaper than carryStep, whose word high half is one variable-width bit
+  // field extract and whose carry is funnel shifts: both take the same number of instructions.  FFT323161 does not use sloppy carries anyway.
+  return carryStep(x, outCarry, isBigWord);
 }
 
 Word OVERLOAD carryStepSignedSloppy(i96 x, i64 *outCarry, bool isBigWord) {
@@ -795,11 +515,34 @@ Word OVERLOAD carryStepSignedSloppy(i32 x, i32 *outCarry, bool isBigWord) {
 
 
 // Carry propagation from word and carry.  Used by carryB.cl.
+// carryWordLast: the same for the last word pair of a carryB group, adding the carry out of the first word into the second without
+// normalizing it.  carryIsZero: true if the carry is zero.
+#if FFT_TYPE == FFT323161
+Word2 carryWord(Word2 a, CarryABM* carry, bool b1, bool b2) {
+  a.x = carryStep(add(make_i128(*carry), (i64) a.x), carry, b1);
+  a.y = carryStep(add(make_i128(*carry), (i64) a.y), carry, b2);
+  return a;
+}
+Word2 carryWordLast(Word2 a, CarryABM carry, bool b1) {
+  i64 c;      // The carry out of one word fits in an i64
+  a.x = carryStep(add(make_i128(carry), (i64) a.x), &c, b1);
+  a.y += c;
+  return a;
+}
+bool carryIsZero(CarryABM c) { return (i96_lo64(c) | i96_hi32(c)) == 0; }
+#else
 Word2 carryWord(Word2 a, CarryABM* carry, bool b1, bool b2) {
   a.x = carryStep(a.x + *carry, carry, b1);
   a.y = carryStep(a.y + *carry, carry, b2);
   return a;
 }
+Word2 carryWordLast(Word2 a, CarryABM carry, bool b1) {
+  a.x = carryStep(a.x + carry, &carry, b1);
+  a.y += carry;
+  return a;
+}
+bool carryIsZero(CarryABM c) { return c == 0; }
+#endif
 
 /**************************************************************************/
 /*     Do this last, it depends on weightAndCarryOne defined above        */
@@ -807,18 +550,38 @@ Word2 carryWord(Word2 a, CarryABM* carry, bool b1, bool b2) {
 
 /* Support both 32-bit and 64-bit carries */
 
+/* iCARRY is set to all possible data types that CFCarry in carryfused could be.  Carryinc.cl is then #included for each data type. */
+/* In essence, iCARRY means "a carry from carryShuttle or a carry from the first word of a pair". */
+
+#if FFT_TYPE == FFT323161
+// FFT323161's CRT value (hi:lo) - x plus the carry, x in [-2^22, 2^61 + 2^22).  With CARRY_SUB_X (the host's guarantee that carries are
+// below 2^63 - 2^61 - 2^22) an i64 carry is subtracted from x instead of being added to the i128.  A 96-bit carry is added to the i128.
+#ifndef CARRY_SUB_X
+#define CARRY_SUB_X 0
+#endif
+i128 OVERLOAD crtPlusCarry(i64 hi, u64 lo, i64 x, bool hasInCarry, i64 inCarry) {
+  if (CARRY_SUB_X) { return sub(make_i128(hi, lo), hasInCarry ? x - inCarry : x); }
+  i128 v = sub(make_i128(hi, lo), x);
+  return hasInCarry ? add(v, inCarry) : v;
+}
+i128 OVERLOAD crtPlusCarry(i64 hi, u64 lo, i64 x, bool hasInCarry, i96 inCarry) {
+  i128 v = sub(make_i128(hi, lo), x);
+  return hasInCarry ? add(v, inCarry) : v;
+}
+#endif
+
 #if WordSize <= 4
-// A 32-bit carry means weightAndCarryOne returns RNDVAL + value un-stripped, and carryStep(i64, i32*) reads
-// the carry from bits [nBits, nBits+32).  That window must stay strictly below the RNDVAL bit 51, so
-// nBits <= 19; a big word has nBits = EXP / NWORDS + 1.  The host is supposed to select CARRY64 before this
+// A 32-bit carry means FFT64's weightAndCarryOne returns RNDVAL + value un-stripped (bit 51 flipped at 19 bpw), and
+// carryStep(i64, i32*) reads the carry from bits [nBits, nBits+32).  That window must stay within bits [0,52), so
+// nBits <= 20; a big word has nBits = EXP / NWORDS + 1.  The host is supposed to select CARRY64 before this
 // point (FFTShape::needsLargeCarry); fail loudly rather than compute wrong carries if it ever does not.
 //
 // The bound is the host's own, and the host does not make it depend on the FFT type: needsLargeCarry()
-// returns true for every type at EXP / NWORDS >= 19, so CARRY_AUTO can never reach here.  Only an explicit
+// returns true for every type at EXP / NWORDS >= 20, so CARRY_AUTO can never reach here.  Only an explicit
 // 32-bit carry in the FFT spec ("-fft 3:256:2:256:212:0") can, and the NTT types need the check as much as
 // FP64 does -- a GF61 carry at 25 bpw does not fit in i32 either, and nothing else would report it.
-#if !CARRY64 && EXP / NWORDS >= 19
-#error "CARRY32 requires EXP / NWORDS <= 18; this exponent needs CARRY64 (-carry long)"
+#if CFCARRY32 && EXP / NWORDS >= 20
+#error "CARRY32 requires EXP / NWORDS < 20; this exponent needs CARRY64 (-carry long)"
 #endif
 #define iCARRY i32
 #include "carryinc.cl"
@@ -828,5 +591,13 @@ Word2 carryWord(Word2 a, CarryABM* carry, bool b1, bool b2) {
 #if FFT_TYPE != FFT32 && FFT_TYPE != FFT31
 #define iCARRY i64
 #include "carryinc.cl"
+#undef iCARRY
+#endif
+
+#if FFT_TYPE == FFT323161
+#define iCARRY i96
+#define ICARRY_I96 1
+#include "carryinc.cl"
+#undef ICARRY_I96
 #undef iCARRY
 #endif

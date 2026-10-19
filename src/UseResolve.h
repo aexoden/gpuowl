@@ -82,14 +82,21 @@ struct SelectionLayers {
 //   the selection file's global line, then its family lines, then the selected entry's option set
 //   -use lines in the config files
 //   '!' lines in the config files, by rank, then the last read
+//   the -use settings on the FFT's tune.txt line
 //   -use on the command line
 [[nodiscard]] UseConfig resolveConfig(const Args& args, const FFTConfig& fft, TestKind kind,
-                                      const SelectionLayers& selection = {});
+                                      const SelectionLayers& selection = {},
+                                      const std::vector<std::pair<std::string, std::string>>& fftUses = {});
 
 // Replaces args' flags with what resolveConfig() gives, with `extraConf` on top, and drops the '!' lines they came
 // from.
 void resolveInto(Args& args, const FFTConfig& fft, TestKind kind,
-                 const std::vector<std::pair<std::string, std::string>>& extraConf);
+                 const std::vector<std::pair<std::string, std::string>>& extraConf,
+                 const std::vector<std::pair<std::string, std::string>>& fftUses = {});
+
+// Says which of a tune.txt line's settings apply to `fftSpec` and which the command line overrides.
+void logFftUses(const Args& args, const std::string& fftSpec,
+                const std::vector<std::pair<std::string, std::string>>& fftUses);
 
 // The keys a tuning run set aside, each list sorted.
 struct Takeover {

@@ -10,6 +10,7 @@
 #include <map>
 #include <set>
 #include <filesystem>
+#include <optional>
 
 namespace fs = std::filesystem;
 
@@ -23,6 +24,9 @@ public:
   static vector<KeyVal> splitArgLine(const std::string& inputLine);
   static vector<KeyVal> splitUses(std::string ss);
   static std::string mergeArgs(int argc, char **argv);
+  // An exponent as a whole number or with a K, M or G suffix (thousand, million, billion), e.g. 150000000, 150M or 142.5M.  Nothing
+  // if not one, or if it is not a whole number.
+  static std::optional<u64> parseExponent(const std::string& s);
 
   explicit Args(bool silent = false) : silent{silent} {}
 
@@ -31,6 +35,14 @@ public:
   [[nodiscard]] bool uses(const std::string& key) const { return flags.contains(key); }
   [[nodiscard]] int value(const std::string& key, int valNotFound = -1) const;
   void readConfig(const fs::path& path);
+  // The REGxxxx register limit keys (see Gpu::numRegisters) and NOREG.  The C++ code reads them, never the .cl code.
+  [[nodiscard]] static bool isRegisterKey(const string& k) {
+    return k == "NOREG" || k.starts_with("REGCF") || k.starts_with("REGMI") || k.starts_with("REGMO") || k.starts_with("REGTS");
+  }
+  // -use 256RADIX8_W / 256RADIX8_H (default off): radix 8 rather than radix 4 at WIDTH / SMALL_HEIGHT 256, also from the FFT's
+  // "! <fft>" config.txt line.  The C++ code reads them, never the .cl code (which sees NW and NH).
+  [[nodiscard]] static bool isRadixKey(const string& k) { return k == "256RADIX8_W" || k == "256RADIX8_H"; }
+  [[nodiscard]] bool radix8At256(const string& fftShapeSpec, bool height) const;
   [[nodiscard]] u32 getProofPow(u64 exponent) const;
   [[nodiscard]] string tailDir() const;
 

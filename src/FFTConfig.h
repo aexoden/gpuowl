@@ -43,26 +43,42 @@ public:
   explicit FFTShape(const string& spec);
 
   [[nodiscard]] u32 size() const { return width * height * middle * 2; }
-  [[nodiscard]] u32 nW() const { return (/*width == 1024 ||*/ width == 256) ? 4 : 8; }
-  [[nodiscard]] u32 nH() const { return (/*height == 1024 ||*/ height == 256) ? 4 : 8; }
+  // Radix 8, except radix 4 at 256 unless radix8At256 (-use 256RADIX8_W / 256RADIX8_H, see Args::radix8At256) selects the 4 * 8 * 8
+  // radix-8 code.  Radix 8 at 256 (32 threads per line) does less math.  It is faster for FP64 on Radeon VII and TitanV and for GF61 on
+  // Radeon VII, but slower for the NTT types on TitanV (more registers, fewer warps, more instruction fetch stalls).
+  [[nodiscard]] u32 nW(bool radix8At256) const { return width == 256 && !radix8At256 ? 4 : 8; }
+  [[nodiscard]] u32 nH(bool radix8At256) const { return height == 256 && !radix8At256 ? 4 : 8; }
+  // Variant 0 (BCAST) is implemented for sizes up to 1K, but not for radix 8 at 256
+  [[nodiscard]] bool hasVariant0W(bool radix8At256) const { return width <= 1024 && !(width == 256 && radix8At256); }
+  [[nodiscard]] bool hasVariant0H(bool radix8At256) const { return height <= 1024 && !(height == 256 && radix8At256); }
 
   [[nodiscard]] float minBpw() const { return fft_type != FFT32 ? 3.0f : 1.0f; }
   [[nodiscard]] float maxBpw() const { return *std::ranges::max_element(bpw); }
   [[nodiscard]] u64 maxExp() const { return u64(maxBpw() * size()); }
   [[nodiscard]] std::string spec() const { return (fft_type ? to_string(fft_type) + ':' : "") + numberK(width) + ':' + numberK(middle) + ':' + numberK(height); }
 
-  [[nodiscard]] float carry32BPW() const;
-  [[nodiscard]] bool needsLargeCarry(u64 E) const;
+  // The highest bpw for 32-bit carries in carryFused; mul3: in its MUL3 version
+  [[nodiscard]] float carry32BPW(bool mul3 = false) const;
+  // The same for FFT323161's 64-bit carries (its wider carry is 96 bits)
+  [[nodiscard]] float carry64BPW(bool mul3 = false) const;
+  // The highest bpw for this FFT type's narrower carry (32 bits, or 64 bits for FFT323161)
+  [[nodiscard]] float narrowCarryBPW(bool mul3 = false) const { return fft_type == FFT323161 ? carry64BPW(mul3) : carry32BPW(mul3); }
+  // True if the exponent needs the wider carry (64 bits, or 96 bits for FFT323161)
+  [[nodiscard]] bool needsLargeCarry(u64 E, bool mul3 = false) const;
   [[nodiscard]] bool isFavoredShape() const;
-  // A MIDDLE with an odd factor (3, 7, 9 or 11 times a power of two) on an NTT or hybrid FFT/NTT type is done as a Good-Thomas
-  // prime-factor transform: R = 3, 7, 9 or 11 rows of a power-of-two transform, the radix-R in fftMiddleIn/Out uses only an R-th
-  // root of unity (in Z/pZ for both M31 and M61, complex for the FP part of a hybrid) and no twiddles.  The pure FP types use
-  // ordinary odd radices.
+  // A MIDDLE with an odd factor R times a power of two on an NTT or hybrid FFT/NTT type is done as a Good-Thomas prime-factor
+  // transform: R rows of a power-of-two transform, the radix-R in fftMiddleIn/Out uses only an R-th root of unity (in Z/pZ for M31
+  // and M61, complex for the FP part of a hybrid) and no twiddles.  R = 3, 7, 9 and 11 divide both M31 - 1 and M61 - 1.  R = 5 and 15
+  // divide only M61 - 1 (GF(M31^2) has no 5th roots of unity), so they are for the types with GF61 and without GF31.  The pure FP
+  // types use ordinary odd radices.
   [[nodiscard]] static bool pfaType(enum FFT_TYPES t) { return t != FFT64 && t != FFT32; }
   [[nodiscard]] static u32 pfaRadix(u32 m) { return m / (m & (~m + 1)); }     // The odd part of m
-  [[nodiscard]] static bool pfaMiddle(u32 m) { u32 const r = pfaRadix(m); return r == 3 || r == 7 || r == 9 || r == 11; }
+  [[nodiscard]] static bool pfaMiddle(u32 m, enum FFT_TYPES t) {
+    u32 const r = pfaRadix(m);
+    return r == 3 || r == 7 || r == 9 || r == 11 || ((r == 5 || r == 15) && (t == FFT61 || t == FFT3261));
+  }
   [[nodiscard]] u32 pfaRadix() const { return pfaRadix(middle); }
-  [[nodiscard]] bool isPfa() const { return pfaMiddle(middle) && pfaType(fft_type); }
+  [[nodiscard]] bool isPfa() const { return pfaMiddle(middle, fft_type) && pfaType(fft_type); }
 };
 
 static const u32 N_VARIANT_W = 3;
@@ -83,10 +99,15 @@ enum CARRY_KIND {CARRY_32=0, CARRY_64=1, CARRY_AUTO=2};
 
 struct FFTConfig {
 public:
+  // uses, if given, receives the -use settings from the chosen FFT's tune.txt line.
   // fp64: whether the device has FP64, or empty to ask the device.
   // quiet: the caller only asks whether some FFT fits, or has already said why tune.txt is not what answers.
-  static FFTConfig bestFit(const Args& args, u64 E, const std::string& spec, std::optional<bool> fp64 = {},
-                           bool quiet = false);
+  static FFTConfig bestFit(const Args& args, u64 E, const std::string& spec, vector<KeyVal>* uses = nullptr,
+                           std::optional<bool> fp64 = {}, bool quiet = false);
+  // The same choice as a list:  one FFT for an -fft spec or a tune.txt line, else the untuned candidates in order of preference
+  // (Task::execute tries the next when a GPU can't be built for one).  Throws "No FFT" if none can handle E.
+  static vector<FFTConfig> bestFits(const Args& args, u64 E, const std::string& spec, vector<KeyVal>* uses = nullptr,
+                                    std::optional<bool> fp64 = {}, bool quiet = false);
 
   // Which FP and NTT primes are involved in the FFT
   bool FFT_FP64;
