@@ -639,7 +639,7 @@ vector<Option> buildTable() {
                .group = Group::Width,
                .touches = KG_WIDTH,
                .values = {0, 1},
-               .defaultFn = [](const Env& e, const FFTConfig&, const UseConfig&) { return e.isAmd ? 0 : 1; },
+               .defaultValue = 1,
                .inert = [](const Env&, const FFTConfig& f,
                            const UseConfig&) { return unrollInert(f.shape.width, variant_W(f.variant), f); },
                .inertWhen = "width 1024 or 2048, or FFT64 with variant W 2"});
@@ -717,8 +717,7 @@ vector<Option> buildTable() {
                .group = Group::Height,
                .touches = KG_HEIGHT,
                .values = {0, 1},
-               .defaultFn = [](const Env& e, const FFTConfig& f,
-                               const UseConfig&) { return (e.isAmd && f.shape.height >= 1024) ? 0 : 1; },
+               .defaultValue = 1,
                .inert = [](const Env&, const FFTConfig& f,
                            const UseConfig&) { return unrollInert(f.shape.height, variant_H(f.variant), f); },
                .inertWhen = "height 1024 or 2048, or FFT64 with variant H 2"});

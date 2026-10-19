@@ -288,9 +288,12 @@ TEST(inert_unroll) {
   CHECK(!inert(e, "3:512:8:2K:202", "UNROLL_W"));
   CHECK(applicable(nvidia(806, true), "512:15:512:101", {}, "UNROLL_W"));  // #pragma unroll reaches NVRTC too
 
-  CHECK_EQ(defaultOf(amd(), "512:8:1K:101", {}, "UNROLL_H"), 0);
-  CHECK_EQ(defaultOf(amd(), "1K:8:512:101", {}, "UNROLL_H"), 1);
-  CHECK_EQ(defaultOf(e, "512:8:1K:101", {}, "UNROLL_H"), 1);
+  // Fully unrolled by default on every GPU.
+  for (const Env& env : {e, amd()}) {
+    CHECK_EQ(defaultOf(env, "512:8:1K:101", {}, "UNROLL_H"), 1);
+    CHECK_EQ(defaultOf(env, "1K:8:512:101", {}, "UNROLL_H"), 1);
+    CHECK_EQ(defaultOf(env, "512:15:512:101", {}, "UNROLL_W"), 1);
+  }
 }
 
 TEST(inert_fast_barrier) {
