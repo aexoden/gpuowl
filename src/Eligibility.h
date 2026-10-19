@@ -22,12 +22,15 @@ struct Regime {
   bool longCarry = false;
 
   // The kernels are compiled with -DCARRY64, a 64-bit carry. Used either if the exponent needs one or if the spec pins
-  // one.
+  // one; FFT323161's narrower carry is 64-bit, so it always is.
   bool carry64 = false;
+
+  // FFT323161's wider carry, -DCARRY96, in place of its 64-bit one.
+  bool carry96 = false;
 
   [[nodiscard]] bool operator==(const Regime&) const = default;
 
-  // "short32", "short64", "long32", "long64"
+  // "short32", "short64", "short96", "long32", "long64", "long96"
   [[nodiscard]] std::string label() const;
 };
 

@@ -32,13 +32,13 @@ FFTConfig cfg(const FFTShape& shape, CARRY_KIND carry = CARRY_AUTO) {
 TEST(regime_labels_round_trip) {
   std::set<std::string> labels;
   for (bool longCarry : {false, true}) {
-    for (bool carry64 : {false, true}) {
-      Regime const regime{longCarry, carry64};
+    for (Regime const regime : {Regime{longCarry, false}, Regime{longCarry, true}, Regime{longCarry, false, true}}) {
       labels.insert(regime.label());
       CHECK(parseRegime(regime.label()) == regime);
     }
   }
-  CHECK_EQ(labels.size(), size_t(4));
+  CHECK_EQ(labels.size(), size_t(6));
+  CHECK(labels.contains("short96") && labels.contains("long96"));
   CHECK(!parseRegime("short"));
   CHECK(!parseRegime(""));
 }
@@ -56,6 +56,25 @@ TEST(min_exp_is_the_constructor_boundary) {
     CHECK(!isEligible(fft, floorExp - 1));
     CHECK(bitsPerWord(fft, floorExp) >= fft.minBpw());
     CHECK(bitsPerWord(fft, floorExp - 1) < fft.minBpw());
+  }
+}
+
+// FFT323161's carries are 64 bits up to carry64BPW() and 96 bits beyond; it never runs a 32-bit carry.
+TEST(the_wide_carry_of_fft323161_is_its_own_regime) {
+  FFTConfig const fft{"4:4K:8:2K:202"};
+  u64 const cut = u64(double(fft.shape.carry64BPW()) * double(fft.size()));
+  CHECK(cut < maxExp(fft));
+
+  CHECK_EQ(regimeOf(fft, cut - 1000).label(), std::string{"short64"});
+  CHECK_EQ(regimeOf(fft, cut + 1000).label(), std::string{"short96"});
+  CHECK_EQ(regimeOf(FFTConfig{"4:4K:8:2K:202:0"}, cut - 1000).label(), std::string{"short64"});
+  CHECK_EQ(regimeOf(FFTConfig{"4:4K:8:2K:202:1"}, cut - 1000).label(), std::string{"short96"});
+
+  std::vector<Interval> const split = intervals(fft, cut - 1000, cut + 1000);
+  CHECK_EQ(split.size(), size_t(2));
+  if (split.size() == 2) {
+    CHECK(split[0].regime == (Regime{.carry64 = true}));
+    CHECK(split[1].regime == (Regime{.carry96 = true}));
   }
 }
 

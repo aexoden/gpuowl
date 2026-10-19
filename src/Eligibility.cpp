@@ -27,17 +27,19 @@ template<typename Pred> u64 lowerBoundary(u64 lo, u64 hi, Pred pred) {
   return lo;
 }
 
-// A 64-bit carry because the exponent asks for one, rather than because the spec pins one.
-bool needsCarry64(const FFTConfig& fft, u64 E) { return fft.carry == CARRY_AUTO && fft.shape.needsLargeCarry(E); }
+// The wider carry (64 bits, or 96 for FFT323161) because the exponent asks for one, rather than because the spec pins
+// one.
+bool needsWideCarry(const FFTConfig& fft, u64 E) { return fft.carry == CARRY_AUTO && fft.shape.needsLargeCarry(E); }
 
 }  // namespace
 
-std::string Regime::label() const { return string{longCarry ? "long" : "short"} + (carry64 ? "64" : "32"); }
+std::string Regime::label() const {
+  return string{longCarry ? "long" : "short"} + (carry96 ? "96" : carry64 ? "64" : "32");
+}
 
 std::optional<Regime> parseRegime(std::string_view label) {
   for (bool longCarry : {false, true}) {
-    for (bool carry64 : {false, true}) {
-      Regime const regime{longCarry, carry64};
+    for (Regime const regime : {Regime{longCarry, false}, Regime{longCarry, true}, Regime{longCarry, false, true}}) {
       if (regime.label() == label) { return regime; }
     }
   }
@@ -53,7 +55,10 @@ Regime regimeOf(const FFTConfig& fft, u64 E) {
   // As Gpu's constructor decides it: carryFused leaves part of each carry unnormalized, which only settles when the
   // words are well above sqrt(N).
   double const longBelow = std::max(10.0, 0.5 * std::log2(double(fft.size())) + 0.5);
-  return {.longCarry = bitsPerWord(fft, E) < longBelow, .carry64 = needsCarry64(fft, E) || fft.carry == CARRY_64};
+  bool const longCarry = bitsPerWord(fft, E) < longBelow;
+  bool const wide = needsWideCarry(fft, E) || fft.carry == CARRY_64;
+  if (fft.shape.fft_type == FFT323161) { return {.longCarry = longCarry, .carry64 = !wide, .carry96 = wide}; }
+  return {.longCarry = longCarry, .carry64 = wide};
 }
 
 u64 minExp(const FFTConfig& fft) {
@@ -72,10 +77,10 @@ std::vector<Interval> intervals(const FFTConfig& fft, u64 lo, u64 hi) {
   if (lo > hi) { return {}; }
 
   u64 const shortCarryFrom = lowerBoundary(lo, hi, [&](u64 E) { return !regimeOf(fft, E).longCarry; });
-  u64 const carry64From = lowerBoundary(lo, hi, [&](u64 E) { return needsCarry64(fft, E); });
+  u64 const wideCarryFrom = lowerBoundary(lo, hi, [&](u64 E) { return needsWideCarry(fft, E); });
 
   std::vector<u64> starts{lo};
-  for (u64 cut : {shortCarryFrom, carry64From}) {
+  for (u64 cut : {shortCarryFrom, wideCarryFrom}) {
     if (cut > lo && cut <= hi) { starts.push_back(cut); }
   }
 
