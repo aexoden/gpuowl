@@ -363,7 +363,9 @@ TEST(a_malformed_spec_is_refused_rather_than_built) {
   CHECK(!parseFft("512:15"));
   CHECK(!parseFft("512:15:512:212:1:0"));
   CHECK(!parseFft("7:256:2:256"));   // no such FFT type
-  CHECK(!parseFft("512:1:512"));     // a middle out of range
+  CHECK(!parseFft("512:0:512"));     // a middle out of range
+  CHECK(!parseFft("512:1:512"));     // middle 1 is only the 128K FFT
+  CHECK(parseFft("256:1:256"));
   CHECK(!parseFft("512:15:768"));    // no such height
   CHECK(!parseFft("512:8:4K"));      // nor this one, which is only a width
   CHECK(!parseFft("1:256:15:256"));  // an NTT middle that is neither a power of two nor a prime-factor one

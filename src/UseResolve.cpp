@@ -126,10 +126,12 @@ FFTSelector FFTSelector::parse(std::string_view text) {
   if (*w != 256 && *w != 512 && *w != 1024 && *w != 2048 && *w != 4096) {
     refuse(text, "width must be 256, 512, 1K, 2K or 4K");
   }
-  if (*m < 2 || *m > 16) { refuse(text, "middle must be between 2 and 16"); }
+  if (*m < 1 || *m > 16) { refuse(text, "middle must be between 1 and 16"); }
   if (*h != 256 && *h != 512 && *h != 1024 && *h != 2048) { refuse(text, "height must be 256, 512, 1K or 2K"); }
-  if (*sel.type != FFT64 && *sel.type != FFT32 && (*m & (*m - 1))) {
-    refuse(text, "NTT middle must be a power of two");
+  if (*m == 1 && (*w != 256 || *h != 256)) { refuse(text, "middle 1 is only the 128K FFT, 256:1:256"); }
+  if (*sel.type != FFT64 && *sel.type != FFT32 && (*m & (*m - 1)) &&
+      !(FFTShape::pfaMiddle(*m, *sel.type) && FFTShape::pfaType(*sel.type))) {
+    refuse(text, "this NTT middle is neither a power of two nor a prime-factor middle of this type");
   }
   sel.width = *w;
   sel.middle = *m;

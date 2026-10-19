@@ -87,7 +87,7 @@ std::string kernelKey(const FFTShape& shape, u32 v, CARRY_KIND carry) {
   };
 
   std::string key = pass(shape.width, shape.nW(false), variant_W(v)) + "/";
-  bool const chainsRead = (parts.FFT_FP64 || parts.FFT_FP32) && shape.middle != 2 && !shape.isPfa();
+  bool const chainsRead = (parts.FFT_FP64 || parts.FFT_FP32) && shape.middle > 2 && !shape.isPfa();
   key += chainsRead ? std::to_string(variant_M(v)) : "-";
   key += "/" + pass(shape.height, shape.nH(false), variant_H(v)) + "/";
 
