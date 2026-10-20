@@ -12,6 +12,7 @@
 
 #pragma once
 
+#include "ClassicSettings.h"
 #include "common.h"
 #include "Probe.h"
 #include "UseResolve.h"
@@ -120,6 +121,10 @@ struct TuneCommand {
 
   // `run` only: false to search no family's fastest FFT ahead of the rest.
   bool bootstrap = true;
+
+  // `run`, `status` and `emit`: upstream's procedure (Classic.h) in place of the search, and its settings.
+  bool classic = false;
+  ClassicSettings classicSettings{};
 
   // `run` only: what counts as one step from an entry's best option set.
   Strategy strategy{};

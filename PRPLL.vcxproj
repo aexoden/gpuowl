@@ -81,6 +81,7 @@
     <ClCompile Include=".\src\Value.cpp" />
     <ClCompile Include=".\src\Gate.cpp" />
     <ClCompile Include=".\src\Occupancy.cpp" />
+    <ClCompile Include=".\src\Classic.cpp" />
     <ClCompile Include=".\src\Reach.cpp" />
     <ClCompile Include=".\src\Summary.cpp" />
     <ClCompile Include=".\src\Accuracy.cpp" />

@@ -42,6 +42,7 @@ add_executable(prpll
   Value.cpp
   Gate.cpp
   Occupancy.cpp
+  Classic.cpp
   Reach.cpp
   Summary.cpp
   Accuracy.cpp

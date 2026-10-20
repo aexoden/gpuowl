@@ -24,6 +24,7 @@ Everything below explains what those two commands do and how to adjust them.
 - [Envs: one set of measurements per card, driver and build](#envs-one-set-of-measurements-per-card-driver-and-build)
 - [Several GPUs](#several-gpus)
 - [Other tools: `-measure` and `-options`](#other-tools--measure-and--options)
+- [Classic mode: upstream's procedure](#classic-mode-upstreams-procedure)
 - [The previous tuner: `-oldtune`](#the-previous-tuner--oldtune)
 - [Exit statuses](#exit-statuses)
 - [Questions](#questions)
@@ -852,6 +853,46 @@ unstable, and records its readings in `tunedb.txt`. The options measured are tho
 `kind=prp|ll`, `anchor=<fft>` (time a second FFT alternately and correct for its drift), `roe=0|1` (read the rounding
 error), `drift=0|1` (time the drift anchor; on by default), `drain=0|1`.
 
+
+## Classic mode: upstream's procedure
+
+`-tune mode=classic` runs upstream PRPLL's own tuning procedure instead of the search, with this tuner's measurement,
+test kinds, fault handling, database, accuracy checks and publishing:
+
+```bash
+prpll -tune mode=classic                       # as upstream's -tune would, over the workload
+prpll -tune mode=classic,fp64,exp=100M-140M    # upstream's own words are understood here
+prpll -tune mode=classic,regs                  # only the register limits of what is published
+```
+
+For each test kind in `kinds=`, on that kind's own readings, it does what upstream's `-tune` does, in the same order:
+
+1. Times an FP64 FFT against an M31+M61 NTT and tunes the faster type, and the slower too where it is within
+   `typesMargin` (upstream's 20%); `fp64` or `ntt` names the types instead.
+2. Sweeps upstream's options one at a time, each over upstream's values, on the FFT of each type that holds the probe
+   (`IN_WG`/`IN_SIZEX`, `OUT_WG`/`OUT_SIZEX`, `PAD`, the middle transposes, `INPLACE`, each `LOADS`/`STORES` class,
+   `FAST_BARRIER`, the `TAIL_TRIGS` and `TABMUL_CHAIN` keys, `MODM31`, `UNROLL`, `ZEROHACK`, `WMUL`, `MULTI_Q`, `L1CUDA`,
+   `GRAPHS`, `TAIL_KERNELS`). A value is kept only where it reads faster than what is in force by more than upstream's
+   threshold for that option (0 to 0.3%) and beyond both readings' error bars. What is kept becomes the default lines,
+   and these FFTs are recorded as the bootstrap families, so a later ordinary `-tune` carries on from them.
+3. Times every favoured shape over the workload, smallest first, keeping upstream's cost/reach frontier, and of the FP64
+   variants only the fastest width and height variant (`whVariants=`), then middle variant 1 of the new entries.
+4. Tunes the register limits of the entries that joined the frontier, in upstream's order (see
+   [Register limits](#settings)), each candidate an ordinary reading, then with `tk=` the other `TAIL_KERNELS` choices.
+5. Reads the accuracy gate for every entry it would publish, and publishes as a tuning run does.
+
+Every reading is an ordinary row of `tunedb.txt`, and every decision is made from the rows, so a stopped or restarted
+run replays what it has and carries on, `-tune status` says where a classic run stands and what it would read next,
+and `-tune emit,mode=classic` publishes with the lines it settled on.
+
+Upstream's words: `fp64`, `ntt`, `noconfig`, `inplace`, `nofp32`, `fp32=0|1|2`, `fp6431[=0|1|2]`, `1k256[=..]`,
+`m61[=..]`, `pfa=0|1|2`, `regs`, `variants`, `fine[=<pct>]`, `tk=auto|<N>`, and `minexp=`/`maxexp=`/`exp=`, which set the
+workload. `quick=` is accepted and has no effect: how long a candidate is timed is decided by its error bars, up to
+`maxCalls=` calls. This mode's own: `types=auto|fp64|ntt|both`, `sweeps=0|1`, `keepMargin=upstream|<P>%` (one threshold
+for every option in place of upstream's), `typesMargin=<P>%`, `whVariants=fastest|accurate|all`, `maxCalls=<N>`
+(default 6), and `tkLosses=<N>`/`tkBad=<P>%`, after which a `TAIL_KERNELS` choice that keeps losing for an FFT type is not
+tried again (default 4 losses, or 2 by more than 5%). Not carried over from upstream: its `WMUL=1` trial with an odd
+number of blocks during the register pass, and `tk=`'s carrying of one choice's register occupancy over to the next.
 
 ## The previous tuner: `-oldtune`
 

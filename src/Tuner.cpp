@@ -4,6 +4,7 @@
 
 #include "Accuracy.h"
 #include "Args.h"
+#include "Classic.h"
 #include "BuildId.h"
 #include "Dashboard.h"
 #include "Emit.h"
@@ -357,6 +358,23 @@ private:
   Bootstrap bootstrap = bootstrapFor(device, scope, entries, true);
   Scheduler const scheduler{scope, std::move(entries), 1000, std::move(bootstrap)};
   return scheduler.lines(db, env);
+}
+
+// A classic run with `command`'s settings replayed over the rows alone: where it stands, and its lines.
+[[nodiscard]] std::pair<ClassicOutcome, std::string> replayClassic(const TuneDB& db, u32 env, const Env& device,
+                                                                 const RunScope& scope, const TuneCommand& command) {
+  std::vector<TestKind> kinds;
+  for (const Grid& g : scope.grids) { kinds.push_back(g.kind); }
+  ReplayBench replay{db, env, device};
+  ClassicOutcome outcome = runClassic({.device = device,
+                                       .db = db,
+                                       .env = env,
+                                       .scope = scope,
+                                       .kinds = kinds,
+                                       .settings = command.classicSettings,
+                                       .tailQueues = command.strategy.tailQueues},
+                                      replay);
+  return {std::move(outcome), replay.next()};
 }
 
 // The queue a run with `command`'s settings works through on `device`.
@@ -728,10 +746,53 @@ TuneCommand parseTuneCommand(std::string_view text) {
   std::optional<TailQueues> tailQueues;
 
   size_t const settingsFrom = isRun ? 0 : firstComma == std::string_view::npos ? text.size() + 1 : firstComma + 1;
+
+  // Classic mode takes upstream's own words, wherever mode=classic comes among them.
+  bool const takesMode = isRun || isStatus || out.verb == TuneVerb::Emit;
+  bool classicMode = false;
+  for (size_t at = settingsFrom; at <= text.size();) {
+    size_t const comma = text.find(',', at);
+    classicMode = classicMode || text.substr(at, comma == std::string_view::npos ? comma : comma - at) == "mode=classic";
+    at = comma == std::string_view::npos ? text.size() + 1 : comma + 1;
+  }
   for (size_t at = settingsFrom; at <= text.size();) {
     size_t const comma = text.find(',', at);
     std::string_view const token = text.substr(at, comma == std::string_view::npos ? comma : comma - at);
     at = comma == std::string_view::npos ? text.size() + 1 : comma + 1;
+
+    if (token.starts_with("mode=") && takesMode) {
+      std::string_view const mode = token.substr(5);
+      if (mode != "classic" && mode != "search") { throw std::string{"-tune: mode= takes search or classic"}; }
+      out.classic = mode == "classic";
+      if (isStatus) { out.settings += (out.settings.empty() ? "" : ",") + std::string{token}; }
+      continue;
+    }
+    if (classicMode && takesMode) {
+      std::string_view const word = token.substr(0, token.find('='));
+      std::string_view const value = token.find('=') == std::string_view::npos ? "" : token.substr(token.find('=') + 1);
+      bool handled = true;
+      // Upstream's range words name the workload; quick= sets how long upstream times, which error bars decide here.
+      if (word == "minexp" || word == "maxexp") {
+        std::optional<u64> const e = Args::parseExponent(std::string{value});
+        if (!e) { throw "-tune: " + std::string{word} + "= takes an exponent, e.g. 150000000 or 150M"; }
+        (word == "minexp" ? out.scope.lo : out.scope.hi) = *e;
+      } else if (word == "exp") {
+        size_t const dash = value.find('-');
+        std::optional<u64> const lo =
+          dash == std::string_view::npos ? std::nullopt : Args::parseExponent(std::string{value.substr(0, dash)});
+        std::optional<u64> const hi =
+          dash == std::string_view::npos ? std::nullopt : Args::parseExponent(std::string{value.substr(dash + 1)});
+        if (!lo || !hi || *lo > *hi) { throw std::string{"-tune: exp= takes a range of exponents, e.g. exp=140M-142M"}; }
+        out.scope.lo = *lo;
+        out.scope.hi = *hi;
+      } else if (word != "quick") {
+        handled = parseClassicWord(token, out.classicSettings);
+      }
+      if (handled) {
+        if (isStatus) { out.settings += (out.settings.empty() ? "" : ",") + std::string{token}; }
+        continue;
+      }
+    }
 
     if (isUpstreamWord(token)) {
       throw who + ": '" + std::string{token} + "' is an option of the previous tuner, which is now -oldtune";
@@ -850,7 +911,7 @@ TuneCommand parseTuneCommand(std::string_view text) {
       switch (out.verb) {
       case TuneVerb::Emit:
         accepted = "env=<id>, tunetxt=0|1, and the run's workload=<lo>-<hi>, probe=<E>, probeWeight=<0..1>,"
-                   " kinds=prp|ll|prp+ll, pfaShapes=ntt|all|none";
+                   " kinds=prp|ll|prp+ll, pfaShapes=ntt|all|none, mode=search|classic and classic mode's settings";
         break;
       case TuneVerb::Reset: accepted = "env=<id>, fft=<spec>"; break;
       case TuneVerb::Adopt: accepted = "into=<id> (or env=<id>), from=<id>"; break;
@@ -868,7 +929,8 @@ TuneCommand parseTuneCommand(std::string_view text) {
                    " halvings=<N>, lookCalls=<N>,"
                    " typeMargin=<P>%|all, lookMargin=<P>%|all, linesSweep=0|1, linesMargin=<P>%+<P>%...|all,"
                    " sweepMargin=<P>%|all, stop=<P>%|0,"
-                   " tunetxt=0|1, dashboard=0|1,"
+                   " tunetxt=0|1, dashboard=0|1, mode=search|classic (classic: upstream's options and types=, sweeps=,"
+                   " keepMargin=, typesMargin=, whVariants=, maxCalls=, tkLosses=, tkBad=),"
                    " or a subcommand:"
                    " emit, reset, adopt, compact, scope, status, accuracy";
         break;
@@ -879,7 +941,7 @@ TuneCommand parseTuneCommand(std::string_view text) {
                    " comboTiers=1|2|3, tailQueues=ntt|all|none, contenders=<N>, roundCalls=<N>, halvings=<N>,"
                    " lookCalls=<N>,"
                    " typeMargin=<P>%|all, lookMargin=<P>%|all, linesSweep=0|1, linesMargin=<P>%+<P>%...|all,"
-                   " sweepMargin=<P>%|all, stop=<P>%|0";
+                   " sweepMargin=<P>%|all, stop=<P>%|0, mode=search|classic and classic mode's settings";
         break;
       case TuneVerb::Accuracy: accepted = "workload=<lo>-<hi>, probe=<E>, fft=<spec>, groups=<Group>+<Group>..."; break;
       }
@@ -965,7 +1027,12 @@ std::string runSettings(const RunScope& scope, const TuneCommand& command) {
     ",linesSweep=" + (command.exploration.linesSweep ? "1" : "0") +
     ",linesMargin=" + marginsText(command.exploration.linesMargin) +
     ",sweepMargin=" + marginText(command.exploration.sweepMargin);
-  return out + ",stop=" + (command.stop > 0 ? shortest(command.stop * 100) + "%" : "0");
+  out += std::string{",stop="} + (command.stop > 0 ? shortest(command.stop * 100) + "%" : "0");
+  if (command.classic) {
+    out += ",mode=classic";
+    for (const std::string& word : classicWords(command.classicSettings)) { out += "," + word; }
+  }
+  return out;
 }
 
 std::vector<WorkRow> workRows(u32 sess, const std::vector<PendingWork>& pending) {
@@ -1179,13 +1246,23 @@ namespace {
 
   std::vector<PendingWork> const pending = statusWork(db, run, args, dir);
   RunScope const scope = makeScope(settings->scope, pending);
-  Scheduler const scheduler = schedulerFor(row.toEnv(), scope, *settings, args.blockSize);
 
   std::string const work = std::to_string(pending.size()) + (pending.size() == 1 ? " assignment" : " assignments");
   std::string const whose = !run
     ? "a run started here now, there being none on env " + std::to_string(env) + ", over the " + work + " pending"
     : "session " + std::to_string(run->id) + "'s run" + (command.settings.empty() ? "" : " with " + command.settings) +
       ", over the " + work + " pending when it started";
+
+  if (settings->classic) {
+    auto const [outcome, next] = replayClassic(db, env, row.toEnv(), scope, *settings);
+    log("tune: status: %s: %s\n", whose.c_str(), runSettings(scope, *settings).c_str());
+    log("tune: status: classic mode %s%s; the lines are %s\n",
+        outcome.complete ? "is done" : ("is in " + outcome.stage).c_str(),
+        next.empty() ? "" : (", and would next read " + next).c_str(), linesText(outcome.lines).c_str());
+    return true;
+  }
+
+  Scheduler const scheduler = schedulerFor(row.toEnv(), scope, *settings, args.blockSize);
   logStatus(statusOf(scheduler, db, env, settings->stop, activity), row, whose + ": " + runSettings(scope, *settings));
   return true;
 }
@@ -1236,7 +1313,10 @@ bool runTuneCommand(const TuneCommand& command, const Args& args, const fs::path
   if (command.verb == TuneVerb::Emit) {
     Provenance const from{.ts = u64(time(nullptr)), .db = TuneDB::DEFAULT_NAME, .env = env};
 
-    std::optional<SelectionFile> const file = emit(db, defaultsOf(db, env, *scope), from);
+    Defaults const lines = command.classic
+      ? replayClassic(db, env, db.findEnv(env)->toEnv(), *scope, command).first.lines
+      : defaultsOf(db, env, *scope);
+    std::optional<SelectionFile> const file = emit(db, lines, from);
     if (!file) {
       log("tune: emit: the database gave nothing that could be published\n");
       return false;
@@ -1320,6 +1400,62 @@ MeasureOutcome runTune(const GpuCommon& shared, const TuneCommand& command) {
   // Every generation says it again, so that a restart after a fault is never the only record of the fault.
   logFaults(faultsOf(db, envId), "tune: ");
 
+  fs::path const out = dir / SELECTION_NAME;
+  std::optional<fs::path> const compat =
+    command.tuneTxt ? std::optional<fs::path>{dir / TUNE_TXT_NAME} : std::optional<fs::path>{};
+  auto publishNow = [&](const Objective& objective, const Defaults& defaults) {
+    Provenance const from{.ts = u64(time(nullptr)),
+                          .db = TuneDB::DEFAULT_NAME,
+                          .env = envId,
+                          .T = objective.T(),
+                          .workloadLo = scope.lo,
+                          .workloadHi = scope.hi};
+    if (!publish(out, db, defaults, from, compat)) { log("tune: %s could not be published\n", out.string().c_str()); }
+  };
+  auto const finish = [&] {
+    Benefit const benefit = benefitOf(db, envId, env, Objective{db, envId, scope}, probeKind(scope), scope.probe);
+    std::string text;
+    if (File file = File::openRead(dbPath)) { text = file.readAll(); }
+    std::vector<SessionSpan> const spans = spansOf(text, envId);
+    log("tune: benefit: %s; env %u has been measured for %s over %zu %s\n", benefitText(benefit).c_str(), envId,
+        clockText(measuringTime(spans)).c_str(), spans.size(), spans.size() == 1 ? "session" : "sessions");
+    logFaults(faultsOf(db, envId), "tune: ");
+    log("tune: published %s%s\n", out.string().c_str(), compat ? (" and " + compat->string()).c_str() : "");
+    if (!takeover.configKeys.empty()) {
+      std::string keys;
+      for (const std::string& k : takeover.configKeys) { keys += (keys.empty() ? "" : ", ") + k; }
+      log("tune: the config files set %s, which production puts ahead of %s; remove them to run what was tuned\n",
+          keys.c_str(), out.filename().string().c_str());
+    }
+    if (session.deviceLost()) { return MeasureOutcome::DeviceLost; }
+    session.end();
+    return session.cannotRecord() ? MeasureOutcome::Failed : MeasureOutcome::Ok;
+  };
+
+  if (command.classic) {
+    std::vector<TestKind> kinds;
+    for (const Grid& g : scope.grids) { kinds.push_back(g.kind); }
+    std::string words;
+    for (const std::string& w : classicWords(command.classicSettings)) { words += (words.empty() ? "" : ",") + w; }
+    log("tune: classic mode (upstream's procedure, each kind on its own readings): %s\n", words.c_str());
+
+    SessionBench bench{session, args.blockSize};
+    SessionClassicBench classic{bench, db, envId, env};
+    ClassicContext const context{.device = env,
+                                 .db = db,
+                                 .env = envId,
+                                 .scope = scope,
+                                 .kinds = kinds,
+                                 .settings = command.classicSettings,
+                                 .tailQueues = command.strategy.tailQueues};
+    ClassicOutcome const outcome = runClassic(context, classic);
+    publishNow(Objective{db, envId, scope}, outcome.lines);
+    log("tune: classic mode %s after %u calls in %.1f min; the lines are %s\n",
+        outcome.complete ? "done" : ("stopped in " + outcome.stage).c_str(), classic.calls(), classic.seconds() / 60,
+        linesText(outcome.lines).c_str());
+    return finish();
+  }
+
   Scheduler scheduler = schedulerFor(env, scope, command, args.blockSize);
   std::string shaping;
   for (const std::string& setting : strategySettings(command.strategy)) {
@@ -1354,19 +1490,6 @@ MeasureOutcome runTune(const GpuCommon& shared, const TuneCommand& command) {
   }
   reportSearch(env, scope, command.strategy, false);
 
-  fs::path const out = dir / SELECTION_NAME;
-  std::optional<fs::path> const compat =
-    command.tuneTxt ? std::optional<fs::path>{dir / TUNE_TXT_NAME} : std::optional<fs::path>{};
-  auto publishNow = [&](const Objective& objective, const Defaults& defaults) {
-    Provenance const from{.ts = u64(time(nullptr)),
-                          .db = TuneDB::DEFAULT_NAME,
-                          .env = envId,
-                          .T = objective.T(),
-                          .workloadLo = scope.lo,
-                          .workloadHi = scope.hi};
-    if (!publish(out, db, defaults, from, compat)) { log("tune: %s could not be published\n", out.string().c_str()); }
-  };
-
   bool const dashboard = command.dashboard && liveTerminal();
   if (command.dashboard && !dashboard) {
     log("tune: dashboard=1 needs a terminal on stdout, which this is not, so the run writes its usual lines\n");
@@ -1396,26 +1519,7 @@ MeasureOutcome runTune(const GpuCommon& shared, const TuneCommand& command) {
   logSummary(summarize(scheduler, db, envId, session.id(), report, command.stop));
   log("tune: T %.3f -> %.3f us/it%s\n", report.startT, report.endT,
       report.stopped ? ", stopped before the queue was done" : "");
-  {
-    Benefit const benefit = benefitOf(db, envId, env, Objective{db, envId, scope}, probeKind(scope), scope.probe);
-    std::string text;
-    if (File file = File::openRead(dbPath)) { text = file.readAll(); }
-    std::vector<SessionSpan> const spans = spansOf(text, envId);
-    log("tune: benefit: %s; env %u has been measured for %s over %zu %s\n", benefitText(benefit).c_str(), envId,
-        clockText(measuringTime(spans)).c_str(), spans.size(), spans.size() == 1 ? "session" : "sessions");
-  }
-  logFaults(faultsOf(db, envId), "tune: ");
-  log("tune: published %s%s\n", out.string().c_str(), compat ? (" and " + compat->string()).c_str() : "");
-  if (!takeover.configKeys.empty()) {
-    std::string keys;
-    for (const std::string& k : takeover.configKeys) { keys += (keys.empty() ? "" : ", ") + k; }
-    log("tune: the config files set %s, which production puts ahead of %s; remove them to run what was tuned\n",
-        keys.c_str(), out.filename().string().c_str());
-  }
-
-  if (session.deviceLost()) { return MeasureOutcome::DeviceLost; }
-  session.end();
-  return session.cannotRecord() ? MeasureOutcome::Failed : MeasureOutcome::Ok;
+  return finish();
 }
 
 }  // namespace tune
