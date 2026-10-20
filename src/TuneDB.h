@@ -211,7 +211,7 @@ struct RegsRow {
   TestKind kind = TestKind::PRP;
   std::string key{};
   KernelResources resources{};
-  std::vector<int> candidates{};
+  RegisterPlan plan{};
   u64 ts = 0;
 };
 
@@ -335,9 +335,12 @@ public:
   [[nodiscard]] const std::vector<JumpRow>& jumps() const { return jumps_; }
   [[nodiscard]] const std::vector<RegsRow>& regs() const { return regs_; }
 
-  // What the search offers each REG* key of an entry: the candidates of its `regs` row in `env`.  A key with none is
+  // What the search offers each REG* key of an entry: the values of its `regs` row's plan in `env`.  A key with none is
   // not named.
   [[nodiscard]] RegisterOffer registerOffer(u32 env, const std::string& fft, TestKind kind) const;
+
+  // The `regs` row of one key of an entry in `env`, the first written; none where there is none.
+  [[nodiscard]] const RegsRow* findRegs(u32 env, const std::string& fft, TestKind kind, const std::string& key) const;
   [[nodiscard]] const std::vector<ComboRow>& combos() const { return combos_; }
   [[nodiscard]] const std::vector<BootRow>& boots() const { return boots_; }
   [[nodiscard]] const std::vector<RoundRow>& rounds() const { return rounds_; }

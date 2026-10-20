@@ -114,7 +114,7 @@ Call timeCall(GpuCommon shared, const Env& env, const FFTConfig& fft, TestKind k
   if (std::optional<OccupancyLimits> const limits = deviceLimits(shared.context->deviceId())) {
     for (const Gpu::RegTunable& k : gpu->regTunables(false)) {
       out.kernels.push_back(
-        {.key = k.key, .resources = k.res, .candidates = registerCandidates(k.res, *limits, k.defaultCap)});
+        {.key = k.key, .resources = k.res, .plan = registerPlan(k.res, *limits, k.defaultCap)});
     }
   }
   return out;
@@ -596,7 +596,7 @@ void Session::recordRegisters(const FFTConfig& fft, TestKind kind, const Call& c
                           .kind = kind,
                           .key = k.key,
                           .resources = k.resources,
-                          .candidates = k.candidates,
+                          .plan = k.plan,
                           .ts = now()});
   }
 }

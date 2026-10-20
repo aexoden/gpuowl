@@ -51,14 +51,19 @@ TEST(cuda_occupancy_is_the_blocks_the_register_file_holds) {
   CHECK(occ.canTry(2) && occ.canTry(4) && !occ.canTry(9));
 
   // Launch bounds of 2, 3 and 4 blocks, and the register count at each.
-  CHECK(registerCandidates({.regs = 96, .localBytes = 0, .sharedBytes = 0, .threads = 256}, p100(), false) ==
+  CHECK(registerPlan({.regs = 96, .localBytes = 0, .sharedBytes = 0, .threads = 256}, p100(), false).values() ==
         (std::vector<int>{2, 3, 4, 64, 80, 128}));
+  RegisterPlan const plan =
+    registerPlan({.regs = 96, .localBytes = 0, .sharedBytes = 0, .threads = 256}, p100(), false);
+  CHECK_EQ(plan.k0, 2);
+  CHECK(plan.occupancies == (std::vector<std::pair<int, int>>{{2, 128}, {3, 80}, {4, 64}}));
+  CHECK(!plan.lift);
 
   // Shared memory caps the blocks as the registers do: 20 KB a block leaves room for three.
   Occupancy const shared = occupancyOf({.regs = 32, .localBytes = 0, .sharedBytes = 20'480, .threads = 256}, p100());
   CHECK_EQ(shared.maxBlocks, 3);
   CHECK_EQ(shared.k0, 3);
-  CHECK(registerCandidates({.regs = 32, .localBytes = 0, .sharedBytes = 20'480, .threads = 256}, p100(), false) ==
+  CHECK(registerPlan({.regs = 32, .localBytes = 0, .sharedBytes = 20'480, .threads = 256}, p100(), false).values() ==
         (std::vector<int>{2, 3, 80, 128}));
 }
 
@@ -73,14 +78,19 @@ TEST(amd_occupancy_is_the_waves_the_vgprs_and_the_lds_allow) {
   CHECK(!occ.canTry(1));  // a minimum of waves cannot lower the occupancy
 
   // Only more waves, and -1 where the host caps the kernel of its own accord.
-  CHECK(registerCandidates(middle, gfx906(), false) == (std::vector<int>{2, 3}));
-  CHECK(registerCandidates(middle, gfx906(), true) == (std::vector<int>{-1, 2, 3}));
+  CHECK(registerPlan(middle, gfx906(), false).values() == (std::vector<int>{2, 3}));
+  CHECK(registerPlan(middle, gfx906(), true).values() == (std::vector<int>{-1, 2, 3}));
+  RegisterPlan const plan = registerPlan(middle, gfx906(), true);
+  CHECK_EQ(plan.k0, 1);
+  CHECK(plan.occupancies == (std::vector<std::pair<int, int>>{{2, 0}, {3, 0}}));
+  CHECK(plan.lift);
 }
 
 TEST(a_kernel_whose_resources_say_nothing_is_offered_nothing) {
-  CHECK(registerCandidates({.regs = -1, .localBytes = 0, .sharedBytes = 0, .threads = 256}, p100(), false).empty());
-  CHECK(registerCandidates({.regs = 64, .localBytes = 0, .sharedBytes = 0, .threads = 0}, p100(), false).empty());
-  CHECK(registerCandidates({.regs = 64, .localBytes = 0, .sharedBytes = 0, .threads = 64}, OccupancyLimits{.amd = true},
-                           false)
-          .empty());
+  CHECK(registerPlan({.regs = -1, .localBytes = 0, .sharedBytes = 0, .threads = 256}, p100(), false).values().empty());
+  CHECK(registerPlan({.regs = 64, .localBytes = 0, .sharedBytes = 0, .threads = 0}, p100(), false).values().empty());
+  CHECK(
+    registerPlan({.regs = 64, .localBytes = 0, .sharedBytes = 0, .threads = 64}, OccupancyLimits{.amd = true}, false)
+      .values()
+      .empty());
 }

@@ -30,7 +30,7 @@ namespace tune {
 struct KernelUse {
   std::string key{};
   KernelResources resources{};
-  std::vector<int> candidates{};
+  RegisterPlan plan{};
 };
 
 // One call to the GPU.

@@ -57,12 +57,23 @@ struct Occupancy {
 
 [[nodiscard]] Occupancy occupancyOf(const KernelResources& resources, const OccupancyLimits& limits);
 
-// The REG* values worth timing for a kernel built at the compiler's own registers, ascending, the default (0) not
-// among them.  CUDA: launch bounds of one block below the compiler's occupancy to two above, and the register count at
-// each of those.  AMD: one and two waves above, and -1 where `defaultCap`, the host's own cap of a kernel left at 0,
-// is to be lifted.  Empty where the resources give no occupancy.
-[[nodiscard]] std::vector<int> registerCandidates(const KernelResources& resources, const OccupancyLimits& limits,
-                                                  bool defaultCap);
+// What the model makes of a kernel built at the compiler's own registers.  CUDA: launch bounds of one block below the
+// compiler's occupancy to two above, each with the register count at it, which compiles differently.  AMD: one and two
+// waves above, with no count, and -1 where `lift`: the host caps a kernel left at 0 of its own accord.  Nothing where
+// the resources give no occupancy.
+struct RegisterPlan {
+  int k0 = 0;
+  std::vector<std::pair<int, int>> occupancies{};  // ascending: (blocks or waves, register count at it, or 0)
+  bool lift = false;
+
+  // Every value the plan offers its key, ascending, the default (0) not among them.
+  [[nodiscard]] std::vector<int> values() const;
+
+  [[nodiscard]] bool operator==(const RegisterPlan&) const = default;
+};
+
+[[nodiscard]] RegisterPlan registerPlan(const KernelResources& resources, const OccupancyLimits& limits,
+                                        bool defaultCap);
 
 // The open device's limits, where its register limits can be modelled: CUDA, and AMD where the runtime reports a
 // kernel's VGPRs.

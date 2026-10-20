@@ -369,12 +369,15 @@ std::string formatRow(const TryRow& row) {
 std::string formatRow(const DoneRow& row) { return "done  " + to_string(row.sess) + ' ' + to_string(row.ts); }
 
 std::string formatRow(const RegsRow& row) {
-  std::string candidates;
-  for (int const v : row.candidates) { candidates += (candidates.empty() ? "" : "+") + to_string(v); }
+  std::string plan;
+  for (auto const& [blocks, regs] : row.plan.occupancies) {
+    plan += (plan.empty() ? "" : "+") + to_string(blocks) + ':' + to_string(regs);
+  }
+  if (row.plan.lift) { plan += plan.empty() ? "-1" : "+-1"; }
   const KernelResources& r = row.resources;
   return "regs  " + to_string(row.sess) + ' ' + row.fft + ' ' + toString(row.kind) + ' ' + row.key + ' ' +
     to_string(r.regs) + ' ' + to_string(r.sharedBytes) + ' ' + to_string(r.threads) + ' ' + to_string(r.localBytes) +
-    ' ' + (candidates.empty() ? "-" : candidates) + ' ' + to_string(row.ts);
+    ' ' + to_string(row.plan.k0) + ' ' + (plan.empty() ? "-" : plan) + ' ' + to_string(row.ts);
 }
 
 std::string formatRow(const JumpRow& row) {
@@ -686,9 +689,16 @@ bool TuneDB::add(const RegsRow& row) {
 RegisterOffer TuneDB::registerOffer(u32 env, const std::string& fft, TestKind kind) const {
   RegisterOffer out;
   for (const RegsRow& row : regs_) {
-    if (row.fft == fft && row.kind == kind && envOf(row.sess) == env) { out.try_emplace(row.key, row.candidates); }
+    if (row.fft == fft && row.kind == kind && envOf(row.sess) == env) { out.try_emplace(row.key, row.plan.values()); }
   }
   return out;
+}
+
+const RegsRow* TuneDB::findRegs(u32 env, const std::string& fft, TestKind kind, const std::string& key) const {
+  for (const RegsRow& row : regs_) {
+    if (row.fft == fft && row.kind == kind && row.key == key && envOf(row.sess) == env) { return &row; }
+  }
+  return nullptr;
 }
 
 bool TuneDB::add(const ComboRow& row) {
@@ -1541,8 +1551,8 @@ bool TuneDB::parse(std::string_view text, std::string_view name) {
       if (!ok) { continue; }
       if (!add(row)) { refuse("lines row names a session that is not declared"); }
     } else if (tag == "regs") {
-      if (f.size() != 11) {
-        refuse("regs row has " + to_string(f.size()) + " fields, expected 11");
+      if (f.size() != 12) {
+        refuse("regs row has " + to_string(f.size()) + " fields, expected 12");
         continue;
       }
       std::optional<u32> const sess = sessionOf();
@@ -1551,29 +1561,39 @@ bool TuneDB::parse(std::string_view text, std::string_view name) {
       auto const shared = parseInt<int>(f[6]);
       auto const threads = parseInt<int>(f[7]);
       auto const local = parseInt<int>(f[8]);
-      auto const ts = parseInt<u64>(f[10]);
-      std::vector<int> candidates;
-      bool listed = true;
-      if (f[9] != "-") {
-        for (size_t at = 0; at <= f[9].size();) {
-          size_t const plus = std::min(f[9].find('+', at), f[9].size());
-          auto const v = parseInt<int>(std::string_view{f[9]}.substr(at, plus - at));
-          if (!v) { listed = false; }
-          candidates.push_back(v.value_or(0));
+      auto const k0 = parseInt<int>(f[9]);
+      auto const ts = parseInt<u64>(f[11]);
+      RegisterPlan plan{.k0 = k0.value_or(0), .occupancies = {}, .lift = false};
+      bool listed = k0.has_value();
+      if (f[10] != "-") {
+        std::string_view const text = f[10];
+        for (size_t at = 0; at <= text.size();) {
+          size_t const plus = std::min(text.find('+', at), text.size());
+          std::string_view const item = text.substr(at, plus - at);
+          size_t const colon = item.find(':');
+          if (item == "-1") {
+            plan.lift = true;
+          } else if (auto const blocks = parseInt<int>(item.substr(0, colon)),
+                     regs = colon == std::string_view::npos ? std::nullopt : parseInt<int>(item.substr(colon + 1));
+                     blocks && regs) {
+            plan.occupancies.emplace_back(*blocks, *regs);
+          } else {
+            listed = false;
+          }
           at = plus + 1;
         }
       }
       if (!kind) { refuse("'" + f[3] + "' is not a test kind"); }
       if (!regs || !shared || !threads || !local) { refuse("regs row's resources are not numbers"); }
-      if (!listed) { refuse("'" + f[9] + "' is not a list of register limits"); }
-      if (!ts) { refuse("'" + f[10] + "' is not a timestamp"); }
+      if (!listed) { refuse("'" + f[9] + " " + f[10] + "' is not a register plan"); }
+      if (!ts) { refuse("'" + f[11] + "' is not a timestamp"); }
       if (!sess || !kind || !regs || !shared || !threads || !local || !listed || !ts) { continue; }
       RegsRow const row{.sess = *sess,
                         .fft = f[2],
                         .kind = *kind,
                         .key = f[4],
                         .resources = {.regs = *regs, .localBytes = *local, .sharedBytes = *shared, .threads = *threads},
-                        .candidates = std::move(candidates),
+                        .plan = std::move(plan),
                         .ts = *ts};
       if (!add(row)) { refuse("regs row names no FFT or no register limit"); }
     } else if (tag == "alarm") {

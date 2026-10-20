@@ -48,19 +48,26 @@ Occupancy occupancyOf(const KernelResources& r, const OccupancyLimits& l) {
   return o;
 }
 
-std::vector<int> registerCandidates(const KernelResources& resources, const OccupancyLimits& limits, bool defaultCap) {
-  Occupancy const occ = occupancyOf(resources, limits);
+std::vector<int> RegisterPlan::values() const {
   std::set<int> out;
-  if (occ.k0 > 0) {
-    for (int const blocks : {occ.k0 - 1, occ.k0, occ.k0 + 1, occ.k0 + 2}) {
-      if (!occ.canTry(blocks)) { continue; }
-      out.insert(blocks);
-      // A register count compiles differently from launch bounds of the same occupancy, sometimes better.
-      if (int const regs = occ.regsFor(blocks); !occ.amd && regs > Gpu::REG_MAX_OCCUPANCY) { out.insert(regs); }
-    }
+  for (auto const& [blocks, regs] : occupancies) {
+    out.insert(blocks);
+    if (regs > Gpu::REG_MAX_OCCUPANCY) { out.insert(regs); }
   }
-  if (limits.amd && defaultCap) { out.insert(-1); }
+  if (lift) { out.insert(-1); }
   return {out.begin(), out.end()};
+}
+
+RegisterPlan registerPlan(const KernelResources& resources, const OccupancyLimits& limits, bool defaultCap) {
+  Occupancy const occ = occupancyOf(resources, limits);
+  RegisterPlan out{.k0 = occ.k0, .occupancies = {}, .lift = limits.amd && defaultCap};
+  if (occ.k0 <= 0) { return out; }
+  for (int const blocks : {occ.k0 - 1, occ.k0, occ.k0 + 1, occ.k0 + 2}) {
+    if (!occ.canTry(blocks)) { continue; }
+    int const regs = occ.amd ? 0 : occ.regsFor(blocks);
+    out.occupancies.emplace_back(blocks, regs > Gpu::REG_MAX_OCCUPANCY ? regs : 0);
+  }
+  return out;
 }
 
 std::optional<OccupancyLimits> deviceLimits([[maybe_unused]] cl_device_id id) {
