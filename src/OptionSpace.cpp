@@ -11,6 +11,7 @@
 #include <algorithm>
 #include <cstdlib>
 #include <cstring>
+#include <numeric>
 #include <set>
 #include <string_view>
 
@@ -237,16 +238,26 @@ bool mm2ChainInert(const FFTConfig& f) { return f.shape.middle < 5 || pfa(f); }
 // The access policy window exists from compute capability 8.0; below it the stream attribute is refused.
 bool l2PersistUsable(const Env& e) { return e.cudaBackend && e.isNvidia && e.computeCapability >= 800; }
 
+// Every REG* value a configuration may hold.  The search offers few of them, as the occupancy model of the kernel's
+// resources says (Occupancy.h, axesOf()); these are what a published set or a config line may name.
+//
 // On CUDA 0 leaves the registers to the compiler, 1..20 (Gpu::REG_MAX_OCCUPANCY) are launch bounds' minimum blocks per
-// SM, and larger values a maximum register count.
-const vector<int> REG_LADDER{0, 1, 2, 4, 48, 56, 64, 72, 80, 88, 96, 104, 112, 128};
+// SM, and larger values a maximum register count, up to the 255 a thread can have.
+vector<int> cudaRegValues() {
+  vector<int> v(256);
+  std::iota(v.begin(), v.end(), 0);
+  return v;
+}
 
-// On AMD a value of 1..20 asks for that many waves per SIMD, which caps the VGPRs at 128, 84 and 64 for 2, 3 and 4 on
-// gfx9. An explicit VGPR count is left out: ROCm compiles as usual and then spills to fit.
-const vector<int> AMD_WAVES{0, 2, 3, 4};
-
-// Where 0 already means two waves, -1 lifts the cap instead.
-const vector<int> AMD_WAVES_CAPPED{-1, 0, 3, 4};
+// On AMD a value of 2..20 asks for that many waves per SIMD, which caps the VGPRs at 128, 84 and 64 for 2, 3 and 4 on
+// gfx9; one wave is no cap.  An explicit VGPR count is left out: ROCm compiles as usual and then spills to fit.  Where 0
+// already means two waves (`capped`), -1 lifts the cap and 2 is 0 again.
+vector<int> amdWaves(bool capped) {
+  vector<int> v{0};
+  if (capped) { v.insert(v.begin(), -1); }
+  for (int w = capped ? 3 : 2; w <= 20; ++w) { v.push_back(w); }
+  return v;
+}
 
 // NOREG=1 makes numRegisters() return early, so no REG* key reaches the compiler. Without CUDA only AMD reads them.
 bool regUsable(const Env& e, const UseConfig& d) { return (e.cudaBackend || e.isAmd) && useValue(d, "NOREG", 0) == 0; }
@@ -261,13 +272,13 @@ u32 cudaDriverMajor(const Env& e) {
 }
 
 vector<int> regLadder(const Env& e, const FFTConfig&, const UseConfig&) {
-  return e.cudaBackend ? REG_LADDER : AMD_WAVES;
+  return e.cudaBackend ? cudaRegValues() : amdWaves(false);
 }
 
 // Upstream caps the in-place middle kernels at two waves by default on Vega.
 vector<int> regMiddleLadder(const Env& e, const FFTConfig&, const UseConfig& d) {
-  if (e.cudaBackend) { return REG_LADDER; }
-  return (e.isVega() && inplaceOn(e, d)) ? AMD_WAVES_CAPPED : AMD_WAVES;
+  if (e.cudaBackend) { return cudaRegValues(); }
+  return amdWaves(e.isVega() && inplaceOn(e, d));
 }
 
 template<enum FFT_TYPES T> bool regCarryApplies(const Env& e, const FFTConfig& f, const UseConfig& d) {
@@ -959,6 +970,19 @@ string join(const vector<int>& v) {
   return s.empty() ? "-" : s;
 }
 
+// As join(), with each run of three or more consecutive values written as a range: "-1,0,3..20".
+string joinRuns(const vector<int>& v) {
+  string s;
+  for (size_t i = 0; i < v.size();) {
+    size_t j = i;
+    while (j + 1 < v.size() && v[j + 1] == v[j] + 1) { ++j; }
+    string const part = j - i >= 2 ? to_string(v[i]) + ".." + to_string(v[j]) : to_string(v[i]);
+    s += (s.empty() ? "" : ",") + part;
+    i = j - i >= 2 ? j + 1 : i + 1;
+  }
+  return s.empty() ? "-" : s;
+}
+
 string join(const vector<string>& v, const char* sep) {
   string s;
   for (const string& x : v) { s += (s.empty() ? "" : sep) + x; }
@@ -1522,7 +1546,7 @@ u32 dumpOptionSpace(const Env& env, const FFTConfig& fft) {
       }
       log("%-24s %-10s %-7s %-12s %-1s %-3s %7d  %-22s %s\n", o.key.c_str(), toString(o.group), toString(o.scope),
           touchesString(o.touchesFor(env, fft, decided)).c_str(), o.structural ? "*" : "", toString(o.accuracyImpact),
-          d, o.compound ? "(access classes)" : join(vals).c_str(), join(o.dependsOn, ",").c_str());
+          d, o.compound ? "(access classes)" : joinRuns(vals).c_str(), join(o.dependsOn, ",").c_str());
     }
     if (!single.empty()) { log("One value only here: %s\n", join(single, ", ").c_str()); }
     if (!inert.empty()) { log("Offered but inert in the kernels here: %s\n", join(inert, ", ").c_str()); }

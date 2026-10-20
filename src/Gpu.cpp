@@ -901,19 +901,21 @@ string Gpu::numRegisters(enum WHICH_KERNEL which_kernel) {
 #endif
 }
 
-vector<Gpu::RegTunable> Gpu::regTunables() {
+vector<Gpu::RegTunable> Gpu::regTunables(bool timedOnly) {
   vector<RegTunable> ret;
+  // An LL test runs carryFused's LL build, which takes the same limit
+  const Kernel* const carryFused = kCarryFused.isLoaded() || !kCarryFusedLL.isLoaded() ? &kCarryFused : &kCarryFusedLL;
   for (auto [which, kernel] : initializer_list<pair<WHICH_KERNEL, const Kernel*>>{
-         {CARRYFUSED, &kCarryFused},
+         {CARRYFUSED, carryFused},
          {MIDIN, &kfftMidIn}, {MIDIN31, &kfftMidInGF31}, {MIDIN61, &kfftMidInGF61},
          {TAIL, &ktailSquare}, {TAIL31, &ktailSquareGF31}, {TAIL61, &ktailSquareGF61},
          {MIDOUT, &kfftMidOut}, {MIDOUT31, &kfftMidOutGF31}, {MIDOUT61, &kfftMidOutGF61}}) {
     const TimeInfo* t = kernel->getTimeInfo();
-    if (!kernel->isLoaded() || !t->n) { continue; }
+    if (!kernel->isLoaded() || (timedOnly && !t->n)) { continue; }
 #ifdef CUDA_BACKEND
-    ret.push_back({regKey(which), t->name, t->times[2] * 1e-3 / t->n, cudaKernelResources(kernel->handle()), false});
+    ret.push_back({regKey(which), t->name, t->n ? t->times[2] * 1e-3 / t->n : 0, cudaKernelResources(kernel->handle()), false});
 #else
-    ret.push_back({regKey(which), t->name, t->times[2] * 1e-3 / t->n, amdKernelResources(kernel->handle(), shared.context->deviceId()),
+    ret.push_back({regKey(which), t->name, t->n ? t->times[2] * 1e-3 / t->n : 0, amdKernelResources(kernel->handle(), shared.context->deviceId()),
                    !amdRegisterOption(which, 0).empty()});
 #endif
   }

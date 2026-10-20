@@ -8,6 +8,7 @@
 #include "Gpu.h"
 #include "GpuFault.h"
 #include "LLCheck.h"
+#include "Occupancy.h"
 #include "log.h"
 #include "Primes.h"
 #include "Restart.h"
@@ -110,6 +111,12 @@ Call timeCall(GpuCommon shared, const Env& env, const FFTConfig& fft, TestKind k
   out.timedSec = t.at();
   out.buildSec = buildSec;
   out.ran = gpu->args.flags;
+  if (std::optional<OccupancyLimits> const limits = deviceLimits(shared.context->deviceId())) {
+    for (const Gpu::RegTunable& k : gpu->regTunables(false)) {
+      out.kernels.push_back(
+        {.key = k.key, .resources = k.res, .candidates = registerCandidates(k.res, *limits, k.defaultCap)});
+    }
+  }
   return out;
 }
 
@@ -574,7 +581,24 @@ Call Session::runCall(const FFTConfig& fft, TestKind kind, u64 exponent, const U
                        .regime = regimeOf(fft, exponent),
                        .cfg = ran,
                        .m = out.measurement});
+  recordRegisters(fft, kind, out);
   return out;
+}
+
+void Session::recordRegisters(const FFTConfig& fft, TestKind kind, const Call& call) {
+  if (call.kernels.empty()) { return; }
+  RegisterOffer const recorded = db_.registerOffer(envId_, fft.spec(), kind);
+  bool const unlimited = useValue(call.ran, "NOREG", 0) != 0;
+  for (const KernelUse& k : call.kernels) {
+    if (recorded.contains(k.key) || (!unlimited && useValue(call.ran, k.key, 0) != 0)) { continue; }
+    (void)db_.add(RegsRow{.sess = session_,
+                          .fft = fft.spec(),
+                          .kind = kind,
+                          .key = k.key,
+                          .resources = k.resources,
+                          .candidates = k.candidates,
+                          .ts = now()});
+  }
 }
 
 Call Session::attempt(GpuCommon shared, const FFTConfig& fft, TestKind kind, u64 exponent, const UseConfig& options,

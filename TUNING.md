@@ -295,6 +295,15 @@ on an FFT that is otherwise out of the running. Under `single` each option's val
 Whatever the strategy, an FFT whose search has run out of steps is occasionally tried with a random option set, which
 is what lets the search find combinations no step would reach.
 
+**Register limits.** Which values the search tries for a register limit (`REGCF64`, `REGMI31` and the like, under CUDA
+and on AMD) comes from the kernel itself. The first time an FFT's kernel is built with its limit left to the compiler,
+the tuner records the registers, shared memory and threads it was compiled with (a `regs` line in `tunedb.txt`), and
+from those and the GPU's own limits works out how many blocks per SM (on AMD, waves per SIMD) the compiler's choice
+gives. It then offers launch bounds of one block fewer to two more, and under CUDA also the register count at each of
+those, which compiles differently; on AMD it offers one and two more waves. Until that build has happened, the limit is
+offered only at the compiler's default, so the first step at it is what records the kernel. `-tune status` and later
+runs read the same lines, so they offer the same values without the GPU.
+
 **`maxPermute=<N>|all`** (`hybrid` and `groups`): how many options of one group are permuted together. A group with
 more is split into pieces of this many, in a fixed order, and no step moves options in two pieces at once. `all` keeps
 each group whole. Default `4`. The register limits of the `Cuda` group (`REGMI64`, `REGTS31` and the like) are never

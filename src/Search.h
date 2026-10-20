@@ -224,6 +224,7 @@ private:
   // A row that says either of a probe always will, so each is checked once.
   struct ListMemo {
     std::string from;
+    std::string registers;  // what the occupancy model offered when it was listed
     u32 listed = PROBE_WINDOW;
     ProbeList list;
     std::vector<std::string> texts;
@@ -233,14 +234,17 @@ private:
   };
 
   // The memo for `best`, rebuilt when `from` -- what the readings of its branch say, which only the combo tiers read
-  // -- changes: a best set changes rarely, and each re-score asks again.  With `widen`, rebuilt listing twice as many
+  // -- changes, or what the occupancy model offers: a best set changes rarely, and each re-score asks again.  With `widen`, rebuilt listing twice as many
   // points of each stage.  A probe the rebuilt list shares with the old one keeps what the rows answered it.
   [[nodiscard]] ListMemo& probeList(const SearchContext& context, const UseConfig& best,
                                     std::span<const Reading> readings, bool structuralSteps, std::string from,
                                     bool widen = false);
 
   // restartOf(), canonical: a draw takes one enumeration of the axes per axis.
-  [[nodiscard]] const UseConfig& draw(const Env& device, u32 k, TailQueues tailQueues);
+  [[nodiscard]] const UseConfig& draw(const Env& device, u32 k, TailQueues tailQueues, const RegisterOffer& registers);
+
+  // What the occupancy model offers this entry's REG* keys, from its `regs` rows.
+  [[nodiscard]] RegisterOffer registerOffer(const SearchContext& context) const;
 
   // The next draw worth making, if the space has anything left to offer.
   [[nodiscard]] std::optional<Candidate> nextRestart(const SearchContext& context);

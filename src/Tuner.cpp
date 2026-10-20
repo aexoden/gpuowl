@@ -939,6 +939,10 @@ void reportSearch(const Env& env, const RunScope& scope, const Strategy& strateg
   log("tune: strategy=%s (%s) steps from one best set of each type, before the combinations above them:\n",
       strategy.text().c_str(), settings.c_str());
   for (const std::string& line : searchReport(env, ffts, strategy, groups)) { log("tune:   %s\n", line.c_str()); }
+  if (env.cudaBackend || env.isAmd) {
+    log("tune:   (each REG* register limit is counted at the compiler's default; the occupancy model's values for it are"
+        " offered once a reading records its kernel's resources)\n");
+  }
 }
 
 }  // namespace

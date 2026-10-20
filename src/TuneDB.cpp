@@ -3,6 +3,7 @@
 #include "TuneDB.h"
 
 #include "Anchor.h"
+#include "Args.h"
 #include "BuildId.h"
 #include "CycleFile.h"
 #include "File.h"
@@ -367,6 +368,15 @@ std::string formatRow(const TryRow& row) {
 
 std::string formatRow(const DoneRow& row) { return "done  " + to_string(row.sess) + ' ' + to_string(row.ts); }
 
+std::string formatRow(const RegsRow& row) {
+  std::string candidates;
+  for (int const v : row.candidates) { candidates += (candidates.empty() ? "" : "+") + to_string(v); }
+  const KernelResources& r = row.resources;
+  return "regs  " + to_string(row.sess) + ' ' + row.fft + ' ' + toString(row.kind) + ' ' + row.key + ' ' +
+    to_string(r.regs) + ' ' + to_string(r.sharedBytes) + ' ' + to_string(r.threads) + ' ' + to_string(r.localBytes) +
+    ' ' + (candidates.empty() ? "-" : candidates) + ' ' + to_string(row.ts);
+}
+
 std::string formatRow(const JumpRow& row) {
   return "jump  " + to_string(row.sess) + ' ' + row.fft + ' ' + toString(row.kind) + ' ' + row.regime.label() + ' ' +
     to_string(row.cfg) + ' ' + to_string(row.k) + ' ' + to_string(row.ts);
@@ -661,6 +671,24 @@ bool TuneDB::add(const JumpRow& row) {
   if (!record(jumps_, row)) { return false; }
   noteRow(row.sess, ts);
   return true;
+}
+
+bool TuneDB::add(const RegsRow& row) {
+  if (!findSession(row.sess) || isSealed(row.sess) || !Args::isRegisterKey(row.key) || row.key == "NOREG") {
+    return false;
+  }
+  u64 const ts = row.ts;
+  if (!record(regs_, row)) { return false; }
+  noteRow(row.sess, ts);
+  return true;
+}
+
+RegisterOffer TuneDB::registerOffer(u32 env, const std::string& fft, TestKind kind) const {
+  RegisterOffer out;
+  for (const RegsRow& row : regs_) {
+    if (row.fft == fft && row.kind == kind && envOf(row.sess) == env) { out.try_emplace(row.key, row.candidates); }
+  }
+  return out;
 }
 
 bool TuneDB::add(const ComboRow& row) {
@@ -1025,6 +1053,7 @@ bool TuneDB::reset(u32 env, std::string_view fft) {
   std::erase_if(refs_, drop);
   std::erase_if(nogos_, drop);
   std::erase_if(jumps_, drop);
+  std::erase_if(regs_, drop);
   std::erase_if(combos_, drop);
   std::erase_if(boots_, drop);
   std::erase_if(rounds_, drop);
@@ -1132,6 +1161,7 @@ void TuneDB::clear() {
   anchors_.clear();
   refs_.clear();
   jumps_.clear();
+  regs_.clear();
   combos_.clear();
   boots_.clear();
   rounds_.clear();
@@ -1190,7 +1220,7 @@ bool TuneDB::parse(std::string_view text, std::string_view name) {
 
     auto const known = tag == "env" || tag == "cfg" || tag == "sess" || tag == "work" || tag == "run" || tag == "try" ||
       tag == "done" || tag == "nogo" || tag == "roe" || tag == "ref" || tag == "jump" || tag == "combo" ||
-      tag == "boot" || tag == "round" || tag == "lines";
+      tag == "boot" || tag == "round" || tag == "lines" || tag == "regs";
     if (known && f.size() < 2) {
       refuse(tag + " row has no fields");
       continue;
@@ -1510,6 +1540,42 @@ bool TuneDB::parse(std::string_view text, std::string_view name) {
       }
       if (!ok) { continue; }
       if (!add(row)) { refuse("lines row names a session that is not declared"); }
+    } else if (tag == "regs") {
+      if (f.size() != 11) {
+        refuse("regs row has " + to_string(f.size()) + " fields, expected 11");
+        continue;
+      }
+      std::optional<u32> const sess = sessionOf();
+      auto const kind = parseTestKind(f[3]);
+      auto const regs = parseInt<int>(f[5]);
+      auto const shared = parseInt<int>(f[6]);
+      auto const threads = parseInt<int>(f[7]);
+      auto const local = parseInt<int>(f[8]);
+      auto const ts = parseInt<u64>(f[10]);
+      std::vector<int> candidates;
+      bool listed = true;
+      if (f[9] != "-") {
+        for (size_t at = 0; at <= f[9].size();) {
+          size_t const plus = std::min(f[9].find('+', at), f[9].size());
+          auto const v = parseInt<int>(std::string_view{f[9]}.substr(at, plus - at));
+          if (!v) { listed = false; }
+          candidates.push_back(v.value_or(0));
+          at = plus + 1;
+        }
+      }
+      if (!kind) { refuse("'" + f[3] + "' is not a test kind"); }
+      if (!regs || !shared || !threads || !local) { refuse("regs row's resources are not numbers"); }
+      if (!listed) { refuse("'" + f[9] + "' is not a list of register limits"); }
+      if (!ts) { refuse("'" + f[10] + "' is not a timestamp"); }
+      if (!sess || !kind || !regs || !shared || !threads || !local || !listed || !ts) { continue; }
+      RegsRow const row{.sess = *sess,
+                        .fft = f[2],
+                        .kind = *kind,
+                        .key = f[4],
+                        .resources = {.regs = *regs, .localBytes = *local, .sharedBytes = *shared, .threads = *threads},
+                        .candidates = std::move(candidates),
+                        .ts = *ts};
+      if (!add(row)) { refuse("regs row names no FFT or no register limit"); }
     } else if (tag == "alarm") {
       if (f.size() != 3) {
         refuse("alarm row has " + to_string(f.size()) + " fields, expected 3");
@@ -1721,6 +1787,7 @@ std::string TuneDB::text() const {
   for (const AnchorRow& r : anchors_) { out += formatRow(r) + '\n'; }
   for (const RefRow& r : refs_) { out += formatRow(r) + '\n'; }
   for (const JumpRow& r : jumps_) { out += formatRow(r) + '\n'; }
+  for (const RegsRow& r : regs_) { out += formatRow(r) + '\n'; }
   for (const ComboRow& r : combos_) { out += formatRow(r) + '\n'; }
   for (const BootRow& r : boots_) { out += formatRow(r) + '\n'; }
   for (const RoundRow& r : rounds_) { out += formatRow(r) + '\n'; }

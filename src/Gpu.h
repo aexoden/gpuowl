@@ -383,8 +383,9 @@ public:
     KernelResources res;
     bool defaultCap;      // AMD: without a REGxxxx value the kernel gets a cap of its own (see amdRegisterOption), not the compiler's default
   };
-  // The REGxxxx keys of this FFT, each with the main kernel it limits, for the kernels that have run (e.g. in timePRP)
-  [[nodiscard]] vector<RegTunable> regTunables();
+  // The REGxxxx keys of this FFT, each with the main kernel it limits, for the kernels that have run (e.g. in timePRP).  timedOnly=false:
+  // every such kernel that has been loaded, profiled or not (usPerCall 0 where not).
+  [[nodiscard]] vector<RegTunable> regTunables(bool timedOnly = true);
 
   tuple<bool, u64, RoeInfo, RoeInfo> measureROE(bool quick);
   tuple<bool, RoeInfo> measureCarry(bool mul3 = false);

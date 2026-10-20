@@ -504,22 +504,25 @@ TEST(amd_register_caps) {
   CHECK(!applicable(amd(), "512:15:512:101", {}, "NOREG"));
   CHECK(!applicable(amd(), "512:15:512:101", {{"NOREG", "1"}}, "REGMI64"));
   CHECK(!applicable(amd(), "3:512:4:512:202", {}, "REGMI64"));
-  CHECK_EQ(valuesOf(amd(), "512:15:512:101", {}, "REGCF64"), string("0,2,3,4"));
+  // Every value a set may hold; the search offers few of them (axesOf(), the occupancy model).  On AMD, waves: one is no
+  // cap, and 0 is already two for the in-place middle kernels on Vega, so there -1 lifts it and 2 is 0 again.
+  string const waves{"0,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20"};
+  string const capped{"-1,0,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20"};
+  CHECK_EQ(valuesOf(amd(), "512:15:512:101", {}, "REGCF64"), waves);
+  CHECK_EQ(valuesOf(vega, "512:15:512:101", {{"INPLACE", "1"}}, "REGMI64"), capped);
+  CHECK_EQ(valuesOf(vega, "512:15:512:101", {{"INPLACE", "1"}}, "REGMO64"), capped);
+  CHECK_EQ(valuesOf(vega, "512:15:512:101", {{"INPLACE", "1"}}, "REGCF64"), waves);
+  CHECK_EQ(valuesOf(vega, "512:15:512:101", {{"INPLACE", "1"}}, "REGTS64"), waves);
+  CHECK_EQ(valuesOf(vega, "512:15:512:101", {}, "REGMI64"), waves);
+  CHECK_EQ(valuesOf(amd(), "512:15:512:101", {{"INPLACE", "1"}}, "REGMI64"), waves);
 
-  // 0 is already two waves for the in-place middle kernels on Vega, so there -1 takes the place of 2.
-  CHECK_EQ(valuesOf(vega, "512:15:512:101", {{"INPLACE", "1"}}, "REGMI64"), string("-1,0,3,4"));
-  CHECK_EQ(valuesOf(vega, "512:15:512:101", {{"INPLACE", "1"}}, "REGMO64"), string("-1,0,3,4"));
-  CHECK_EQ(valuesOf(vega, "512:15:512:101", {{"INPLACE", "1"}}, "REGCF64"), string("0,2,3,4"));
-  CHECK_EQ(valuesOf(vega, "512:15:512:101", {{"INPLACE", "1"}}, "REGTS64"), string("0,2,3,4"));
-  CHECK_EQ(valuesOf(vega, "512:15:512:101", {}, "REGMI64"), string("0,2,3,4"));
-  CHECK_EQ(valuesOf(amd(), "512:15:512:101", {{"INPLACE", "1"}}, "REGMI64"), string("0,2,3,4"));
-
-  // The CUDA backend reads the same keys as a register count, whatever the vendor.
-  string const ladder{"0,1,2,4,48,56,64,72,80,88,96,104,112,128"};
-  CHECK_EQ(valuesOf(nvidia(806, true), "512:15:512:101", {{"INPLACE", "1"}}, "REGMI64"), ladder);
+  // The CUDA backend reads the same keys as launch bounds up to 20 and a register count above, whatever the vendor.
+  string cuda{"0"};
+  for (int v = 1; v <= 255; ++v) { cuda += "," + to_string(v); }
+  CHECK_EQ(valuesOf(nvidia(806, true), "512:15:512:101", {{"INPLACE", "1"}}, "REGMI64"), cuda);
   CHECK_EQ(valuesOf(Env{.isAmd = true, .cudaBackend = true, .deviceName = "gfx906"}, "512:15:512:101",
                     {{"INPLACE", "1"}}, "REGMI64"),
-           ladder);
+           cuda);
 }
 
 TEST(fused_weight_butterfly) {

@@ -7,6 +7,7 @@
 
 #include "Scheduler.h"
 
+#include "Args.h"
 #include "test.h"
 
 #include <algorithm>
@@ -62,6 +63,20 @@ struct Rows {
       .cfg = db.internCfg(options),
       .m = {
         .mean = mean, .stddev = 0.1, .blocks = 4 * calls, .calls = calls, .drift = 1, .status = status, .ts = ts}}));
+  }
+
+  // A `regs` row for every register limit of the entry on `device`, each offering `candidates`.
+  void limits(const Env& device, const std::vector<int>& candidates) {
+    for (const Option* o : applicableOptions(device, FFTConfig{SPEC}, {})) {
+      if (o->key == "NOREG" || !Args::isRegisterKey(o->key)) { continue; }
+      CHECK(db.add(RegsRow{.sess = sess,
+                           .fft = SPEC,
+                           .kind = TestKind::PRP,
+                           .key = o->key,
+                           .resources = {.regs = 96, .localBytes = 0, .sharedBytes = 0, .threads = 256},
+                           .candidates = candidates,
+                           .ts = 1'753'471'200}));
+    }
   }
 };
 
@@ -303,9 +318,11 @@ TEST(the_groups_of_a_search_by_group_take_turns_an_option_at_a_time_counting_wha
   device.cudaBackend = true;
   Rows rows{device};
   rows.add({}, 1700);
+  rows.limits(device, {2, 64, 72});
   std::vector<Reading> const readings{{.config = {}, .cost = 1700}};
   Asking const ask{.strategy = Strategy{.turns = Turns::Option}, .device = device};
-  ProbeList const list = probesOf(device, FFTConfig{SPEC}, {}, Strategy{});
+  ProbeList const list = probesOf(device, FFTConfig{SPEC}, {}, Strategy{}, {}, true, NO_LIMIT,
+                                  rows.db.registerOffer(rows.env, SPEC, TestKind::PRP));
 
   // A unit is the axes a step moves within its stage: every value of one key, or every point of one pair.
   using Unit = std::pair<u32, std::vector<size_t>>;

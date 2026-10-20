@@ -352,7 +352,8 @@ TEST(the_bins_of_one_group_are_combined_at_the_second_tier) {
   FFTConfig const fp64{"1K:7:256:212"};
   UseConfig const caps{{"REGMI64", "72"}, {"REGMO64", "72"}};
   std::vector<Reading> const capReadings{{{}, 100}, {{{"REGMI64", "72"}}, 100.1}, {{{"REGMO64", "72"}}, 100.2}};
-  ProbeList const capList = probesOf(cuda, fp64, {}, {}, capReadings);
+  RegisterOffer const offer{{"REGMI64", {72}}, {"REGMO64", {72}}};
+  ProbeList const capList = probesOf(cuda, fp64, {}, {}, capReadings, true, NO_LIMIT, offer);
   CHECK(std::ranges::any_of(capList.probes, [&](const Probe& p) {
     return p.stage == "Cuda combined" && p.config == canonicalConfig(cuda, fp64, caps);
   }));

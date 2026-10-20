@@ -15,6 +15,7 @@
 
 #include "common.h"
 #include "FFTConfig.h"
+#include "Occupancy.h"
 #include "OptionSpace.h"
 
 #include <algorithm>
@@ -193,9 +194,16 @@ struct Axis {
 
 // Every axis of `background` that has somewhere to move: the applicable tunable keys in declaration order, LOADS and
 // STORES taken apart into their access classes in class order, each class offering only the modes `env` can emit.
-// The search's own axes leave out what `tailQueues` does not offer this FFT; with its default every value is there.
+// What a search offers of the table's values: TAIL_KERNELS 11 and 13 where `tailQueues` says, and the REG* keys the
+// compiler's default and what `registers` names for them, the occupancy model's candidates.  Without `registers` every
+// value the table offers is a position, as outside a search.
+struct AxisFilter {
+  TailQueues tailQueues = TailQueues::All;
+  const RegisterOffer* registers = nullptr;
+};
+
 [[nodiscard]] std::vector<Axis> axesOf(const Env& env, const FFTConfig& fft, const UseConfig& background,
-                                       TailQueues tailQueues = TailQueues::All);
+                                       const AxisFilter& filter = {});
 
 // Where `config` puts `axis`.
 [[nodiscard]] std::pair<int, int> positionOf(const Env& env, const FFTConfig& fft, const UseConfig& config,
@@ -325,9 +333,10 @@ struct Branch {
 // No stage lists more than `listed` points.  One stopped there before its own limit, with points it has not offered
 // yet, is named in `unlisted`.  What is listed of a stage is always the start of what a longer `listed` would list of
 // it.
+// `registers`: what the occupancy model offers each REG* key of the entry (AxisFilter).
 [[nodiscard]] ProbeList probesOf(const Env& env, const FFTConfig& fft, const UseConfig& best, const Strategy& strategy,
                                  std::span<const Reading> readings = {}, bool structuralSteps = true,
-                                 u32 listed = NO_LIMIT);
+                                 u32 listed = NO_LIMIT, const RegisterOffer& registers = {});
 
 // How many steps one best set of `fft` offers, group by group, at tier 1 under `strategy`: the combinations above them
 // depend on what is read, and are left out.
@@ -352,9 +361,10 @@ struct SearchSize {
 };
 
 // Pure: counts points without listing them.  The counts are of the cross products, so a point the table would fit onto
-// another is counted as well; for a strategy that does not search by group, nothing.
+// another is counted as well; for a strategy that does not search by group, nothing.  The REG* keys count what
+// `registers` offers them, as the search would (AxisFilter).
 [[nodiscard]] SearchSize searchSize(const Env& env, const FFTConfig& fft, const UseConfig& best,
-                                    const Strategy& strategy);
+                                    const Strategy& strategy, const RegisterOffer& registers = {});
 
 // Whether a row measured under `row` took the step `probe` takes, against another background: it has every axis the
 // probe moves where the probe puts it, and agrees with the probe on every key those axes' keys depend on.  Evidence of
@@ -369,6 +379,6 @@ struct SearchSize {
 // A fixed sequence per entry, so that a resumed run draws what the first one would have, and a row can be recognised
 // as a restart's by drawing again.
 [[nodiscard]] UseConfig restartOf(const Env& env, const FFTConfig& fft, std::string_view entry, u32 k,
-                                  TailQueues tailQueues = Strategy{}.tailQueues);
+                                  TailQueues tailQueues = Strategy{}.tailQueues, const RegisterOffer& registers = {});
 
 }  // namespace tune

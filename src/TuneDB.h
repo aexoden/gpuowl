@@ -9,6 +9,7 @@
 #include "common.h"
 #include "Eligibility.h"
 #include "File.h"
+#include "Occupancy.h"
 #include "OptionSpace.h"
 #include "Stats.h"
 #include "UseResolve.h"
@@ -201,6 +202,19 @@ struct JumpRow {
   u64 ts = 0;
 };
 
+// A kernel a REG* key limits, as a build that left it to the compiler compiled it: its resources, and the values the
+// occupancy model (Occupancy.h) offers its key on this device, so that a search read off the device offers the same.
+// The first such build of an entry writes it, key by key.
+struct RegsRow {
+  u32 sess = 0;
+  std::string fft{};
+  TestKind kind = TestKind::PRP;
+  std::string key{};
+  KernelResources resources{};
+  std::vector<int> candidates{};
+  u64 ts = 0;
+};
+
 // A combination of the tier below's best answers (tier 2 or 3), declared before its first call, so that what the device
 // learns from combinations is kept apart from what it learns from single moves.
 struct ComboRow {
@@ -319,6 +333,11 @@ public:
   [[nodiscard]] const std::vector<AnchorRow>& anchors() const { return anchors_; }
   [[nodiscard]] const std::vector<RefRow>& refs() const { return refs_; }
   [[nodiscard]] const std::vector<JumpRow>& jumps() const { return jumps_; }
+  [[nodiscard]] const std::vector<RegsRow>& regs() const { return regs_; }
+
+  // What the search offers each REG* key of an entry: the candidates of its `regs` row in `env`.  A key with none is
+  // not named.
+  [[nodiscard]] RegisterOffer registerOffer(u32 env, const std::string& fft, TestKind kind) const;
   [[nodiscard]] const std::vector<ComboRow>& combos() const { return combos_; }
   [[nodiscard]] const std::vector<BootRow>& boots() const { return boots_; }
   [[nodiscard]] const std::vector<RoundRow>& rounds() const { return rounds_; }
@@ -368,6 +387,7 @@ public:
   [[nodiscard]] bool add(const AlarmRow& row);
   [[nodiscard]] bool add(const RefRow& row);
   [[nodiscard]] bool add(const JumpRow& row);
+  [[nodiscard]] bool add(const RegsRow& row);
   [[nodiscard]] bool add(const ComboRow& row);
   [[nodiscard]] bool add(const BootRow& row);
   [[nodiscard]] bool add(const RoundRow& row);
@@ -444,6 +464,7 @@ private:
   std::vector<AnchorRow> anchors_;
   std::vector<RefRow> refs_;
   std::vector<JumpRow> jumps_;
+  std::vector<RegsRow> regs_;
   std::vector<ComboRow> combos_;
   std::vector<BootRow> boots_;
   std::vector<RoundRow> rounds_;
@@ -470,6 +491,7 @@ private:
 [[nodiscard]] std::string formatRow(const AlarmRow& row);
 [[nodiscard]] std::string formatRow(const RefRow& row);
 [[nodiscard]] std::string formatRow(const JumpRow& row);
+[[nodiscard]] std::string formatRow(const RegsRow& row);
 [[nodiscard]] std::string formatRow(const ComboRow& row);
 [[nodiscard]] std::string formatRow(const BootRow& row);
 [[nodiscard]] std::string formatRow(const RoundRow& row);

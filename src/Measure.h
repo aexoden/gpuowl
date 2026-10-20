@@ -26,6 +26,13 @@ struct IterSamples;  // Gpu.h
 
 namespace tune {
 
+// A kernel a REG* key limits, as one call built it, with what the occupancy model offers its key on this device.
+struct KernelUse {
+  std::string key{};
+  KernelResources resources{};
+  std::vector<int> candidates{};
+};
+
 // One call to the GPU.
 struct Call {
   Measurement measurement;
@@ -44,6 +51,9 @@ struct Call {
 
   // The options the kernels were built with.
   UseConfig ran;
+
+  // The REG*-limited kernels it built; empty where the device's register limits are not modelled.
+  std::vector<KernelUse> kernels{};
 
   // Wall-clock seconds, so that what an item costs can be told from what it measures: building the Gpu (a compile
   // included, on a cold kernel cache) against the timed blocks themselves.
@@ -214,6 +224,10 @@ private:
   // The residue an LL call of this shape at `exponent` must reproduce, reading built-in defaults on other FFTs where
   // the env has no agreed one yet; empty where none can be agreed.
   [[nodiscard]] std::optional<u64> llReference(const FFTConfig& fft, u64 exponent, u32 nBlocks, u32 blockSize);
+
+  // A `regs` row for each REG*-limited kernel `call` built at the compiler's own registers whose key the entry has none
+  // for yet: what the search then offers that key.
+  void recordRegisters(const FFTConfig& fft, TestKind kind, const Call& call);
 
   // Whether the context can still do anything at all.
   [[nodiscard]] bool deviceUsable();

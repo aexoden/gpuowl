@@ -102,13 +102,26 @@ void EntrySearch::resume(const SearchContext& context, const std::string& canoni
   }
 }
 
+RegisterOffer EntrySearch::registerOffer(const SearchContext& context) const {
+  return context.db.registerOffer(context.env, entry_.fft.spec(), entry_.kind);
+}
+
 EntrySearch::ListMemo& EntrySearch::probeList(const SearchContext& context, const UseConfig& best,
                                               std::span<const Reading> readings, bool structuralSteps, std::string from,
                                               bool widen) {
   UseConfig const canonical = canonicalConfig(context.device, entry_.fft, best);
   auto const [at, fresh] = lists_.try_emplace(configText(canonical) + (structuralSteps ? "" : " within"));
   ListMemo& memo = at->second;
-  if (!fresh && memo.from == from && !widen) { return memo; }
+
+  // A key's recorded resources add the model's candidates to its axis.
+  RegisterOffer const registers = registerOffer(context);
+  std::string offered;
+  for (const auto& [key, values] : registers) {
+    offered += key + ":";
+    for (int const v : values) { offered += std::to_string(v) + ","; }
+  }
+  if (!fresh && memo.from == from && memo.registers == offered && !widen) { return memo; }
+  memo.registers = std::move(offered);
   if (widen) { memo.listed = memo.listed > NO_LIMIT / 2 ? NO_LIMIT : 2 * memo.listed; }
 
   // Against the same background, so over the same axes.
@@ -125,7 +138,8 @@ EntrySearch::ListMemo& EntrySearch::probeList(const SearchContext& context, cons
   }
 
   memo.from = std::move(from);
-  memo.list = probesOf(context.device, entry_.fft, canonical, context.strategy, readings, structuralSteps, memo.listed);
+  memo.list =
+    probesOf(context.device, entry_.fft, canonical, context.strategy, readings, structuralSteps, memo.listed, registers);
   size_t const n = memo.list.probes.size();
   memo.texts.resize(n);
   memo.answered.assign(n, false);
@@ -140,9 +154,12 @@ EntrySearch::ListMemo& EntrySearch::probeList(const SearchContext& context, cons
   return memo;
 }
 
-const UseConfig& EntrySearch::draw(const Env& device, u32 k, TailQueues tailQueues) {
+const UseConfig& EntrySearch::draw(const Env& device, u32 k, TailQueues tailQueues, const RegisterOffer& registers) {
   auto const [at, fresh] = draws_.try_emplace(k);
-  if (fresh) { at->second = canonicalConfig(device, entry_.fft, restartOf(device, entry_.fft, entry_.label(), k, tailQueues)); }
+  if (fresh) {
+    at->second =
+      canonicalConfig(device, entry_.fft, restartOf(device, entry_.fft, entry_.label(), k, tailQueues, registers));
+  }
   return at->second;
 }
 
@@ -162,7 +179,7 @@ std::optional<Candidate> EntrySearch::nextRestart(const SearchContext& context) 
   }
 
   auto candidateOf = [&](u32 k) {
-    const UseConfig& drawn = draw(context.device, k, context.strategy.tailQueues);
+    const UseConfig& drawn = draw(context.device, k, context.strategy.tailQueues, registerOffer(context));
     std::string const text = configText(drawn);
     Candidate out{.kind = Offer::Restart,
                   .options = drawn,
@@ -174,12 +191,12 @@ std::optional<Candidate> EntrySearch::nextRestart(const SearchContext& context) 
   };
 
   auto ok = [&](u32 k) {
-    if (context.progress.answered.contains({key_, configText(draw(context.device, k, context.strategy.tailQueues))})) { return false; }
+    if (context.progress.answered.contains({key_, configText(draw(context.device, k, context.strategy.tailQueues, registerOffer(context)))})) { return false; }
     Candidate const c = candidateOf(k);
     return runnable(context, c.options, c.exponent);
   };
 
-  std::optional<u32> const k = nextRunnable(scan_, [&](u32 k) { return configText(draw(context.device, k, context.strategy.tailQueues)); }, ok);
+  std::optional<u32> const k = nextRunnable(scan_, [&](u32 k) { return configText(draw(context.device, k, context.strategy.tailQueues, registerOffer(context))); }, ok);
   if (!k) { return {}; }
   return candidateOf(*k);
 }

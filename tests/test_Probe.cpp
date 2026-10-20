@@ -225,16 +225,40 @@ TEST(a_stage_is_listed_a_window_at_a_time_in_the_order_it_is_listed_whole) {
   }
 }
 
+// What the occupancy model might offer every register limit of `fft`: five values and one the table does not hold.
+RegisterOffer offerOf(const Env& env, const FFTConfig& fft) {
+  RegisterOffer out;
+  for (const Option* o : applicableOptions(env, fft, {})) {
+    if (o->key != "NOREG" && o->key.starts_with("REG")) { out[o->key] = {3, 4, 5, 64, 80, 300}; }
+  }
+  return out;
+}
+
 TEST(a_register_cap_is_searched_a_key_at_a_time) {
-  // FFT6431 on a P100 under CUDA: GRAPHS and L1CUDA, and seven 14-valued register caps, each of one kernel.  Permuted
-  // together they were 2 x 4 x 14^7 points; searched a key at a time they are GRAPHS x L1CUDA and 13 moves each.  NOREG,
-  // which compiles what the defaults do, is not among them.
+  // FFT6431 on a P100 under CUDA: GRAPHS and L1CUDA, and seven register caps, each of one kernel, each offered the five
+  // values of the model's that the table holds.  Searched a key at a time they are GRAPHS x L1CUDA and five moves each.
+  // NOREG, which compiles what the defaults do, is not among them.
   Env const p100{.isNvidia = true, .cudaBackend = true, .computeCapability = 600, .pdlLaunch = true};
   FFTConfig const fft{"51:1K:4:256:212"};
   Strategy const lifted{.maxPermute = NO_LIMIT, .maxPoints = NO_LIMIT};
-  ProbeList const list = probesOf(p100, fft, {}, lifted, {}, true, PROBE_WINDOW);
+  RegisterOffer const offer = offerOf(p100, fft);
+  CHECK_EQ(offer.size(), size_t(7));
+  ProbeList const list = probesOf(p100, fft, {}, lifted, {}, true, PROBE_WINDOW, offer);
   std::map<std::string, size_t> const stages = stagesOf(list);
-  CHECK_EQ(stages.at("Cuda"), size_t(2 * 4 - 1 + 7 * 13));
+  CHECK_EQ(stages.at("Cuda"), size_t(2 * 4 - 1 + 7 * 5));
+
+  // Until a kernel's resources are recorded its key is offered nothing but the compiler's default.
+  CHECK_EQ(stagesOf(probesOf(p100, fft, {}, lifted, {}, true, PROBE_WINDOW)).at("Cuda"), size_t(2 * 4 - 1));
+  RegisterOffer partial = offer;
+  partial.erase("REGCF6431");
+  CHECK_EQ(stagesOf(probesOf(p100, fft, {}, lifted, {}, true, PROBE_WINDOW, partial)).at("Cuda"), size_t(2 * 4 - 1 + 6 * 5));
+
+  // A value the model offers outside a search too, where every value the table holds is a position.
+  size_t positions = 0;
+  for (const Axis& axis : axesOf(p100, fft, {})) {
+    if (axis.name == "REGCF6431") { positions = axis.values.size(); }
+  }
+  CHECK_EQ(positions, size_t(256));
   for (const Probe& p : list.probes) {
     size_t regs = 0;
     for (const auto& [axis, position] : p.moves) { regs += list.axes[axis].option->alone; }
@@ -267,13 +291,16 @@ TEST(a_search_size_counts_what_the_strategy_offers_without_listing_it) {
   for (const char* spec : {"1K:7:256:212", "51:1K:4:256:212", "4:1K:4:256:212"}) {
     for (const Env& env : {nvidia(), p100, amd()}) {
       FFTConfig const fft{spec};
-      CHECK_EQ(searchSize(env, fft, {}, {}).offered(), u64(probesOf(env, fft, {}, {}).probes.size()));
+      RegisterOffer const offer = offerOf(env, fft);
+      CHECK_EQ(searchSize(env, fft, {}, {}, offer).offered(),
+               u64(probesOf(env, fft, {}, {}, {}, true, NO_LIMIT, offer).probes.size()));
     }
   }
-  SearchSize const cuda = searchSize(p100, FFTConfig{"51:1K:4:256:212"}, {}, {.maxPermute = NO_LIMIT});
+  FFTConfig const fft6431{"51:1K:4:256:212"};
+  SearchSize const cuda = searchSize(p100, fft6431, {}, {.maxPermute = NO_LIMIT}, offerOf(p100, fft6431));
   auto const regs = std::ranges::find(cuda.groups, Group::Cuda, &SearchSize::GroupSize::group);
   CHECK(regs != cuda.groups.end());
-  if (regs != cuda.groups.end()) { CHECK_EQ(regs->whole, u64(2 * 4 - 1 + 7 * 13)); }
+  if (regs != cuda.groups.end()) { CHECK_EQ(regs->whole, u64(2 * 4 - 1 + 7 * 5)); }
 
   CHECK(searchSize(nvidia(), fp64, {}, {.kind = Strategy::Kind::Single}).groups.empty());
 }
@@ -432,7 +459,7 @@ TEST(a_row_takes_the_same_step_as_a_probe_where_it_agrees_on_what_the_step_depen
 TEST(tail_queues_choose_which_ffts_the_search_offers_11_and_13) {
   auto const tailValues = [](const Env& env, const char* spec, TailQueues queues) {
     std::string out;
-    for (const Axis& axis : axesOf(env, FFTConfig{spec}, {}, queues)) {
+    for (const Axis& axis : axesOf(env, FFTConfig{spec}, {}, {.tailQueues = queues})) {
       if (axis.name != "TAIL_KERNELS") { continue; }
       for (const auto& [value, digit] : axis.values) { out += (out.empty() ? "" : ",") + std::to_string(value); }
     }
@@ -448,7 +475,7 @@ TEST(tail_queues_choose_which_ffts_the_search_offers_11_and_13) {
   // Where the set already runs one of them, it stays the axis's position.
   CHECK_EQ(tailValues(nvidia(), "512:15:512:212", TailQueues::Ntt), tailValues(nvidia(), "512:15:512:212", TailQueues::None));
   bool held = false;
-  for (const Axis& axis : axesOf(nvidia(), FFTConfig{"512:15:512:212"}, {{"TAIL_KERNELS", "13"}}, TailQueues::None)) {
+  for (const Axis& axis : axesOf(nvidia(), FFTConfig{"512:15:512:212"}, {{"TAIL_KERNELS", "13"}}, {.tailQueues = TailQueues::None})) {
     if (axis.name == "TAIL_KERNELS") { held = axis.values[axis.current].first == 13; }
   }
   CHECK(held);
@@ -480,7 +507,8 @@ TEST(a_restart_is_a_fixed_draw_of_every_axis_the_table_offers) {
         CHECK(std::ranges::find(values, parseInt<int>(value).value_or(-1)) != values.end());
       }
 
-      for (const Axis& axis : axesOf(env, fft, config, Strategy{}.tailQueues)) {
+      RegisterOffer const none;
+      for (const Axis& axis : axesOf(env, fft, config, {.tailQueues = Strategy{}.tailQueues, .registers = &none})) {
         offered[axis.name].insert(axis.values.begin(), axis.values.end());
         drawn[axis.name].insert(axis.values[axis.current]);
       }

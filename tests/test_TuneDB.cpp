@@ -560,6 +560,38 @@ TEST(option_sets_round_trip) {
   CHECK(!parseConfigText("INPLACE=1,"));
 }
 
+// A kernel's resources and what the occupancy model offers its key survive the file, and are what the search is offered
+// for that entry alone.
+TEST(regs_rows_round_trip_and_offer_their_entry_alone) {
+  TuneDB db;
+  u32 const env = db.internEnv(DbEnv{.gpu = "Tesla P100-PCIE-16GB", .name = "Tesla P100-PCIE-16GB", .driver = "CUDA 12.4",
+                                     .isNvidia = true, .cudaBackend = true, .computeCapability = 600, .build = 1});
+  u32 const sess = db.beginSession(env, "", 0, 1'753'471'200);
+  CHECK(env && sess);
+  RegsRow const row{.sess = sess,
+                    .fft = "512:15:512:212",
+                    .kind = TestKind::PRP,
+                    .key = "REGCF64",
+                    .resources = {.regs = 96, .localBytes = 8, .sharedBytes = 4096, .threads = 256},
+                    .candidates = {-1, 2, 3, 128},
+                    .ts = 1'753'471'300};
+  CHECK(db.add(row));
+  CHECK(!db.add(RegsRow{.sess = sess, .fft = "512:15:512:212", .key = "NOREG", .ts = 1}));
+  CHECK(!db.add(RegsRow{.sess = sess, .fft = "512:15:512:212", .key = "WMUL", .ts = 1}));
+  CHECK(db.add(RegsRow{.sess = sess, .fft = "512:15:512:212", .kind = TestKind::LL, .key = "REGTS64", .ts = 2}));
+
+  CHECK(db.registerOffer(env, "512:15:512:212", TestKind::PRP) == (RegisterOffer{{"REGCF64", {-1, 2, 3, 128}}}));
+  CHECK(db.registerOffer(env, "512:15:512:212", TestKind::LL) == (RegisterOffer{{"REGTS64", {}}}));
+  CHECK(db.registerOffer(env, "512:15:512:202", TestKind::PRP).empty());
+
+  TuneDB again;
+  CHECK(again.parse(db.text(), "fixture"));
+  CHECK_EQ(again.text(), db.text());
+  CHECK(again.text().find("regs  " + std::to_string(sess) + " 512:15:512:212 prp REGCF64 96 4096 256 8 -1+2+3+128 ") !=
+        std::string::npos);
+  CHECK(again.registerOffer(env, "512:15:512:212", TestKind::PRP) == db.registerOffer(env, "512:15:512:212", TestKind::PRP));
+}
+
 TEST(a_stored_middle_chain_reads_as_both_of_the_keys_it_became) {
   CHECK_EQ(configText(*parseConfigText("MIDDLE_CHAIN=1,PAD=256")),
            std::string{"MIDDLE_CHAIN31=1,MIDDLE_CHAIN61=1,PAD=256"});
