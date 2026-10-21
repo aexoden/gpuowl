@@ -135,5 +135,7 @@ src/version.inc: FORCE
 
 FORCE:
 
+include tune.mk
+
 include $(wildcard $(patsubst %,$(DEPDIR)/%.d,$(basename $(SRCS1))))
 # include $(wildcard $(patsubst %,$(DEPDIR)/%.d,$(basename $(SRCS2))))

@@ -123,6 +123,18 @@ jobs:
           test "$rc" -eq 0
         done
 
+  Source-Checkers:
+    name: Source checkers (tools/)
+    # The checkers themselves run as a prerequisite of every build below; this job also runs their own tests, which
+    # are slower than the checkers and need neither a compiler nor a device.
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v7
+    - name: Script
+      run: |
+        make check-source
+        make check-tools
+
   Linux-OpenCL:
     name: Linux OpenCL
 
@@ -132,6 +144,8 @@ jobs:
         os: [ubuntu-22.04, ubuntu-24.04, ubuntu-26.04, ubuntu-22.04-arm, ubuntu-24.04-arm, ubuntu-26.04-arm]
         cxx: [g++, clang++]
         exclude:
+        - os: ubuntu-22.04
+          cxx: clang++
         - os: ubuntu-22.04-arm
           cxx: clang++
       fail-fast: false
@@ -147,6 +161,7 @@ jobs:
     - name: Script
       run: |
         make DEBUG=1 -O -j "$(nproc)"
+        make DEBUG=1 check                 # the unit tests need the OpenCL library to start, but no device
         cd build-debug
         rm -f -- *.o
         ./prpll -h
@@ -164,6 +179,9 @@ jobs:
       matrix:
         os: [ubuntu-22.04, ubuntu-24.04, ubuntu-26.04]
         cxx: [g++, clang++]
+        exclude:
+        - os: ubuntu-22.04
+          cxx: clang++
       fail-fast: false
     env:
       CXX: ${{ matrix.cxx }}

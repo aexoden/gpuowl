@@ -22,6 +22,8 @@ add_executable(prpll
   fs.cpp
   )
 
+include(tune.cmake)
+
 if (${CMAKE_SYSTEM_NAME} MATCHES "Darwin")
   # Real GCC (not clang), needed for 128-bit floats and std::filesystem::path
   set(CMAKE_CXX_COMPILER g++-14)

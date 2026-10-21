@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The tuner's sources, imported by PRPLL.vcxproj.  Kept apart from it so that upstream's own list merges without
+     conflicts. -->
+<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup>
+    <ClCompile Include=".\src\OptionSpace.cpp" />
+    <ClCompile Include=".\src\FFTVariants.cpp" />
+    <ClCompile Include=".\src\Occupancy.cpp" />
+  </ItemGroup>
+</Project>

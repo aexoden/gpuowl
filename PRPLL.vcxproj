@@ -68,6 +68,7 @@
       <ExcludedFromBuild Condition="'$(Configuration)'=='OpenCL-Debug' Or '$(Configuration)'=='OpenCL-Release'">true</ExcludedFromBuild>
     </ClCompile>
   </ItemGroup>
+  <Import Project="PRPLL.tune.props" />
   <PropertyGroup Label="Globals">
     <VCProjectVersion>17.0</VCProjectVersion>
     <ProjectGuid>{2B3F9C8E-3384-0407-D9E1-D3E86AA8823A}</ProjectGuid>
