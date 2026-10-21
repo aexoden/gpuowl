@@ -6,4 +6,8 @@ target_sources(prpll PRIVATE
   Occupancy.cpp
   Restart.cpp
   GpuFault.cpp
+  Stats.cpp
+  Eligibility.cpp
+  BuildId.cpp
+  Anchor.cpp
   )

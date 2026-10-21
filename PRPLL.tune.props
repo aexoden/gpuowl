@@ -8,5 +8,9 @@
     <ClCompile Include=".\src\Occupancy.cpp" />
     <ClCompile Include=".\src\Restart.cpp" />
     <ClCompile Include=".\src\GpuFault.cpp" />
+    <ClCompile Include=".\src\Stats.cpp" />
+    <ClCompile Include=".\src\Eligibility.cpp" />
+    <ClCompile Include=".\src\BuildId.cpp" />
+    <ClCompile Include=".\src\Anchor.cpp" />
   </ItemGroup>
 </Project>
