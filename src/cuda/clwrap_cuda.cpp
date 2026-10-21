@@ -79,6 +79,10 @@ static bool isStickyError(CUresult r) {
   }
 }
 
+// clwrap.cpp
+bool isContextLost();
+void markContextLost(const char* why);
+
 // The mapping onto an OpenCL error is lossy, so the real CUDA error is named on the way through.
 static int clResult(const char* what, CUresult r) {
   if (r == CUDA_SUCCESS) { return CL_SUCCESS; }
@@ -86,14 +90,25 @@ static int clResult(const char* what, CUresult r) {
   if (isStickyError(r)) {
     const char* name = nullptr;
     cuGetErrorName(r, &name);
-    log("\nCUDA context lost in %s: %s (%d).\n"
-        "The context is now unusable and every CUDA operation will fail. PRPLL must be restarted.\n\n",
-        what, name ? name : "?", (int) r);
+    if (!isContextLost()) {
+      log("\nCUDA context lost in %s: %s (%d).\n"
+          "A kernel fault is reported by the next call that touches the device, not by the launch that caused it, so\n"
+          "the kernel at fault is most likely one launched before this call; CUDA_LAUNCH_BLOCKING=1 names it.\n"
+          "The context is now unusable and every CUDA operation will fail. PRPLL must be restarted.\n\n",
+          what, name ? name : "?", (int) r);
+    }
+    markContextLost(name ? name : "a sticky CUDA error");
     return CL_DEVICE_NOT_AVAILABLE;
   }
 
-  logCudaError(what, r);
+  // Once the context is gone, everything downstream fails for that reason.
+  if (isContextLost()) { return CL_DEVICE_NOT_AVAILABLE; }
+
+  // Expected while configurations are measured; the caller records them as the configuration's own failure.
   if (r == CUDA_ERROR_OUT_OF_MEMORY) { return CL_MEM_OBJECT_ALLOCATION_FAILURE; }
+  if (r == CUDA_ERROR_LAUNCH_OUT_OF_RESOURCES) { return CL_OUT_OF_RESOURCES; }
+
+  logCudaError(what, r);
   return CL_OUT_OF_RESOURCES;
 }
 
@@ -208,9 +223,8 @@ cl_context clCreateContext(const intptr_t*, unsigned nDevices, const cl_device_i
   CUresult const r = cuCtxCreate(&ctx->ctx, 0, ctx->dev);
 #endif
   if (r != CUDA_SUCCESS) {
-    logCudaError("cuCtxCreate", r);
     delete ctx;
-    if (err) *err = CL_OUT_OF_RESOURCES;
+    if (err) *err = clResult("cuCtxCreate", r);
     return nullptr;
   }
   g_cudaContext = ctx->ctx;  // Track for ensureContextCurrent()
@@ -316,7 +330,8 @@ static string cacheBlob(const _cl_program* prog) {
 static CUresult loadModule(_cl_program* prog, unsigned nOpts, CUjit_option* opts, void** optVals) {
   if (!prog->cubin.empty()) {
     CUresult const r = cuModuleLoadDataEx(&prog->module, prog->cubin.data(), nOpts, opts, optVals);
-    if (r == CUDA_SUCCESS) { return r; }
+    // A sticky error is an earlier fault surfacing here; it says nothing about the CUBIN, and the PTX would meet it too.
+    if (r == CUDA_SUCCESS || isStickyError(r)) { return r; }
     const char* errName = nullptr;
     cuGetErrorName(r, &errName);
     log("CUBIN rejected by the driver: %s (%d) — loading the PTX through the JIT instead\n", errName ? errName : "?", (int)r);
@@ -354,6 +369,11 @@ cl_program clCreateProgramWithBinary(cl_context ctx, unsigned  /*nDevices*/, con
       prog->moduleLoaded = true;
       moduleRetain(prog->module);  // program owns one reference
       if (binaryStatus) binaryStatus[0] = CL_SUCCESS;
+    } else if (isStickyError(r)) {
+      prog->compiled = false;
+      if (binaryStatus) binaryStatus[0] = CL_INVALID_BINARY;
+      int const lost = clResult("cuModuleLoadData", r);
+      if (err) { *err = lost; return prog; }
     } else {
       log("cuModuleLoadData from cache failed: %d, blob size=%zu\n", (int)r, lengths[0]);
       prog->compiled = false;
@@ -574,6 +594,13 @@ cl_program clLinkProgram(cl_context ctx, unsigned  /*nDevices*/, const cl_device
     (void*)(size_t)sizeof(jitInfoLog), (void*)jitInfoLog
   };
   CUresult const r = loadModule(linked, 4, jitOpts, jitOptVals);
+  if (isStickyError(r)) {
+    // Not a failed link: the PTX is not at fault, so there is nothing to dump.
+    delete linked;
+    int const lost = clResult("cuModuleLoadDataEx", r);
+    if (err) *err = lost;
+    return nullptr;
+  }
   if (r != CUDA_SUCCESS) {
     const char* errName = nullptr;
     cuGetErrorName(r, &errName);
@@ -886,9 +913,8 @@ cl_command_queue clCreateCommandQueueWithProperties(cl_context ctx, cl_device_id
   cuCtxSetCurrent(ctx->ctx);
   CUresult const r = cuStreamCreate(&q->stream, CU_STREAM_NON_BLOCKING);
   if (r != CUDA_SUCCESS) {
-    logCudaError("cuStreamCreate", r);
     delete q;
-    if (err) *err = CL_OUT_OF_RESOURCES;
+    if (err) *err = clResult("cuStreamCreate", r);
     return nullptr;
   }
   if (err) *err = CL_SUCCESS;
@@ -1468,6 +1494,11 @@ bool cudaSetKernelRegLimit(cl_program prog, const char* kernelName, int maxRegs,
   CUjit_option jitOpts[] = { CU_JIT_ERROR_LOG_BUFFER_SIZE_BYTES, CU_JIT_ERROR_LOG_BUFFER };
   void* jitOptVals[] = { (void*)(size_t)sizeof(jitErrorLog), (void*)jitErrorLog };
   CUresult r = loadModule(prog, 2, jitOpts, jitOptVals);
+  // A sticky error is an earlier fault surfacing here; it says nothing about the limit, and a retry would meet it too.
+  if (isStickyError(r)) {
+    clResult("cuModuleLoadDataEx", r);
+    return false;
+  }
   if (r != CUDA_SUCCESS && smemSpill) {
     log("%s: the JIT rejected enable_smem_spilling, loading it without (%s)\n", kernelName, jitErrorLog);
     ptx.erase(ptx.find(pragma, entry + directive.size()), pragma.size());
@@ -1475,6 +1506,7 @@ bool cudaSetKernelRegLimit(cl_program prog, const char* kernelName, int maxRegs,
     r = loadModule(prog, 2, jitOpts, jitOptVals);
   }
   if (r != CUDA_SUCCESS) {
+    if (isStickyError(r)) { clResult("cuModuleLoadDataEx", r); return false; }
     log("cuModuleLoadData for %s with maxnreg %d minnctapersm %d failed: %d %s\n", kernelName, maxRegs, minBlocks, (int)r, jitErrorLog);
     return false;
   }

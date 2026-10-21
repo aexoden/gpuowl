@@ -515,7 +515,14 @@ KernelHolder KernelCompiler::loadAux(const string& fileName, const string& kerne
     program = loadBinary(context, deviceId, cacheFile);
   }
 
+  // A load that meets a lost context is not a build failure: the device was gone, usually because a kernel launched
+  // earlier faulted, and compiling (again) would only meet it again.
+  auto const throwIfLost = [&fileName] {
+    if (isContextLost()) { CHECK2(CL_DEVICE_NOT_AVAILABLE, "loading " + fileName); }
+  };
+
   if (!program) {
+    throwIfLost();
     fromCache = false;
     program = compile(fileName, kernelName, compileArgs);
   } else if (asmDump && !asmCacheNoted) {
@@ -525,6 +532,7 @@ KernelHolder KernelCompiler::loadAux(const string& fileName, const string& kerne
   }
 
   if (!program) {
+    throwIfLost();
     log("Can't compile %s\n", fileName.c_str());
     throw "Can't compile " + fileName;
   }
@@ -537,6 +545,7 @@ KernelHolder KernelCompiler::loadAux(const string& fileName, const string& kerne
 
 #ifdef CUDA_BACKEND
   if ((maxRegs > 0 || minBlocks > 0) && !cudaSetKernelRegLimit(program.get(), kernelName.c_str(), maxRegs, minBlocks, smemSpill)) {
+    throwIfLost();
     log("Can't apply the register limit (maxrregcount %d, minblocks %d) to %s\n", maxRegs, minBlocks, kernelName.c_str());
     throw "Can't apply register limit to " + kernelName;
   }

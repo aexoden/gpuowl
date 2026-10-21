@@ -54,6 +54,11 @@ std::string getUUID(int seqId);
 std::string errMes(int err);
 void check(int err, const char *file, int line, const char *func, string_view mes);
 
+// Whether a GPU error has left this process's context unusable: once it has, every later call fails with
+// CL_DEVICE_NOT_AVAILABLE whatever it asks for, and only a new process can use the device again.
+bool isContextLost();
+void markContextLost(const char* why);
+
 #define CHECK1(err) check(err, __FILE__, __LINE__, __func__, #err)
 #define CHECK2(err, mes) check(err, __FILE__, __LINE__, __func__, mes)
 
