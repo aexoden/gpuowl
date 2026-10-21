@@ -10,4 +10,5 @@ target_sources(prpll PRIVATE
   Eligibility.cpp
   BuildId.cpp
   Anchor.cpp
+  TuneDB.cpp
   )

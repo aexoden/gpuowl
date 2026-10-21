@@ -1,10 +1,10 @@
 # The tuner's sources, unit tests and source checkers, included by the Makefile.  Kept apart from it so that upstream's
 # own lists merge without conflicts.
 
-TUNE_SRCS = OptionSpace.cpp FFTVariants.cpp Occupancy.cpp Restart.cpp GpuFault.cpp Stats.cpp Eligibility.cpp BuildId.cpp Anchor.cpp
+TUNE_SRCS = OptionSpace.cpp FFTVariants.cpp Occupancy.cpp Restart.cpp GpuFault.cpp Stats.cpp Eligibility.cpp BuildId.cpp Anchor.cpp TuneDB.cpp
 
 TESTSRCS = test_main.cpp test_OptionSpace.cpp test_FFTVariants.cpp test_Occupancy.cpp test_Restart.cpp test_GpuFault.cpp test_Stats.cpp test_Eligibility.cpp \
-  test_BuildId.cpp test_Anchor.cpp
+  test_BuildId.cpp test_Anchor.cpp test_TuneDB.cpp
 
 # The prpll rules above were read with upstream's SRCS1 alone: their recipes link ${OBJS}, which is expanded when they
 # run, so adding to SRCS1 here is enough for the link; the prerequisites are added below.
