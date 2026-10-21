@@ -46,6 +46,18 @@ struct LLResult {
   u64 res64;
 };
 
+// The result from one timing call.
+struct IterSamples {
+  vector<double> usPerIt;
+
+  // The Gerbicz check over the timed blocks, and the residue after them.
+  bool checkOk = true;
+  u64 res64 = 0;
+
+  // Iterations behind res64, warm-up included.
+  u64 iters = 0;
+};
+
 struct ZAvg {
   double sum{};
   double n{};
@@ -93,7 +105,7 @@ class Gpu {
   std::atomic<bool> proofSaveFailed{false};
 
 public:
-  Args args;     // This Gpu's own copy: the shared args plus the FFT's tune.txt settings (see withFftUses)
+  Args args;     // This Gpu's own copy: every setting that applies to its FFT, as its kernels were built (see gpuArgs, clDefines)
 
 private:
   std::unique_ptr<Saver<PRPState>> saver;
@@ -338,6 +350,21 @@ public:
 
   double timePRP(int quick = 7);
 
+  // Times nBlocks Gerbicz blocks after warmupBlocks untimed ones, and returns one sample per timed
+  // block.  A block is one modMul followed by blockSize squarings.
+  //
+  // The samples are microseconds per iteration, so each already carries 1/blockSize of a modMul:
+  // costs are comparable only across measurements taken at the same blockSize.
+  //
+  // With heatSec, blocks of squarings are run first until that long has passed, and the start state is written again
+  // after them: a card that runs fast for a moment after idling is timed at the clock it settles to, and the
+  // iterations behind the residue stay the same.
+  IterSamples timeIters(u32 nBlocks, u32 blockSize, u32 warmupBlocks = 1, double heatSec = 0);
+
+  // The LL counterpart: from the LL seed, a block is blockSize LL iterations and nothing else, since there is no check
+  // for a modMul to serve.  checkOk stays true; the residue is the only check there is, and the caller makes it.
+  IterSamples timeItersLL(u32 nBlocks, u32 blockSize, u32 warmupBlocks = 1, double heatSec = 0);
+
   // REGxxxx values up to this are an occupancy: minimum blocks per SM (CUDA launch bounds) or waves per SIMD (AMD).  Larger values
   // are a register count.  20 is the most waves per SIMD of any AMD GPU (RDNA1); no kernel runs usefully in so few registers.
   static constexpr int REG_MAX_OCCUPANCY = 20;
@@ -351,8 +378,9 @@ public:
     KernelResources res;
     bool defaultCap;      // AMD: without a REGxxxx value the kernel gets a cap of its own (see amdRegisterOption), not the compiler's default
   };
-  // The REGxxxx keys of this FFT, each with the main kernel it limits, for the kernels that have run (e.g. in timePRP)
-  [[nodiscard]] vector<RegTunable> regTunables();
+  // The REGxxxx keys of this FFT, each with the main kernel it limits, for the kernels that have run (e.g. in timePRP).  timedOnly=false:
+  // every such kernel that has been loaded, profiled or not (usPerCall 0 where not).
+  [[nodiscard]] vector<RegTunable> regTunables(bool timedOnly = true);
 
   tuple<bool, u64, RoeInfo, RoeInfo> measureROE(bool quick);
   tuple<bool, RoeInfo> measureCarry(bool mul3 = false);

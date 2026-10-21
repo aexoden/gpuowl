@@ -270,25 +270,14 @@ ROE_SIZE = 100000,
 CARRY_SIZE = 100000
 };
 
-// Any setting adjusted here for this FFT or device (INPLACE, TAIL_KERNELS, WMUL, LDSPAD_W, L2_STRIPING, MULTI_Q, GRAPHS...) is changed
-// only in the local config and in the out-parameters.  args is const: writing such a change back into args.flags would carry it into
-// every later Gpu, e.g. once -tune timed a PFA FFT (which turns L2_STRIPING off) every later timing would also run without L2_STRIPING.
-string clDefines(const Args& args, cl_device_id id, FFTConfig fft, u32 nW, u32 nH, const vector<KeyVal>& extraConf, u64 E, bool doLog,
+// args is the Gpu's own copy (see gpuArgs), holding every setting that applies to this FFT.  Any setting adjusted here for this FFT or
+// device (INPLACE, TAIL_KERNELS, WMUL, LDSPAD_W, L2_STRIPING, MULTI_Q, GRAPHS...) is changed in it, so that the Gpu's args name what
+// its kernels were built with, and in the out-parameters.  The shared args are never written: a change there would carry into every
+// later Gpu, e.g. once -tune timed a PFA FFT (which turns L2_STRIPING off) every later timing would also run without L2_STRIPING.
+string clDefines(Args& args, cl_device_id id, FFTConfig fft, u32 nW, u32 nH, u64 E, bool doLog,
                  bool &tail_single_wide, bool &tail_single_kernel, u32 &in_place, u32 &pad_size, u32 &wmul,
                  u32 &multi_q, u32 &l2_striping, bool &graphs, bool &zero_q) {
-  map<string, string> config;
-
-  // Highest priority is the requested "extra" conf
-  config.insert(extraConf.begin(), extraConf.end());
-
-  // Next, args config
-  config.insert(args.flags.begin(), args.flags.end());
-
-  // Lowest priority: the per-FFT config if any
-  if (auto it = args.perFftConfig.find(fft.shape.spec()); it != args.perFftConfig.end()) {
-    // log("Found %s\n", fft.shape.spec().c_str());
-    config.insert(it->second.begin(), it->second.end());
-  }
+  map<string, string>& config = args.flags;
 
   // Default value for -use options that must also be parsed in C++ code
   tail_single_wide = false, tail_single_kernel = true;         // Default tailSquare is double-wide in one kernel
@@ -481,7 +470,6 @@ string clDefines(const Args& args, cl_device_id id, FFTConfig fft, u32 nW, u32 n
   // profile would show those kernels -- most of an iteration -- as one call of ~0 ns.
   // (Only the CUDA build has graphs.  Leave the OpenCL build's flags alone, or the next Gpu would report GRAPHS as having no effect.)
   graphs = configValue("GRAPHS", 1);
-  if (zero_q) { config["TAIL_KERNELS"] = to_string(configValue("TAIL_KERNELS", 2) % 10); }
 #if CUDA_BACKEND
   if (args.profile && graphs) {
     graphs = false;
@@ -534,8 +522,11 @@ string clDefines(const Args& args, cl_device_id id, FFTConfig fft, u32 nW, u32 n
   // The register limits are applied per kernel (numRegisters), not as defines: as defines they would change every kernel's
   // compile options, and so its kernel cache entry, whenever one kernel's limit changed.
   // Nor can the radix keys be defines (a macro name cannot start with a digit); the .cl code sees NW and NH.
-  std::erase_if(config, [](const auto& kv) { return Args::isRegisterKey(kv.first) || Args::isRadixKey(kv.first) || kv.first == "SMEM_SPILL"; });
-  string defines = toDefine(config);
+  // config names what the kernels are built with; what only the defines say differently goes to a copy.
+  map<string, string> defined = config;
+  if (zero_q) { defined["TAIL_KERNELS"] = to_string(configValue("TAIL_KERNELS", 2) % 10); }
+  std::erase_if(defined, [](const auto& kv) { return Args::isRegisterKey(kv.first) || Args::isRadixKey(kv.first) || kv.first == "SMEM_SPILL"; });
+  string defines = toDefine(defined);
   if (doLog) { log("config: %s\n", defines.c_str()); }
 
   defines += toDefine("EXP", E);
@@ -828,9 +819,13 @@ string formatSecsPerIter(float secsPerIter) {
 // --------
 
 // A Gpu's own args: the shared args, then the FFT's tune.txt settings (not over the command line), then extraConf over everything
-static Args gpuArgs(const Args& shared, const string& fftSpec, const vector<KeyVal>& fftUses, const vector<KeyVal>& extraConf, bool doLog = true) {
-  Args ret = shared.withFftUses(fftSpec, fftUses, doLog);
+static Args gpuArgs(const Args& shared, FFTConfig fft, const vector<KeyVal>& fftUses, const vector<KeyVal>& extraConf, bool doLog = true) {
+  Args ret = shared.withFftUses(fft.spec(), fftUses, doLog);
   for (const auto& [key, val] : extraConf) { ret.flags[key] = val; }
+  // Lowest priority: the FFT's "! <fft>" config.txt line, if any
+  if (auto it = shared.perFftConfig.find(fft.shape.spec()); it != shared.perFftConfig.end()) {
+    ret.flags.insert(it->second.begin(), it->second.end());
+  }
   return ret;
 }
 
@@ -854,7 +849,7 @@ unique_ptr<Gpu> Gpu::make(u64 E, GpuCommon shared, FFTConfig fftConfig, const ve
   }
   // No variant 0 for radix 8 at 256: an explicit one (with -use 256RADIX8_W on the command line, say) becomes variant 1
   if (fftConfig.FFT_FP64) {
-    Args const args = gpuArgs(*shared.args, fftConfig.spec(), fftUses, extraConf, false);
+    Args const args = gpuArgs(*shared.args, fftConfig, fftUses, extraConf, false);
     string const shapeSpec = fftConfig.shape.spec();
     u32 const vw = variant_W(fftConfig.variant), vh = variant_H(fftConfig.variant);
     bool const noW0 = vw == 0 && !fftConfig.shape.hasVariant0W(args.radix8At256(shapeSpec, false));
@@ -948,19 +943,21 @@ string Gpu::numRegisters(enum WHICH_KERNEL which_kernel) {
 #endif
 }
 
-vector<Gpu::RegTunable> Gpu::regTunables() {
+vector<Gpu::RegTunable> Gpu::regTunables(bool timedOnly) {
   vector<RegTunable> ret;
+  // An LL test runs carryFused's LL build, which takes the same limit
+  const Kernel* const carryFused = kCarryFused.isLoaded() || !kCarryFusedLL.isLoaded() ? &kCarryFused : &kCarryFusedLL;
   for (auto [which, kernel] : initializer_list<pair<WHICH_KERNEL, const Kernel*>>{
-         {CARRYFUSED, &kCarryFused},
+         {CARRYFUSED, carryFused},
          {MIDIN, &kfftMidIn}, {MIDIN31, &kfftMidInGF31}, {MIDIN61, &kfftMidInGF61},
          {TAIL, &ktailSquare}, {TAIL31, &ktailSquareGF31}, {TAIL61, &ktailSquareGF61},
          {MIDOUT, &kfftMidOut}, {MIDOUT31, &kfftMidOutGF31}, {MIDOUT61, &kfftMidOutGF61}}) {
     const TimeInfo* t = kernel->getTimeInfo();
-    if (!kernel->isLoaded() || !t->n) { continue; }
+    if (!kernel->isLoaded() || (timedOnly && !t->n)) { continue; }
 #ifdef CUDA_BACKEND
-    ret.push_back({regKey(which), t->name, t->times[2] * 1e-3 / t->n, cudaKernelResources(kernel->handle()), false});
+    ret.push_back({regKey(which), t->name, t->n ? t->times[2] * 1e-3 / t->n : 0, cudaKernelResources(kernel->handle()), false});
 #else
-    ret.push_back({regKey(which), t->name, t->times[2] * 1e-3 / t->n, amdKernelResources(kernel->handle(), shared.context->deviceId()),
+    ret.push_back({regKey(which), t->name, t->n ? t->times[2] * 1e-3 / t->n : 0, amdKernelResources(kernel->handle(), shared.context->deviceId()),
                    !amdRegisterOption(which, 0).empty()});
 #endif
   }
@@ -1028,7 +1025,7 @@ string Gpu::kernelDefines(enum WHICH_KERNEL_TYPE which_kernel) {
 Gpu::Gpu(GpuCommon s, FFTConfig fft, u64 E, const vector<KeyVal>& extraConf, bool logFftSize, const vector<KeyVal>& fftUses) :
   shared(s),
   background{shared.background},
-  args{gpuArgs(*shared.args, fft.spec(), fftUses, extraConf)},
+  args{gpuArgs(*shared.args, fft, fftUses, extraConf)},
   E(E),
   N(fft.shape.size()),
   fft(fft),
@@ -1041,7 +1038,7 @@ Gpu::Gpu(GpuCommon s, FFTConfig fft, u64 E, const vector<KeyVal>& extraConf, boo
   useLongCarry{args.carry == CARRY_64},
   queue{*shared.context, args.profile},
       
-  compiler{args, shared.context, clDefines(args, shared.context->deviceId(), fft, nW, nH, extraConf, E, logFftSize, tail_single_wide, tail_single_kernel, in_place, pad_size, wmul,
+  compiler{args, shared.context, clDefines(args, shared.context->deviceId(), fft, nW, nH, E, logFftSize, tail_single_wide, tail_single_kernel, in_place, pad_size, wmul,
                                multi_q, l2_striping, graphs, zero_q)},
 
 #define K(name, ...) name(#name, &compiler, profile.make(#name), &queue, __VA_ARGS__)
@@ -2899,6 +2896,121 @@ tuple<bool, u64, RoeInfo, RoeInfo> Gpu::measureROE(bool  /*quick*/) {
   wantROE = 0;
   // log("%s %016" PRIx64 " %s\n", ok ? "OK" : "EE", res, roe.toString(statsBits).c_str());
   return {ok, res, roes.first, roes.second};
+}
+
+IterSamples Gpu::timeIters(u32 nBlocks, u32 blockSize, u32 warmupBlocks, double heatSec) {
+  assert(nBlocks > 0 && blockSize > 1);
+  // The first modMul of a timed block has to close a block of real squarings; with no warm-up it
+  // would land on top of the one that establishes the Gerbicz base, and the check would fail.
+  assert(warmupBlocks > 0);
+
+  PRPState const state{.exponent=E, .k=0, .blockSize=blockSize, .res64=3, .check=makeWords(E, 1), .nErrors=0};
+  writeState(state.k, state.check, state.blockSize);
+
+  enum LEAD_TYPE leadIn = LEAD_NONE;
+  enum LEAD_TYPE const leadOut = useLongCarry ? LEAD_NONE : LEAD_WIDTH;
+
+  auto squares = [&] {
+    for (u32 i = 0; i + 1 < blockSize; ++i) {
+      square(bufData, bufData, leadIn, leadOut);
+      leadIn = leadOut;
+    }
+    square(bufData, bufData, leadIn, LEAD_NONE);
+    leadIn = LEAD_NONE;
+  };
+
+  queue.setSquareTime(0);     // Busy wait on nVidia to get the most accurate timings while tuning
+  if (heatSec > 0) {
+    for (Timer heat; heat.at() < heatSec;) {
+      squares();
+      queue.finish();
+      if (Signal::stopRequested()) { throw "stop requested"; }
+    }
+    writeState(state.k, state.check, state.blockSize);
+  }
+  assert(dataResidue() == state.res64);
+
+  modMul(bufCheck, bufData, leadIn);
+  leadIn = LEAD_MIDDLE;
+
+  for (u32 w = 0; w < warmupBlocks; ++w) {
+    if (w) {
+      modMul(bufCheck, bufData, leadIn);
+      leadIn = LEAD_MIDDLE;
+    }
+    squares();
+  }
+  queue.finish();
+  if (Signal::stopRequested()) { throw "stop requested"; }
+
+  IterSamples out;
+  out.usPerIt.reserve(nBlocks);
+
+  Timer t;
+  for (u32 b = 0; b < nBlocks; ++b) {
+    modMul(bufCheck, bufData, leadIn);
+    leadIn = LEAD_MIDDLE;
+    squares();
+
+    // Draining here is what turns one long timing into a sequence of comparable ones, at the cost
+    // of a launch-latency bubble per block.
+    queue.finish();
+    out.usPerIt.push_back(t.reset() * 1e6 / blockSize);
+
+    if (Signal::stopRequested()) { throw "stop requested"; }
+  }
+
+  out.res64 = dataResidue();
+  out.checkOk = doCheck(blockSize);
+  out.iters = u64(warmupBlocks + nBlocks) * blockSize;
+  return out;
+}
+
+IterSamples Gpu::timeItersLL(u32 nBlocks, u32 blockSize, u32 warmupBlocks, double heatSec) {
+  assert(nBlocks > 0 && blockSize > 1);
+
+  writeIn(bufData, makeWords(E, 4));
+
+  // Each block ends in a long carry, as a PRP block does, so that the blocks are interchangeable.
+  auto block = [&] {
+    enum LEAD_TYPE leadIn = LEAD_NONE;
+    enum LEAD_TYPE const leadOut = useLongCarry ? LEAD_NONE : LEAD_WIDTH;
+    for (u32 i = 0; i + 1 < blockSize; ++i) {
+      squareLL(bufData, leadIn, leadOut);
+      leadIn = leadOut;
+    }
+    squareLL(bufData, leadIn, LEAD_NONE);
+  };
+
+  queue.setSquareTime(0);     // Busy wait on nVidia to get the most accurate timings while tuning
+  if (heatSec > 0) {
+    for (Timer heat; heat.at() < heatSec;) {
+      block();
+      queue.finish();
+      if (Signal::stopRequested()) { throw "stop requested"; }
+    }
+    writeIn(bufData, makeWords(E, 4));
+  }
+
+  for (u32 w = 0; w < warmupBlocks; ++w) { block(); }
+  queue.finish();
+  if (Signal::stopRequested()) { throw "stop requested"; }
+
+  IterSamples out;
+  out.usPerIt.reserve(nBlocks);
+
+  Timer t;
+  for (u32 b = 0; b < nBlocks; ++b) {
+    block();
+    queue.finish();
+    out.usPerIt.push_back(t.reset() * 1e6 / blockSize);
+
+    if (Signal::stopRequested()) { throw "stop requested"; }
+  }
+
+  out.res64 = dataResidue();
+  out.iters = u64(warmupBlocks + nBlocks) * blockSize;
+  return out;
 }
 
 double Gpu::timePRP(int quick) {        // Quick varies from 1 (slowest, longest) to 10 (quickest, shortest)
