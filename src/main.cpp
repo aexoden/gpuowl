@@ -15,6 +15,8 @@
 #include "GpuCommon.h"
 #include "Gpu.h"
 #include "tune.h"
+#include "Restart.h"
+#include "GpuFault.h"
 
 #include <atomic>
 #include <cctype>
@@ -75,6 +77,7 @@ namespace {
 constexpr int EXIT_OK = 0;
 constexpr int EXIT_FAILED = 1;
 constexpr int EXIT_USAGE = 2;
+constexpr int EXIT_DEVICE_LOST = 3;
 
 } // namespace
 
@@ -96,12 +99,15 @@ int main(int argc, char **argv) {
 #endif
 
   // 0 for a normal end — the queue ran dry, a stop was requested, -h, -info
-  // or -version; 2 for an argument that could not be read or accepted; and 1 for
-  // everything else (a kernel that would not compile, a missing device, a lost
-  // context), so a supervisor can tell "out of work" from "fix your command
-  // line" from "cannot run" without parsing the log.
+  // or -version; 2 for an argument that could not be read or accepted; 3 for a
+  // device that went away and could not be recovered by restarting; and 1 for
+  // everything else (a kernel that would not compile, a missing device), so a
+  // supervisor can tell "out of work" from "fix your command line" from
+  // "cannot run" from "this card is gone" without parsing the log.
   int exitCode = EXIT_OK;
   bool parsing = true;
+
+  restart::init(argc, argv);
 
   try {
     string const mainLine = Args::mergeArgs(argc, argv);
@@ -212,6 +218,8 @@ int main(int argc, char **argv) {
     if (args.maxAlloc) { AllocTrac::setMaxAlloc(args.maxAlloc); }
 
     Context context(getDevice(args.device));
+
+    gpufault::arm(context.deviceId(), EXIT_DEVICE_LOST);
     Signal const signal;
     Background background;
     GpuCommon shared;

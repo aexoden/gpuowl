@@ -4,4 +4,6 @@ target_sources(prpll PRIVATE
   OptionSpace.cpp
   FFTVariants.cpp
   Occupancy.cpp
+  Restart.cpp
+  GpuFault.cpp
   )
