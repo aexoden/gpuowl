@@ -357,9 +357,10 @@ float FFTConfig::maxBpw() const {
     float const b2 = shape.bpw[variant_M(variant) * 3 + variant_H(variant)];
     b = (b1 + b2) / 2.0f;
   }
-  // Only some FFTs support both 32 and 64 bit carries.
-  // Only some FFTs support two carry widths (FFT64, FFT3231: 32 or 64 bits; FFT323161: 64 or 96 bits)
-  bool const twoWidths = shape.fft_type == FFT64 || shape.fft_type == FFT3231 || shape.fft_type == FFT323161;
+  // A pinned narrow carry caps every type whose carryFused takes its carry width from the host (clDefines' CARRY64): the
+  // single-arithmetic types and FFT3231 (32 or 64 bits), and FFT323161 (64 or 96 bits).
+  bool const twoWidths = shape.fft_type == FFT64 || shape.fft_type == FFT3231 || shape.fft_type == FFT323161 ||
+                         shape.fft_type == FFT61 || shape.fft_type == FFT31 || shape.fft_type == FFT32;
   return (carry == CARRY_32 && twoWidths) ? std::min(shape.narrowCarryBPW(), b) : b;
 }
 
