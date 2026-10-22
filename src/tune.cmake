@@ -23,4 +23,6 @@ target_sources(prpll PRIVATE
   Gate.cpp
   Candidates.cpp
   Publish.cpp
+  Acquire.cpp
+  Tuner.cpp
   )

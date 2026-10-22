@@ -33,7 +33,7 @@ struct MinSumResult {
 
 // The cheapest assignment.  Exact by variable elimination wherever no intermediate table exceeds `tableLimit` entries;
 // otherwise coordinate descent from several starts, which is a local minimum only.
-[[nodiscard]] MinSumResult minimize(const MinSum& problem, size_t tableLimit = size_t{1} << 22);
+[[nodiscard]] MinSumResult minimize(const MinSum& problem, size_t tableLimit = size_t{1} << 18);
 
 // The cost of `assignment`.
 [[nodiscard]] double evaluate(const MinSum& problem, const std::vector<size_t>& assignment);

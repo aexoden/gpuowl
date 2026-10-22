@@ -18,7 +18,7 @@ constexpr u32 BRANCH_ROUNDS = 6;
 constexpr double MOVE_COST = 1e-9;
 
 Optimum minimizeBranch(const Model& model, const Draw& draw, const Subject& subject, const AxisFilter& filter,
-                       UseConfig background) {
+                       UseConfig background, const Subspace* subspace) {
   const Env& env = model.env();
   Optimum best{.options = {}, .predicted = FORBIDDEN, .exact = true};
   bool exact = true;
@@ -30,8 +30,22 @@ Optimum minimizeBranch(const Model& model, const Draw& draw, const Subject& subj
     Energy const e = model.energy(draw, subject, background, axes);
     MinSum problem{.unary = e.unary, .pairs = {}};
     for (size_t a = 0; a < axes.size(); ++a) {
+      bool const held = subspace && std::ranges::find(subspace->free, axes[a].name) == subspace->free.end();
+      std::pair<int, int> const at =
+        held ? positionOf(env, subject.fft, subspace->around, axes[a]) : std::pair<int, int>{};
       for (size_t p = 0; p < problem.unary[a].size(); ++p) {
-        if (p != axes[a].reference) { problem.unary[a][p] += MOVE_COST; }
+        if (held && axes[a].values[p] != at) {
+          problem.unary[a][p] = FORBIDDEN;
+        } else if (p != axes[a].reference) {
+          problem.unary[a][p] += MOVE_COST;
+        }
+      }
+      // A held axis whose position the background does not offer stays where the background has it.
+      if (held && std::ranges::all_of(problem.unary[a], [](double v) { return v == FORBIDDEN; })) {
+        problem.unary[a] = e.unary[a];
+        for (size_t p = 0; p < problem.unary[a].size(); ++p) {
+          if (p != axes[a].current) { problem.unary[a][p] = FORBIDDEN; }
+        }
       }
     }
     for (const Energy::Pair& p : e.pairs) { problem.pairs.push_back({.a = p.a, .b = p.b, .table = p.table}); }
@@ -53,23 +67,26 @@ Optimum minimizeBranch(const Model& model, const Draw& draw, const Subject& subj
 
 }  // namespace
 
-Optimum optimize(const Model& model, const Draw& draw, const Subject& subject, const AxisFilter& filter) {
+Optimum optimize(const Model& model, const Draw& draw, const Subject& subject, const AxisFilter& filter,
+                 const Subspace* subspace) {
   const Env& env = model.env();
+  UseConfig const start = subspace ? fitted(env, subject.fft, subspace->around) : UseConfig{};
+  bool const branching = !subspace || std::ranges::find(subspace->free, "INPLACE") != subspace->free.end();
   std::vector<UseConfig> branches;
-  for (const Axis& axis : axesOf(env, subject.fft, {}, filter)) {
-    if (axis.option->key != "INPLACE") { continue; }
+  for (const Axis& axis : axesOf(env, subject.fft, start, filter)) {
+    if (axis.option->key != "INPLACE" || !branching) { continue; }
     for (size_t i = 0; i < axis.values.size(); ++i) {
-      UseConfig branch;
+      UseConfig branch = start;
       place(branch, axis, i);
       branches.push_back(fitted(env, subject.fft, branch));
     }
   }
-  if (branches.empty()) { branches.emplace_back(); }
+  if (branches.empty()) { branches.push_back(start); }
 
   Optimum best{.options = {}, .predicted = FORBIDDEN, .exact = true};
   bool exact = true;
   for (const UseConfig& branch : branches) {
-    Optimum const o = minimizeBranch(model, draw, subject, filter, branch);
+    Optimum const o = minimizeBranch(model, draw, subject, filter, branch, subspace);
     exact = exact && o.exact;
     if (o.predicted < best.predicted) { best = o; }
   }

@@ -25,5 +25,7 @@
     <ClCompile Include=".\src\Gate.cpp" />
     <ClCompile Include=".\src\Candidates.cpp" />
     <ClCompile Include=".\src\Publish.cpp" />
+    <ClCompile Include=".\src\Acquire.cpp" />
+    <ClCompile Include=".\src\Tuner.cpp" />
   </ItemGroup>
 </Project>

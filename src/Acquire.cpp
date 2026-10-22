@@ -1,0 +1,236 @@
+// Copyright (C) Jason Lynch
+
+#include "Acquire.h"
+
+#include "Optimize.h"
+
+#include <algorithm>
+#include <atomic>
+#include <cmath>
+#include <limits>
+#include <map>
+#include <thread>
+
+namespace tune {
+
+namespace {
+
+constexpr double NONE = std::numeric_limits<double>::infinity();
+
+// How many grid points choose() tries before it gives up, and how many draws it takes for a challenger at each.
+constexpr u32 POINT_TRIES = 8;
+constexpr u32 CHALLENGER_DRAWS = 4;
+
+struct Valued {
+  UseConfig options{};
+  double value = NONE;  // log microseconds per iteration
+};
+
+// Runs f(0) .. f(n-1) across the machine's threads.
+template<typename F> void parallelFor(size_t n, F&& f) {
+  size_t const threads = std::min<size_t>(n, std::max(1u, std::thread::hardware_concurrency()));
+  if (threads <= 1) {
+    for (size_t i = 0; i < n; ++i) { f(i); }
+    return;
+  }
+  std::atomic<size_t> next{0};
+  std::vector<std::jthread> pool;
+  for (size_t t = 0; t < threads; ++t) {
+    pool.emplace_back([&] {
+      for (size_t i; (i = next++) < n;) { f(i); }
+    });
+  }
+}
+
+// A few axes of `options` on `c`, chosen at random by `seed`.
+std::vector<std::string> someAxes(const AcquireContext& context, const Candidate& c, const UseConfig& options,
+                                  u64 seed) {
+  std::vector<std::string> names;
+  for (const Axis& a : axesOf(context.model.env(), c.subject.fft, options, context.filter(c))) {
+    names.push_back(a.name);
+  }
+  std::mt19937_64 rng{seed};
+  std::ranges::shuffle(names, rng);
+  size_t const m = 1 + rng() % MAX_FREE_AXES;
+  if (names.size() > m) { names.resize(m); }
+  return names;
+}
+
+// One posterior draw, and what it makes of each candidate, worked out once.
+class DrawView {
+public:
+  DrawView(const AcquireContext& context, Draw draw) : context_{context}, draw_{std::move(draw)} {}
+
+  // Works out every candidate of `candidates` holding `E`, across the machine's threads.
+  void valueAt(const std::vector<Candidate>& candidates, u64 E) {
+    std::vector<const Candidate*> todo;
+    for (const Candidate& c : candidates) {
+      if (c.interval.contains(E) && !cache_.contains(&c)) { todo.push_back(&c); }
+    }
+    std::vector<Valued> values(todo.size());
+    parallelFor(todo.size(), [&](size_t i) { values[i] = work(*todo[i]); });
+    for (size_t i = 0; i < todo.size(); ++i) { cache_.emplace(todo[i], std::move(values[i])); }
+  }
+
+  const Valued& valued(const Candidate& c) {
+    auto const it = cache_.find(&c);
+    if (it != cache_.end()) { return it->second; }
+    return cache_.emplace(&c, work(c)).first->second;
+  }
+
+  [[nodiscard]] double predict(const Subject& subject, const UseConfig& options) const {
+    return context_.model.predict(draw_, subject, options);
+  }
+
+private:
+  Valued work(const Candidate& c) const {
+    Valued out;
+    auto offer = [&](const UseConfig& options) {
+      if (context_.blocked(c, options)) { return; }
+      if (double const v = context_.model.predict(draw_, c.subject, options); v < out.value) {
+        out = {.options = options, .value = v};
+      }
+    };
+
+    AxisFilter const filter = context_.filter(c);
+    const Optimum* mean = context_.means ? context_.means->find(&c) : nullptr;
+    Optimum computed;
+    if (!mean) {
+      computed = optimize(context_.model, context_.model.mean(), c.subject, filter);
+      if (context_.means) { context_.means->put(&c, computed); }
+      mean = &computed;
+    }
+    offer(mean->options);
+
+    // The best measured set is where exploration starts from; with none, the mean's optimum.
+    const Reading* incumbent = nullptr;
+    for (const Reading* r : context_.readings.of(c.subject)) {
+      if (r->failed || r->calls == 0 || context_.blocked(c, r->options)) { continue; }
+      offer(r->options);
+      if (!incumbent || r->mean < incumbent->mean) { incumbent = r; }
+    }
+    UseConfig const around = incumbent ? incumbent->options : mean->options;
+    u64 const seed = draw_.seed ^ termHash(c.subject.fft.spec() + toString(c.subject.kind) + c.subject.regime.label());
+    Subspace const subspace{.around = around, .free = someAxes(context_, c, around, seed)};
+    offer(optimize(context_.model, draw_, c.subject, filter, &subspace).options);
+    return out;
+  }
+
+  const AcquireContext& context_;
+  Draw draw_;
+  std::map<const Candidate*, Valued> cache_;
+};
+
+DrawView takeDraw(const AcquireContext& context, std::mt19937_64& rng) {
+  std::chi_squared_distribution<double> chi{DRAW_TAIL_DOF};
+  double const tail = std::sqrt(DRAW_TAIL_DOF / std::max(chi(rng), 1e-9));
+  return DrawView{context, context.model.draw(rng() | 1, context.scale * tail)};
+}
+
+// The cheapest candidate at `E` under one draw.
+std::pair<const Candidate*, Valued> winnerAt(DrawView& view, const std::vector<Candidate>& candidates, u64 E) {
+  view.valueAt(candidates, E);
+  const Candidate* best = nullptr;
+  Valued bestValue;
+  for (const Candidate& c : candidates) {
+    if (!c.interval.contains(E)) { continue; }
+    const Valued& v = view.valued(c);
+    if (v.value < bestValue.value) {
+      best = &c;
+      bestValue = v;
+    }
+  }
+  return {best, bestValue};
+}
+
+bool wellMeasured(const Readings& readings, const Candidate& c, const UseConfig& options) {
+  const Reading* const r = readings.find(c.subject, options);
+  return r && r->calls >= WELL_MEASURED;
+}
+
+}  // namespace
+
+const Optimum* MeanOptima::find(const Candidate* c) const {
+  std::lock_guard const lock{mutex_};
+  auto const it = optima_.find(c);
+  return it == optima_.end() ? nullptr : &it->second;
+}
+
+void MeanOptima::put(const Candidate* c, Optimum o) {
+  std::lock_guard const lock{mutex_};
+  optima_.try_emplace(c, std::move(o));
+}
+
+std::optional<Choice> choose(const AcquireContext& context, std::mt19937_64& rng) {
+  std::vector<size_t> kinds;
+  for (size_t k = 0; k < context.scope.grids.size() && k < context.candidates.size(); ++k) {
+    if (!context.candidates[k].empty()) { kinds.push_back(k); }
+  }
+  if (kinds.empty()) { return {}; }
+
+  std::uniform_real_distribution<double> uniform{0, 1};
+  for (u32 attempt = 0; attempt < POINT_TRIES; ++attempt) {
+    size_t const k = kinds[std::uniform_int_distribution<size_t>{0, kinds.size() - 1}(rng)];
+    const Grid& grid = context.scope.grids[k];
+    std::vector<double> weights;
+    for (const GridPoint& p : grid.points) { weights.push_back(p.weight); }
+    u64 const E = grid.points[std::discrete_distribution<size_t>{weights.begin(), weights.end()}(rng)].exponent;
+
+    DrawView first = takeDraw(context, rng);
+    auto const [winner, valued] = winnerAt(first, context.candidates[k], E);
+    if (!winner) { continue; }
+
+    bool const settled = wellMeasured(context.readings, *winner, valued.options);
+    if (!settled && uniform(rng) < TOP_TWO_BETA) {
+      return Choice{.candidate = winner,
+                    .options = valued.options,
+                    .predictedUs = std::exp(valued.value),
+                    .why = "the draw's cheapest at " + std::to_string(E)};
+    }
+
+    for (u32 d = 0; d < CHALLENGER_DRAWS; ++d) {
+      DrawView other = takeDraw(context, rng);
+      auto const [challenger, cv] = winnerAt(other, context.candidates[k], E);
+      if (!challenger || (challenger == winner && cv.options == valued.options)) { continue; }
+      if (wellMeasured(context.readings, *challenger, cv.options)) { continue; }
+      return Choice{.candidate = challenger,
+                    .options = cv.options,
+                    .predictedUs = std::exp(cv.value),
+                    .why = "a challenger at " + std::to_string(E)};
+    }
+    if (!settled) {
+      return Choice{.candidate = winner,
+                    .options = valued.options,
+                    .predictedUs = std::exp(valued.value),
+                    .why = "the draw's cheapest at " + std::to_string(E) + ", unchallenged"};
+    }
+  }
+  return {};
+}
+
+double expectedRegret(const AcquireContext& context, const Publication& publication, std::mt19937_64& rng, u32 draws) {
+  double total = 0;
+  for (u32 i = 0; i < draws; ++i) {
+    DrawView view = takeDraw(context, rng);
+    double excess = 0;
+    double cost = 0;
+    for (size_t k = 0; k < context.scope.grids.size() && k < context.candidates.size(); ++k) {
+      const Grid& grid = context.scope.grids[k];
+      const KindPublication* const pub = publication.of(grid.kind);
+      for (const GridPoint& p : grid.points) {
+        const Line* const line = pub ? pub->at(p.exponent) : nullptr;
+        if (!line) { return NONE; }
+        const FFTConfig& fft = line->candidate->subject.fft;
+        Subject const there{.fft = fft, .kind = grid.kind, .regime = regimeOf(fft, p.exponent)};
+        double const published = std::exp(view.predict(there, line->reading->options));
+        double const best = std::exp(winnerAt(view, context.candidates[k], p.exponent).second.value);
+        excess += p.weight * std::max(0.0, published - best);
+        cost += p.weight * published;
+      }
+    }
+    total += cost > 0 ? excess / cost : 0;
+  }
+  return total / double(std::max(draws, 1u));
+}
+
+}  // namespace tune

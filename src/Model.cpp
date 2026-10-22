@@ -7,6 +7,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <map>
 #include <numbers>
 
 namespace tune {
@@ -20,6 +21,14 @@ namespace {
 // directions less than it should, which the caller's calibration makes up for.
 constexpr double SOLVE_TOLERANCE = 1e-6;
 constexpr u32 SOLVE_MAX_ITERATIONS = 300;
+
+// A group's spread is learnt from its terms read by at least SPREAD_READINGS observations, once there are
+// SPREAD_TERMS of them: the root mean square of those terms, a fitted term being shrunk toward zero by its prior by
+// about what SHRINK_UNDO undoes for a well-read one.  It stays within SPREAD_RANGE of the stated prior either way.
+constexpr u32 SPREAD_READINGS = 3;
+constexpr size_t SPREAD_TERMS = 5;
+constexpr double SHRINK_UNDO = 1.25;
+constexpr double SPREAD_RANGE = 10;
 
 constexpr u64 FNV_OFFSET = 0xcbf29ce484222325ull;
 constexpr u64 FNV_PRIME = 0x100000001b3ull;
@@ -50,7 +59,8 @@ private:
   u64 state_;
 };
 
-double offsetOf(const FFTConfig& fft) { return std::log(priorWork(fft.shape.size())); }
+// The stated prior's cost: what an FFT is expected to cost before this card has read anything like it.
+double offsetOf(const FFTConfig& fft) { return std::log(statedPrior(fft.shape)); }
 
 std::string digit(u32 d) { return std::to_string(d); }
 
@@ -63,6 +73,11 @@ u64 termHash(std::string_view text) {
 }
 
 Model::Model(Env env, ModelPrior prior) : env_{std::move(env)}, prior_{prior} {}
+
+double Model::spreadOf(Group group, double stated) const {
+  double const learnt = learnt_[size_t(group)];
+  return learnt > 0 ? learnt : stated;
+}
 
 bool Model::interact(const Env& env, const FFTConfig& fft, const UseConfig& background, const Axis& a, const Axis& b) {
   const Option& oa = *a.option;
@@ -85,18 +100,20 @@ std::vector<Model::Term> Model::termsOf(const Subject& s, const UseConfig& optio
   std::string const entry = s.fft.spec() + '|' + toString(s.kind) + '|' + regime;
 
   std::vector<Term> out;
-  auto add = [&](const std::string& text, double sd) { out.push_back({.hash = termHash(text), .sd = sd}); };
+  auto add = [&](const std::string& text, Group group, double stated) {
+    out.push_back({.hash = termHash(text), .group = group, .sd = spreadOf(group, stated)});
+  };
 
-  add("T|" + type, prior_.type);
-  add("Tk|" + type + '|' + toString(s.kind), prior_.kind);
-  add("W|" + type + '|' + std::to_string(shape.width), prior_.shape);
-  add("M|" + type + '|' + std::to_string(shape.middle), prior_.shape);
-  add("H|" + type + '|' + std::to_string(shape.height), prior_.shape);
-  add("Vw|" + type + '|' + digit(variant_W(s.fft.variant)), prior_.variant);
-  add("Vm|" + type + '|' + digit(variant_M(s.fft.variant)), prior_.variant);
-  add("Vh|" + type + '|' + digit(variant_H(s.fft.variant)), prior_.variant);
-  add("Rg|" + type + '|' + regime, prior_.variant);
-  add("E|" + entry, prior_.entry);
+  add("T|" + type, Group::Type, prior_.type);
+  add("Tk|" + type + '|' + toString(s.kind), Group::Kind, prior_.kind);
+  add("W|" + type + '|' + std::to_string(shape.width), Group::Shape, prior_.shape);
+  add("M|" + type + '|' + std::to_string(shape.middle), Group::Shape, prior_.shape);
+  add("H|" + type + '|' + std::to_string(shape.height), Group::Shape, prior_.shape);
+  add("Vw|" + type + '|' + digit(variant_W(s.fft.variant)), Group::Variant, prior_.variant);
+  add("Vm|" + type + '|' + digit(variant_M(s.fft.variant)), Group::Variant, prior_.variant);
+  add("Vh|" + type + '|' + digit(variant_H(s.fft.variant)), Group::Variant, prior_.variant);
+  add("Rg|" + type + '|' + regime, Group::Variant, prior_.variant);
+  add("E|" + entry, Group::Entry, prior_.entry);
 
   UseConfig const canonical = canonicalConfig(env_, s.fft, options);
   std::vector<Axis> const axes = axesOf(env_, s.fft, canonical);
@@ -108,20 +125,21 @@ std::vector<Model::Term> Model::termsOf(const Subject& s, const UseConfig& optio
     std::string const label = axis.label(axis.current);
     labels.push_back(label);
     if (axis.current == axis.reference) { continue; }
-    add("G|" + label, prior_.effect);
-    add("GT|" + type + '|' + label, prior_.effectType);
-    add("GS|" + entry + '|' + label, prior_.effectEntry);
+    add("G|" + label, Group::Effect, prior_.effect);
+    add("GT|" + type + '|' + label, Group::EffectType, prior_.effectType);
+    add("GS|" + entry + '|' + label, Group::EffectEntry, prior_.effectEntry);
   }
   for (size_t i = 0; i < axes.size(); ++i) {
     if (axes[i].current == axes[i].reference) { continue; }
     for (size_t j = i + 1; j < axes.size(); ++j) {
       if (axes[j].current == axes[j].reference || !interact(env_, s.fft, canonical, axes[i], axes[j])) { continue; }
       auto const& [lo, hi] = std::minmax(labels[i], labels[j]);
-      add("P|" + type + '|' + lo + '|' + hi, prior_.pair);
+      add("P|" + type + '|' + lo + '|' + hi, Group::Pair, prior_.pair);
+      out.back().drawn = axes[i].option->group == axes[j].option->group;
     }
   }
 
-  add("R|" + entry + '|' + configText(canonical), prior_.residual);
+  add("R|" + entry + '|' + configText(canonical), Group::Residual, prior_.residual);
   return out;
 }
 
@@ -136,12 +154,19 @@ void Model::fit(std::span<const Observation> observations) {
   y_.clear();
   w_.clear();
 
+  std::vector<Group> groups;
+  std::vector<u32> readings;
   for (const Observation& o : observations) {
     if (!(o.cost > 0)) { continue; }
     for (const Term& t : termsOf(Subject{.fft = o.fft, .kind = o.kind, .regime = o.regime}, o.options)) {
       auto const [it, fresh] = index_.try_emplace(t.hash, u32(lambda_.size()));
-      if (fresh) { lambda_.push_back(1 / (t.sd * t.sd)); }
+      if (fresh) {
+        lambda_.push_back(1 / (t.sd * t.sd));
+        groups.push_back(t.group);
+        readings.push_back(0);
+      }
       cols_.push_back(it->second);
+      ++readings[it->second];
     }
     rowStart_.push_back(u32(cols_.size()));
     y_.push_back(std::log(o.cost) - offsetOf(o.fft));
@@ -161,6 +186,51 @@ void Model::fit(std::span<const Observation> observations) {
     if (auto const it = previous.find(hash); it != previous.end()) { start[at] = it->second; }
   }
   beta_ = solve(y_, std::vector<double>(lambda_.size(), 0.0), std::move(start));
+
+  learnSpreads(groups, readings);
+}
+
+void Model::learnSpreads(const std::vector<Group>& groups, const std::vector<u32>& readings) {
+  auto stated = [&](Group g) {
+    switch (g) {
+    case Group::Type: return prior_.type;
+    case Group::Kind: return prior_.kind;
+    case Group::Shape: return prior_.shape;
+    case Group::Variant: return prior_.variant;
+    case Group::Entry: return prior_.entry;
+    case Group::Effect: return prior_.effect;
+    case Group::EffectType: return prior_.effectType;
+    case Group::EffectEntry: return prior_.effectEntry;
+    case Group::Pair: return prior_.pair;
+    case Group::Residual: return prior_.residual;
+    default: return 0.0;
+    }
+  };
+
+  for (u32 round = 0; round < 3; ++round) {
+    bool moved = false;
+    for (size_t g = 0; g < size_t(Group::Count); ++g) {
+      double ss = 0;
+      size_t n = 0;
+      for (size_t j = 0; j < groups.size(); ++j) {
+        if (size_t(groups[j]) == g && readings[j] >= SPREAD_READINGS) {
+          ss += beta_[j] * beta_[j];
+          ++n;
+        }
+      }
+      if (n < SPREAD_TERMS) { continue; }
+      double const base = stated(Group(g));
+      double const sd = std::clamp(SHRINK_UNDO * std::sqrt(ss / double(n)), base / SPREAD_RANGE, base * SPREAD_RANGE);
+      if (std::abs(sd / spreadOf(Group(g), base) - 1) < 0.1) { continue; }
+      learnt_[g] = sd;
+      for (size_t j = 0; j < groups.size(); ++j) {
+        if (size_t(groups[j]) == g) { lambda_[j] = 1 / (sd * sd); }
+      }
+      moved = true;
+    }
+    if (!moved) { break; }
+    beta_ = solve(y_, std::vector<double>(lambda_.size(), 0.0), beta_);
+  }
 }
 
 void Model::apply(const std::vector<double>& b, std::vector<double>& out) const {
@@ -247,7 +317,7 @@ Draw Model::draw(u64 seed, double scale) const {
 
 double Model::value(const Draw& draw, const Term& term) const {
   if (auto const it = index_.find(term.hash); it != index_.end()) { return draw.beta[it->second]; }
-  if (!draw.seed) { return 0; }
+  if (!draw.seed || !term.drawn) { return 0; }
   return draw.scale * term.sd * gaussian(term.hash ^ splitmix(draw.seed));
 }
 
@@ -263,18 +333,20 @@ Energy Model::energy(const Draw& draw, const Subject& s, const UseConfig& backgr
   std::string const type = std::to_string(int(shape.fft_type));
   std::string const regime = s.regime.label();
   std::string const entry = s.fft.spec() + '|' + toString(s.kind) + '|' + regime;
-  auto term = [&](const std::string& text, double sd) { return value(draw, Term{.hash = termHash(text), .sd = sd}); };
+  auto term = [&](const std::string& text, Group group, double stated, bool drawn = true) {
+    return value(draw, Term{.hash = termHash(text), .group = group, .sd = spreadOf(group, stated), .drawn = drawn});
+  };
 
   Energy out;
-  out.constant = offsetOf(s.fft) + centre_ + term("T|" + type, prior_.type) +
-    term("Tk|" + type + '|' + toString(s.kind), prior_.kind) +
-    term("W|" + type + '|' + std::to_string(shape.width), prior_.shape) +
-    term("M|" + type + '|' + std::to_string(shape.middle), prior_.shape) +
-    term("H|" + type + '|' + std::to_string(shape.height), prior_.shape) +
-    term("Vw|" + type + '|' + digit(variant_W(s.fft.variant)), prior_.variant) +
-    term("Vm|" + type + '|' + digit(variant_M(s.fft.variant)), prior_.variant) +
-    term("Vh|" + type + '|' + digit(variant_H(s.fft.variant)), prior_.variant) +
-    term("Rg|" + type + '|' + regime, prior_.variant) + term("E|" + entry, prior_.entry);
+  out.constant = offsetOf(s.fft) + centre_ + term("T|" + type, Group::Type, prior_.type) +
+    term("Tk|" + type + '|' + toString(s.kind), Group::Kind, prior_.kind) +
+    term("W|" + type + '|' + std::to_string(shape.width), Group::Shape, prior_.shape) +
+    term("M|" + type + '|' + std::to_string(shape.middle), Group::Shape, prior_.shape) +
+    term("H|" + type + '|' + std::to_string(shape.height), Group::Shape, prior_.shape) +
+    term("Vw|" + type + '|' + digit(variant_W(s.fft.variant)), Group::Variant, prior_.variant) +
+    term("Vm|" + type + '|' + digit(variant_M(s.fft.variant)), Group::Variant, prior_.variant) +
+    term("Vh|" + type + '|' + digit(variant_H(s.fft.variant)), Group::Variant, prior_.variant) +
+    term("Rg|" + type + '|' + regime, Group::Variant, prior_.variant) + term("E|" + entry, Group::Entry, prior_.entry);
 
   std::vector<std::vector<std::string>> labels(axes.size());
   out.unary.resize(axes.size());
@@ -283,15 +355,16 @@ Energy Model::energy(const Draw& draw, const Subject& s, const UseConfig& backgr
       std::string const label = axes[a].label(p);
       labels[a].push_back(label);
       out.unary[a].push_back(p == axes[a].reference ? 0.0
-                                                    : term("G|" + label, prior_.effect) +
-                                 term("GT|" + type + '|' + label, prior_.effectType) +
-                                 term("GS|" + entry + '|' + label, prior_.effectEntry));
+                                                    : term("G|" + label, Group::Effect, prior_.effect) +
+                                 term("GT|" + type + '|' + label, Group::EffectType, prior_.effectType) +
+                                 term("GS|" + entry + '|' + label, Group::EffectEntry, prior_.effectEntry));
     }
   }
 
   for (size_t a = 0; a < axes.size(); ++a) {
     for (size_t b = a + 1; b < axes.size(); ++b) {
       if (!interact(env_, s.fft, background, axes[a], axes[b])) { continue; }
+      bool const drawn = axes[a].option->group == axes[b].option->group;
       Energy::Pair pair{.a = a, .b = b, .table = {}};
       for (size_t pa = 0; pa < labels[a].size(); ++pa) {
         for (size_t pb = 0; pb < labels[b].size(); ++pb) {
@@ -300,10 +373,11 @@ Energy Model::energy(const Draw& draw, const Subject& s, const UseConfig& backgr
             continue;
           }
           auto const& [lo, hi] = std::minmax(labels[a][pa], labels[b][pb]);
-          pair.table.push_back(term("P|" + type + '|' + lo + '|' + hi, prior_.pair));
+          pair.table.push_back(term("P|" + type + '|' + lo + '|' + hi, Group::Pair, prior_.pair, drawn));
         }
       }
-      out.pairs.push_back(std::move(pair));
+      // A pair the draw says nothing of is no edge for the optimiser to eliminate.
+      if (std::ranges::any_of(pair.table, [](double v) { return v != 0; })) { out.pairs.push_back(std::move(pair)); }
     }
   }
   return out;

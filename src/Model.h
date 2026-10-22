@@ -4,12 +4,13 @@
 //
 // The log of a call's cost is a sum of terms:
 //
-//   an offset           log(N log2 N), plus the mean over the readings
+//   an offset           the stated prior's cost (Prior.h), plus the readings' mean departure from it
 //   an entry intercept  per (FFT, test kind, carry regime), with a prior from the FFT's structure: its type, the type's
 //                       test kind, width, middle, height, variant digits and regime, each a term of its own
 //   option effects      per axis at its position (Axes.h), at three levels: the card, the FFT type, the entry
 //   interactions        per pair of axes that share a kernel (or a group, for the groups that reach every kernel), per
-//                       FFT type
+//                       FFT type; a pair within a group takes its prior in a draw before anything has measured it, a
+//                       pair across groups only once something has, which keeps a draw's optimisation tractable
 //   a residual          per configuration, so that what was measured is what the model says of it
 //   noise               per call
 //
@@ -29,6 +30,7 @@
 #include "OptionSpace.h"
 #include "TestKind.h"
 
+#include <array>
 #include <span>
 #include <string>
 #include <unordered_map>
@@ -114,21 +116,39 @@ public:
                                      const Axis& b);
 
   [[nodiscard]] const Env& env() const { return env_; }
+  // The spread an entry's departure from its structure was learnt to have: how much better than its structure an FFT
+  // never read is taken to possibly be.
+  [[nodiscard]] double entrySpread() const { return spreadOf(Group::Entry, prior_.entry); }
+
+  // The same for an option effect on this card.
+  [[nodiscard]] double effectSpread() const { return spreadOf(Group::Effect, prior_.effect); }
   [[nodiscard]] size_t terms() const { return index_.size(); }
   [[nodiscard]] size_t observations() const { return y_.size(); }
   [[nodiscard]] u32 lastIterations() const { return lastIterations_; }
 
 private:
+  // What kind of departure a term is, for its prior: each kind's spread is learnt from its terms the readings
+  // determine well.
+  enum class Group : u8 { Type, Kind, Shape, Variant, Entry, Effect, EffectType, EffectEntry, Pair, Residual, Count };
+
   struct Term {
     u64 hash = 0;
+    Group group = Group::Type;
     double sd = 0;
+    bool drawn = true;  // whether, unmeasured, it takes its prior in a draw
   };
+
+  // The prior spread of a kind of term: as stated, or as learnt.
+  [[nodiscard]] double spreadOf(Group group, double stated) const;
 
   // The terms of an observation or a prediction: the structural and option terms, then the residual.
   [[nodiscard]] std::vector<Term> termsOf(const Subject& subject, const UseConfig& options) const;
 
   // The coefficient of a term under a draw: fitted, or for a term nothing measured, its prior.
   [[nodiscard]] double value(const Draw& draw, const Term& term) const;
+
+  // Learns each group's spread from its well-read terms, and fits again where one moved.
+  void learnSpreads(const std::vector<Group>& groups, const std::vector<u32>& readings);
 
   // (X^T W X + Lambda) b
   void apply(const std::vector<double>& b, std::vector<double>& out) const;
@@ -150,6 +170,9 @@ private:
   std::vector<double> y_;
   std::vector<double> w_;
   double centre_ = 0;
+
+  // Learnt spreads, per group; 0 where the stated prior stands.
+  std::array<double, size_t(Group::Count)> learnt_{};
 
   std::vector<double> beta_;
   mutable u32 lastIterations_ = 0;
