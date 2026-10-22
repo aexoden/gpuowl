@@ -252,6 +252,21 @@ std::optional<Task> Worktodo::getTask(Args &args, i32 instance) {
   return getWork(args, instance);
 }
 
+std::vector<Task> Worktodo::pending(const std::vector<fs::path>& files) {
+  vector<Task> out;
+  for (const fs::path& file : files) {
+    File fi = File::openRead(file);
+    if (!fi && errno != ENOENT) {
+      log("Can't read '%s': %s\n", file.string().c_str(), strerror(errno));
+      throw "worktodo file unreadable";
+    }
+    for (const string& line : fi) {
+      if (optional<Task> task = parse(line)) { out.push_back(std::move(*task)); }
+    }
+  }
+  return out;
+}
+
 bool Worktodo::deleteTask(const Task &task, i32 instance) {
   // Some tasks don't originate in worktodo.txt and thus don't need deleting.
   if (task.line.empty()) { return true; }
