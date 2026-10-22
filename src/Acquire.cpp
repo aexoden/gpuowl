@@ -11,6 +11,12 @@
 #include <map>
 #include <thread>
 
+#ifdef __linux__
+#include <sys/resource.h>
+#include <sys/syscall.h>
+#include <unistd.h>
+#endif
+
 namespace tune {
 
 namespace {
@@ -26,6 +32,14 @@ struct Valued {
   double value = NONE;  // log microseconds per iteration
 };
 
+// The model's work yields to anything else wanting the CPU: another tuner's timed loop on the same machine busy-waits
+// on its device, and a stall there is read as the configuration's cost.
+void lowerPriority() {
+#ifdef __linux__
+  (void)setpriority(PRIO_PROCESS, pid_t(syscall(SYS_gettid)), 19);
+#endif
+}
+
 // Runs f(0) .. f(n-1) across the machine's threads.
 template<typename F> void parallelFor(size_t n, F&& f) {
   size_t const threads = std::min<size_t>(n, std::max(1u, std::thread::hardware_concurrency()));
@@ -37,6 +51,7 @@ template<typename F> void parallelFor(size_t n, F&& f) {
   std::vector<std::jthread> pool;
   for (size_t t = 0; t < threads; ++t) {
     pool.emplace_back([&] {
+      lowerPriority();
       for (size_t i; (i = next++) < n;) { f(i); }
     });
   }

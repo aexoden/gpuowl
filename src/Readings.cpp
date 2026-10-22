@@ -15,6 +15,11 @@ constexpr double SINGLE_CALL_SE = 0.01;
 // No reading is more exact than this, relative to its mean.
 constexpr double SE_FLOOR = 0.001;
 
+// A call this much above another call of the same configuration was disturbed -- by another process wanting the CPU
+// the timed loop busy-waits on, or by the card itself -- and says nothing of the configuration.  Calls scatter by well
+// under 1%.
+constexpr double DISTURBED = 1.15;
+
 }  // namespace
 
 double Reading::pessimistic() const { return mean + PESSIMISM_SIGMA * se; }
@@ -25,7 +30,11 @@ ConfigKey Readings::keyOf(const Subject& subject, const UseConfig& options) {
 }
 
 Readings::Readings(const TuneDB& db, u32 env, const Env& device) {
-  std::map<ConfigKey, std::vector<double>> costs;
+  struct Taken {
+    double cost;
+    double relSem;
+  };
+  std::map<ConfigKey, std::vector<Taken>> costs;
 
   for (const CallRow& row : db.calls()) {
     if (db.envOf(row.sess) != env) { continue; }
@@ -45,13 +54,8 @@ Readings::Readings(const TuneDB& db, u32 env, const Env& device) {
     switch (row.status) {
     case Status::Ok:
       if (row.ok()) {
-        costs[key].push_back(row.cost());
-        observations_.push_back({.fft = *fft,
-                                 .kind = row.kind,
-                                 .regime = subject.regime,
-                                 .options = options,
-                                 .cost = row.cost(),
-                                 .relSem = row.mean > 0 ? row.sd / row.mean / std::sqrt(double(row.blocks)) : 0});
+        costs[key].push_back(
+          {.cost = row.cost(), .relSem = row.mean > 0 ? row.sd / row.mean / std::sqrt(double(row.blocks)) : 0});
       }
       break;
     case Status::Lost: break;  // says nothing of the configuration
@@ -59,10 +63,21 @@ Readings::Readings(const TuneDB& db, u32 env, const Env& device) {
     }
   }
 
+  for (auto& [key, taken] : costs) {
+    double const least = std::ranges::min(taken, {}, &Taken::cost).cost;
+    std::erase_if(taken, [&](const Taken& t) { return t.cost > least * DISTURBED; });
+    const Reading& r = readings_.at(key);
+    for (const Taken& t : taken) {
+      observations_.push_back(
+        {.fft = r.fft, .kind = r.kind, .regime = r.regime, .options = r.options, .cost = t.cost, .relSem = t.relSem});
+    }
+  }
+
   for (auto& [key, r] : readings_) {
     auto const it = costs.find(key);
     if (it == costs.end()) { continue; }
-    const std::vector<double>& c = it->second;
+    std::vector<double> c;
+    for (const Taken& t : it->second) { c.push_back(t.cost); }
     r.calls = u32(c.size());
     double sum = 0;
     for (double const x : c) { sum += x; }
