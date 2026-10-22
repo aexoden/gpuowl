@@ -226,7 +226,47 @@ private:
     offer(mean->options);
     Subspace const subspace{.around = start, .free = someAxes(context_, c, start, seed)};
     offer(optimize(context_.model, draw_, c.subject, filter, &subspace).options);
+    if (std::optional<UseConfig> const step = bestStep(c, around, filter)) { offer(*step); }
     return out;
+  }
+
+  // The single-axis move from `around` this draw likes best.  A random subspace holds any one axis only now and then,
+  // so a move whose effect here is uncertain -- a stripe width read on other shapes but not this one -- would wait long
+  // for a draw to look at it; a move changes one effect, so the draw's noise cannot stack across axes the way a free
+  // optimum's can.
+  std::optional<UseConfig> bestStep(const Candidate& c, const UseConfig& around, const AxisFilter& filter) const {
+    const Model& model = context_.model;
+    std::vector<Axis> const axes = axesOf(model.env(), c.subject.fft, around, filter);
+    Energy const e = model.energy(draw_, c.subject, around, axes);
+    double best = 0;
+    std::optional<std::pair<size_t, size_t>> move;
+    for (size_t a = 0; a < axes.size(); ++a) {
+      if (axes[a].option->structural) { continue; }
+      size_t const from = axes[a].current;
+      for (size_t p = 0; p < axes[a].values.size(); ++p) {
+        if (p == from) { continue; }
+        double delta = e.unary[a][p] - e.unary[a][from];
+        for (const Energy::Pair& pair : e.pairs) {
+          if (pair.a == a) {
+            size_t const nb = axes[pair.b].values.size();
+            size_t const b = axes[pair.b].current;
+            delta += pair.table[p * nb + b] - pair.table[from * nb + b];
+          } else if (pair.b == a) {
+            size_t const nb = axes[a].values.size();
+            size_t const o = axes[pair.a].current;
+            delta += pair.table[o * nb + p] - pair.table[o * nb + from];
+          }
+        }
+        if (delta < best) {
+          best = delta;
+          move = {a, p};
+        }
+      }
+    }
+    if (!move) { return {}; }
+    UseConfig step = around;
+    place(step, axes[move->first], move->second);
+    return fitted(model.env(), c.subject.fft, step);
   }
 
   // The mean's optimum, moving at most MEAN_STEP_AXES axes from `around`: those its unbounded optimum gains most from
