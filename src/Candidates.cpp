@@ -36,10 +36,19 @@ std::vector<Candidate> candidatesOf(const Env& env, const RunScope& scope, TestK
         }
         if (c.points.empty()) { continue; }
 
-        u64 const want = interval.contains(scope.probe) ? scope.probe : c.points.back().exponent;
-        u64 const timing = primes.isPrime(want) ? want : primes.prevPrime(want);
-        c.timing = timing >= interval.lo ? timing : primes.nextPrime(interval.lo - 1);
-        if (!interval.contains(c.timing)) { continue; }
+        // Few distinct timing exponents, since each LL one needs a reference residue settled first: the probe, else
+        // the workload's ends, else the candidate's own top point.
+        u64 timing = 0;
+        for (u64 const E :
+             {scope.probe, grid->points.front().exponent, grid->points.back().exponent, c.points.back().exponent}) {
+          u64 const prime = primes.isPrime(E) ? E : primes.prevPrime(E);
+          if (interval.contains(prime)) {
+            timing = prime;
+            break;
+          }
+        }
+        if (!timing) { continue; }
+        c.timing = timing;
         out.push_back(std::move(c));
       }
     }

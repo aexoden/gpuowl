@@ -17,7 +17,7 @@ struct Candidate {
   Subject subject;
   Interval interval;              // within the workload and the FFT's table, one regime
   std::vector<GridPoint> points;  // the grid points it holds, each with its weight
-  u64 timing = 0;                 // the exponent it is called at: the probe where it holds it, else its top point
+  u64 timing = 0;                 // the exponent it is called at: the probe, else a workload end, else its top point
 
   [[nodiscard]] double weight() const;
 };
