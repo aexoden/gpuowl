@@ -30,8 +30,6 @@ constexpr size_t SPREAD_TERMS = 5;
 constexpr double SHRINK_UNDO = 1.25;
 constexpr double SPREAD_RANGE = 10;
 
-// Degrees of freedom of the Student-t an unmeasured term's draw is taken from.
-constexpr double UNSEEN_TAIL_DOF = 3;
 
 constexpr u64 FNV_OFFSET = 0xcbf29ce484222325ull;
 constexpr u64 FNV_PRIME = 0x100000001b3ull;
@@ -369,15 +367,9 @@ Draw Model::draw(u64 seed, double scale) const {
 double Model::value(const Draw& draw, const Term& term) const {
   if (auto const it = index_.find(term.hash); it != index_.end()) { return draw.beta[it->second]; }
   if (!draw.seed || !term.drawn) { return 0; }
-  // Student-t with UNSEEN_TAIL_DOF degrees of freedom: the spread learnt from what was measured is mostly small
-  // effects, and the occasional large one an untried value can have is what is worth a measurement to find.
-  u64 const key = term.hash ^ splitmix(draw.seed);
-  double chi = 0;
-  for (u64 k = 1; k <= u64(UNSEEN_TAIL_DOF); ++k) {
-    double const g = gaussian(splitmix(key + k));
-    chi += g * g;
-  }
-  return draw.scale * term.sd * gaussian(key) / std::sqrt(std::max(chi, 1e-6) / UNSEEN_TAIL_DOF);
+  // Gaussian, as its prior says.  A heavier tail per term is no help to a search that takes the cheapest of a hundred
+  // single moves: it takes whichever term drew furthest out, and predicts a third of what anything costs.
+  return draw.scale * term.sd * gaussian(term.hash ^ splitmix(draw.seed));
 }
 
 bool Model::measured(const Subject& subject, const std::string& label) const {
