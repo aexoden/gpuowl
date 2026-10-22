@@ -127,6 +127,10 @@ TuneCommand parseTuneCommand(std::string_view text) {
       out.tailQueues = *q;
     } else if (key == "stop" && out.verb != TuneVerb::Scope) {
       out.stop = parseStop(value);
+    } else if (key == "sweep" && out.verb == TuneVerb::Run) {
+      std::optional<double> const share = parseDouble(value);
+      if (!share || *share < 0 || *share > 1) { throw std::string{"-tune: sweep= takes a fraction from 0 to 1"}; }
+      out.sweep = *share;
     } else if (key == "dashboard" && out.verb == TuneVerb::Run) {
       if (value != "0" && value != "1") { throw std::string{"-tune: dashboard= takes 0 or 1"}; }
       out.dashboard = value == "1";

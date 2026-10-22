@@ -207,7 +207,11 @@ LoopResult runLoop(Device& device, TuneDB& db, u32 env, const Env& card, const R
       }
     }
 
-    std::optional<Choice> choice = choose(context, rng);
+    std::optional<Choice> choice;
+    if (settings.sweep > 0 && std::uniform_real_distribution<double>{0, 1}(rng) < settings.sweep) {
+      choice = untriedStep(context, rng, true);
+    }
+    if (!choice) { choice = choose(context, rng); }
     if (!choice && settings.stop == 0) { choice = untriedStep(context, rng); }
     if (!choice) {
       out.regret = expectedRegret(context, publication, rng, settings.regretDraws);
@@ -318,6 +322,7 @@ RunOutcome runTune(GpuCommon shared, const TuneCommand& command) {
   }
   LoopResult const result = runLoop(device, db, bench.envId(), card, *scope,
                                     {.stop = command.stop,
+                                     .sweep = command.sweep,
                                      .seed = seed,
                                      .tailQueues = command.tailQueues,
                                      .publishTo = fs::current_path(),

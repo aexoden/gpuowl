@@ -350,6 +350,7 @@ named "config.txt" in the prpll run directory.
                          probeWeight=<f>     the share of weight on the probe, 0 to 1 [0.5]
                          kinds=prp|ll|prp+ll test kinds to tune [prp]
                          stop=<P>%%|0        stop when the published choice is expected within P%% of the best [0.1%%]
+                         sweep=<f>           the share of calls that read an option value not yet read, 0 to 1 [0.2]
                          pfaShapes=ntt|all|none  prime-factor middles considered [ntt]
                          tailQueues=ntt|all|none FFTs offered TAIL_KERNELS 11 and 13 [ntt: NTTs on nVidia]
                          dashboard=1         a full-screen view of the run

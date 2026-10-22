@@ -17,6 +17,9 @@ namespace tune {
 // do over the workload.  Measured against what is left to gain, not against a clock.
 inline constexpr double STOP = 0.001;
 
+// The share of items given to a step new to the type, the shape or the FFT (untriedStep()), whatever the draws say.
+inline constexpr double SWEEP = 0.2;
+
 enum class TuneVerb : u8 {
   Run,     // tune on the device
   Status,  // where the database stands, with no device
@@ -30,7 +33,8 @@ struct TuneCommand {
   TuneVerb verb = TuneVerb::Run;
   ScopeArgs scope{};
   TailQueues tailQueues = TailQueues::Ntt;
-  double stop = STOP;      // 0 to run until stopped
+  double stop = STOP;  // 0 to run until stopped
+  double sweep = SWEEP;
   bool dashboard = false;  // display only: not part of the settings a run records
   u64 seed = 0;            // the draws' seed; 0 for one from the clock
 };

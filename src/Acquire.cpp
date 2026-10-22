@@ -408,13 +408,30 @@ std::optional<Choice> choose(const AcquireContext& context, std::mt19937_64& rng
   return {};
 }
 
-std::optional<Choice> untriedStep(const AcquireContext& context, std::mt19937_64& rng) {
+const char* toString(Novelty novelty) {
+  switch (novelty) {
+  case Novelty::Type: return "new to the type";
+  case Novelty::Shape: return "new to the shape";
+  case Novelty::Entry: return "new to the FFT";
+  case Novelty::Set: return "a new set";
+  }
+  return "?";
+}
+
+std::optional<Choice> untriedStep(const AcquireContext& context, std::mt19937_64& rng, bool positionsOnly) {
   std::vector<size_t> kinds;
   for (size_t k = 0; k < context.scope.grids.size() && k < context.candidates.size(); ++k) {
     if (!context.candidates[k].empty()) { kinds.push_back(k); }
   }
   if (kinds.empty()) { return {}; }
 
+  const Model& model = context.model;
+  struct Step {
+    const Candidate* candidate;
+    UseConfig options;
+    Novelty novelty;
+    double weight;
+  };
   for (u32 attempt = 0; attempt < POINT_TRIES; ++attempt) {
     size_t const k = kinds[std::uniform_int_distribution<size_t>{0, kinds.size() - 1}(rng)];
     const Grid& grid = context.scope.grids[k];
@@ -422,34 +439,53 @@ std::optional<Choice> untriedStep(const AcquireContext& context, std::mt19937_64
     for (const GridPoint& p : grid.points) { weights.push_back(p.weight); }
     u64 const E = grid.points[std::discrete_distribution<size_t>{weights.begin(), weights.end()}(rng)].exponent;
 
-    DrawView const view{context, context.model.mean()};
+    DrawView const view{context, model.mean()};
     std::vector<const Candidate*> leading = view.screen(context.candidates[k], E);
     if (leading.size() > UNTRIED_LEADERS) { leading.resize(UNTRIED_LEADERS); }
-    std::ranges::shuffle(leading, rng);
 
+    // The newest kind of step any leading candidate has, then one of those at random: a position no FFT of the type
+    // was read at teaches every one of them, one read on other shapes only teaches this shape as far as the option's
+    // effect varies between shapes, and so on down to a set nothing measured.
+    std::vector<Step> steps;
     for (const Candidate* c : leading) {
       const Reading* best = nullptr;
       for (const Reading* r : context.readings.of(c->subject)) {
         if (!r->failed && r->calls > 0 && (!best || r->mean < best->mean)) { best = r; }
       }
       UseConfig const around = best ? best->options : UseConfig{};
-      std::vector<UseConfig> steps;
-      for (const Axis& axis : axesOf(context.model.env(), c->subject.fft, around, context.filter(*c))) {
+      for (const Axis& axis : axesOf(model.env(), c->subject.fft, around, context.filter(*c))) {
+        double const otherShape = std::min(1.0, model.shapeDeparture(axis.name) / model.effectSpread());
+        double const otherVariant = std::min(1.0, model.entryDeparture(axis.name) / model.effectSpread());
         for (size_t p = 0; p < axis.values.size(); ++p) {
           if (p == axis.current) { continue; }
-          UseConfig step = around;
-          place(step, axis, p);
-          step = fitted(context.model.env(), c->subject.fft, step);
-          if (!context.readings.find(c->subject, step) && !context.blocked(*c, step)) { steps.push_back(step); }
+          std::string const label = axis.label(p);
+          Step step{.candidate = c, .options = around, .novelty = Novelty::Set, .weight = 1};
+          if (p != axis.reference && !model.measured(c->subject, label)) {
+            step.novelty = Novelty::Type;
+          } else if (p != axis.reference && !model.measuredOnShape(c->subject, label)) {
+            step = {.candidate = c, .options = around, .novelty = Novelty::Shape, .weight = otherShape};
+          } else if (p != axis.reference && !model.measuredAt(c->subject, label)) {
+            step = {.candidate = c, .options = around, .novelty = Novelty::Entry, .weight = otherVariant};
+          } else if (positionsOnly) {
+            continue;
+          }
+          if (!steps.empty() && step.novelty > steps.front().novelty) { continue; }
+          place(step.options, axis, p);
+          step.options = fitted(model.env(), c->subject.fft, step.options);
+          if (context.readings.find(c->subject, step.options) || context.blocked(*c, step.options)) { continue; }
+          if (!steps.empty() && step.novelty < steps.front().novelty) { steps.clear(); }
+          steps.push_back(std::move(step));
         }
       }
-      if (steps.empty()) { continue; }
-      UseConfig const step = steps[std::uniform_int_distribution<size_t>{0, steps.size() - 1}(rng)];
-      return Choice{.candidate = c,
-                    .options = step,
-                    .predictedUs = std::exp(context.model.predict(context.model.mean(), c->subject, step)),
-                    .why = "an untried step at " + std::to_string(E)};
     }
+    if (steps.empty()) { continue; }
+    std::vector<double> w;
+    for (const Step& s : steps) { w.push_back(std::max(s.weight, 1e-6)); }
+    const Step& step = steps[std::discrete_distribution<size_t>{w.begin(), w.end()}(rng)];
+    return Choice{.candidate = step.candidate,
+                  .options = step.options,
+                  .predictedUs = std::exp(model.predict(model.mean(), step.candidate->subject, step.options)),
+                  .why = std::string{"an untried step ("} + toString(step.novelty) + ") at " + std::to_string(E)};
   }
   return {};
 }

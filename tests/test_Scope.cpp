@@ -86,8 +86,8 @@ TEST(an_option_of_upstreams_tuner_is_refused_naming_its_flag) {
 
 TEST(every_setting_is_accepted_where_it_belongs) {
   for (const char* text : {"", "workload=100M-140M,probe=118063003", "probeWeight=0", "kinds=prp+ll", "pfaShapes=all",
-                           "tailQueues=none", "stop=0.5%", "stop=0", "dashboard=1", "seed=42", "status",
-                           "status,stop=1%", "emit,kinds=ll", "scope,workload=60M-80M"}) {
+                           "tailQueues=none", "stop=0.5%", "stop=0", "dashboard=1", "seed=42", "sweep=0", "sweep=0.3",
+                           "status", "status,stop=1%", "emit,kinds=ll", "scope,workload=60M-80M"}) {
     CHECK_EQ(refusal(text), std::string{});
   }
   CHECK(parsed("").verb == TuneVerb::Run);
@@ -95,6 +95,10 @@ TEST(every_setting_is_accepted_where_it_belongs) {
   CHECK(parsed("status").verb == TuneVerb::Status);
   CHECK(near(parsed("stop=0.5%").stop, 0.005));
   CHECK(!refusal("stop=0.1").empty());
+  CHECK(near(parsed("").sweep, SWEEP));
+  CHECK(near(parsed("sweep=0.3").sweep, 0.3));
+  CHECK(!refusal("sweep=2").empty());
+  CHECK(!refusal("status,sweep=0.3").empty());
   CHECK(parsed("tailQueues=all").tailQueues == TailQueues::All);
 }
 

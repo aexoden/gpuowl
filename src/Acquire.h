@@ -113,10 +113,18 @@ struct Choice {
 // The configuration to measure next; nothing where every draw at every point tried names one already well measured.
 [[nodiscard]] std::optional<Choice> choose(const AcquireContext& context, std::mt19937_64& rng);
 
+// How new what a step reads is: a position no FFT of the type was measured at, one no variant of the shape was, one
+// this entry never was, or only a set of options nothing measured.
+enum class Novelty : u8 { Type, Shape, Entry, Set };
+
+[[nodiscard]] const char* toString(Novelty novelty);
+
 // One step nothing has measured: a single option moved from the best measured set of one of the leading candidates at a
-// grid point drawn by weight.  What a run that is not to stop takes when no draw names anything new.  Nothing where no
-// such step is left.
-[[nodiscard]] std::optional<Choice> untriedStep(const AcquireContext& context, std::mt19937_64& rng);
+// grid point drawn by weight, the newest kind there is.  A share of the items, so that every option's positions are
+// read in time however rarely a draw favours them, and what a run that is not to stop takes when no draw names
+// anything new.  With `positionsOnly`, nothing where only a new set is left; otherwise nothing where no step is.
+[[nodiscard]] std::optional<Choice> untriedStep(const AcquireContext& context, std::mt19937_64& rng,
+                                                bool positionsOnly = false);
 
 // The relative regret of the publication, the median over `draws` posterior draws: the weight-averaged amount by which
 // what production would run costs more, under each draw, than the cheapest the draw sees, relative to its cost.  The
