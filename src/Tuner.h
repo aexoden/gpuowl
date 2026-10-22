@@ -44,8 +44,8 @@ struct LoopSettings {
   double stop = STOP;
   u64 seed = 1;
   TailQueues tailQueues = TailQueues::Ntt;
-  u32 regretEvery = 16;  // calls between estimates of the regret
-  u32 regretDraws = 8;
+  u32 regretEvery = 32;  // calls between estimates of the regret
+  u32 regretDraws = 4;
   u32 maxItems = 0;      // 0 for no limit; for tests
   fs::path publishTo{};  // where the tune files go; empty to write none
   std::string header{};  // the comment the tune files open with
@@ -63,8 +63,10 @@ struct LoopResult {
 LoopResult runLoop(Device& device, TuneDB& db, u32 env, const Env& card, const RunScope& scope,
                    const LoopSettings& settings);
 
+enum class RunOutcome : u8 { Ok, Failed, DeviceLost };
+
 // -tune: the run on the open device, in the current directory.
-[[nodiscard]] bool runTune(GpuCommon shared, const TuneCommand& command);
+[[nodiscard]] RunOutcome runTune(GpuCommon shared, const TuneCommand& command);
 
 // -tune status / emit / scope: no device.
 [[nodiscard]] bool runOffline(const TuneCommand& command, const Args& args);

@@ -226,7 +226,7 @@ std::optional<RunScope> scopeFor(const TuneCommand& command, const Args& args) {
 
 }  // namespace
 
-bool runTune(GpuCommon shared, const TuneCommand& command) {
+RunOutcome runTune(GpuCommon shared, const TuneCommand& command) {
   const Args& args = *shared.args;
   Takeover const takeover = takeOver(args);
   if (!takeover.setAside.empty()) {
@@ -239,19 +239,19 @@ bool runTune(GpuCommon shared, const TuneCommand& command) {
   if (takeover.carry) { log("tune: -carry is set aside: a reading's carry is the one its exponent takes\n"); }
 
   std::optional<RunScope> const scope = scopeFor(command, args);
-  if (!scope) { return false; }
+  if (!scope) { return RunOutcome::Failed; }
   reportScope(*scope);
 
   fs::path const path = fs::current_path() / TuneDB::DEFAULT_NAME;
   TuneDB db;
-  if (!db.lockForWriting(path) || !db.load(path)) { return false; }
+  if (!db.lockForWriting(path) || !db.load(path)) { return RunOutcome::Failed; }
   db.attach(path);
 
   Env const card = detectEnv(*shared.context, args);
   Bench bench{shared, db, card};
   if (!bench.begin(scope->probe, settingsWord(*scope, command))) {
     log("tune: could not open a session in %s\n", path.string().c_str());
-    return false;
+    return RunOutcome::Failed;
   }
 
   u64 const seed = command.seed ? command.seed : u64(std::chrono::steady_clock::now().time_since_epoch().count());
@@ -268,7 +268,7 @@ bool runTune(GpuCommon shared, const TuneCommand& command) {
       result.converged       ? ", below the stop"
         : bench.deviceLost() ? ", stopped by a lost device"
                              : "");
-  return !bench.deviceLost();
+  return bench.deviceLost() ? RunOutcome::DeviceLost : RunOutcome::Ok;
 }
 
 bool runOffline(const TuneCommand& command, const Args& args) {

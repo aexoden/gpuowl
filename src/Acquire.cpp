@@ -61,11 +61,11 @@ class DrawView {
 public:
   DrawView(const AcquireContext& context, Draw draw) : context_{context}, draw_{std::move(draw)} {}
 
-  // Works out every candidate of `candidates` holding `E`, across the machine's threads.
+  // Works out the candidates of `candidates` holding `E` that pass the screen, across the machine's threads.
   void valueAt(const std::vector<Candidate>& candidates, u64 E) {
     std::vector<const Candidate*> todo;
-    for (const Candidate& c : candidates) {
-      if (c.interval.contains(E) && !cache_.contains(&c)) { todo.push_back(&c); }
+    for (const Candidate* c : screen(candidates, E)) {
+      if (!cache_.contains(c)) { todo.push_back(c); }
     }
     std::vector<Valued> values(todo.size());
     parallelFor(todo.size(), [&](size_t i) { values[i] = work(*todo[i]); });
@@ -80,6 +80,39 @@ public:
 
   [[nodiscard]] double predict(const Subject& subject, const UseConfig& options) const {
     return context_.model.predict(draw_, subject, options);
+  }
+
+  // The candidates at `E` worth optimising in full under this draw.
+  std::vector<const Candidate*> screen(const std::vector<Candidate>& candidates, u64 E) const {
+    std::vector<const Candidate*> at;
+    for (const Candidate& c : candidates) {
+      if (c.interval.contains(E)) { at.push_back(&c); }
+    }
+    if (at.size() <= SCREENED + SCREEN_EXTRA) { return at; }
+
+    auto value = [&](const Candidate* c) {
+      const Reading* best = nullptr;
+      for (const Reading* r : context_.readings.of(c->subject)) {
+        if (!r->failed && r->calls > 0 && (!best || r->mean < best->mean)) { best = r; }
+      }
+      return context_.model.predict(context_.model.mean(), c->subject, best ? best->options : UseConfig{});
+    };
+    std::vector<std::pair<double, const Candidate*>> ranked;
+    if (context_.means) {
+      context_.means->screen(at, value);
+      for (const Candidate* c : at) { ranked.emplace_back(context_.means->screenValue(c), c); }
+    } else {
+      for (const Candidate* c : at) { ranked.emplace_back(value(c), c); }
+    }
+    std::ranges::sort(ranked, {}, &std::pair<double, const Candidate*>::first);
+
+    std::vector<const Candidate*> out;
+    for (size_t i = 0; i < SCREENED; ++i) { out.push_back(ranked[i].second); }
+    std::mt19937_64 rng{draw_.seed ^ E};
+    for (size_t i = 0; i < SCREEN_EXTRA; ++i) {
+      out.push_back(ranked[SCREENED + rng() % (ranked.size() - SCREENED)].second);
+    }
+    return out;
   }
 
 private:
@@ -132,11 +165,10 @@ std::pair<const Candidate*, Valued> winnerAt(DrawView& view, const std::vector<C
   view.valueAt(candidates, E);
   const Candidate* best = nullptr;
   Valued bestValue;
-  for (const Candidate& c : candidates) {
-    if (!c.interval.contains(E)) { continue; }
-    const Valued& v = view.valued(c);
+  for (const Candidate* c : view.screen(candidates, E)) {
+    const Valued& v = view.valued(*c);
     if (v.value < bestValue.value) {
-      best = &c;
+      best = c;
       bestValue = v;
     }
   }
@@ -159,6 +191,27 @@ const Optimum* MeanOptima::find(const Candidate* c) const {
 void MeanOptima::put(const Candidate* c, Optimum o) {
   std::lock_guard const lock{mutex_};
   optima_.try_emplace(c, std::move(o));
+}
+
+double MeanOptima::screenValue(const Candidate* c) const {
+  std::lock_guard const lock{mutex_};
+  auto const it = screened_.find(c);
+  return it == screened_.end() ? NONE : it->second;
+}
+
+void MeanOptima::screen(const std::vector<const Candidate*>& candidates,
+                        const std::function<double(const Candidate*)>& value) {
+  std::vector<const Candidate*> todo;
+  {
+    std::lock_guard const lock{mutex_};
+    for (const Candidate* c : candidates) {
+      if (!screened_.contains(c)) { todo.push_back(c); }
+    }
+  }
+  std::vector<double> values(todo.size());
+  parallelFor(todo.size(), [&](size_t i) { values[i] = value(todo[i]); });
+  std::lock_guard const lock{mutex_};
+  for (size_t i = 0; i < todo.size(); ++i) { screened_.try_emplace(todo[i], values[i]); }
 }
 
 std::optional<Choice> choose(const AcquireContext& context, std::mt19937_64& rng) {

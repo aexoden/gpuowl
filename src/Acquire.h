@@ -52,15 +52,26 @@ inline constexpr double DRAW_TAIL_DOF = 8;
 // The most axes the draw may move at once in an exploring proposal.
 inline constexpr u32 MAX_FREE_AXES = 4;
 
-// What one fit of the model says of each candidate under its posterior mean, worked out once per fit.
+// At one grid point, how many candidates are optimised in full: those the posterior mean values best at their best
+// measured set (or their defaults), and a few others at random, so that none is passed over for good.
+inline constexpr size_t SCREENED = 24;
+inline constexpr size_t SCREEN_EXTRA = 4;
+
+// What one fit of the model says of each candidate under its posterior mean, worked out once per fit: its optimum,
+// and what it costs at its best measured set (or its defaults), which screens it.
 class MeanOptima {
 public:
   [[nodiscard]] const Optimum* find(const Candidate* c) const;
   void put(const Candidate* c, Optimum o);
 
+  // The screening value of every candidate, worked out on first use across the machine's threads.
+  [[nodiscard]] double screenValue(const Candidate* c) const;
+  void screen(const std::vector<const Candidate*>& candidates, const std::function<double(const Candidate*)>& value);
+
 private:
   mutable std::mutex mutex_;
   std::map<const Candidate*, Optimum> optima_;
+  std::map<const Candidate*, double> screened_;
 };
 
 struct AcquireContext {

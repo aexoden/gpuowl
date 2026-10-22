@@ -17,6 +17,8 @@
 #include "tune.h"
 #include "Restart.h"
 #include "GpuFault.h"
+#include "Tuner.h"
+#include "TuneCommand.h"
 
 #include <atomic>
 #include <cctype>
@@ -24,6 +26,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
+#include <optional>
 #include <thread>
 #include <utility>
 #ifndef _WIN32
@@ -78,6 +81,14 @@ constexpr int EXIT_OK = 0;
 constexpr int EXIT_FAILED = 1;
 constexpr int EXIT_USAGE = 2;
 constexpr int EXIT_DEVICE_LOST = 3;
+
+// A GPU fault poisons the process rather than the context, so only a fresh process can carry on.
+int restartOrReport() {
+  log("The device was lost; restarting to recover it.\n");
+  string const why = restart::reexec();
+  log("Could not restart: %s\n", why.c_str());
+  return EXIT_DEVICE_LOST;
+}
 
 } // namespace
 
@@ -213,6 +224,15 @@ int main(int argc, char **argv) {
     args.parse(mainLine);
     parsing = false;
 
+    // -tune's verbs that read the files alone are answered before a device is opened, so they work without one.
+    std::optional<tune::TuneCommand> const tuneCommand =
+      args.doTuneCommand ? tune::parseTuneCommand(args.tuneCommand) : std::optional<tune::TuneCommand>{};
+    if (tuneCommand && tuneCommand->verb != tune::TuneVerb::Run) {
+      exitCode = tune::runOffline(*tuneCommand, args) ? EXIT_OK : EXIT_FAILED;
+      log("Bye\n");
+      return exitCode;
+    }
+
     args.setDefaults();
 
     if (args.maxAlloc) { AllocTrac::setMaxAlloc(args.maxAlloc); }
@@ -229,7 +249,13 @@ int main(int argc, char **argv) {
     shared.bufCache = &bufCache;
     shared.background = &background;
 
-    if (args.doCtune || args.doTune || args.doZtune || args.carryTune) {
+    if (tuneCommand) {
+      switch (tune::runTune(shared, *tuneCommand)) {
+        case tune::RunOutcome::Ok: break;
+        case tune::RunOutcome::Failed: exitCode = EXIT_FAILED; break;
+        case tune::RunOutcome::DeviceLost: exitCode = restartOrReport(); break;
+      }
+    } else if (args.doCtune || args.doTune || args.doZtune || args.carryTune) {
       Tune tune{shared};
 
       if (args.doCtune) {

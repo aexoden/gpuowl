@@ -62,7 +62,11 @@ public:
   vector<string> ctune;
 
   bool doCtune{};
-  bool doTune{};
+  bool doTune{};          // -oldtune, upstream's tuner
+
+  // -tune: the settings word tune::parseTuneCommand reads.
+  string tuneCommand;
+  bool doTuneCommand{};
   bool doZtune{};
   bool carryTune{};
   bool logROE{};

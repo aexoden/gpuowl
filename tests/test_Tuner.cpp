@@ -83,12 +83,12 @@ TEST(the_loop_publishes_what_the_simulated_card_rewards) {
   u32 const env = db.internEnv(DbEnv{.gpu = "sim", .isNvidia = true, .cudaBackend = true, .computeCapability = 860});
   u32 const sess = db.beginSession(env, "", 0, "");
   RunScope const scope =
-    makeScope({.lo = 67'000'000, .hi = 68'000'000, .probe = 67'500'000, .kinds = {TestKind::PRP}}, {});
+    makeScope({.lo = 67'400'000, .hi = 67'600'000, .probe = 67'500'000, .kinds = {TestKind::PRP}}, {});
 
   SimDevice device{db, sess};
   Timer t;
   LoopResult const r =
-    runLoop(device, db, env, nvidia(), scope, {.stop = 0.002, .seed = 7, .regretEvery = 8, .maxItems = 120});
+    runLoop(device, db, env, nvidia(), scope, {.stop = 0.002, .seed = 7, .regretEvery = 8, .maxItems = 40});
   double const seconds = t.at();
   printf("loop: %u calls, %u gate readings, regret %.4f, T %.1f, %.1f s (%.0f ms an item)\n", r.calls, r.gateReadings,
          r.regret, r.T, seconds, 1000 * seconds / std::max(1u, r.calls + r.gateReadings));

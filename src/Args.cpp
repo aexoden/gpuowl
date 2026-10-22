@@ -1,6 +1,7 @@
 // Copyright (C) Mihai Preda
 
 #include "Args.h"
+#include "TuneCommand.h"
 #include "File.h"
 #include "clwrap.h"
 #include "gpuid.h"
@@ -124,7 +125,7 @@ std::optional<u64> Args::parseExponent(const string& s) {
   return n;
 }
 
-// Checks the comma separated -tune options up front: Tune::tune() silently skips anything it does not recognise,
+// Checks the comma separated -oldtune options up front: Tune::tune() silently skips anything it does not recognise,
 // so a typo such as "maxexponent=" would otherwise tune the default exponent range for hours without a word.
 static void checkTuneOptions(const string& options) {
   for (const string& s : split(options, ',')) {
@@ -135,16 +136,16 @@ static void checkTuneOptions(const string& options) {
     bool const isGroup = key == "1k256" || key == "m61" || key == "pfa" || key == "fp6431" || key == "fp32";
     if (pos != string::npos && (key == "minexp" || key == "maxexp")) {
       if (!Args::parseExponent(s.substr(pos + 1))) {
-        log("-tune %s expects an exponent, e.g. 150000000 or 150M (found '%s')\n", key.c_str(), s.substr(pos + 1).c_str());
-        throw "-tune option value";
+        log("-oldtune %s expects an exponent, e.g. 150000000 or 150M (found '%s')\n", key.c_str(), s.substr(pos + 1).c_str());
+        throw "-oldtune option value";
       }
       continue;
     }
     if (pos != string::npos && key == "tk") {
       string const val = s.substr(pos + 1);
       if (val != "auto" && val != "0" && val != "1" && val != "2" && val != "3" && val != "11" && val != "13") {
-        log("-tune tk expects auto, 0 (off) or a TAIL_KERNELS value: 1, 2, 3, 11 or 13 (found '%s')\n", val.c_str());
-        throw "-tune option value";
+        log("-oldtune tk expects auto, 0 (off) or a TAIL_KERNELS value: 1, 2, 3, 11 or 13 (found '%s')\n", val.c_str());
+        throw "-oldtune option value";
       }
       continue;
     }
@@ -154,8 +155,8 @@ static void checkTuneOptions(const string& options) {
       auto const lo = dash == string::npos ? std::nullopt : Args::parseExponent(val.substr(0, dash));
       auto const hi = dash == string::npos ? std::nullopt : Args::parseExponent(val.substr(dash + 1));
       if (!lo || !hi || *lo > *hi) {
-        log("-tune exp expects a range of exponents, e.g. exp=140M-142M (found '%s')\n", val.c_str());
-        throw "-tune option value";
+        log("-oldtune exp expects a range of exponents, e.g. exp=140M-142M (found '%s')\n", val.c_str());
+        throw "-oldtune option value";
       }
       continue;
     }
@@ -165,14 +166,14 @@ static void checkTuneOptions(const string& options) {
       auto [end, ec] = std::from_chars(val.data(), val.data() + val.size(), n);
       if (val.empty() || ec != std::errc{} || end != val.data() + val.size() || (key == "quick" && (n < 1 || n > 10)) || (isGroup && n > 2)
           || (key == "fine" && (n < 1 || n > 50))) {
-        log("-tune %s expects %s (found '%s')\n", key.c_str(),
+        log("-oldtune %s expects %s (found '%s')\n", key.c_str(),
             key == "quick" ? "a value from 1 to 10" : isGroup ? "0, 1 or 2" : "a percentage from 1 to 50", val.c_str());
-        throw "-tune option value";
+        throw "-oldtune option value";
       }
       continue;
     }
-    log("-tune option '%s' not understood; valid options are noconfig, regs, variants, fine, fine=<pct>, inplace, fp64, ntt, fp32=0, fp6431, 1k256, m61, pfa, minexp=<val>, maxexp=<val>, exp=<min>-<max>, tk=<val>, quick=<val>\n", s.c_str());
-    throw "-tune option";
+    log("-oldtune option '%s' not understood; valid options are noconfig, regs, variants, fine, fine=<pct>, inplace, fp64, ntt, fp32=0, fp6431, 1k256, m61, pfa, minexp=<val>, maxexp=<val>, exp=<min>-<max>, tk=<val>, quick=<val>\n", s.c_str());
+    throw "-oldtune option";
   }
 }
 
@@ -340,7 +341,21 @@ named "config.txt" in the prpll run directory.
   -use STATS=<val> : enable carry statistics collection & logging (developers), for the kernel according to <val>:
                      1 = CarryFused, 2 = CarryFusedMul, 4 = CarryA, 8 = CarryMul
 
--tune <options>    : Looks for best settings to include in config.txt.  Times many FFTs to find fastest one to test exponents -- written to tune.txt.
+-tune [<verb>][,<setting>=<value>...] : finds the fastest FFT and -use settings for the exponents you test on this
+                     GPU and writes them to tune.txt (PRP) and tune-ll.txt (LL).  Measurements are kept in tunedb.txt;
+                     Ctrl-C stops cleanly and running it again resumes.  -use settings from config.txt and the command
+                     line are set aside while measuring.  One comma-separated word:
+                         workload=<lo>-<hi>  exponents to tune for, e.g. 100M-400M [from worktodo, else 100M-400M]
+                         probe=<E>           the exponent that matters most [worktodo's most common]
+                         probeWeight=<f>     the share of weight on the probe, 0 to 1 [0.5]
+                         kinds=prp|ll|prp+ll test kinds to tune [prp]
+                         stop=<P>%%|0        stop when the published choice is expected within P%% of the best [0.1%%]
+                         pfaShapes=ntt|all|none  prime-factor middles considered [ntt]
+                         tailQueues=ntt|all|none FFTs offered TAIL_KERNELS 11 and 13 [ntt: NTTs on nVidia]
+                         dashboard=1         a full-screen view of the run
+                     Verbs, which open no device: status (where tunedb.txt stands), emit (write the tune files it
+                     supports), scope (the exponents a run would tune for).
+-oldtune <options> : The previous tuner.  Looks for best settings to include in config.txt.  Times many FFTs to find fastest one to test exponents -- written to tune.txt.
                      An -fft <spec> can be given on the command line to limit which FFTs are timed.
                      Options are not required.  If present, the options are a comma separated list from below.
                          noconfig     - Skip timings to find best config.txt settings.
@@ -493,9 +508,14 @@ void Args::parse(const string& line) {
     } else if (key == "-roe") {
       assert(s.empty());
       logROE = true;
-    } else if (key == "-tune") {
+    } else if (key == "-oldtune") {
       doTune = true;
       if (!s.empty()) { checkTuneOptions(s); tune = s; }
+    } else if (key == "-tune") {
+      // Validated now, so that a mistyped setting is a usage error rather than a failure once the device is open.
+      doTuneCommand = true;
+      tuneCommand = s;
+      (void) tune::parseTuneCommand(tuneCommand);
 //    } else if (key == "-ctune") {
 //      doCtune = true;
 //      if (!s.empty()) { ctune.push_back(s); }
