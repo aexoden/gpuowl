@@ -245,6 +245,9 @@ public:
   // Every attempt a process died holding: open at the end of its session with nothing after it.
   [[nodiscard]] std::vector<TryRow> diedHolding() const;
 
+  // Whether session `sess` has an attempt no record has answered yet.
+  [[nodiscard]] bool attemptOpen(u32 sess) const { return open_.contains(sess); }
+
   // Whether a process died holding this configuration.
   [[nodiscard]] bool diedOn(u32 env, const std::string& fft, TestKind kind, u64 exponent, u32 cfg) const;
 

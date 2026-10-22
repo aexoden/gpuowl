@@ -1598,4 +1598,39 @@ u32 dumpOptionSpace(const Env& env, const FFTConfig& fft) {
   return problems;
 }
 
+UseConfig canonicalConfig(const Env& env, const FFTConfig& fft, const UseConfig& config) {
+  UseConfig out;
+  for (const auto& [key, value] : config) {
+    const Option* const option = findOption(key);
+    if (option && option->kind == Kind::Tunable) { out.emplace(key, value); }
+  }
+
+  // One key at a time, since dropping one can change whether another applies or what its default is.
+  for (bool changed = true; changed;) {
+    changed = false;
+    for (auto it = out.begin(); it != out.end(); ++it) {
+      const Option& option = *findOption(it->first);
+      char* end = nullptr;
+      long const value = strtol(it->second.c_str(), &end, 10);
+      bool const numeric = !it->second.empty() && *end == 0;
+      if (!option.appliesTo(env, fft, out) || option.isInert(env, fft, out) ||
+          (numeric && value == option.defaultFor(env, fft, out))) {
+        out.erase(it);
+        changed = true;
+        break;
+      }
+    }
+  }
+  return out;
+}
+
+UseConfig builtAs(const Env& env, const FFTConfig& fft, const UseConfig& config) {
+  UseConfig out = canonicalConfig(env, fft, config);
+  for (const auto& [key, value] : config) {
+    const Option* const option = findOption(key);
+    if (!option || option->kind != Kind::Tunable) { out.emplace(key, value); }
+  }
+  return out;
+}
+
 }  // namespace tune

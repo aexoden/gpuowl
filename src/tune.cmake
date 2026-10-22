@@ -11,4 +11,6 @@ target_sources(prpll PRIVATE
   BuildId.cpp
   Anchor.cpp
   TuneDB.cpp
+  LLCheck.cpp
+  Measure.cpp
   )

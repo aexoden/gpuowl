@@ -214,6 +214,14 @@ struct Option {
 // Every -use key this build understands, whatever its kind.
 [[nodiscard]] bool isKnownKey(const string& key);
 
+// The tunable part of `config` as the kernels would see it: a key that does not apply, that the kernels cannot read, or
+// that is at its default is dropped, since leaving it in would give one configuration two names.
+[[nodiscard]] UseConfig canonicalConfig(const Env& env, const FFTConfig& fft, const UseConfig& config);
+
+// What tells two builds of `fft` apart: canonical where the option table knows a key well enough to say it changes
+// nothing, and as written everywhere else.
+[[nodiscard]] UseConfig builtAs(const Env& env, const FFTConfig& fft, const UseConfig& config);
+
 // The tunable keys worth searching for one FFT given the options decided so far: those that apply, are not inert, and
 // offer more than one value (or are compound).
 [[nodiscard]] vector<const Option*> applicableOptions(const Env& env, const FFTConfig& fft, const UseConfig& decided);
