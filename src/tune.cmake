@@ -13,4 +13,6 @@ target_sources(prpll PRIVATE
   TuneDB.cpp
   LLCheck.cpp
   Measure.cpp
+  Axes.cpp
+  Model.cpp
   )

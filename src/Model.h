@@ -1,0 +1,160 @@
+// Copyright (C) Jason Lynch
+
+// One statistical model of what every configuration costs on one card, learnt from every call the card has made.
+//
+// The log of a call's cost is a sum of terms:
+//
+//   an offset           log(N log2 N), plus the mean over the readings
+//   an entry intercept  per (FFT, test kind, carry regime), with a prior from the FFT's structure: its type, the type's
+//                       test kind, width, middle, height, variant digits and regime, each a term of its own
+//   option effects      per axis at its position (Axes.h), at three levels: the card, the FFT type, the entry
+//   interactions        per pair of axes that share a kernel (or a group, for the groups that reach every kernel), per
+//                       FFT type
+//   a residual          per configuration, so that what was measured is what the model says of it
+//   noise               per call
+//
+// Each term has a Gaussian prior around zero, so the posterior is Gaussian too: its mean is a regularised
+// least-squares fit, and a draw from it is the same fit with the readings and the prior means perturbed by their own
+// noise (perturb-then-optimise).  A term no reading touches has its prior in a draw, seeded by the draw and the term,
+// so the model is honestly uncertain of what it has never seen.
+//
+// What the model is for is ranking what to measure next.  It never decides what is published: measured readings do.
+
+#pragma once
+
+#include "Axes.h"
+#include "common.h"
+#include "Eligibility.h"
+#include "FFTConfig.h"
+#include "OptionSpace.h"
+#include "TestKind.h"
+
+#include <span>
+#include <string>
+#include <unordered_map>
+#include <vector>
+
+namespace tune {
+
+// The prior standard deviation of each kind of term, in natural log units (0.01 is 1%).
+struct ModelPrior {
+  double type = 0.5;          // per FFT type
+  double kind = 0.1;          // per type and test kind
+  double shape = 0.2;         // per type and width, middle or height
+  double variant = 0.1;       // per type and variant digit, and per type and regime
+  double entry = 0.1;         // per entry, against what its structure says
+  double effect = 0.1;        // an axis position, on this card
+  double effectType = 0.03;   // its departure on one FFT type
+  double effectEntry = 0.01;  // its departure on one entry
+  double pair = 0.02;         // an interaction, per FFT type
+  double residual = 0.005;    // one configuration, against everything above
+  double callNoise = 0.008;   // one call, against the configuration's cost
+  double noiseFloor = 0.002;  // whatever a call's own blocks say
+};
+
+// One call as the model learns from it.
+struct Observation {
+  FFTConfig fft;
+  TestKind kind = TestKind::PRP;
+  Regime regime{};
+  UseConfig options{};  // canonical
+  double cost = 0;      // microseconds per iteration, drift-corrected
+  double relSem = 0;    // the call's own standard error relative to its mean, from its blocks
+};
+
+// What the model is asked about.
+struct Subject {
+  FFTConfig fft;
+  TestKind kind = TestKind::PRP;
+  Regime regime{};
+};
+
+// A posterior draw, or the posterior mean.
+struct Draw {
+  std::vector<double> beta{};
+  u64 seed = 0;      // 0 for the mean: then a term nothing measured contributes nothing
+  double scale = 1;  // multiplies the draw's departure from the mean, for calibration and heavy tails
+};
+
+// The model's view of one subject's options under one draw: a constant, a term per axis position, and a term per
+// position pair of the axes that interact.  The predicted log cost of an assignment is their sum.
+struct Energy {
+  double constant = 0;
+  std::vector<std::vector<double>> unary;  // [axis][position]
+  struct Pair {
+    size_t a = 0;
+    size_t b = 0;
+    std::vector<double> table;  // [position of a * |b| + position of b]
+  };
+  std::vector<Pair> pairs;
+};
+
+class Model {
+public:
+  explicit Model(Env env, ModelPrior prior = {});
+
+  // Fits the posterior mean to the observations, starting from the last fit where its terms carry over.
+  void fit(std::span<const Observation> observations);
+
+  [[nodiscard]] Draw mean() const;
+
+  // A draw from the posterior, its departure from the mean multiplied by `scale`.
+  [[nodiscard]] Draw draw(u64 seed, double scale = 1) const;
+
+  // The predicted log cost (natural log of microseconds per iteration).
+  [[nodiscard]] double predict(const Draw& draw, const Subject& subject, const UseConfig& options) const;
+
+  // The energy of `axes`, the axes of `subject` under `background` (axesOf()), whose structural keys fix them.  The
+  // residual is left out: it is a term of one configuration, which the caller can ask predict() for.
+  [[nodiscard]] Energy energy(const Draw& draw, const Subject& subject, const UseConfig& background,
+                              const std::vector<Axis>& axes) const;
+
+  // Whether the two axes interact in the model.
+  [[nodiscard]] static bool interact(const Env& env, const FFTConfig& fft, const UseConfig& background, const Axis& a,
+                                     const Axis& b);
+
+  [[nodiscard]] size_t terms() const { return index_.size(); }
+  [[nodiscard]] size_t observations() const { return y_.size(); }
+  [[nodiscard]] u32 lastIterations() const { return lastIterations_; }
+
+private:
+  struct Term {
+    u64 hash = 0;
+    double sd = 0;
+  };
+
+  // The terms of an observation or a prediction: the structural and option terms, then the residual.
+  [[nodiscard]] std::vector<Term> termsOf(const Subject& subject, const UseConfig& options) const;
+
+  // The coefficient of a term under a draw: fitted, or for a term nothing measured, its prior.
+  [[nodiscard]] double value(const Draw& draw, const Term& term) const;
+
+  // (X^T W X + Lambda) b
+  void apply(const std::vector<double>& b, std::vector<double>& out) const;
+
+  // Solves (X^T W X + Lambda) beta = X^T W y + Lambda m from `start`.
+  [[nodiscard]] std::vector<double> solve(const std::vector<double>& y, const std::vector<double>& m,
+                                          std::vector<double> start) const;
+
+  Env env_;
+  ModelPrior prior_;
+
+  // Terms by hash, and their prior precisions.
+  std::unordered_map<u64, u32> index_;
+  std::vector<double> lambda_;
+
+  // The observations: rows of term indices (CSR), centred targets and weights.
+  std::vector<u32> rowStart_;
+  std::vector<u32> cols_;
+  std::vector<double> y_;
+  std::vector<double> w_;
+  double centre_ = 0;
+
+  std::vector<double> beta_;
+  mutable u32 lastIterations_ = 0;
+};
+
+// The model's coefficient for `term` text, hashed as the model hashes it; for tests.
+[[nodiscard]] u64 termHash(std::string_view text);
+
+}  // namespace tune
