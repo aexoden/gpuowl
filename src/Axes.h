@@ -36,6 +36,9 @@ struct Axis {
   std::vector<std::pair<int, int>> values{};
   size_t current = 0;
 
+  // Where the axis is when nothing sets it: the key's default for this FFT and device, or mode 0 for a class.
+  size_t reference = 0;
+
   // "WMUL", "LOADS[trig, used once]"
   std::string name{};
 

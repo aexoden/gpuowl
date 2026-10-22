@@ -61,12 +61,13 @@ std::vector<Axis> axesOf(const Env& env, const FFTConfig& fft, const UseConfig& 
   };
 
   std::vector<Axis> out;
-  auto add = [&](Axis axis, std::pair<int, int> current) {
-    if (std::ranges::find(axis.values, current) == axis.values.end()) {
-      axis.values.push_back(current);
-      std::ranges::sort(axis.values);
+  auto add = [&](Axis axis, std::pair<int, int> current, std::pair<int, int> reference) {
+    for (auto const& p : {current, reference}) {
+      if (std::ranges::find(axis.values, p) == axis.values.end()) { axis.values.push_back(p); }
     }
+    std::ranges::sort(axis.values);
     axis.current = size_t(std::ranges::find(axis.values, current) - axis.values.begin());
+    axis.reference = size_t(std::ranges::find(axis.values, reference) - axis.values.begin());
     if (axis.values.size() > 1) { out.push_back(std::move(axis)); }
   };
 
@@ -76,7 +77,7 @@ std::vector<Axis> axesOf(const Env& env, const FFTConfig& fft, const UseConfig& 
       for (int const value : option->valuesFor(env, fft, from)) {
         if (offered(*option, value)) { axis.values.emplace_back(value, 0); }
       }
-      add(std::move(axis), positionOf(env, fft, from, Axis{.option = option}));
+      add(std::move(axis), positionOf(env, fft, from, Axis{.option = option}), {option->defaultFor(env, fft, from), 0});
       continue;
     }
 
@@ -96,7 +97,7 @@ std::vector<Axis> axesOf(const Env& env, const FFTConfig& fft, const UseConfig& 
         if (axis.values.empty()) { continue; }
       }
       std::pair<int, int> const current = positionOf(env, fft, from, axis);
-      add(std::move(axis), current);
+      add(std::move(axis), current, {0, 0});
     }
   }
   return out;

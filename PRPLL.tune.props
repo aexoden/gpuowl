@@ -17,5 +17,7 @@
     <ClCompile Include=".\src\Measure.cpp" />
     <ClCompile Include=".\src\Axes.cpp" />
     <ClCompile Include=".\src\Model.cpp" />
+    <ClCompile Include=".\src\MinSum.cpp" />
+    <ClCompile Include=".\src\Optimize.cpp" />
   </ItemGroup>
 </Project>

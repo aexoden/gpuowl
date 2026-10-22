@@ -15,4 +15,6 @@ target_sources(prpll PRIVATE
   Measure.cpp
   Axes.cpp
   Model.cpp
+  MinSum.cpp
+  Optimize.cpp
   )

@@ -113,6 +113,7 @@ public:
   [[nodiscard]] static bool interact(const Env& env, const FFTConfig& fft, const UseConfig& background, const Axis& a,
                                      const Axis& b);
 
+  [[nodiscard]] const Env& env() const { return env_; }
   [[nodiscard]] size_t terms() const { return index_.size(); }
   [[nodiscard]] size_t observations() const { return y_.size(); }
   [[nodiscard]] u32 lastIterations() const { return lastIterations_; }

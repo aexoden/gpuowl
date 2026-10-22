@@ -100,18 +100,22 @@ std::vector<Model::Term> Model::termsOf(const Subject& s, const UseConfig& optio
 
   UseConfig const canonical = canonicalConfig(env_, s.fft, options);
   std::vector<Axis> const axes = axesOf(env_, s.fft, canonical);
+  // An axis at its reference has no term: a position's effect is against the FFT's own default, so a position never
+  // measured is, before any reading, as good as the default give or take its prior.
   std::vector<std::string> labels;
   labels.reserve(axes.size());
   for (const Axis& axis : axes) {
     std::string const label = axis.label(axis.current);
+    labels.push_back(label);
+    if (axis.current == axis.reference) { continue; }
     add("G|" + label, prior_.effect);
     add("GT|" + type + '|' + label, prior_.effectType);
     add("GS|" + entry + '|' + label, prior_.effectEntry);
-    labels.push_back(label);
   }
   for (size_t i = 0; i < axes.size(); ++i) {
+    if (axes[i].current == axes[i].reference) { continue; }
     for (size_t j = i + 1; j < axes.size(); ++j) {
-      if (!interact(env_, s.fft, canonical, axes[i], axes[j])) { continue; }
+      if (axes[j].current == axes[j].reference || !interact(env_, s.fft, canonical, axes[i], axes[j])) { continue; }
       auto const& [lo, hi] = std::minmax(labels[i], labels[j]);
       add("P|" + type + '|' + lo + '|' + hi, prior_.pair);
     }
@@ -278,8 +282,10 @@ Energy Model::energy(const Draw& draw, const Subject& s, const UseConfig& backgr
     for (size_t p = 0; p < axes[a].values.size(); ++p) {
       std::string const label = axes[a].label(p);
       labels[a].push_back(label);
-      out.unary[a].push_back(term("G|" + label, prior_.effect) + term("GT|" + type + '|' + label, prior_.effectType) +
-                             term("GS|" + entry + '|' + label, prior_.effectEntry));
+      out.unary[a].push_back(p == axes[a].reference ? 0.0
+                                                    : term("G|" + label, prior_.effect) +
+                                 term("GT|" + type + '|' + label, prior_.effectType) +
+                                 term("GS|" + entry + '|' + label, prior_.effectEntry));
     }
   }
 
@@ -287,9 +293,13 @@ Energy Model::energy(const Draw& draw, const Subject& s, const UseConfig& backgr
     for (size_t b = a + 1; b < axes.size(); ++b) {
       if (!interact(env_, s.fft, background, axes[a], axes[b])) { continue; }
       Energy::Pair pair{.a = a, .b = b, .table = {}};
-      for (const std::string& la : labels[a]) {
-        for (const std::string& lb : labels[b]) {
-          auto const& [lo, hi] = std::minmax(la, lb);
+      for (size_t pa = 0; pa < labels[a].size(); ++pa) {
+        for (size_t pb = 0; pb < labels[b].size(); ++pb) {
+          if (pa == axes[a].reference || pb == axes[b].reference) {
+            pair.table.push_back(0);
+            continue;
+          }
+          auto const& [lo, hi] = std::minmax(labels[a][pa], labels[b][pb]);
           pair.table.push_back(term("P|" + type + '|' + lo + '|' + hi, prior_.pair));
         }
       }
