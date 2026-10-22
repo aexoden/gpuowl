@@ -21,5 +21,7 @@
     <ClCompile Include=".\src\Optimize.cpp" />
     <ClCompile Include=".\src\Scope.cpp" />
     <ClCompile Include=".\src\TuneCommand.cpp" />
+    <ClCompile Include=".\src\Readings.cpp" />
+    <ClCompile Include=".\src\Gate.cpp" />
   </ItemGroup>
 </Project>

@@ -19,4 +19,6 @@ target_sources(prpll PRIVATE
   Optimize.cpp
   Scope.cpp
   TuneCommand.cpp
+  Readings.cpp
+  Gate.cpp
   )
