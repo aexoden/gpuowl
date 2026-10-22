@@ -40,6 +40,12 @@ void lowerPriority() {
 #endif
 }
 
+// The value `config` gives `key`, as text; empty where it gives none.
+std::string useText(const UseConfig& config, const std::string& key) {
+  auto const it = config.find(key);
+  return it == config.end() ? std::string{} : it->second;
+}
+
 // Runs f(0) .. f(n-1) across the machine's threads.
 template<typename F> void parallelFor(size_t n, F&& f) {
   size_t const threads = std::min<size_t>(n, std::max(1u, std::thread::hardware_concurrency()));
@@ -165,6 +171,36 @@ private:
     }
     UseConfig const around = incumbent ? incumbent->options : UseConfig{};
 
+    // Exploration starts half the time from another structural branch -- an INPLACE value other than the incumbent's,
+    // from its best measured set there or else its defaults -- since the keys a branch opens (L2_STRIPING under
+    // INPLACE=1, the layout keys under INPLACE=0) are no axes of the other's, and a search around one never reaches
+    // them.
+    u64 const seed = draw_.seed ^ termHash(c.subject.fft.spec() + toString(c.subject.kind) + c.subject.regime.label());
+    UseConfig start = around;
+    if (seed % 2) {
+      const Env& env = context_.model.env();
+      std::string const here = useText(branchOf(env, c.subject.fft, around), "INPLACE");
+      for (const Axis& axis : axesOf(env, c.subject.fft, around, filter)) {
+        if (axis.option->key != "INPLACE") { continue; }
+        std::vector<UseConfig> others;
+        for (size_t i = 0; i < axis.values.size(); ++i) {
+          if (std::to_string(axis.values[i].first) == here) { continue; }
+          const Reading* best = nullptr;
+          for (const Reading* r : context_.readings.of(c.subject)) {
+            if (r->failed || r->calls == 0 || context_.blocked(c, r->options)) { continue; }
+            if (useText(branchOf(env, c.subject.fft, r->options), "INPLACE") != std::to_string(axis.values[i].first)) {
+              continue;
+            }
+            if (!best || r->mean < best->mean) { best = r; }
+          }
+          UseConfig other;
+          place(other, axis, i);
+          others.push_back(best ? best->options : fitted(env, c.subject.fft, other));
+        }
+        if (!others.empty()) { start = others[(seed / 2) % others.size()]; }
+      }
+    }
+
     const Optimum* mean = context_.means ? context_.means->find(&c) : nullptr;
     Optimum computed;
     if (!mean) {
@@ -173,8 +209,7 @@ private:
       mean = &computed;
     }
     offer(mean->options);
-    u64 const seed = draw_.seed ^ termHash(c.subject.fft.spec() + toString(c.subject.kind) + c.subject.regime.label());
-    Subspace const subspace{.around = around, .free = someAxes(context_, c, around, seed)};
+    Subspace const subspace{.around = start, .free = someAxes(context_, c, start, seed)};
     offer(optimize(context_.model, draw_, c.subject, filter, &subspace).options);
     return out;
   }

@@ -12,6 +12,7 @@
 
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <random>
 
 using namespace tune;
@@ -87,8 +88,11 @@ TEST(the_loop_publishes_what_the_simulated_card_rewards) {
 
   SimDevice device{db, sess};
   Timer t;
-  LoopResult const r =
-    runLoop(device, db, env, nvidia(), scope, {.stop = 0.002, .seed = 7, .regretEvery = 8, .maxItems = 40});
+  LoopResult const r = runLoop(device, db, env, nvidia(), scope,
+                               {.stop = 0.002,
+                                .seed = u64(getenv("SEED") ? atoi(getenv("SEED")) : 7),
+                                .regretEvery = 8,
+                                .maxItems = u32(getenv("ITEMS") ? atoi(getenv("ITEMS")) : 80)});
   double const seconds = t.at();
   printf("loop: %u calls, %u gate readings, regret %.4f, T %.1f, %.1f s (%.0f ms an item)\n", r.calls, r.gateReadings,
          r.regret, r.T, seconds, 1000 * seconds / std::max(1u, r.calls + r.gateReadings));
