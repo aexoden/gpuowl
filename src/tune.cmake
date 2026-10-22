@@ -25,4 +25,5 @@ target_sources(prpll PRIVATE
   Publish.cpp
   Acquire.cpp
   Tuner.cpp
+  Dashboard.cpp
   )

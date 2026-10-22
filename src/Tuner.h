@@ -8,6 +8,7 @@
 #include "Acquire.h"
 #include "Measure.h"
 #include "TuneCommand.h"
+#include "Watch.h"
 
 #include <filesystem>
 #include <functional>
@@ -49,6 +50,7 @@ struct LoopSettings {
   u32 maxItems = 0;      // 0 for no limit; for tests
   fs::path publishTo{};  // where the tune files go; empty to write none
   std::string header{};  // the comment the tune files open with
+  Watch* watch = nullptr;
 };
 
 struct LoopResult {

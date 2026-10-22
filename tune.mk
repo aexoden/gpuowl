@@ -25,7 +25,8 @@ TUNE_SRCS = \
   Candidates.cpp \
   Publish.cpp \
   Acquire.cpp \
-  Tuner.cpp
+  Tuner.cpp \
+  Dashboard.cpp
 
 TESTSRCS = \
   test_main.cpp \
@@ -48,7 +49,8 @@ TESTSRCS = \
   test_TuneEntry.cpp \
   test_Gate.cpp \
   test_Publish.cpp \
-  test_Tuner.cpp
+  test_Tuner.cpp \
+  test_Dashboard.cpp
 
 # The prpll rules above were read with upstream's SRCS1 alone: their recipes link ${OBJS}, which is expanded when they
 # run, so adding to SRCS1 here is enough for the link; the prerequisites are added below.

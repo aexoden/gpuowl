@@ -4,10 +4,12 @@
 
 #include "Args.h"
 #include "BuildId.h"
+#include "Dashboard.h"
 #include "File.h"
 #include "fs.h"
 #include "GpuCommon.h"
 #include "log.h"
+#include "Restart.h"
 #include "Signal.h"
 #include "version.h"
 
@@ -72,6 +74,42 @@ private:
   std::map<TestKind, std::string> written_;
 };
 
+void report(const ItemReport& item, Watch* watch) {
+  std::string const predicted = item.predicted > 0 ? "predicted " + std::to_string(item.predicted).substr(0, 6) : "";
+  std::string const note = predicted.empty() ? item.why : item.why.empty() ? predicted : predicted + "; " + item.why;
+  log("tune: %u. %s%s -use %s at %" PRIu64 ": %s%s\n", item.n, item.kind == "gate" ? "gate " : "", item.what.c_str(),
+      item.options.c_str(), item.exponent, item.result.c_str(), note.empty() ? "" : (" (" + note + ")").c_str());
+  if (watch) { watch->finished(item); }
+}
+
+StateReport stateOf(const Publication& publication, const Readings& readings, const Model& model, const TuneDB& db,
+                    const LoopResult& sofar) {
+  StateReport out{.T = publication.T(),
+                  .coverage = publication.coverage(),
+                  .regret = sofar.regret,
+                  .calls = sofar.calls,
+                  .gates = sofar.gateReadings,
+                  .observations = u32(readings.observations().size()),
+                  .spreads = model.spreads()};
+  for (const KindPublication& kind : publication.kinds) {
+    for (const Line& line : kind.lines) {
+      char buf[96];
+      snprintf(buf, sizeof(buf), "%s %7.1f %-16s to %" PRIu64 " ", toString(kind.kind), line.cost(),
+               line.candidate->subject.fft.spec().c_str(), line.reach());
+      out.lines.push_back(buf + optionsText(line.reading->options));
+    }
+  }
+  for (const auto& [key, r] : readings.all()) {
+    if (r.failed) { out.faults.push_back("failed: " + key.fft + " " + toString(key.kind) + " -use " + key.options); }
+  }
+  for (const TryRow& t : db.diedHolding()) {
+    const UseConfig* const options = db.findCfg(t.cfg);
+    out.faults.push_back("died holding: " + t.fft + " " + toString(t.kind) + " -use " +
+                         (options ? configText(*options) : std::string{"?"}));
+  }
+  return out;
+}
+
 }  // namespace
 
 LoopResult runLoop(Device& device, TuneDB& db, u32 env, const Env& card, const RunScope& scope,
@@ -95,6 +133,7 @@ LoopResult runLoop(Device& device, TuneDB& db, u32 env, const Env& card, const R
     Publication const publication = publish(scope, candidates, readings);
     out.T = publication.T();
     publisher.write(publication);
+    if (settings.watch) { settings.watch->state(stateOf(publication, readings, model, db, out)); }
 
     // What the occupancy model offers each FFT's register limits, from its `regs` records; built before the search,
     // which asks from many threads.
@@ -123,24 +162,36 @@ LoopResult runLoop(Device& device, TuneDB& db, u32 env, const Env& card, const R
 
     if (!publication.owedGates.empty()) {
       const GateItem& g = publication.owedGates.front();
+      ItemReport item{
+        .n = items, .kind = "gate", .what = g.fft.spec(), .options = optionsText(g.options), .exponent = g.exponent};
+      if (settings.watch) { settings.watch->measuring("gate " + item.what + " at " + std::to_string(g.exponent)); }
       RoeCheck const r = device.roe(g.fft, g.options, g.exponent);
       ++out.gateReadings;
-      log("tune: %u. gate %s -use %s at %" PRIu64 ": %s\n", items, g.fft.spec().c_str(), optionsText(g.options).c_str(),
-          g.exponent,
-          r.status != Status::Ok ? toString(r.status)
-            : r.applicable       ? ("z " + std::to_string(r.z).substr(0, 5)).c_str()
-                                 : "exact");
+      char z[32];
+      snprintf(z, sizeof(z), "z %.2f", r.z);
+      item.result = r.status != Status::Ok ? toString(r.status) : r.applicable ? z : "exact";
+      report(item, settings.watch);
       continue;
     }
 
-    if (!publication.owedCalls.empty()) {
-      const ConcludeItem& c = publication.owedCalls.front();
-      Call const call = device.call(*c.candidate, c.options);
+    auto callOf = [&](const Candidate& c, const UseConfig& options, ItemReport item) {
+      item.what = std::string{toString(c.subject.kind)} + ' ' + c.subject.fft.spec();
+      item.options = optionsText(options);
+      item.exponent = c.timing;
+      if (settings.watch) { settings.watch->measuring(item.what + " -use " + item.options); }
+      Call const call = device.call(c, options);
       ++out.calls;
       ++sinceRegret;
-      log("tune: %u. %s %s -use %s at %" PRIu64 ": %.1f us/it, its second call\n", items,
-          toString(c.candidate->subject.kind), c.candidate->subject.fft.spec().c_str(), optionsText(c.options).c_str(),
-          c.candidate->timing, call.mean());
+      char us[32];
+      snprintf(us, sizeof(us), "%.1f us/it", call.mean());
+      item.result = call.ok() ? us : toString(call.status);
+      item.measured = call.ok() ? call.mean() : 0;
+      report(item, settings.watch);
+    };
+
+    if (!publication.owedCalls.empty()) {
+      const ConcludeItem& c = publication.owedCalls.front();
+      callOf(*c.candidate, c.options, {.n = items, .kind = "second call", .why = "its second call"});
       continue;
     }
 
@@ -149,6 +200,7 @@ LoopResult runLoop(Device& device, TuneDB& db, u32 env, const Env& card, const R
       out.regret = expectedRegret(context, publication, rng, settings.regretDraws);
       log("tune: T %.2f us/it over %s of the workload; expected regret %s\n", out.T,
           percent(publication.coverage()).c_str(), percent(out.regret).c_str());
+      if (settings.watch) { settings.watch->state(stateOf(publication, readings, model, db, out)); }
       if (settings.stop > 0 && out.regret <= settings.stop) {
         out.converged = true;
         break;
@@ -163,14 +215,8 @@ LoopResult runLoop(Device& device, TuneDB& db, u32 env, const Env& card, const R
       break;
     }
 
-    Call const call = device.call(*choice->candidate, choice->options);
-    ++out.calls;
-    ++sinceRegret;
-    log("tune: %u. %s %s -use %s at %" PRIu64 ": %s (predicted %.1f; %s)\n", items,
-        toString(choice->candidate->subject.kind), choice->candidate->subject.fft.spec().c_str(),
-        optionsText(choice->options).c_str(), choice->candidate->timing,
-        call.ok() ? (std::to_string(call.mean()).substr(0, 7) + " us/it").c_str() : toString(call.status),
-        choice->predictedUs, choice->why.c_str());
+    callOf(*choice->candidate, choice->options,
+           {.n = items, .kind = "call", .predicted = choice->predictedUs, .why = choice->why});
   }
   return out;
 }
@@ -256,12 +302,26 @@ RunOutcome runTune(GpuCommon shared, const TuneCommand& command) {
 
   u64 const seed = command.seed ? command.seed : u64(std::chrono::steady_clock::now().time_since_epoch().count());
   BenchDevice device{bench};
+
+  std::optional<DashboardView> dashboard;
+  if (command.dashboard && canTakeTerminal()) {
+    std::string kinds;
+    for (const Grid& g : scope->grids) { kinds += (kinds.empty() ? "" : "+") + std::string{toString(g.kind)}; }
+    dashboard.emplace(card.deviceName,
+                      kinds + " " + std::to_string(scope->lo) + "-" + std::to_string(scope->hi) + ", probe " +
+                        std::to_string(scope->probe),
+                      restart::generation());
+  } else if (command.dashboard) {
+    log("tune: dashboard=1 needs stdout to be a terminal; running without it\n");
+  }
   LoopResult const result = runLoop(device, db, bench.envId(), card, *scope,
                                     {.stop = command.stop,
                                      .seed = seed,
                                      .tailQueues = command.tailQueues,
                                      .publishTo = fs::current_path(),
-                                     .header = headerFor(*scope, command)});
+                                     .header = headerFor(*scope, command),
+                                     .watch = dashboard ? &*dashboard : nullptr});
+  dashboard.reset();
 
   log("tune: %u calls and %u accuracy readings; T %.2f us/it; expected regret %s%s\n", result.calls,
       result.gateReadings, result.T, percent(result.regret).c_str(),
