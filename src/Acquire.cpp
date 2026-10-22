@@ -23,6 +23,9 @@ namespace {
 
 constexpr double NONE = std::numeric_limits<double>::infinity();
 
+// How many of the leading candidates at a point an untried step may be taken on.
+constexpr size_t UNTRIED_LEADERS = 8;
+
 // How many grid points choose() tries before it gives up, and how many draws it takes for a challenger at each.
 constexpr u32 POINT_TRIES = 8;
 constexpr u32 CHALLENGER_DRAWS = 4;
@@ -348,6 +351,52 @@ std::optional<Choice> choose(const AcquireContext& context, std::mt19937_64& rng
                     .options = valued.options,
                     .predictedUs = std::exp(valued.value),
                     .why = "the draw's cheapest at " + std::to_string(E) + ", unchallenged"};
+    }
+  }
+  return {};
+}
+
+std::optional<Choice> untriedStep(const AcquireContext& context, std::mt19937_64& rng) {
+  std::vector<size_t> kinds;
+  for (size_t k = 0; k < context.scope.grids.size() && k < context.candidates.size(); ++k) {
+    if (!context.candidates[k].empty()) { kinds.push_back(k); }
+  }
+  if (kinds.empty()) { return {}; }
+
+  for (u32 attempt = 0; attempt < POINT_TRIES; ++attempt) {
+    size_t const k = kinds[std::uniform_int_distribution<size_t>{0, kinds.size() - 1}(rng)];
+    const Grid& grid = context.scope.grids[k];
+    std::vector<double> weights;
+    for (const GridPoint& p : grid.points) { weights.push_back(p.weight); }
+    u64 const E = grid.points[std::discrete_distribution<size_t>{weights.begin(), weights.end()}(rng)].exponent;
+
+    DrawView const view{context, context.model.mean()};
+    std::vector<const Candidate*> leading = view.screen(context.candidates[k], E);
+    if (leading.size() > UNTRIED_LEADERS) { leading.resize(UNTRIED_LEADERS); }
+    std::ranges::shuffle(leading, rng);
+
+    for (const Candidate* c : leading) {
+      const Reading* best = nullptr;
+      for (const Reading* r : context.readings.of(c->subject)) {
+        if (!r->failed && r->calls > 0 && (!best || r->mean < best->mean)) { best = r; }
+      }
+      UseConfig const around = best ? best->options : UseConfig{};
+      std::vector<UseConfig> steps;
+      for (const Axis& axis : axesOf(context.model.env(), c->subject.fft, around, context.filter(*c))) {
+        for (size_t p = 0; p < axis.values.size(); ++p) {
+          if (p == axis.current) { continue; }
+          UseConfig step = around;
+          place(step, axis, p);
+          step = fitted(context.model.env(), c->subject.fft, step);
+          if (!context.readings.find(c->subject, step) && !context.blocked(*c, step)) { steps.push_back(step); }
+        }
+      }
+      if (steps.empty()) { continue; }
+      UseConfig const step = steps[std::uniform_int_distribution<size_t>{0, steps.size() - 1}(rng)];
+      return Choice{.candidate = c,
+                    .options = step,
+                    .predictedUs = std::exp(context.model.predict(context.model.mean(), c->subject, step)),
+                    .why = "an untried step at " + std::to_string(E)};
     }
   }
   return {};

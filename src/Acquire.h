@@ -111,6 +111,11 @@ struct Choice {
 // The configuration to measure next; nothing where every draw at every point tried names one already well measured.
 [[nodiscard]] std::optional<Choice> choose(const AcquireContext& context, std::mt19937_64& rng);
 
+// One step nothing has measured: a single option moved from the best measured set of one of the leading candidates at a
+// grid point drawn by weight.  What a run that is not to stop takes when no draw names anything new.  Nothing where no
+// such step is left.
+[[nodiscard]] std::optional<Choice> untriedStep(const AcquireContext& context, std::mt19937_64& rng);
+
 // The relative regret of the publication, the median over `draws` posterior draws: the weight-averaged amount by which
 // what production would run costs more, under each draw, than the cheapest the draw sees, relative to its cost.  The
 // median, since one draw scaled far out by its heavy tail would otherwise decide it.

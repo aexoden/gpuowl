@@ -207,11 +207,13 @@ LoopResult runLoop(Device& device, TuneDB& db, u32 env, const Env& card, const R
       }
     }
 
-    std::optional<Choice> const choice = choose(context, rng);
+    std::optional<Choice> choice = choose(context, rng);
+    if (!choice && settings.stop == 0) { choice = untriedStep(context, rng); }
     if (!choice) {
       out.regret = expectedRegret(context, publication, rng, settings.regretDraws);
       out.converged = out.regret <= settings.stop;
-      log("tune: no draw names anything not already well measured; expected regret %s\n", percent(out.regret).c_str());
+      log("tune: no draw names anything not already well measured%s; expected regret %s\n",
+          settings.stop == 0 ? ", and no untried step is left" : "", percent(out.regret).c_str());
       break;
     }
 
