@@ -344,7 +344,13 @@ string clDefines(Args& args, cl_device_id id, FFTConfig fft, u32 nW, u32 nH, u64
                               "MODM31",
                               "LOADS","STORES",
                               "WMUL",
-                              "MULTI_Q"
+                              "MULTI_Q",
+                              // Read by the kernels too (cl/*.cl), so not unrecognized
+                              "CARRY96", "CARRY_SUB_X", "DISABLE_MUL64", "DISABLE_NEW_ONEPAIRSQ", "ENABLE_ALT_MUL64",
+                              "ENABLE_BARSYNC", "ENABLE_FP32_VARIANT_2", "ENABLE_MAD64", "ENABLE_RESTRICT", "FUSE_WEIGHT_BUTTERFLY",
+                              "LDSMUL_H", "LDSMUL_W", "MIDDLE_CHAIN", "MM2_CHAIN", "MM_CHAIN", "NO_INT128", "NOREG", "OLD_FENCE",
+                              "ROUNDOFF_LIMIT", "SHUFL_BYTES_H", "SHUFL_BYTES_W", "SWIZ_RECOMPUTE", "TEST_KERNEL", "TRY_SHL30",
+                              "TRY_SHL31", "TRY_SQRT2", "USE_REGISTER_BARSYNC", "WAVEFRONT"
                             });
     if (k == "TRY_LDS_CARVEOUT") {
       // Not a -use key: the CUDA build reads it from the environment (clwrap_cuda.cpp)
