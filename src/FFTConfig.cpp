@@ -364,11 +364,11 @@ float FFTConfig::maxBpw() const {
   return (carry == CARRY_32 && twoWidths) ? std::min(shape.narrowCarryBPW(), b) : b;
 }
 
-FFTConfig FFTConfig::bestFit(const Args& args, u64 E, const string& spec, vector<KeyVal>* uses) {
-  return bestFits(args, E, spec, uses).front();
+FFTConfig FFTConfig::bestFit(const Args& args, u64 E, const string& spec, vector<KeyVal>* uses, bool ll) {
+  return bestFits(args, E, spec, uses, ll).front();
 }
 
-vector<FFTConfig> FFTConfig::bestFits(const Args& args, u64 E, const string& spec, vector<KeyVal>* uses) {
+vector<FFTConfig> FFTConfig::bestFits(const Args& args, u64 E, const string& spec, vector<KeyVal>* uses, bool ll) {
   if (uses) { uses->clear(); }
 
   // A FFT-spec was given, simply take the first FFT from the spec that can handle E
@@ -377,7 +377,7 @@ vector<FFTConfig> FFTConfig::bestFits(const Args& args, u64 E, const string& spe
     if (fft.maxExp() * args.fftOverdrive < E) {
       log("Warning: %s (max %" PRIu64 ") may be too small for %" PRIu64 "\n", fft.spec().c_str(), fft.maxExp(), E);
     }
-    if (uses) { *uses = TuneEntry::usesFor(args, fft); }
+    if (uses) { *uses = TuneEntry::usesFor(args, fft, ll); }
     return {fft};
   }
 
@@ -386,12 +386,13 @@ vector<FFTConfig> FFTConfig::bestFits(const Args& args, u64 E, const string& spe
 
   // No FFT-spec given, so choose from tune.txt the fastest FFT that can handle E
   // An FFT too large for E (below minBpw) would make the Gpu constructor throw "FFT size too large", so skip those too.
-  auto const fits = [&](const FFTConfig& fft) { return E <= fft.maxExp() * args.fftOverdrive && !(E / float(fft.size()) < fft.minBpw()); };
+  auto const fitsUpTo = [&](const FFTConfig& fft, u64 maxExp) { return E <= maxExp * args.fftOverdrive && !(E / float(fft.size()) < fft.minBpw()); };
+  auto const fits = [&](const FFTConfig& fft) { return fitsUpTo(fft, fft.maxExp()); };
 
-  vector<TuneEntry> const tunes = TuneEntry::readTuneFile(args);
+  vector<TuneEntry> const tunes = TuneEntry::readTuneFile(args, ll);
   for (const TuneEntry& e : tunes) {
     // The first acceptable is the best as they're sorted by cost
-    if (fits(e.fft) && (fp64 || !e.fft.FFT_FP64)) {
+    if (fitsUpTo(e.fft, e.maxExp()) && (fp64 || !e.fft.FFT_FP64)) {
       if (uses) { *uses = e.uses; }
       return {e.fft};
     }

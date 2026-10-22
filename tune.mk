@@ -38,7 +38,8 @@ TESTSRCS = \
   test_Model.cpp \
   test_MinSum.cpp \
   test_Optimize.cpp \
-  test_Scope.cpp
+  test_Scope.cpp \
+  test_TuneEntry.cpp
 
 # The prpll rules above were read with upstream's SRCS1 alone: their recipes link ${OBJS}, which is expanded when they
 # run, so adding to SRCS1 here is enough for the link; the prerequisites are added below.
