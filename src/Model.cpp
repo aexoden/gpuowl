@@ -381,6 +381,11 @@ bool Model::measured(const Subject& subject, const std::string& label) const {
   return index_.contains(termHash("GT|" + std::to_string(int(subject.fft.shape.fft_type)) + '|' + label));
 }
 
+bool Model::measuredAt(const Subject& s, const std::string& label) const {
+  return index_.contains(
+    termHash("GS|" + s.fft.spec() + '|' + toString(s.kind) + '|' + s.regime.label() + '|' + label));
+}
+
 double Model::predict(const Draw& draw, const Subject& subject, const UseConfig& options) const {
   double out = offsetOf(subject.fft) + centre_;
   for (const Term& t : termsOf(subject, options)) { out += value(draw, t); }

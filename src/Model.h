@@ -120,12 +120,19 @@ public:
 
   // Whether an axis position (Axis::label) has been measured on any FFT of the subject's type.
   [[nodiscard]] bool measured(const Subject& subject, const std::string& label) const;
+  // Whether it has been measured on the subject itself.
+  [[nodiscard]] bool measuredAt(const Subject& subject, const std::string& label) const;
   // The spread an entry's departure from its structure was learnt to have: how much better than its structure an FFT
   // never read is taken to possibly be.
   [[nodiscard]] double entrySpread() const { return spreadOf(Group::Entry, prior_.entry); }
 
   // The same for an option effect on this card.
   [[nodiscard]] double effectSpread() const { return spreadOf(Group::Effect, prior_.effect); }
+
+  // How far an axis's effect on one entry was learnt to depart from its effect on the entry's type.
+  [[nodiscard]] double entryDeparture(const std::string& axis) const {
+    return spreadOf(Group::EffectEntry, prior_.effectEntry, axis);
+  }
 
   // Every group's spread as now in force, for reports: "type 0.500 kind 0.100 ...".
   [[nodiscard]] std::string spreads() const;

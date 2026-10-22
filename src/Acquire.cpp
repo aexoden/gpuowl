@@ -70,12 +70,21 @@ template<typename F> void parallelFor(size_t n, F&& f) {
 std::vector<std::string> someAxes(const AcquireContext& context, const Candidate& c, const UseConfig& options,
                                   u64 seed) {
   // Weighted toward axes with positions no FFT of the type has been measured at: one reading of a position teaches
-  // every FFT of the type what it does.
+  // every FFT of the type what it does.  A position read on other FFTs but not this one counts for as much as its
+  // axis's effect was learnt to vary between FFTs: L2_STRIPING's best stripe depends on the shape, and what it did
+  // elsewhere hides what it would do here.
+  const Model& model = context.model;
   std::vector<std::pair<std::string, double>> axes;
-  for (const Axis& a : axesOf(context.model.env(), c.subject.fft, options, context.filter(c))) {
+  for (const Axis& a : axesOf(model.env(), c.subject.fft, options, context.filter(c))) {
+    double const elsewhere = std::min(1.0, model.entryDeparture(a.name) / model.effectSpread());
     double untried = 0;
     for (size_t p = 0; p < a.values.size(); ++p) {
-      if (p != a.reference && !context.model.measured(c.subject, a.label(p))) { ++untried; }
+      if (p == a.reference) { continue; }
+      if (!model.measured(c.subject, a.label(p))) {
+        ++untried;
+      } else if (!model.measuredAt(c.subject, a.label(p))) {
+        untried += elsewhere;
+      }
     }
     axes.emplace_back(a.name, 1 + UNTRIED_WEIGHT * untried / double(a.values.size()));
   }
