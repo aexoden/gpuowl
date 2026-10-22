@@ -6,8 +6,9 @@
 // each candidate holding it is valued at the cheapest of what is proposed for it, and the cheapest candidate wins.
 // What is proposed for a candidate:
 //
-//   - the optimum of its options under the posterior mean, over every axis at once (Optimize.h): what everything learnt
-//     says, transfer from other FFTs included, with no prior noise to exploit;
+//   - the optimum of its options under the posterior mean (Optimize.h), moving at most MEAN_STEP_AXES axes from its
+//     best measured set: what everything learnt says, transfer from other FFTs included, with no prior noise to
+//     exploit, one measured step at a time;
 //   - the optimum under the draw over a few axes chosen at random, everything else held where the candidate's best
 //     measured set has it: exploration that moves several axes together, so a pair that loses alone can be found,
 //     while staying near enough to what was measured for its reading to teach something;
@@ -51,6 +52,9 @@ inline constexpr double DRAW_TAIL_DOF = 8;
 
 // The most axes the draw may move at once in an exploring proposal.
 inline constexpr u32 MAX_FREE_AXES = 4;
+
+// The most axes the mean's proposal may move from a candidate's best measured set in one step.
+inline constexpr size_t MEAN_STEP_AXES = 4;
 
 // At one grid point, how many candidates are optimised in full: those the posterior mean values best at their best
 // measured set (or their defaults), and a few others at random, so that none is passed over for good.
@@ -103,8 +107,9 @@ struct Choice {
 // The configuration to measure next; nothing where every draw at every point tried names one already well measured.
 [[nodiscard]] std::optional<Choice> choose(const AcquireContext& context, std::mt19937_64& rng);
 
-// The expected relative regret of the publication, over `draws` posterior draws: the weight-averaged amount by which
-// what production would run costs more, under each draw, than the cheapest the draw sees, relative to its cost.
+// The relative regret of the publication, the median over `draws` posterior draws: the weight-averaged amount by which
+// what production would run costs more, under each draw, than the cheapest the draw sees, relative to its cost.  The
+// median, since one draw scaled far out by its heavy tail would otherwise decide it.
 // Infinite where some grid point has no line.
 [[nodiscard]] double expectedRegret(const AcquireContext& context, const Publication& publication, std::mt19937_64& rng,
                                     u32 draws);

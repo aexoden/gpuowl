@@ -126,27 +126,55 @@ private:
     };
 
     AxisFilter const filter = context_.filter(c);
-    const Optimum* mean = context_.means ? context_.means->find(&c) : nullptr;
-    Optimum computed;
-    if (!mean) {
-      computed = optimize(context_.model, context_.model.mean(), c.subject, filter);
-      if (context_.means) { context_.means->put(&c, computed); }
-      mean = &computed;
-    }
-    offer(mean->options);
 
-    // The best measured set is where exploration starts from; with none, the mean's optimum.
+    // The best measured set is where both proposals start from; with none, the built-in defaults.
     const Reading* incumbent = nullptr;
     for (const Reading* r : context_.readings.of(c.subject)) {
       if (r->failed || r->calls == 0 || context_.blocked(c, r->options)) { continue; }
       offer(r->options);
       if (!incumbent || r->mean < incumbent->mean) { incumbent = r; }
     }
-    UseConfig const around = incumbent ? incumbent->options : mean->options;
+    UseConfig const around = incumbent ? incumbent->options : UseConfig{};
+
+    const Optimum* mean = context_.means ? context_.means->find(&c) : nullptr;
+    Optimum computed;
+    if (!mean) {
+      computed = meanStep(c, around, filter);
+      if (context_.means) { context_.means->put(&c, computed); }
+      mean = &computed;
+    }
+    offer(mean->options);
     u64 const seed = draw_.seed ^ termHash(c.subject.fft.spec() + toString(c.subject.kind) + c.subject.regime.label());
     Subspace const subspace{.around = around, .free = someAxes(context_, c, around, seed)};
     offer(optimize(context_.model, draw_, c.subject, filter, &subspace).options);
     return out;
+  }
+
+  // The mean's optimum, moving at most MEAN_STEP_AXES axes from `around`: those its unbounded optimum gains most from
+  // one at a time, then minimised together.  Unbounded, it stacks every effect the fit has spread over axes that were
+  // only ever measured moving together, and predicts a saving no configuration has.
+  Optimum meanStep(const Candidate& c, const UseConfig& around, const AxisFilter& filter) const {
+    const Model& model = context_.model;
+    Draw const mean = model.mean();
+    Optimum const full = optimize(model, mean, c.subject, filter);
+
+    std::vector<Axis> const axes = axesOf(model.env(), c.subject.fft, around, filter);
+    Energy const e = model.energy(mean, c.subject, around, axes);
+    std::vector<std::pair<double, std::string>> moves;
+    for (size_t a = 0; a < axes.size(); ++a) {
+      std::pair<int, int> const to = positionOf(model.env(), c.subject.fft, full.options, axes[a]);
+      if (to == axes[a].values[axes[a].current]) { continue; }
+      auto const at = std::ranges::find(axes[a].values, to);
+      double const gain =
+        at == axes[a].values.end() ? 0 : e.unary[a][size_t(at - axes[a].values.begin())] - e.unary[a][axes[a].current];
+      moves.emplace_back(gain, axes[a].name);
+    }
+    if (moves.size() <= MEAN_STEP_AXES) { return full; }
+
+    std::ranges::sort(moves);
+    Subspace subspace{.around = around, .free = {}};
+    for (size_t i = 0; i < MEAN_STEP_AXES; ++i) { subspace.free.push_back(moves[i].second); }
+    return optimize(model, mean, c.subject, filter, &subspace);
   }
 
   const AcquireContext& context_;
@@ -262,7 +290,7 @@ std::optional<Choice> choose(const AcquireContext& context, std::mt19937_64& rng
 }
 
 double expectedRegret(const AcquireContext& context, const Publication& publication, std::mt19937_64& rng, u32 draws) {
-  double total = 0;
+  std::vector<double> regrets;
   for (u32 i = 0; i < draws; ++i) {
     DrawView view = takeDraw(context, rng);
     double excess = 0;
@@ -281,9 +309,11 @@ double expectedRegret(const AcquireContext& context, const Publication& publicat
         cost += p.weight * published;
       }
     }
-    total += cost > 0 ? excess / cost : 0;
+    regrets.push_back(cost > 0 ? excess / cost : 0);
   }
-  return total / double(std::max(draws, 1u));
+  if (regrets.empty()) { return 0; }
+  std::ranges::nth_element(regrets, regrets.begin() + regrets.size() / 2);
+  return regrets[regrets.size() / 2];
 }
 
 }  // namespace tune

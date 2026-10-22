@@ -74,6 +74,20 @@ u64 termHash(std::string_view text) {
 
 Model::Model(Env env, ModelPrior prior) : env_{std::move(env)}, prior_{prior} {}
 
+std::string Model::spreads() const {
+  static constexpr const char* NAMES[] = {"type",   "kind",       "shape",       "variant", "entry",
+                                          "effect", "effectType", "effectEntry", "pair",    "residual"};
+  double const stated[] = {prior_.type,   prior_.kind,       prior_.shape,       prior_.variant, prior_.entry,
+                           prior_.effect, prior_.effectType, prior_.effectEntry, prior_.pair,    prior_.residual};
+  std::string out;
+  for (size_t g = 0; g < size_t(Group::Count); ++g) {
+    char buf[64];
+    snprintf(buf, sizeof(buf), "%s%s %.4f", out.empty() ? "" : " ", NAMES[g], spreadOf(Group(g), stated[g]));
+    out += buf;
+  }
+  return out;
+}
+
 double Model::spreadOf(Group group, double stated) const {
   double const learnt = learnt_[size_t(group)];
   return learnt > 0 ? learnt : stated;

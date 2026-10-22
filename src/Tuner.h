@@ -45,7 +45,7 @@ struct LoopSettings {
   u64 seed = 1;
   TailQueues tailQueues = TailQueues::Ntt;
   u32 regretEvery = 32;  // calls between estimates of the regret
-  u32 regretDraws = 4;
+  u32 regretDraws = 5;
   u32 maxItems = 0;      // 0 for no limit; for tests
   fs::path publishTo{};  // where the tune files go; empty to write none
   std::string header{};  // the comment the tune files open with

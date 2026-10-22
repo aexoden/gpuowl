@@ -122,6 +122,9 @@ public:
 
   // The same for an option effect on this card.
   [[nodiscard]] double effectSpread() const { return spreadOf(Group::Effect, prior_.effect); }
+
+  // Every group's spread as now in force, for reports: "type 0.500 kind 0.100 ...".
+  [[nodiscard]] std::string spreads() const;
   [[nodiscard]] size_t terms() const { return index_.size(); }
   [[nodiscard]] size_t observations() const { return y_.size(); }
   [[nodiscard]] u32 lastIterations() const { return lastIterations_; }
