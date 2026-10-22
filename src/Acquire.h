@@ -31,6 +31,7 @@
 #include "Publish.h"
 #include "Readings.h"
 
+#include <array>
 #include <functional>
 #include <map>
 #include <mutex>
@@ -50,8 +51,8 @@ inline constexpr u32 WELL_MEASURED = 6;
 // Degrees of freedom of the Student-t factor draws are scaled by.
 inline constexpr double DRAW_TAIL_DOF = 8;
 
-// The most axes the draw may move at once in an exploring proposal.
-inline constexpr u32 MAX_FREE_AXES = 4;
+// How likely an exploring proposal is to free one, two, three or four axes.
+inline constexpr std::array<double, 4> FREE_AXES_WEIGHTS{0.5, 0.3, 0.12, 0.08};
 
 // The most axes the mean's proposal may move from a candidate's best measured set in one step.
 inline constexpr size_t MEAN_STEP_AXES = 4;

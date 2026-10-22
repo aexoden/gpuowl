@@ -71,7 +71,9 @@ std::vector<std::string> someAxes(const AcquireContext& context, const Candidate
     axes.emplace_back(a.name, 1 + UNTRIED_WEIGHT * untried / double(a.values.size()));
   }
   std::mt19937_64 rng{seed};
-  size_t const m = 1 + rng() % MAX_FREE_AXES;
+  // Mostly one axis: a reading that moves one thing says what that thing does, where one that moves several leaves the
+  // fit to share its difference among them.
+  size_t const m = 1 + std::discrete_distribution<size_t>{FREE_AXES_WEIGHTS.begin(), FREE_AXES_WEIGHTS.end()}(rng);
   std::vector<std::string> names;
   while (names.size() < m && !axes.empty()) {
     std::vector<double> weights;
