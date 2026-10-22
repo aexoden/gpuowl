@@ -132,6 +132,9 @@ public:
   [[nodiscard]] size_t observations() const { return y_.size(); }
   [[nodiscard]] u32 lastIterations() const { return lastIterations_; }
 
+  // The solver's iteration cap, for experiments; SOLVE_MAX_ITERATIONS by default.
+  void setMaxIterations(u32 n) { maxIterations_ = n; }
+
 private:
   // What kind of departure a term is, for its prior: each kind's spread is learnt from its terms the readings
   // determine well.
@@ -182,6 +185,7 @@ private:
 
   std::vector<double> beta_;
   mutable u32 lastIterations_ = 0;
+  u32 maxIterations_ = 0;
 };
 
 // The model's coefficient for `term` text, hashed as the model hashes it; for tests.

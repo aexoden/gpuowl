@@ -75,7 +75,7 @@ u64 termHash(std::string_view text) {
   return h;
 }
 
-Model::Model(Env env, ModelPrior prior) : env_{std::move(env)}, prior_{prior} {}
+Model::Model(Env env, ModelPrior prior) : env_{std::move(env)}, prior_{prior}, maxIterations_{SOLVE_MAX_ITERATIONS} {}
 
 std::string Model::spreads() const {
   static constexpr const char* NAMES[] = {"type",   "kind",       "shape",       "variant", "entry",
@@ -293,7 +293,7 @@ std::vector<double> Model::solve(const std::vector<double>& y, const std::vector
 
   double const tolerance = SOLVE_TOLERANCE * SOLVE_TOLERANCE * std::max(rhsNorm, 1e-30);
   u32 iter = 0;
-  for (; iter < SOLVE_MAX_ITERATIONS; ++iter) {
+  for (; iter < maxIterations_; ++iter) {
     double rr = 0;
     for (size_t j = 0; j < n; ++j) { rr += r[j] * r[j]; }
     if (rr <= tolerance) { break; }
