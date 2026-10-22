@@ -91,7 +91,10 @@ std::string Model::spreads() const {
   return out;
 }
 
-double Model::spreadOf(Group group, double stated) const {
+double Model::spreadOf(Group group, double stated, const std::string& axis) const {
+  if (!axis.empty()) {
+    if (auto const it = axisLearnt_.find({group, axis}); it != axisLearnt_.end()) { return it->second; }
+  }
   double const learnt = learnt_[size_t(group)];
   return learnt > 0 ? learnt : stated;
 }
@@ -117,8 +120,8 @@ std::vector<Model::Term> Model::termsOf(const Subject& s, const UseConfig& optio
   std::string const entry = s.fft.spec() + '|' + toString(s.kind) + '|' + regime;
 
   std::vector<Term> out;
-  auto add = [&](const std::string& text, Group group, double stated) {
-    out.push_back({.hash = termHash(text), .group = group, .sd = spreadOf(group, stated)});
+  auto add = [&](const std::string& text, Group group, double stated, const std::string& axis = {}) {
+    out.push_back({.hash = termHash(text), .group = group, .sd = spreadOf(group, stated, axis), .axis = axis});
   };
 
   add("T|" + type, Group::Type, prior_.type);
@@ -143,8 +146,8 @@ std::vector<Model::Term> Model::termsOf(const Subject& s, const UseConfig& optio
     labels.push_back(label);
     if (axis.current == axis.reference) { continue; }
     add("G|" + label, Group::Effect, prior_.effect);
-    add("GT|" + type + '|' + label, Group::EffectType, prior_.effectType);
-    add("GS|" + entry + '|' + label, Group::EffectEntry, prior_.effectEntry);
+    add("GT|" + type + '|' + label, Group::EffectType, prior_.effectType, axis.name);
+    add("GS|" + entry + '|' + label, Group::EffectEntry, prior_.effectEntry, axis.name);
   }
   for (size_t i = 0; i < axes.size(); ++i) {
     if (axes[i].current == axes[i].reference) { continue; }
@@ -172,6 +175,7 @@ void Model::fit(std::span<const Observation> observations) {
   w_.clear();
 
   std::vector<Group> groups;
+  std::vector<std::string> axes;
   std::vector<u32> readings;
   for (const Observation& o : observations) {
     if (!(o.cost > 0)) { continue; }
@@ -180,6 +184,7 @@ void Model::fit(std::span<const Observation> observations) {
       if (fresh) {
         lambda_.push_back(1 / (t.sd * t.sd));
         groups.push_back(t.group);
+        axes.push_back(t.axis);
         readings.push_back(0);
       }
       cols_.push_back(it->second);
@@ -204,10 +209,11 @@ void Model::fit(std::span<const Observation> observations) {
   }
   beta_ = solve(y_, std::vector<double>(lambda_.size(), 0.0), std::move(start));
 
-  learnSpreads(groups, readings);
+  learnSpreads(groups, axes, readings);
 }
 
-void Model::learnSpreads(const std::vector<Group>& groups, const std::vector<u32>& readings) {
+void Model::learnSpreads(const std::vector<Group>& groups, const std::vector<std::string>& axes,
+                         const std::vector<u32>& readings) {
   auto stated = [&](Group g) {
     switch (g) {
     case Group::Type: return prior_.type;
@@ -244,6 +250,31 @@ void Model::learnSpreads(const std::vector<Group>& groups, const std::vector<u32
         if (size_t(groups[j]) == g) { lambda_[j] = 1 / (sd * sd); }
       }
       moved = true;
+    }
+    // Then each effect axis's departures, within SPREAD_RANGE of its group's.
+    for (Group const g : {Group::EffectType, Group::EffectEntry}) {
+      std::map<std::string, std::pair<double, size_t>> perAxis;
+      for (size_t j = 0; j < groups.size(); ++j) {
+        if (groups[j] == g && readings[j] >= SPREAD_READINGS && !axes[j].empty()) {
+          auto& [ss, n] = perAxis[axes[j]];
+          ss += beta_[j] * beta_[j];
+          ++n;
+        }
+      }
+      double const group = spreadOf(g, stated(g));
+      for (const auto& [axis, sums] : perAxis) {
+        auto const [ss, n] = sums;
+        if (n < SPREAD_TERMS) { continue; }
+        double const sd =
+          std::clamp(SHRINK_UNDO * std::sqrt(ss / double(n)), group / SPREAD_RANGE, group * SPREAD_RANGE);
+        double const before = spreadOf(g, stated(g), axis);
+        if (std::abs(sd / before - 1) < 0.1) { continue; }
+        axisLearnt_[{g, axis}] = sd;
+        for (size_t j = 0; j < groups.size(); ++j) {
+          if (groups[j] == g && axes[j] == axis) { lambda_[j] = 1 / (sd * sd); }
+        }
+        moved = true;
+      }
     }
     if (!moved) { break; }
     beta_ = solve(y_, std::vector<double>(lambda_.size(), 0.0), beta_);
@@ -362,8 +393,11 @@ Energy Model::energy(const Draw& draw, const Subject& s, const UseConfig& backgr
   std::string const type = std::to_string(int(shape.fft_type));
   std::string const regime = s.regime.label();
   std::string const entry = s.fft.spec() + '|' + toString(s.kind) + '|' + regime;
-  auto term = [&](const std::string& text, Group group, double stated, bool drawn = true) {
-    return value(draw, Term{.hash = termHash(text), .group = group, .sd = spreadOf(group, stated), .drawn = drawn});
+  auto term = [&](const std::string& text, Group group, double stated, bool drawn = true,
+                  const std::string& axis = {}) {
+    return value(
+      draw,
+      Term{.hash = termHash(text), .group = group, .sd = spreadOf(group, stated, axis), .drawn = drawn, .axis = axis});
   };
 
   Energy out;
@@ -383,10 +417,11 @@ Energy Model::energy(const Draw& draw, const Subject& s, const UseConfig& backgr
     for (size_t p = 0; p < axes[a].values.size(); ++p) {
       std::string const label = axes[a].label(p);
       labels[a].push_back(label);
-      out.unary[a].push_back(p == axes[a].reference ? 0.0
-                                                    : term("G|" + label, Group::Effect, prior_.effect) +
-                                 term("GT|" + type + '|' + label, Group::EffectType, prior_.effectType) +
-                                 term("GS|" + entry + '|' + label, Group::EffectEntry, prior_.effectEntry));
+      out.unary[a].push_back(
+        p == axes[a].reference ? 0.0
+                               : term("G|" + label, Group::Effect, prior_.effect) +
+            term("GT|" + type + '|' + label, Group::EffectType, prior_.effectType, true, axes[a].name) +
+            term("GS|" + entry + '|' + label, Group::EffectEntry, prior_.effectEntry, true, axes[a].name));
     }
   }
 

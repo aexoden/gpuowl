@@ -31,6 +31,7 @@
 #include "TestKind.h"
 
 #include <array>
+#include <map>
 #include <span>
 #include <string>
 #include <unordered_map>
@@ -144,11 +145,13 @@ private:
     u64 hash = 0;
     Group group = Group::Type;
     double sd = 0;
-    bool drawn = true;  // whether, unmeasured, it takes its prior in a draw
+    bool drawn = true;   // whether, unmeasured, it takes its prior in a draw
+    std::string axis{};  // an effect's axis, for its departures' spread
   };
 
-  // The prior spread of a kind of term: as stated, or as learnt.
-  [[nodiscard]] double spreadOf(Group group, double stated) const;
+  // The prior spread of a kind of term: as stated, or as learnt; for an effect's departure on a type or an entry, as
+  // learnt for its axis where that axis has been read widely enough.
+  [[nodiscard]] double spreadOf(Group group, double stated, const std::string& axis = {}) const;
 
   // The terms of an observation or a prediction: the structural and option terms, then the residual.
   [[nodiscard]] std::vector<Term> termsOf(const Subject& subject, const UseConfig& options) const;
@@ -156,8 +159,10 @@ private:
   // The coefficient of a term under a draw: fitted, or for a term nothing measured, its prior.
   [[nodiscard]] double value(const Draw& draw, const Term& term) const;
 
-  // Learns each group's spread from its well-read terms, and fits again where one moved.
-  void learnSpreads(const std::vector<Group>& groups, const std::vector<u32>& readings);
+  // Learns each group's spread from its well-read terms, and each effect axis's departures, and fits again where one
+  // moved.
+  void learnSpreads(const std::vector<Group>& groups, const std::vector<std::string>& axes,
+                    const std::vector<u32>& readings);
 
   // (X^T W X + Lambda) b
   void apply(const std::vector<double>& b, std::vector<double>& out) const;
@@ -182,6 +187,10 @@ private:
 
   // Learnt spreads, per group; 0 where the stated prior stands.
   std::array<double, size_t(Group::Count)> learnt_{};
+
+  // Learnt per axis, for the departures some options have far more of than others: L2_STRIPING's effect depends on
+  // the shape, where most options do much the same on every FFT of a type.
+  std::map<std::pair<Group, std::string>, double> axisLearnt_;
 
   std::vector<double> beta_;
   mutable u32 lastIterations_ = 0;
