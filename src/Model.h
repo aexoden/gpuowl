@@ -116,6 +116,9 @@ public:
                                      const Axis& b);
 
   [[nodiscard]] const Env& env() const { return env_; }
+
+  // Whether an axis position (Axis::label) has been measured on any FFT of the subject's type.
+  [[nodiscard]] bool measured(const Subject& subject, const std::string& label) const;
   // The spread an entry's departure from its structure was learnt to have: how much better than its structure an FFT
   // never read is taken to possibly be.
   [[nodiscard]] double entrySpread() const { return spreadOf(Group::Entry, prior_.entry); }

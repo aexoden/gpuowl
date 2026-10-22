@@ -60,14 +60,26 @@ template<typename F> void parallelFor(size_t n, F&& f) {
 // A few axes of `options` on `c`, chosen at random by `seed`.
 std::vector<std::string> someAxes(const AcquireContext& context, const Candidate& c, const UseConfig& options,
                                   u64 seed) {
-  std::vector<std::string> names;
+  // Weighted toward axes with positions no FFT of the type has been measured at: one reading of a position teaches
+  // every FFT of the type what it does.
+  std::vector<std::pair<std::string, double>> axes;
   for (const Axis& a : axesOf(context.model.env(), c.subject.fft, options, context.filter(c))) {
-    names.push_back(a.name);
+    double untried = 0;
+    for (size_t p = 0; p < a.values.size(); ++p) {
+      if (p != a.reference && !context.model.measured(c.subject, a.label(p))) { ++untried; }
+    }
+    axes.emplace_back(a.name, 1 + UNTRIED_WEIGHT * untried / double(a.values.size()));
   }
   std::mt19937_64 rng{seed};
-  std::ranges::shuffle(names, rng);
   size_t const m = 1 + rng() % MAX_FREE_AXES;
-  if (names.size() > m) { names.resize(m); }
+  std::vector<std::string> names;
+  while (names.size() < m && !axes.empty()) {
+    std::vector<double> weights;
+    for (auto const& [name, w] : axes) { weights.push_back(w); }
+    size_t const pick = std::discrete_distribution<size_t>{weights.begin(), weights.end()}(rng);
+    names.push_back(axes[pick].first);
+    axes.erase(axes.begin() + ptrdiff_t(pick));
+  }
   return names;
 }
 

@@ -30,6 +30,9 @@ constexpr size_t SPREAD_TERMS = 5;
 constexpr double SHRINK_UNDO = 1.25;
 constexpr double SPREAD_RANGE = 10;
 
+// Degrees of freedom of the Student-t an unmeasured term's draw is taken from.
+constexpr double UNSEEN_TAIL_DOF = 3;
+
 constexpr u64 FNV_OFFSET = 0xcbf29ce484222325ull;
 constexpr u64 FNV_PRIME = 0x100000001b3ull;
 
@@ -332,7 +335,19 @@ Draw Model::draw(u64 seed, double scale) const {
 double Model::value(const Draw& draw, const Term& term) const {
   if (auto const it = index_.find(term.hash); it != index_.end()) { return draw.beta[it->second]; }
   if (!draw.seed || !term.drawn) { return 0; }
-  return draw.scale * term.sd * gaussian(term.hash ^ splitmix(draw.seed));
+  // Student-t with UNSEEN_TAIL_DOF degrees of freedom: the spread learnt from what was measured is mostly small
+  // effects, and the occasional large one an untried value can have is what is worth a measurement to find.
+  u64 const key = term.hash ^ splitmix(draw.seed);
+  double chi = 0;
+  for (u64 k = 1; k <= u64(UNSEEN_TAIL_DOF); ++k) {
+    double const g = gaussian(splitmix(key + k));
+    chi += g * g;
+  }
+  return draw.scale * term.sd * gaussian(key) / std::sqrt(std::max(chi, 1e-6) / UNSEEN_TAIL_DOF);
+}
+
+bool Model::measured(const Subject& subject, const std::string& label) const {
+  return index_.contains(termHash("GT|" + std::to_string(int(subject.fft.shape.fft_type)) + '|' + label));
 }
 
 double Model::predict(const Draw& draw, const Subject& subject, const UseConfig& options) const {

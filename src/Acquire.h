@@ -56,6 +56,9 @@ inline constexpr u32 MAX_FREE_AXES = 4;
 // The most axes the mean's proposal may move from a candidate's best measured set in one step.
 inline constexpr size_t MEAN_STEP_AXES = 4;
 
+// How much more likely an exploring proposal is to free an axis all of whose positions are untried on the FFT's type.
+inline constexpr double UNTRIED_WEIGHT = 4;
+
 // At one grid point, how many candidates are optimised in full: those the posterior mean values best at their best
 // measured set (or their defaults), and a few others at random, so that none is passed over for good.
 inline constexpr size_t SCREENED = 24;
