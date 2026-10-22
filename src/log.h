@@ -3,7 +3,9 @@
 #pragma once
 // IWYU pragma: always_keep
 
+#include <functional>
 #include <string>
+#include <string_view>
 
 #ifdef __GNUC__
 void log(const char *fmt, ...) __attribute__ ((format(printf, 1, 2)));
@@ -15,6 +17,10 @@ void initLog();
 void initLog(const char *);
 std::string logContext();
 std::string shortTimeStr();
+
+// Where log()'s stdout copy goes instead of stdout, or nullptr for stdout. Called with log()'s lock held, so it may not
+// call log(); the log file still gets every line.
+void setStdoutSink(std::function<void(std::string_view)> sink);
 
 struct LogContext {
   explicit LogContext(const std::string& s);

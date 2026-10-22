@@ -15,6 +15,9 @@ thread_local File* linkedLogFile = nullptr;
 
 static File stdoutFile{stdout, "stdout"};
 
+static std::mutex logMutex;
+static std::function<void(std::string_view)> stdoutSink;
+
 string logContext() { return context; }
 
 void initLog(const char *logName) {
@@ -27,9 +30,12 @@ string shortTimeStr() { return timeStr("%Y%m%d %H:%M:%S"); }
 
 static char logBuf[32 * 1024];
 
-void log(const char *fmt, ...) {
-  static std::mutex logMutex;
+void setStdoutSink(std::function<void(std::string_view)> sink) {
+  std::unique_lock const lock(logMutex);
+  stdoutSink = std::move(sink);
+}
 
+void log(const char *fmt, ...) {
   string const prefix = shortTimeStr() + ' ' + context;
 
   std::unique_lock const lock(logMutex);
@@ -43,7 +49,7 @@ void log(const char *fmt, ...) {
   string_view const s{logBuf};
 
   if (logFile) { logFile.write(s); } else if (linkedLogFile && *linkedLogFile) { linkedLogFile->write(s); }
-  stdoutFile.write(s);
+  if (stdoutSink) { stdoutSink(s); } else { stdoutFile.write(s); }
 }
 
 LogLink logLink() { return {logFile ? &logFile : linkedLogFile, context}; }
