@@ -14,7 +14,7 @@ namespace tune {
 
 namespace {
 
-// Where the solver stops.  The nested terms (an entry within its type's shape terms, an effect at three levels) leave
+// Where the solver stops.  The nested terms (an entry within its type's shape terms, an effect at four levels) leave
 // directions that only the priors determine, which conjugate gradients converge along very slowly; they move a
 // constant between levels and leave predictions alone.  On the A4000's 8300 readings (20000 terms), held-out error was
 // 0.90% at 100 iterations and at 5000 alike, at 1 s against 19 s a fit.  The cost is that a draw explores those
@@ -78,10 +78,11 @@ u64 termHash(std::string_view text) {
 Model::Model(Env env, ModelPrior prior) : env_{std::move(env)}, prior_{prior}, maxIterations_{SOLVE_MAX_ITERATIONS} {}
 
 std::string Model::spreads() const {
-  static constexpr const char* NAMES[] = {"type",   "kind",       "shape",       "variant", "entry",
-                                          "effect", "effectType", "effectEntry", "pair",    "residual"};
-  double const stated[] = {prior_.type,   prior_.kind,       prior_.shape,       prior_.variant, prior_.entry,
-                           prior_.effect, prior_.effectType, prior_.effectEntry, prior_.pair,    prior_.residual};
+  static constexpr const char* NAMES[] = {"type",       "kind",        "shape",       "variant", "entry",   "effect",
+                                          "effectType", "effectShape", "effectEntry", "pair",    "residual"};
+  double const stated[] = {prior_.type,        prior_.kind,   prior_.shape,      prior_.variant,
+                           prior_.entry,       prior_.effect, prior_.effectType, prior_.effectShape,
+                           prior_.effectEntry, prior_.pair,   prior_.residual};
   std::string out;
   for (size_t g = 0; g < size_t(Group::Count); ++g) {
     char buf[64];
@@ -147,6 +148,7 @@ std::vector<Model::Term> Model::termsOf(const Subject& s, const UseConfig& optio
     if (axis.current == axis.reference) { continue; }
     add("G|" + label, Group::Effect, prior_.effect);
     add("GT|" + type + '|' + label, Group::EffectType, prior_.effectType, axis.name);
+    add("GF|" + shape.spec() + '|' + label, Group::EffectShape, prior_.effectShape, axis.name);
     add("GS|" + entry + '|' + label, Group::EffectEntry, prior_.effectEntry, axis.name);
   }
   for (size_t i = 0; i < axes.size(); ++i) {
@@ -223,6 +225,7 @@ void Model::learnSpreads(const std::vector<Group>& groups, const std::vector<std
     case Group::Entry: return prior_.entry;
     case Group::Effect: return prior_.effect;
     case Group::EffectType: return prior_.effectType;
+    case Group::EffectShape: return prior_.effectShape;
     case Group::EffectEntry: return prior_.effectEntry;
     case Group::Pair: return prior_.pair;
     case Group::Residual: return prior_.residual;
@@ -252,7 +255,7 @@ void Model::learnSpreads(const std::vector<Group>& groups, const std::vector<std
       moved = true;
     }
     // Then each effect axis's departures, within SPREAD_RANGE of its group's.
-    for (Group const g : {Group::EffectType, Group::EffectEntry}) {
+    for (Group const g : {Group::EffectType, Group::EffectShape, Group::EffectEntry}) {
       std::map<std::string, std::pair<double, size_t>> perAxis;
       for (size_t j = 0; j < groups.size(); ++j) {
         if (groups[j] == g && readings[j] >= SPREAD_READINGS && !axes[j].empty()) {
@@ -381,6 +384,10 @@ bool Model::measured(const Subject& subject, const std::string& label) const {
   return index_.contains(termHash("GT|" + std::to_string(int(subject.fft.shape.fft_type)) + '|' + label));
 }
 
+bool Model::measuredOnShape(const Subject& s, const std::string& label) const {
+  return index_.contains(termHash("GF|" + s.fft.shape.spec() + '|' + label));
+}
+
 bool Model::measuredAt(const Subject& s, const std::string& label) const {
   return index_.contains(
     termHash("GS|" + s.fft.spec() + '|' + toString(s.kind) + '|' + s.regime.label() + '|' + label));
@@ -426,6 +433,7 @@ Energy Model::energy(const Draw& draw, const Subject& s, const UseConfig& backgr
         p == axes[a].reference ? 0.0
                                : term("G|" + label, Group::Effect, prior_.effect) +
             term("GT|" + type + '|' + label, Group::EffectType, prior_.effectType, true, axes[a].name) +
+            term("GF|" + shape.spec() + '|' + label, Group::EffectShape, prior_.effectShape, true, axes[a].name) +
             term("GS|" + entry + '|' + label, Group::EffectEntry, prior_.effectEntry, true, axes[a].name));
     }
   }

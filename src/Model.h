@@ -7,7 +7,8 @@
 //   an offset           the stated prior's cost (Prior.h), plus the readings' mean departure from it
 //   an entry intercept  per (FFT, test kind, carry regime), with a prior from the FFT's structure: its type, the type's
 //                       test kind, width, middle, height, variant digits and regime, each a term of its own
-//   option effects      per axis at its position (Axes.h), at three levels: the card, the FFT type, the entry
+//   option effects      per axis at its position (Axes.h), at four levels: the card, the FFT type, the shape, the
+//                       entry
 //   interactions        per pair of axes that share a kernel (or a group, for the groups that reach every kernel), per
 //                       FFT type; a pair within a group takes its prior in a draw before anything has measured it, a
 //                       pair across groups only once something has, which keeps a draw's optimisation tractable
@@ -48,6 +49,7 @@ struct ModelPrior {
   double entry = 0.1;         // per entry, against what its structure says
   double effect = 0.1;        // an axis position, on this card
   double effectType = 0.03;   // its departure on one FFT type
+  double effectShape = 0.02;  // its departure on one shape of that type, whatever the variant
   double effectEntry = 0.01;  // its departure on one entry
   double pair = 0.02;         // an interaction, per FFT type
   double residual = 0.005;    // one configuration, against everything above
@@ -120,7 +122,8 @@ public:
 
   // Whether an axis position (Axis::label) has been measured on any FFT of the subject's type.
   [[nodiscard]] bool measured(const Subject& subject, const std::string& label) const;
-  // Whether it has been measured on the subject itself.
+  // Whether it has been measured on any variant of the subject's shape, and on the subject itself.
+  [[nodiscard]] bool measuredOnShape(const Subject& subject, const std::string& label) const;
   [[nodiscard]] bool measuredAt(const Subject& subject, const std::string& label) const;
   // The spread an entry's departure from its structure was learnt to have: how much better than its structure an FFT
   // never read is taken to possibly be.
@@ -129,7 +132,11 @@ public:
   // The same for an option effect on this card.
   [[nodiscard]] double effectSpread() const { return spreadOf(Group::Effect, prior_.effect); }
 
-  // How far an axis's effect on one entry was learnt to depart from its effect on the entry's type.
+  // How far an axis's effect was learnt to depart, on one shape from its effect on the type, and on one entry from
+  // its effect on the shape.
+  [[nodiscard]] double shapeDeparture(const std::string& axis) const {
+    return spreadOf(Group::EffectShape, prior_.effectShape, axis);
+  }
   [[nodiscard]] double entryDeparture(const std::string& axis) const {
     return spreadOf(Group::EffectEntry, prior_.effectEntry, axis);
   }
@@ -146,7 +153,20 @@ public:
 private:
   // What kind of departure a term is, for its prior: each kind's spread is learnt from its terms the readings
   // determine well.
-  enum class Group : u8 { Type, Kind, Shape, Variant, Entry, Effect, EffectType, EffectEntry, Pair, Residual, Count };
+  enum class Group : u8 {
+    Type,
+    Kind,
+    Shape,
+    Variant,
+    Entry,
+    Effect,
+    EffectType,
+    EffectShape,
+    EffectEntry,
+    Pair,
+    Residual,
+    Count
+  };
 
   struct Term {
     u64 hash = 0;

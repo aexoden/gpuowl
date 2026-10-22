@@ -71,19 +71,22 @@ std::vector<std::string> someAxes(const AcquireContext& context, const Candidate
                                   u64 seed) {
   // Weighted toward axes with positions no FFT of the type has been measured at: one reading of a position teaches
   // every FFT of the type what it does.  A position read on other FFTs but not this one counts for as much as its
-  // axis's effect was learnt to vary between FFTs: L2_STRIPING's best stripe depends on the shape, and what it did
-  // elsewhere hides what it would do here.
+  // axis's effect was learnt to vary between shapes, or between the variants of one: L2_STRIPING's best stripe
+  // depends on the shape, and what it did elsewhere hides what it would do here.
   const Model& model = context.model;
   std::vector<std::pair<std::string, double>> axes;
   for (const Axis& a : axesOf(model.env(), c.subject.fft, options, context.filter(c))) {
-    double const elsewhere = std::min(1.0, model.entryDeparture(a.name) / model.effectSpread());
+    double const otherShape = std::min(1.0, model.shapeDeparture(a.name) / model.effectSpread());
+    double const otherVariant = std::min(1.0, model.entryDeparture(a.name) / model.effectSpread());
     double untried = 0;
     for (size_t p = 0; p < a.values.size(); ++p) {
       if (p == a.reference) { continue; }
       if (!model.measured(c.subject, a.label(p))) {
         ++untried;
+      } else if (!model.measuredOnShape(c.subject, a.label(p))) {
+        untried += otherShape;
       } else if (!model.measuredAt(c.subject, a.label(p))) {
-        untried += elsewhere;
+        untried += otherVariant;
       }
     }
     axes.emplace_back(a.name, 1 + UNTRIED_WEIGHT * untried / double(a.values.size()));
