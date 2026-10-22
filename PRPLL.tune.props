@@ -23,5 +23,7 @@
     <ClCompile Include=".\src\TuneCommand.cpp" />
     <ClCompile Include=".\src\Readings.cpp" />
     <ClCompile Include=".\src\Gate.cpp" />
+    <ClCompile Include=".\src\Candidates.cpp" />
+    <ClCompile Include=".\src\Publish.cpp" />
   </ItemGroup>
 </Project>

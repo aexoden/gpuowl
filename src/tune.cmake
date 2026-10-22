@@ -21,4 +21,6 @@ target_sources(prpll PRIVATE
   TuneCommand.cpp
   Readings.cpp
   Gate.cpp
+  Candidates.cpp
+  Publish.cpp
   )
