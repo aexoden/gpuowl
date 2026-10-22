@@ -17,4 +17,6 @@ target_sources(prpll PRIVATE
   Model.cpp
   MinSum.cpp
   Optimize.cpp
+  Scope.cpp
+  TuneCommand.cpp
   )

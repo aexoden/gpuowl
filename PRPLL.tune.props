@@ -19,5 +19,7 @@
     <ClCompile Include=".\src\Model.cpp" />
     <ClCompile Include=".\src\MinSum.cpp" />
     <ClCompile Include=".\src\Optimize.cpp" />
+    <ClCompile Include=".\src\Scope.cpp" />
+    <ClCompile Include=".\src\TuneCommand.cpp" />
   </ItemGroup>
 </Project>
