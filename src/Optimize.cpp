@@ -6,6 +6,7 @@
 #include "MinSum.h"
 
 #include <algorithm>
+#include <atomic>
 #include <map>
 #include <memory>
 #include <mutex>
@@ -18,6 +19,9 @@ namespace {
 // What leaving an axis's reference costs on top of the draw: nothing a reading could resolve, only enough that a tie --
 // which the mean of the model is everywhere nothing was measured -- goes to the default.
 constexpr double MOVE_COST = 1e-9;
+
+std::atomic<u64> searches{0};
+std::atomic<u64> inexact{0};
 
 // How many FFTs' spaces are kept; a run asks about far fewer, with a few register offers each.
 constexpr size_t SPACES_KEPT = 4096;
@@ -269,6 +273,8 @@ Optimum optimize(const Model& model, const Draw& draw, const Subject& subject, c
   const UseConfig& around = problem.around;
 
   MinSumResult const r = minimize(problem.minsum);
+  ++searches;
+  if (!r.exact || !problem.space->unsearched().empty()) { ++inexact; }
   if (!(r.value < FORBIDDEN)) {
     return {.options = around, .predicted = model.predict(draw, subject, around), .exact = false};
   }
@@ -292,6 +298,8 @@ Optimum optimize(const Model& model, const Draw& draw, const Subject& subject, c
           .predicted = model.predict(draw, subject, options),
           .exact = r.exact && problem.space->unsearched().empty()};
 }
+
+OptimizerCounts optimizerCounts() { return {.searches = searches.load(), .inexact = inexact.load()}; }
 
 double conditionalEnergy(const Model& model, const Draw& draw, const Subject& subject, const AxisFilter& filter,
                          const UseConfig& options) {

@@ -36,6 +36,13 @@ struct Subspace {
 [[nodiscard]] Optimum optimize(const Model& model, const Draw& draw, const Subject& subject, const AxisFilter& filter,
                                const Subspace* subspace = nullptr);
 
+// How many searches optimize() has made in this process, and how many of them were not exact (Optimum::exact).
+struct OptimizerCounts {
+  u64 searches = 0;
+  u64 inexact = 0;
+};
+[[nodiscard]] OptimizerCounts optimizerCounts();
+
 // What the problem optimize() solves says `options` cost, the residual aside: predict() without it, give or take the
 // tie-breaking cost of each axis away from its reference.  For tests.
 [[nodiscard]] double conditionalEnergy(const Model& model, const Draw& draw, const Subject& subject,

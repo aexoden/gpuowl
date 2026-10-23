@@ -198,8 +198,12 @@ LoopResult runLoop(Device& device, TuneDB& db, u32 env, const Env& card, const R
     if (sinceRegret >= settings.regretEvery) {
       sinceRegret = 0;
       out.regret = expectedRegret(context, publication, rng, settings.regretDraws);
-      log("tune: T %.2f us/it over %s of the workload; expected regret %s\n", out.T,
-          percent(publication.coverage()).c_str(), percent(out.regret).c_str());
+      OptimizerCounts const counts = optimizerCounts();
+      std::string const inexact = counts.inexact == 0 ? std::string{}
+                                                      : "; optimiser inexact in " + std::to_string(counts.inexact) +
+          " of " + std::to_string(counts.searches) + " searches";
+      log("tune: T %.2f us/it over %s of the workload; expected regret %s%s\n", out.T,
+          percent(publication.coverage()).c_str(), percent(out.regret).c_str(), inexact.c_str());
       if (settings.watch) { settings.watch->state(stateOf(publication, readings, model, db, out)); }
       if (settings.stop > 0 && out.regret <= settings.stop) {
         out.converged = true;

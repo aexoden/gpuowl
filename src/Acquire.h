@@ -14,6 +14,7 @@
 //     while staying near enough to what was measured for its reading to teach something;
 //   - the single-axis move from its best measured set the draw likes best, so that every axis is looked at under
 //     every draw, and a move whose effect is uncertain here is tried in proportion to its chance of paying;
+//   - each structural move from it on its own, with what the move opens set as the posterior mean says;
 //   - every configuration of it already measured.
 //
 // The draw's optimum over every axis at once is not proposed: with forty-odd untried axes it takes every one at its

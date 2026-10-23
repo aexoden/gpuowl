@@ -230,10 +230,18 @@ private:
       mean = &computed;
     }
     offer(mean->options);
-    Subspace const subspace{
-      .around = start, .free = someAxes(context_, c, start, streamSeed(draw_.seed, "subspace", subjectHash(c.subject)))};
+    Subspace const subspace{.around = start,
+                            .free =
+                              someAxes(context_, c, start, streamSeed(draw_.seed, "subspace", subjectHash(c.subject)))};
     offer(optimize(context_.model, draw_, c.subject, filter, &subspace).options);
     if (std::optional<UseConfig> const step = bestStep(c, around, filter)) { offer(*step); }
+    // Each structural move on its own, which bestStep() leaves out since it changes which axes there are: what it
+    // opens follows the readings (Subspace).
+    for (const Axis& a : axesOf(context_.model.env(), c.subject.fft, around, filter)) {
+      if (!a.option->structural) { continue; }
+      Subspace const one{.around = around, .free = {a.name}};
+      offer(optimize(context_.model, draw_, c.subject, filter, &one).options);
+    }
     return out;
   }
 
