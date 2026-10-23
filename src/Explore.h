@@ -51,11 +51,12 @@ struct Proposal {
 // The next item of the coverage lane: a first look at an entry nothing has read, the next item of the least tried
 // entry's round, or the next set of a contender's least developed branch -- its defaults, then single moves from its
 // fastest set to positions the branch has not read, those the branch opens first; nothing where none is left.
-[[nodiscard]] std::optional<Proposal> coverageStep(const AcquireContext& context, double contenders,
-                                                   std::mt19937_64& rng);
+// `elapsed` is the tuning time so far, which sets how far a random pick may reach (Reach).
+[[nodiscard]] std::optional<Proposal> coverageStep(const AcquireContext& context, const ExploreSettings& settings,
+                                                   double elapsed, std::mt19937_64& rng);
 
 // The next item of the restarts lane: the open restart's next local step from its own best, or a new start.
-[[nodiscard]] std::optional<Proposal> restartStep(const AcquireContext& context, const TuneDB& db, u32 env,
-                                                  std::mt19937_64& rng);
+[[nodiscard]] std::optional<Proposal> restartStep(const AcquireContext& context, const ExploreSettings& settings,
+                                                  double elapsed, const TuneDB& db, u32 env, std::mt19937_64& rng);
 
 }  // namespace tune

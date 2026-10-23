@@ -103,9 +103,15 @@ TEST(every_setting_is_accepted_where_it_belongs) {
   CHECK(parsed("lanes=model").lanes == *parseTimetable("model"));
   CHECK(!refusal("lanes=70/20/10").empty());
   CHECK(!refusal("status,lanes=model").empty());
-  CHECK(near(parsed("").contenders, CONTENDERS));
-  CHECK(near(parsed("contenders=5%").contenders, 0.05));
-  CHECK(std::isinf(parsed("contenders=all").contenders));
+  CHECK(near(parsed("").explore.contenders, CONTENDERS));
+  CHECK(near(parsed("contenders=5%").explore.contenders, 0.05));
+  CHECK(std::isinf(parsed("contenders=all").explore.contenders));
+  CHECK(parsed("").explore.reach == Reach{});
+  CHECK(parsed("randomReach=2x@1h").explore.reach == (Reach{.start = 2, .doubling = 3600}));
+  CHECK(std::isinf(parsed("randomReach=all").explore.reach.start));
+  for (const char* bad : {"randomReach=0.5x@30m", "randomReach=2x", "randomReach=2x@0m", "randomReach=x@1h"}) {
+    CHECK(!refusal(bad).empty());
+  }
   CHECK(!refusal("contenders=0.05").empty());
 }
 

@@ -110,3 +110,15 @@ TEST(lane_time_runs_from_each_item_to_the_next) {
   item("model", 132);
   CHECK(db.attemptOpen(sess));
 }
+
+TEST(a_random_pick_reaches_further_as_the_run_goes_on) {
+  Reach const r{};
+  CHECK(near(r.at(0), 1.5));
+  CHECK(near(r.at(1800), 3));
+  CHECK(near(r.at(3 * 3600), 1.5 * 64));
+  CHECK_EQ(toString(r), std::string{"1.5x@30m"});
+  CHECK_EQ(toString(*parseReach("2x@1h")), std::string{"2x@1h"});
+  CHECK(std::isinf(parseReach("all")->at(0)));
+  CHECK_EQ(toString(*parseReach("all")), std::string{"all"});
+  for (const char* bad : {"", "1.5x", "0.9x@30m", "2x@30", "2x@0h", "x@1h", "2@1h"}) { CHECK(!parseReach(bad)); }
+}

@@ -53,7 +53,7 @@ struct LoopSettings {
   double stop = STOP;
   double sweep = SWEEP;
   Timetable lanes{};
-  double contenders = CONTENDERS;
+  ExploreSettings explore{};
   u64 seed = 1;
   TailQueues tailQueues = TailQueues::Ntt;
   u32 regretEvery = 32;  // calls between estimates of the regret

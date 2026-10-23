@@ -141,15 +141,22 @@ TuneCommand parseTuneCommand(std::string_view text) {
       out.lanes = *lanes;
     } else if (key == "contenders" && out.verb == TuneVerb::Run) {
       if (value == "all") {
-        out.contenders = std::numeric_limits<double>::infinity();
+        out.explore.contenders = std::numeric_limits<double>::infinity();
       } else {
         std::optional<double> const margin =
           value.ends_with('%') ? parseDouble(value.substr(0, value.size() - 1)) : std::optional<double>{};
         if (!margin || *margin < 0) {
           throw std::string{"-tune: contenders= takes a percentage, such as contenders=15%, or all"};
         }
-        out.contenders = *margin / 100;
+        out.explore.contenders = *margin / 100;
       }
+    } else if (key == "randomReach" && out.verb == TuneVerb::Run) {
+      std::optional<Reach> const reach = parseReach(value);
+      if (!reach) {
+        throw std::string{"-tune: randomReach= takes a factor of at least 1 and the time it takes to double, such as "
+                          "randomReach=1.5x@30m, or all"};
+      }
+      out.explore.reach = *reach;
     } else if (key == "dashboard" && out.verb == TuneVerb::Run) {
       if (value != "0" && value != "1") { throw std::string{"-tune: dashboard= takes 0 or 1"}; }
       out.dashboard = value == "1";

@@ -266,12 +266,15 @@ LoopResult runLoop(Device& device, TuneDB& db, u32 env, const Env& card, const R
                       .why = choice->why};
     };
     std::optional<Proposal> proposal;
-    for (Lane const lane : laneOrder(settings.lanes, laneTime(db, env))) {
+    LaneTime const time = laneTime(db, env);
+    double elapsed = 0;
+    for (double const s : time.seconds) { elapsed += s; }
+    for (Lane const lane : laneOrder(settings.lanes, time)) {
       if (!settings.lanes.serves(lane)) { continue; }
       switch (lane) {
       case Lane::Model: proposal = modelStep(); break;
-      case Lane::Coverage: proposal = coverageStep(context, settings.contenders, rng); break;
-      case Lane::Restarts: proposal = restartStep(context, db, env, rng); break;
+      case Lane::Coverage: proposal = coverageStep(context, settings.explore, elapsed, rng); break;
+      case Lane::Restarts: proposal = restartStep(context, settings.explore, elapsed, db, env, rng); break;
       case Lane::Interactions: break;
       }
       if (proposal) { break; }
@@ -391,7 +394,7 @@ RunOutcome runTune(GpuCommon shared, const TuneCommand& command) {
                                     {.stop = command.stop,
                                      .sweep = command.sweep,
                                      .lanes = command.lanes,
-                                     .contenders = command.contenders,
+                                     .explore = command.explore,
                                      .seed = seed,
                                      .tailQueues = command.tailQueues,
                                      .publishTo = fs::current_path(),

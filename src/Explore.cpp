@@ -58,11 +58,16 @@ std::vector<double> behind(const AcquireContext& context, const std::vector<cons
   return out;
 }
 
-// One of `indices`: at random with probability RANDOM_SHARE, else the least behind.
-std::pair<size_t, bool> pick(const std::vector<size_t>& indices, const std::vector<double>& behindBy,
+// One of `indices`: with probability RANDOM_SHARE at random among those within `reach` (a factor) of the frontier,
+// else the least behind.
+std::pair<size_t, bool> pick(const std::vector<size_t>& indices, const std::vector<double>& behindBy, double reach,
                              std::mt19937_64& rng) {
   if (std::uniform_real_distribution<double>{0, 1}(rng) < RANDOM_SHARE) {
-    return {indices[std::uniform_int_distribution<size_t>{0, indices.size() - 1}(rng)], true};
+    std::vector<size_t> within;
+    for (size_t const i : indices) {
+      if (behindBy[i] <= std::log(reach)) { within.push_back(i); }
+    }
+    if (!within.empty()) { return {within[std::uniform_int_distribution<size_t>{0, within.size() - 1}(rng)], true}; }
   }
   return {*std::ranges::min_element(indices, {}, [&](size_t i) { return behindBy[i]; }), false};
 }
@@ -180,7 +185,8 @@ constexpr double OPENED_WEIGHT = 3;
 
 // The next set of a contender's least developed branch.
 std::optional<Proposal> branchStep(const AcquireContext& context, const std::vector<const Candidate*>& entries,
-                                   const std::vector<double>& behindBy, double contenders, std::mt19937_64& rng) {
+                                   const std::vector<double>& behindBy, double contenders, double reach,
+                                   std::mt19937_64& rng) {
   const Env& env = context.model.env();
   struct Open {
     size_t entry;
@@ -207,7 +213,7 @@ std::optional<Proposal> branchStep(const AcquireContext& context, const std::vec
     behind.push_back(open[k].behind);
     if (open[k].archive.configurations == fewest) { least.push_back(k); }
   }
-  auto const [k, random] = pick(least, behind, rng);
+  auto const [k, random] = pick(least, behind, reach, rng);
   const Open& o = open[k];
   const Candidate& c = *entries[o.entry];
   std::shared_ptr<const ConditionalSpace> const space = spaceOf(env, c.subject.fft, context.filter(c));
@@ -270,7 +276,10 @@ std::optional<Proposal> branchStep(const AcquireContext& context, const std::vec
 
 }  // namespace
 
-std::optional<Proposal> coverageStep(const AcquireContext& context, double contenders, std::mt19937_64& rng) {
+std::optional<Proposal> coverageStep(const AcquireContext& context, const ExploreSettings& settings, double elapsed,
+                                     std::mt19937_64& rng) {
+  double const contenders = settings.contenders;
+  double const reach = settings.reach.at(elapsed);
   std::vector<const Candidate*> const entries = entriesOf(context);
   if (entries.empty()) { return {}; }
   std::vector<double> const behindBy = behind(context, entries);
@@ -278,7 +287,7 @@ std::optional<Proposal> coverageStep(const AcquireContext& context, double conte
   // Half to the contenders' branches, half to breadth; either lends its turn to the other.
   bool const branches = std::bernoulli_distribution{0.5}(rng);
   if (branches) {
-    if (std::optional<Proposal> p = branchStep(context, entries, behindBy, contenders, rng)) { return p; }
+    if (std::optional<Proposal> p = branchStep(context, entries, behindBy, contenders, reach, rng)) { return p; }
   }
 
   // An entry's level is how many sets of it have been tried, failures included: rounds go to the least tried.
@@ -298,12 +307,12 @@ std::optional<Proposal> coverageStep(const AcquireContext& context, double conte
     if (level[i] > 0 && level[i] == lowest) { developing.push_back(i); }
   }
   if (unlooked.empty() && developing.empty()) {
-    return branches ? std::nullopt : branchStep(context, entries, behindBy, contenders, rng);
+    return branches ? std::nullopt : branchStep(context, entries, behindBy, contenders, reach, rng);
   }
 
   bool const look = developing.empty() || (!unlooked.empty() && std::bernoulli_distribution{0.5}(rng));
   if (look) {
-    auto const [i, random] = pick(unlooked, behindBy, rng);
+    auto const [i, random] = pick(unlooked, behindBy, reach, rng);
     const Candidate& c = *entries[i];
     return Proposal{.candidate = &c,
                     .options = {},
@@ -316,7 +325,7 @@ std::optional<Proposal> coverageStep(const AcquireContext& context, double conte
                       (random ? "drawn at random" : "least behind of " + std::to_string(unlooked.size())) + " unread"};
   }
 
-  auto const [i, random] = pick(developing, behindBy, rng);
+  auto const [i, random] = pick(developing, behindBy, reach, rng);
   const Candidate& c = *entries[i];
   const Reading* const best = fastest(context, c);
   UseConfig const base = best ? best->options : UseConfig{};
@@ -350,7 +359,8 @@ std::optional<Proposal> coverageStep(const AcquireContext& context, double conte
   return {};
 }
 
-std::optional<Proposal> restartStep(const AcquireContext& context, const TuneDB& db, u32 env, std::mt19937_64& rng) {
+std::optional<Proposal> restartStep(const AcquireContext& context, const ExploreSettings& settings, double elapsed,
+                                    const TuneDB& db, u32 env, std::mt19937_64& rng) {
   std::vector<const Candidate*> const entries = entriesOf(context);
   if (entries.empty()) { return {}; }
   const Env& card = context.model.env();
@@ -417,10 +427,16 @@ std::optional<Proposal> restartStep(const AcquireContext& context, const TuneDB&
     }
   }
 
-  // A new start: an entry drawn uniformly, or uniformly within a (kind, type, shape) drawn uniformly; then a complete
-  // configuration drawn three ways.
+  // A new start: an entry within reach drawn uniformly, or uniformly within a (kind, type, shape) drawn uniformly; then
+  // a complete configuration drawn three ways.
+  std::vector<double> const behindBy = behind(context, entries);
+  std::vector<const Candidate*> reachable;
+  for (size_t i = 0; i < entries.size(); ++i) {
+    if (behindBy[i] <= std::log(settings.reach.at(elapsed))) { reachable.push_back(entries[i]); }
+  }
+  if (reachable.empty()) { return {}; }
   std::map<std::string, std::vector<const Candidate*>> buckets;
-  for (const Candidate* c : entries) {
+  for (const Candidate* c : reachable) {
     buckets[std::string{toString(c->subject.kind)} + '|' + std::to_string(int(c->subject.fft.shape.fft_type)) + '|' +
             c->subject.fft.shape.spec()]
       .push_back(c);
@@ -429,7 +445,7 @@ std::optional<Proposal> restartStep(const AcquireContext& context, const TuneDB&
   for (u32 attempt = 0; attempt < TRIES; ++attempt) {
     const Candidate* c = nullptr;
     if (std::bernoulli_distribution{0.5}(rng)) {
-      c = entries[std::uniform_int_distribution<size_t>{0, entries.size() - 1}(rng)];
+      c = reachable[std::uniform_int_distribution<size_t>{0, reachable.size() - 1}(rng)];
     } else {
       auto it = buckets.begin();
       std::advance(it, std::uniform_int_distribution<size_t>{0, buckets.size() - 1}(rng));

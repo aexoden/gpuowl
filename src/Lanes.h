@@ -28,6 +28,28 @@ inline constexpr const char* DUTY = "duty";
 // entry.  Infinite for every entry read.
 inline constexpr double CONTENDERS = 0.15;
 
+// How far from the frontier a random pick -- a first look, a restart's entry -- may reach: to entries that cost at most
+// `start` times what else serves their timing exponent (measured, else as the model expects), the factor doubling every
+// `doubling` seconds of tuning.  A first half hour has no time for an FFT fourteen times too slow; a long run reaches
+// every entry.  `start` infinite for every entry from the first.
+struct Reach {
+  double start = 1.5;
+  double doubling = 1800;
+
+  [[nodiscard]] double at(double elapsed) const;
+  [[nodiscard]] bool operator==(const Reach&) const = default;
+};
+
+// "1.5x@30m", "2x@1h", or "all".
+[[nodiscard]] std::optional<Reach> parseReach(std::string_view text);
+[[nodiscard]] std::string toString(const Reach& reach);
+
+// What the lanes beyond the model's are allowed.
+struct ExploreSettings {
+  double contenders = CONTENDERS;
+  Reach reach{};
+};
+
 using LaneShares = std::array<double, LANES>;
 
 // Each lane's share of the elapsed tuning time: `start` at first, moving linearly to `end` over `rampSeconds`.

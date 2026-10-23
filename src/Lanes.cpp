@@ -7,6 +7,7 @@
 #include <cmath>
 #include <cstdio>
 #include <functional>
+#include <limits>
 #include <map>
 #include <vector>
 
@@ -107,6 +108,40 @@ std::string toString(const Timetable& t) {
     std::snprintf(buf, sizeof(buf), "%gm", minutes);
   }
   return split(t.start) + '~' + split(t.end) + '@' + buf;
+}
+
+double Reach::at(double elapsed) const {
+  if (!std::isfinite(start)) { return start; }
+  return start * std::exp2(std::max(0.0, elapsed) / doubling);
+}
+
+std::optional<Reach> parseReach(std::string_view text) {
+  if (text == "all") { return Reach{.start = std::numeric_limits<double>::infinity()}; }
+  size_t const x = text.find("x@");
+  if (x == std::string_view::npos || x + 3 > text.size()) { return {}; }
+  double start = 0;
+  auto const [end, ec] = std::from_chars(text.data(), text.data() + x, start);
+  std::string_view const span = text.substr(x + 2);
+  double const unit = span.back() == 'h' ? 3600 : span.back() == 'm' ? 60 : 0;
+  double count = 0;
+  auto const [stop, ec2] = std::from_chars(span.data(), span.data() + span.size() - 1, count);
+  if (ec != std::errc{} || end != text.data() + x || start < 1 || unit == 0 || ec2 != std::errc{} ||
+      stop != span.data() + span.size() - 1 || count <= 0) {
+    return {};
+  }
+  return Reach{.start = start, .doubling = count * unit};
+}
+
+std::string toString(const Reach& reach) {
+  if (!std::isfinite(reach.start)) { return "all"; }
+  char buf[48];
+  double const minutes = reach.doubling / 60;
+  if (std::fmod(minutes, 60) == 0) {
+    std::snprintf(buf, sizeof(buf), "%gx@%gh", reach.start, minutes / 60);
+  } else {
+    std::snprintf(buf, sizeof(buf), "%gx@%gm", reach.start, minutes);
+  }
+  return buf;
 }
 
 double LaneTime::total() const {

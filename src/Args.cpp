@@ -356,6 +356,8 @@ named "config.txt" in the prpll run directory.
                                              alone [70/20/10/0~30/30/20/20@4h]
                          contenders=<P>%%|all  how far behind the best an FFT may be and still have its structural
                                              variants explored [15%%]
+                         randomReach=<f>x@<t>|all  how far behind the best a random pick may reach, the factor
+                                             doubling every <t> (30m, 2h) of tuning [1.5x@30m]
                          pfaShapes=ntt|all|none  prime-factor middles considered [ntt]
                          tailQueues=ntt|all|none FFTs offered TAIL_KERNELS 11 and 13 [ntt: NTTs on nVidia]
                          dashboard=1         a full-screen view of the run

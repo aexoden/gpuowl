@@ -95,7 +95,9 @@ TEST(the_loop_publishes_what_the_simulated_card_rewards) {
   SimDevice device{db, sess};
   Timer t;
   LoopResult const r = runLoop(device, db, env, nvidia(), scope,
+                               // The model's loop alone: what the other lanes add has a test of its own.
                                {.stop = 0.002,
+                                .lanes = *parseTimetable("model"),
                                 .seed = u64(getenv("SEED") ? atoi(getenv("SEED")) : 7),
                                 .regretEvery = 8,
                                 .maxItems = u32(getenv("ITEMS") ? atoi(getenv("ITEMS")) : 80)});
