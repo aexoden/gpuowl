@@ -10,11 +10,14 @@ namespace tune {
 
 namespace {
 
-// A term over some variables, as a table in the order of `scope` (ascending), the last variable fastest.
-struct Factor {
-  std::vector<size_t> scope;
-  std::vector<double> table;
-};
+using Factor = MinSum::Factor;
+
+// Where `assignment` reads `f`'s table.
+size_t indexIn(const Factor& f, const std::vector<size_t>& sizes, const std::vector<size_t>& assignment) {
+  size_t at = 0;
+  for (size_t const u : f.scope) { at = at * sizes[u] + assignment[u]; }
+  return at;
+}
 
 // What eliminating one variable left behind: its best value for each assignment of the variables it was tied to.
 struct Elimination {
@@ -65,6 +68,7 @@ std::optional<MinSumResult> eliminate(const MinSum& problem, size_t tableLimit) 
       factors.push_back(std::move(f));
     }
   }
+  factors.insert(factors.end(), problem.factors.begin(), problem.factors.end());
 
   std::vector<bool> alive(n, true);
   std::vector<Elimination> eliminated;
@@ -177,22 +181,32 @@ std::optional<MinSumResult> eliminate(const MinSum& problem, size_t tableLimit) 
 // Coordinate descent from several starts.
 MinSumResult descend(const MinSum& problem) {
   size_t const n = problem.unary.size();
+  std::vector<size_t> sizes(n);
+  for (size_t v = 0; v < n; ++v) { sizes[v] = problem.unary[v].size(); }
   std::vector<std::vector<const MinSum::Pair*>> touching(n);
   for (const MinSum::Pair& p : problem.pairs) {
     touching[p.a].push_back(&p);
     touching[p.b].push_back(&p);
   }
+  std::vector<std::vector<const Factor*>> reading(n);
+  for (const Factor& f : problem.factors) {
+    for (size_t const u : f.scope) { reading[u].push_back(&f); }
+  }
 
-  auto local = [&](size_t v, size_t x, const std::vector<size_t>& at) {
+  auto local = [&](size_t v, size_t x, std::vector<size_t>& at) {
     double sum = problem.unary[v][x];
     for (const MinSum::Pair* p : touching[v]) {
       size_t const nb = problem.unary[p->b].size();
       sum += p->a == v ? p->table[x * nb + at[p->b]] : p->table[at[p->a] * nb + x];
     }
+    size_t const was = at[v];
+    at[v] = x;
+    for (const Factor* f : reading[v]) { sum += f->table[indexIn(*f, sizes, at)]; }
+    at[v] = was;
     return sum;
   };
 
-  std::vector<std::vector<size_t>> starts;
+  std::vector<std::vector<size_t>> starts = problem.starts;
   starts.emplace_back(n, 0);
   std::vector<size_t> greedy(n);
   for (size_t v = 0; v < n; ++v) {
@@ -241,6 +255,9 @@ double evaluate(const MinSum& problem, const std::vector<size_t>& assignment) {
   for (const MinSum::Pair& p : problem.pairs) {
     sum += p.table[assignment[p.a] * problem.unary[p.b].size() + assignment[p.b]];
   }
+  std::vector<size_t> sizes(problem.unary.size());
+  for (size_t v = 0; v < sizes.size(); ++v) { sizes[v] = problem.unary[v].size(); }
+  for (const Factor& f : problem.factors) { sum += f.table[indexIn(f, sizes, assignment)]; }
   return sum;
 }
 

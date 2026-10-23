@@ -18,6 +18,7 @@
     <ClCompile Include=".\src\Axes.cpp" />
     <ClCompile Include=".\src\Model.cpp" />
     <ClCompile Include=".\src\MinSum.cpp" />
+    <ClCompile Include=".\src\Branches.cpp" />
     <ClCompile Include=".\src\Optimize.cpp" />
     <ClCompile Include=".\src\Scope.cpp" />
     <ClCompile Include=".\src\TuneCommand.cpp" />

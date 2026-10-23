@@ -1,6 +1,6 @@
 // Copyright (C) Jason Lynch
 
-// Minimising a sum of terms over discrete variables, each term reading one or two of them.
+// Minimising a sum of terms over discrete variables, each term reading one, two or a few of them.
 
 #pragma once
 
@@ -23,6 +23,17 @@ struct MinSum {
     std::vector<double> table{};  // [value of a * |b| + value of b]
   };
   std::vector<Pair> pairs;
+
+  // A term over any few distinct variables, as a table in the order of `scope`, the last variable fastest.
+  struct Factor {
+    std::vector<size_t> scope;
+    std::vector<double> table;
+  };
+  std::vector<Factor> factors{};
+
+  // Where the local search starts, besides its own: assignments known to be allowed, which a problem whose FORBIDDEN
+  // values encode constraints needs, since a start that breaks one rarely descends to anything allowed.
+  std::vector<std::vector<size_t>> starts{};
 };
 
 struct MinSumResult {

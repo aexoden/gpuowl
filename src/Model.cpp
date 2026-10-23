@@ -86,13 +86,14 @@ double Model::spreadOf(Group group, double stated, const std::string& axis) cons
 }
 
 bool Model::interact(const Env& env, const FFTConfig& fft, const UseConfig& background, const Axis& a, const Axis& b) {
-  const Option& oa = *a.option;
-  const Option& ob = *b.option;
+  return interact(*a.option, a.option->touchesFor(env, fft, background), *b.option,
+                  b.option->touchesFor(env, fft, background));
+}
+
+bool Model::interact(const Option& oa, u32 ta, const Option& ob, u32 tb) {
   // A key searched alone caps one kernel, launched on its own, so its effect adds to the rest's.
   if (oa.alone || ob.alone) { return false; }
   if (oa.group == ob.group) { return true; }
-  u32 const ta = oa.touchesFor(env, fft, background);
-  u32 const tb = ob.touchesFor(env, fft, background);
   // Keys that reach every kernel would join everything to everything; across groups they act through their own
   // effects and the entry's departures from them.
   if ((ta | tb) & KG_GLOBAL) { return false; }
@@ -142,7 +143,7 @@ std::vector<Model::Term> Model::termsOf(const Subject& s, const UseConfig& optio
       if (axes[j].current == axes[j].reference || !interact(env_, s.fft, canonical, axes[i], axes[j])) { continue; }
       auto const& [lo, hi] = std::minmax(labels[i], labels[j]);
       add("P|" + type + '|' + lo + '|' + hi, Group::Pair, prior_.pair);
-      out.back().drawn = axes[i].option->group == axes[j].option->group;
+      out.back().drawn = drawnTogether(*axes[i].option, *axes[j].option);
     }
   }
 
@@ -372,27 +373,22 @@ bool Model::measuredAt(const Subject& s, const std::string& label) const {
     termHash("GS|" + s.fft.spec() + '|' + toString(s.kind) + '|' + s.regime.label() + '|' + label));
 }
 
-double Model::predict(const Draw& draw, const Subject& subject, const UseConfig& options) const {
+double Model::predict(const Draw& draw, const Subject& subject, const UseConfig& options, bool withResidual) const {
   double out = offsetOf(subject.fft) + centre_;
-  for (const Term& t : termsOf(subject, options)) { out += value(draw, t); }
+  std::vector<Term> const terms = termsOf(subject, options);
+  // The residual is the last term.
+  for (size_t i = 0; i + (withResidual ? 0 : 1) < terms.size(); ++i) { out += value(draw, terms[i]); }
   return out;
 }
 
-Energy Model::energy(const Draw& draw, const Subject& s, const UseConfig& background,
-                     const std::vector<Axis>& axes) const {
+double Model::constantOf(const Draw& draw, const Subject& s) const {
   const FFTShape& shape = s.fft.shape;
   std::string const type = std::to_string(int(shape.fft_type));
-  std::string const regime = s.regime.label();
-  std::string const entry = s.fft.spec() + '|' + toString(s.kind) + '|' + regime;
-  auto term = [&](const std::string& text, Group group, double stated, bool drawn = true,
-                  const std::string& axis = {}) {
-    return value(
-      draw,
-      Term{.hash = termHash(text), .group = group, .sd = spreadOf(group, stated, axis), .drawn = drawn, .axis = axis});
+  std::string const entry = s.fft.spec() + '|' + toString(s.kind) + '|' + s.regime.label();
+  auto term = [&](const std::string& text, Group group, double stated) {
+    return value(draw, Term{.hash = termHash(text), .group = group, .sd = spreadOf(group, stated), .drawn = true});
   };
-
-  Energy out;
-  out.constant = offsetOf(s.fft) + centre_ + term("T|" + type, Group::Type, prior_.type) +
+  return offsetOf(s.fft) + centre_ + term("T|" + type, Group::Type, prior_.type) +
     term("Tk|" + type + '|' + toString(s.kind), Group::Kind, prior_.kind) +
     term("W|" + type + '|' + std::to_string(shape.width), Group::Shape, prior_.shape) +
     term("M|" + type + '|' + std::to_string(shape.middle), Group::Shape, prior_.shape) +
@@ -400,36 +396,53 @@ Energy Model::energy(const Draw& draw, const Subject& s, const UseConfig& backgr
     term("Vw|" + type + '|' + digit(variant_W(s.fft.variant)), Group::Variant, prior_.variant) +
     term("Vm|" + type + '|' + digit(variant_M(s.fft.variant)), Group::Variant, prior_.variant) +
     term("Vh|" + type + '|' + digit(variant_H(s.fft.variant)), Group::Variant, prior_.variant) +
-    term("Rg|" + type + '|' + regime, Group::Variant, prior_.variant) + term("E|" + entry, Group::Entry, prior_.entry);
+    term("Rg|" + type + '|' + s.regime.label(), Group::Variant, prior_.variant) +
+    term("E|" + entry, Group::Entry, prior_.entry);
+}
+
+double Model::effectOf(const Draw& draw, const Subject& s, const std::string& axis, const std::string& label) const {
+  std::string const type = std::to_string(int(s.fft.shape.fft_type));
+  std::string const entry = s.fft.spec() + '|' + toString(s.kind) + '|' + s.regime.label();
+  auto term = [&](const std::string& text, Group group, double stated, const std::string& of) {
+    return value(draw, Term{.hash = termHash(text), .group = group, .sd = spreadOf(group, stated, of), .axis = of});
+  };
+  return term("G|" + label, Group::Effect, prior_.effect, {}) +
+    term("GT|" + type + '|' + label, Group::EffectType, prior_.effectType, axis) +
+    term("GF|" + s.fft.shape.spec() + '|' + label, Group::EffectShape, prior_.effectShape, axis) +
+    term("GS|" + entry + '|' + label, Group::EffectEntry, prior_.effectEntry, axis);
+}
+
+double Model::interactionOf(const Draw& draw, const Subject& s, const std::string& labelA, const std::string& labelB,
+                            bool drawn) const {
+  auto const& [lo, hi] = std::minmax(labelA, labelB);
+  std::string const text = "P|" + std::to_string(int(s.fft.shape.fft_type)) + '|' + lo + '|' + hi;
+  return value(
+    draw, Term{.hash = termHash(text), .group = Group::Pair, .sd = spreadOf(Group::Pair, prior_.pair), .drawn = drawn});
+}
+
+Energy Model::energy(const Draw& draw, const Subject& s, const UseConfig& background,
+                     const std::vector<Axis>& axes) const {
+  Energy out;
+  out.constant = constantOf(draw, s);
 
   std::vector<std::vector<std::string>> labels(axes.size());
   out.unary.resize(axes.size());
   for (size_t a = 0; a < axes.size(); ++a) {
     for (size_t p = 0; p < axes[a].values.size(); ++p) {
-      std::string const label = axes[a].label(p);
-      labels[a].push_back(label);
-      out.unary[a].push_back(
-        p == axes[a].reference ? 0.0
-                               : term("G|" + label, Group::Effect, prior_.effect) +
-            term("GT|" + type + '|' + label, Group::EffectType, prior_.effectType, true, axes[a].name) +
-            term("GF|" + shape.spec() + '|' + label, Group::EffectShape, prior_.effectShape, true, axes[a].name) +
-            term("GS|" + entry + '|' + label, Group::EffectEntry, prior_.effectEntry, true, axes[a].name));
+      labels[a].push_back(axes[a].label(p));
+      out.unary[a].push_back(p == axes[a].reference ? 0.0 : effectOf(draw, s, axes[a].name, labels[a].back()));
     }
   }
 
   for (size_t a = 0; a < axes.size(); ++a) {
     for (size_t b = a + 1; b < axes.size(); ++b) {
       if (!interact(env_, s.fft, background, axes[a], axes[b])) { continue; }
-      bool const drawn = axes[a].option->group == axes[b].option->group;
+      bool const drawn = drawnTogether(*axes[a].option, *axes[b].option);
       Energy::Pair pair{.a = a, .b = b, .table = {}};
       for (size_t pa = 0; pa < labels[a].size(); ++pa) {
         for (size_t pb = 0; pb < labels[b].size(); ++pb) {
-          if (pa == axes[a].reference || pb == axes[b].reference) {
-            pair.table.push_back(0);
-            continue;
-          }
-          auto const& [lo, hi] = std::minmax(labels[a][pa], labels[b][pb]);
-          pair.table.push_back(term("P|" + type + '|' + lo + '|' + hi, Group::Pair, prior_.pair, drawn));
+          bool const atReference = pa == axes[a].reference || pb == axes[b].reference;
+          pair.table.push_back(atReference ? 0.0 : interactionOf(draw, s, labels[a][pa], labels[b][pb], drawn));
         }
       }
       // A pair the draw says nothing of is no edge for the optimiser to eliminate.

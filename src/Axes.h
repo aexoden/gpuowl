@@ -62,6 +62,10 @@ struct AxisFilter {
 [[nodiscard]] std::vector<Axis> axesOf(const Env& env, const FFTConfig& fft, const UseConfig& background,
                                        const AxisFilter& filter = {});
 
+// The same for one option alone: what axesOf() would give of it.
+[[nodiscard]] std::vector<Axis> axesOf(const Env& env, const FFTConfig& fft, const UseConfig& background,
+                                       const AxisFilter& filter, const Option& only);
+
 // Where `config` puts `axis`.
 [[nodiscard]] std::pair<int, int> positionOf(const Env& env, const FFTConfig& fft, const UseConfig& config,
                                              const Axis& axis);

@@ -4,6 +4,7 @@
 
 #include "MinSum.h"
 
+#include <algorithm>
 #include <cmath>
 #include <vector>
 
@@ -86,4 +87,44 @@ TEST(min_sum_respects_forbidden_values) {
   CHECK_EQ(r.assignment[0], size_t{1});
   CHECK_EQ(r.assignment[1], size_t{1});
   CHECK(std::abs(r.value + 0.5) < 1e-12);
+}
+
+TEST(min_sum_with_factors_is_exact_against_brute_force) {
+  Lcg rng{4242};
+  for (int trial = 0; trial < 60; ++trial) {
+    MinSum p = randomProblem(rng, 3 + rng.below(5), 0.2, 0.0);
+    size_t const n = p.unary.size();
+    for (size_t f = 0; f < 1 + rng.below(3); ++f) {
+      // A factor over three distinct variables, in no particular order, forbidding some of its combinations.
+      std::vector<size_t> scope;
+      while (scope.size() < 3) {
+        size_t const v = rng.below(n);
+        if (std::ranges::find(scope, v) == scope.end()) { scope.push_back(v); }
+      }
+      size_t size = 1;
+      for (size_t const v : scope) { size *= p.unary[v].size(); }
+      std::vector<double> table(size);
+      for (double& x : table) { x = rng.uniform() < 0.3 ? FORBIDDEN : rng.uniform() - 0.5; }
+      table[rng.below(size)] = 0;
+      p.factors.push_back({.scope = std::move(scope), .table = std::move(table)});
+    }
+    MinSumResult const r = minimize(p);
+    CHECK(r.exact);
+    double const truth = bruteForce(p);
+    CHECK(std::abs(r.value - truth) < 1e-9 || (std::isinf(truth) && std::isinf(r.value)));
+    CHECK(std::abs(evaluate(p, r.assignment) - r.value) < 1e-9 || std::isinf(r.value));
+  }
+}
+
+TEST(min_sum_local_search_starts_where_it_is_told) {
+  // Only (1, 1, 1) is allowed, and a search starting anywhere else stays there: every step from it is forbidden too.
+  MinSum p;
+  p.unary = {{0.0, 0.0}, {0.0, 0.0}, {0.0, 0.0}};
+  std::vector<double> table(8, FORBIDDEN);
+  table[7] = 1;
+  p.factors.push_back({.scope = {0, 1, 2}, .table = std::move(table)});
+  p.starts.push_back({1, 1, 1});
+  MinSumResult const r = minimize(p, 1);
+  CHECK(!r.exact);
+  CHECK(std::abs(r.value - 1) < 1e-12);
 }

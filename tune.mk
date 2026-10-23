@@ -17,6 +17,7 @@ TUNE_SRCS = \
   Axes.cpp \
   Model.cpp \
   MinSum.cpp \
+  Branches.cpp \
   Optimize.cpp \
   Scope.cpp \
   TuneCommand.cpp \

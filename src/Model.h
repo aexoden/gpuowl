@@ -106,17 +106,32 @@ public:
   // A draw from the posterior, its departure from the mean multiplied by `scale`.
   [[nodiscard]] Draw draw(u64 seed, double scale = 1) const;
 
-  // The predicted log cost (natural log of microseconds per iteration).
-  [[nodiscard]] double predict(const Draw& draw, const Subject& subject, const UseConfig& options) const;
+  // The predicted log cost (natural log of microseconds per iteration); without the configuration's residual, what
+  // energy() and its terms below add up to.
+  [[nodiscard]] double predict(const Draw& draw, const Subject& subject, const UseConfig& options,
+                               bool withResidual = true) const;
 
   // The energy of `axes`, the axes of `subject` under `background` (axesOf()), whose structural keys fix them.  The
   // residual is left out: it is a term of one configuration, which the caller can ask predict() for.
   [[nodiscard]] Energy energy(const Draw& draw, const Subject& subject, const UseConfig& background,
                               const std::vector<Axis>& axes) const;
 
+  // The terms of energy(), one at a time: the subject's constant; the effect of an axis position (Axis::label) away
+  // from the axis's reference; and the interaction of two such positions on axes that interact, which before anything
+  // has measured it takes its prior in a draw only where `drawn`.
+  [[nodiscard]] double constantOf(const Draw& draw, const Subject& subject) const;
+  [[nodiscard]] double effectOf(const Draw& draw, const Subject& subject, const std::string& axis,
+                                const std::string& label) const;
+  [[nodiscard]] double interactionOf(const Draw& draw, const Subject& subject, const std::string& labelA,
+                                     const std::string& labelB, bool drawn) const;
+
   // Whether the two axes interact in the model.
   [[nodiscard]] static bool interact(const Env& env, const FFTConfig& fft, const UseConfig& background, const Axis& a,
                                      const Axis& b);
+  // The same for two options touching the kernel groups `ta` and `tb` (Option::touchesFor), and whether their
+  // interaction is drawn before anything has measured it.
+  [[nodiscard]] static bool interact(const Option& a, u32 ta, const Option& b, u32 tb);
+  [[nodiscard]] static bool drawnTogether(const Option& a, const Option& b) { return a.group == b.group; }
 
   [[nodiscard]] const Env& env() const { return env_; }
 

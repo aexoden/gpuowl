@@ -47,8 +47,18 @@ std::optional<TailQueues> parseTailQueues(std::string_view text) {
   return {};
 }
 
-std::vector<Axis> axesOf(const Env& env, const FFTConfig& fft, const UseConfig& background, const AxisFilter& filter) {
+namespace {
+
+std::vector<Axis> axesAmong(const Env& env, const FFTConfig& fft, const UseConfig& background, const AxisFilter& filter,
+                            const Option* only) {
   UseConfig const from = canonicalConfig(env, fft, background);
+  std::vector<const Option*> options;
+  if (!only) {
+    options = applicableOptions(env, fft, from);
+  } else if (only->kind == Kind::Tunable && only->appliesTo(env, fft, from) && !only->isInert(env, fft, from) &&
+             (only->compound || only->valuesFor(env, fft, from).size() >= 2)) {
+    options.push_back(only);
+  }
   bool const queuesApart = filter.tailQueues == TailQueues::All ||
     (filter.tailQueues == TailQueues::Ntt && env.isNvidia && (fft.NTT_GF31 || fft.NTT_GF61));
 
@@ -71,7 +81,7 @@ std::vector<Axis> axesOf(const Env& env, const FFTConfig& fft, const UseConfig& 
     if (axis.values.size() > 1) { out.push_back(std::move(axis)); }
   };
 
-  for (const Option* const option : applicableOptions(env, fft, from)) {
+  for (const Option* const option : options) {
     if (!option->compound) {
       Axis axis{.option = option, .name = option->key};
       for (int const value : option->valuesFor(env, fft, from)) {
@@ -101,6 +111,17 @@ std::vector<Axis> axesOf(const Env& env, const FFTConfig& fft, const UseConfig& 
     }
   }
   return out;
+}
+
+}  // namespace
+
+std::vector<Axis> axesOf(const Env& env, const FFTConfig& fft, const UseConfig& background, const AxisFilter& filter) {
+  return axesAmong(env, fft, background, filter, nullptr);
+}
+
+std::vector<Axis> axesOf(const Env& env, const FFTConfig& fft, const UseConfig& background, const AxisFilter& filter,
+                         const Option& only) {
+  return axesAmong(env, fft, background, filter, &only);
 }
 
 std::pair<int, int> positionOf(const Env& env, const FFTConfig& fft, const UseConfig& config, const Axis& axis) {
