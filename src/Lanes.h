@@ -23,6 +23,11 @@ inline constexpr size_t LANES = 4;
 // The lane an item record names for work no lane chose: a gate reading, a configuration's second call.
 inline constexpr const char* DUTY = "duty";
 
+// How far behind what else serves its timing exponent an entry may be and still be a contender, whose structural
+// branches the coverage lane develops: half its items go to them, the other half to first looks and rounds over every
+// entry.  Infinite for every entry read.
+inline constexpr double CONTENDERS = 0.15;
+
 using LaneShares = std::array<double, LANES>;
 
 // Each lane's share of the elapsed tuning time: `start` at first, moving linearly to `end` over `rampSeconds`.

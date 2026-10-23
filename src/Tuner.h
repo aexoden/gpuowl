@@ -11,6 +11,7 @@
 #include "TuneCommand.h"
 #include "Watch.h"
 
+#include <ctime>
 #include <filesystem>
 #include <functional>
 #include <optional>
@@ -43,12 +44,16 @@ public:
 
   // The session its records are written under.
   [[nodiscard]] virtual u32 session() const = 0;
+
+  // The time its records are stamped with, in seconds: what the lanes' time is measured by.
+  [[nodiscard]] virtual u64 now() const { return u64(std::time(nullptr)); }
 };
 
 struct LoopSettings {
   double stop = STOP;
   double sweep = SWEEP;
   Timetable lanes{};
+  double contenders = CONTENDERS;
   u64 seed = 1;
   TailQueues tailQueues = TailQueues::Ntt;
   u32 regretEvery = 32;  // calls between estimates of the regret

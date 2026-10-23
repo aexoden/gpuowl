@@ -18,7 +18,6 @@
 #include <chrono>
 #include <cinttypes>
 #include <cmath>
-#include <ctime>
 #include <limits>
 #include <map>
 
@@ -190,7 +189,7 @@ LoopResult runLoop(Device& device, TuneDB& db, u32 env, const Env& card, const R
                            .cfg = db.internCfg(options),
                            .ts = began});
     };
-    u64 const began = u64(std::time(nullptr));
+    u64 const began = device.now();
 
     if (!publication.owedGates.empty()) {
       const GateItem& g = publication.owedGates.front();
@@ -267,7 +266,7 @@ LoopResult runLoop(Device& device, TuneDB& db, u32 env, const Env& card, const R
       if (!settings.lanes.serves(lane)) { continue; }
       switch (lane) {
       case Lane::Model: proposal = modelStep(); break;
-      case Lane::Coverage: proposal = coverageStep(context, rng); break;
+      case Lane::Coverage: proposal = coverageStep(context, settings.contenders, rng); break;
       case Lane::Restarts: proposal = restartStep(context, db, env, rng); break;
       case Lane::Interactions: break;
       }
@@ -388,6 +387,7 @@ RunOutcome runTune(GpuCommon shared, const TuneCommand& command) {
                                     {.stop = command.stop,
                                      .sweep = command.sweep,
                                      .lanes = command.lanes,
+                                     .contenders = command.contenders,
                                      .seed = seed,
                                      .tailQueues = command.tailQueues,
                                      .publishTo = fs::current_path(),

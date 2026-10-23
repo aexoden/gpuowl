@@ -5,6 +5,7 @@
 #include "TuneDB.h"
 
 #include <cmath>
+#include <limits>
 #include <optional>
 
 namespace tune {
@@ -138,6 +139,17 @@ TuneCommand parseTuneCommand(std::string_view text) {
                           "100, as 70/20/10/0 or 70/20/10/0~30/30/20/20@4h"};
       }
       out.lanes = *lanes;
+    } else if (key == "contenders" && out.verb == TuneVerb::Run) {
+      if (value == "all") {
+        out.contenders = std::numeric_limits<double>::infinity();
+      } else {
+        std::optional<double> const margin =
+          value.ends_with('%') ? parseDouble(value.substr(0, value.size() - 1)) : std::optional<double>{};
+        if (!margin || *margin < 0) {
+          throw std::string{"-tune: contenders= takes a percentage, such as contenders=15%, or all"};
+        }
+        out.contenders = *margin / 100;
+      }
     } else if (key == "dashboard" && out.verb == TuneVerb::Run) {
       if (value != "0" && value != "1") { throw std::string{"-tune: dashboard= takes 0 or 1"}; }
       out.dashboard = value == "1";

@@ -37,6 +37,7 @@ struct TuneCommand {
   double stop = STOP;  // 0 to run until stopped
   double sweep = SWEEP;
   Timetable lanes{};
+  double contenders = CONTENDERS;
   bool dashboard = false;  // display only: not part of the settings a run records
   u64 seed = 0;            // the draws' seed; 0 for one from the clock
 };

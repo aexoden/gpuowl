@@ -354,6 +354,8 @@ named "config.txt" in the prpll run directory.
                          lanes=<shares>      time for the model / new FFTs / random restarts / interactions,
                                              in %%, from the start ~ to the end of a ramp, or model for the model
                                              alone [70/20/10/0~30/30/20/20@4h]
+                         contenders=<P>%%|all  how far behind the best an FFT may be and still have its structural
+                                             variants explored [15%%]
                          pfaShapes=ntt|all|none  prime-factor middles considered [ntt]
                          tailQueues=ntt|all|none FFTs offered TAIL_KERNELS 11 and 13 [ntt: NTTs on nVidia]
                          dashboard=1         a full-screen view of the run

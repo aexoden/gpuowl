@@ -48,7 +48,7 @@ public:
                           .mean = us,
                           .sd = us * 0.001,
                           .blocks = 4,
-                          .ts = 1}));
+                          .ts = clock_ += 8}));
     ++calls;
     return out;
   }
@@ -62,13 +62,15 @@ public:
                          .checkOk = true,
                          .z = 30,
                          .n = 9000,
-                         .ts = 1}));
+                         .ts = clock_ += 3}));
     return out;
   }
 
   [[nodiscard]] std::string held(const Candidate&, const UseConfig&) const override { return {}; }
   [[nodiscard]] bool stopped() const override { return false; }
   [[nodiscard]] u32 session() const override { return sess_; }
+  // A call takes 8 s and a gate reading 3, whatever the machine running the test is doing.
+  [[nodiscard]] u64 now() const override { return clock_; }
 
   u32 calls = 0;
 
@@ -76,6 +78,7 @@ private:
   TuneDB& db_;
   u32 sess_;
   std::mt19937_64 rng_{3};
+  u64 clock_ = 1000;
   std::normal_distribution<double> noise_{0, 1};
 };
 
@@ -134,6 +137,7 @@ TEST(the_lanes_measure_legal_sets_in_packets_of_their_own) {
                 {.stop = 0, .lanes = *parseTimetable("40/30/30/0"), .seed = 11, .regretEvery = 1000, .maxItems = 60});
 
   std::map<std::string, u32> lanes;
+  u32 branches = 0;
   std::map<u32, std::vector<const ItemRow*>> restarts;
   for (const ItemRow& r : db.items()) {
     ++lanes[r.lane];
@@ -145,13 +149,26 @@ TEST(the_lanes_measure_legal_sets_in_packets_of_their_own) {
     CHECK(fitted(nvidia(), fft, *options) == *options);
     if (r.what == "first-look") { CHECK(options->empty()); }
     if (r.lane == "restarts") { restarts[r.packet].push_back(&r); }
+    // A branch's set stays in a branch its entry was already read in.
+    if (r.what == "branch") {
+      UseConfig const branch = branchOf(nvidia(), fft, *options);
+      bool before = false;
+      for (const ItemRow& earlier : db.items()) {
+        if (&earlier == &r) { break; }
+        const UseConfig* const o = db.findCfg(earlier.cfg);
+        before = before || (earlier.fft == r.fft && o && branchOf(nvidia(), fft, *o) == branch);
+      }
+      CHECK(before);
+      ++branches;
+    }
   }
+  CHECK(branches > 0);
   CHECK(lanes["model"] > 0);
   CHECK(lanes["coverage"] > 0);
   CHECK(lanes["restarts"] > 0);
   for (const auto& [packet, steps] : restarts) {
     CHECK(packet > 0);
-    CHECK(steps.size() <= RESTART_PACKET);
+    CHECK(steps.size() <= RESTART_MOST);
     for (size_t i = 0; i < steps.size(); ++i) {
       CHECK_EQ(steps[i]->ordinal, u32(i + 1));
       CHECK(steps[i]->fft == steps.front()->fft);

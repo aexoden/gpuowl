@@ -29,11 +29,13 @@
 
 namespace tune {
 
-// The most calls an entry's first packet and a restart's local search take, and the share of first looks and packet
-// items drawn at random rather than by rank.
-inline constexpr u32 FIRST_PACKET = 4;
+// A restart's local search: RESTART_PACKET steps, and more while its best is among its last two, up to RESTART_MOST.
 inline constexpr u32 RESTART_PACKET = 8;
+inline constexpr u32 RESTART_MOST = 32;
+
+// The share of the coverage lane's picks drawn at random rather than by rank.
 inline constexpr double RANDOM_SHARE = 0.25;
+
 
 struct Proposal {
   const Candidate* candidate = nullptr;
@@ -46,9 +48,11 @@ struct Proposal {
   std::string why{};
 };
 
-// The next item of the coverage lane: a first look at an entry nothing has read, or the next item of the least
-// developed entry's packet; nothing where every entry is blocked.
-[[nodiscard]] std::optional<Proposal> coverageStep(const AcquireContext& context, std::mt19937_64& rng);
+// The next item of the coverage lane: a first look at an entry nothing has read, the next item of the least tried
+// entry's round, or the next set of a contender's least developed branch -- its defaults, then single moves from its
+// fastest set to positions the branch has not read, those the branch opens first; nothing where none is left.
+[[nodiscard]] std::optional<Proposal> coverageStep(const AcquireContext& context, double contenders,
+                                                   std::mt19937_64& rng);
 
 // The next item of the restarts lane: the open restart's next local step from its own best, or a new start.
 [[nodiscard]] std::optional<Proposal> restartStep(const AcquireContext& context, const TuneDB& db, u32 env,

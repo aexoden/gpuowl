@@ -100,6 +100,13 @@ TEST(every_setting_is_accepted_where_it_belongs) {
   CHECK(!refusal("sweep=2").empty());
   CHECK(!refusal("status,sweep=0.3").empty());
   CHECK(parsed("tailQueues=all").tailQueues == TailQueues::All);
+  CHECK(parsed("lanes=model").lanes == *parseTimetable("model"));
+  CHECK(!refusal("lanes=70/20/10").empty());
+  CHECK(!refusal("status,lanes=model").empty());
+  CHECK(near(parsed("").contenders, CONTENDERS));
+  CHECK(near(parsed("contenders=5%").contenders, 0.05));
+  CHECK(std::isinf(parsed("contenders=all").contenders));
+  CHECK(!refusal("contenders=0.05").empty());
 }
 
 TEST(scope_settings_are_read_off_the_subcommand) {
