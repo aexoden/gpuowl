@@ -4,6 +4,8 @@
 
 #include <algorithm>
 #include <functional>
+#include <map>
+#include <mutex>
 #include <set>
 #include <string>
 
@@ -41,7 +43,34 @@ std::set<std::string> ancestry(const Option& o) {
   return out;
 }
 
+// How many FFTs' spaces are kept; a run asks about far fewer, with a few register offers each.
+constexpr size_t SPACES_KEPT = 4096;
+
 }  // namespace
+
+std::shared_ptr<const ConditionalSpace> spaceOf(const Env& env, const FFTConfig& fft, const AxisFilter& filter) {
+  std::string key = env.label() + ",wg" + std::to_string(env.maxWorkGroupSize) + ",wf" +
+    std::to_string(env.amdWavefront) + ',' + env.deviceName + '|' + fft.spec() + '|' + toString(filter.tailQueues);
+  if (filter.registers) {
+    for (auto const& [reg, values] : *filter.registers) {
+      key += '|' + reg;
+      for (int const v : values) { key += ',' + std::to_string(v); }
+    }
+  } else {
+    key += "|*";
+  }
+
+  static std::mutex mutex;
+  static std::map<std::string, std::shared_ptr<const ConditionalSpace>> spaces;
+  {
+    std::lock_guard const lock{mutex};
+    if (auto const it = spaces.find(key); it != spaces.end()) { return it->second; }
+  }
+  auto space = std::make_shared<const ConditionalSpace>(env, fft, filter);
+  std::lock_guard const lock{mutex};
+  if (spaces.size() >= SPACES_KEPT) { spaces.clear(); }
+  return spaces.try_emplace(key, std::move(space)).first->second;
+}
 
 ConditionalSpace::ConditionalSpace(const Env& env, const FFTConfig& fft, const AxisFilter& filter) :
   env_{env}, fft_{fft} {
@@ -174,6 +203,71 @@ std::vector<size_t> ConditionalSpace::statesOf(const UseConfig& config) const {
     states[v] = variables_[v].contexts[context].reference ? heldAt(v, context, canonical) : variables_[v].inactive();
   }
   return states;
+}
+
+
+bool ConditionalSpace::legalContext(size_t v, size_t context) const {
+  const BranchVariable& var = variables_[v];
+  std::vector<size_t> states(variables_.size(), 0);
+  for (size_t i = var.ancestors.size(); i-- > 0;) {
+    size_t const a = var.ancestors[i];
+    states[a] = context % variables_[a].states();
+    context /= variables_[a].states();
+  }
+  for (size_t const a : var.ancestors) {
+    const BranchVariable::Context& c = variables_[a].contexts[contextOf(a, states)];
+    bool const ok = states[a] == variables_[a].inactive() ? !c.reference : c.reference && c.offered[states[a]];
+    if (!ok) { return false; }
+  }
+  return true;
+}
+
+BranchCount ConditionalSpace::legalBranches() const {
+  std::call_once(branchesOnce_, [this] {
+    // The structural variables and everything they depend on, in order: an assignment of these that each allows the
+    // next is a legal prefix of some configuration, whose structural part is a branch.
+    std::vector<bool> inScope(variables_.size(), false);
+    for (size_t v = 0; v < variables_.size(); ++v) {
+      if (!variables_[v].axis.option->structural) { continue; }
+      inScope[v] = true;
+      for (size_t const a : variables_[v].ancestors) { inScope[a] = true; }
+    }
+    std::vector<size_t> scope;
+    for (size_t v = 0; v < variables_.size(); ++v) {
+      if (inScope[v]) { scope.push_back(v); }
+    }
+
+    std::set<std::vector<size_t>> seen;
+    size_t leaves = 0;
+    bool complete = true;
+    std::vector<size_t> states(variables_.size(), 0);
+    std::function<void(size_t)> walk = [&](size_t i) {
+      if (!complete) { return; }
+      if (i == scope.size()) {
+        if (++leaves > MAX_BRANCH_WALK) {
+          complete = false;
+          return;
+        }
+        std::vector<size_t> branch;
+        for (size_t const v : scope) {
+          if (variables_[v].axis.option->structural) { branch.push_back(states[v]); }
+        }
+        seen.insert(std::move(branch));
+        return;
+      }
+      size_t const v = scope[i];
+      const BranchVariable::Context& c = variables_[v].contexts[contextOf(v, states)];
+      for (size_t s = 0; s < variables_[v].states(); ++s) {
+        bool const ok = s == variables_[v].inactive() ? !c.reference : c.reference && c.offered[s];
+        if (!ok) { continue; }
+        states[v] = s;
+        walk(i + 1);
+      }
+    };
+    walk(0);
+    branches_ = {.legal = seen.size(), .complete = complete};
+  });
+  return branches_;
 }
 
 }  // namespace tune

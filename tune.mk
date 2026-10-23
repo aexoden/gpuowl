@@ -18,6 +18,7 @@ TUNE_SRCS = \
   Model.cpp \
   MinSum.cpp \
   Branches.cpp \
+  Coverage.cpp \
   Optimize.cpp \
   Scope.cpp \
   TuneCommand.cpp \
@@ -47,6 +48,7 @@ TESTSRCS = \
   test_MinSum.cpp \
   test_Optimize.cpp \
   test_Acquire.cpp \
+  test_Coverage.cpp \
   test_Scope.cpp \
   test_TuneEntry.cpp \
   test_Gate.cpp \

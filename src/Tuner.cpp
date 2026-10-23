@@ -4,6 +4,7 @@
 
 #include "Args.h"
 #include "BuildId.h"
+#include "Coverage.h"
 #include "Dashboard.h"
 #include "File.h"
 #include "fs.h"
@@ -204,6 +205,7 @@ LoopResult runLoop(Device& device, TuneDB& db, u32 env, const Env& card, const R
           " of " + std::to_string(counts.searches) + " searches";
       log("tune: T %.2f us/it over %s of the workload; expected regret %s%s\n", out.T,
           percent(publication.coverage()).c_str(), percent(out.regret).c_str(), inexact.c_str());
+      log("tune: coverage: %s\n", toString(summarize(card, candidates, readings, filter)).c_str());
       if (settings.watch) { settings.watch->state(stateOf(publication, readings, model, db, out)); }
       if (settings.stop > 0 && out.regret <= settings.stop) {
         out.converged = true;

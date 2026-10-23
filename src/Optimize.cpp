@@ -7,9 +7,7 @@
 
 #include <algorithm>
 #include <atomic>
-#include <map>
 #include <memory>
-#include <mutex>
 #include <set>
 
 namespace tune {
@@ -22,34 +20,6 @@ constexpr double MOVE_COST = 1e-9;
 
 std::atomic<u64> searches{0};
 std::atomic<u64> inexact{0};
-
-// How many FFTs' spaces are kept; a run asks about far fewer, with a few register offers each.
-constexpr size_t SPACES_KEPT = 4096;
-
-// The space of `fft` under `filter`, built once.
-std::shared_ptr<const ConditionalSpace> spaceOf(const Env& env, const FFTConfig& fft, const AxisFilter& filter) {
-  std::string key = env.label() + ",wg" + std::to_string(env.maxWorkGroupSize) + ",wf" +
-    std::to_string(env.amdWavefront) + ',' + env.deviceName + '|' + fft.spec() + '|' + toString(filter.tailQueues);
-  if (filter.registers) {
-    for (auto const& [reg, values] : *filter.registers) {
-      key += '|' + reg;
-      for (int const v : values) { key += ',' + std::to_string(v); }
-    }
-  } else {
-    key += "|*";
-  }
-
-  static std::mutex mutex;
-  static std::map<std::string, std::shared_ptr<const ConditionalSpace>> spaces;
-  {
-    std::lock_guard const lock{mutex};
-    if (auto const it = spaces.find(key); it != spaces.end()) { return it->second; }
-  }
-  auto space = std::make_shared<const ConditionalSpace>(env, fft, filter);
-  std::lock_guard const lock{mutex};
-  if (spaces.size() >= SPACES_KEPT) { spaces.clear(); }
-  return spaces.try_emplace(key, std::move(space)).first->second;
-}
 
 // The reference and kernel groups of a variable whose contributions do not depend on its ancestors.
 const BranchVariable::Context* steadyContext(const BranchVariable& v) {

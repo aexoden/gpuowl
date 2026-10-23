@@ -13,6 +13,8 @@
 
 #include "Axes.h"
 
+#include <memory>
+#include <mutex>
 #include <optional>
 #include <vector>
 
@@ -22,6 +24,15 @@ namespace tune {
 // limit, so with the whole register ladder offered it would have 257^4 of them; with the occupancy model's few
 // candidates, a few thousand.
 inline constexpr size_t MAX_CONTEXTS = size_t{1} << 16;
+
+// How many leaves legalBranches() walks before it reports a lower bound.
+inline constexpr size_t MAX_BRANCH_WALK = size_t{1} << 20;
+
+// How many structural branches an entry has: exactly, or where the walk stopped short, at least.
+struct BranchCount {
+  size_t legal = 0;
+  bool complete = true;
+};
 
 struct BranchVariable {
   // Every position the variable takes anywhere, ascending; `current` and `reference` are not used.
@@ -65,6 +76,13 @@ public:
   // Whether every variable's state is one its ancestors allow it.
   [[nodiscard]] bool legal(const std::vector<size_t>& states) const;
 
+  // Whether the ancestors' states `context` stands for are legal among themselves: whether some configuration has
+  // that context for `v`.
+  [[nodiscard]] bool legalContext(size_t v, size_t context) const;
+
+  // The distinct assignments of the structural variables' states that legal configurations have; worked out once.
+  [[nodiscard]] BranchCount legalBranches() const;
+
   // The configuration `states` describe, fitted.
   [[nodiscard]] UseConfig configOf(const std::vector<size_t>& states) const;
 
@@ -84,6 +102,13 @@ private:
   FFTConfig fft_;
   std::vector<BranchVariable> variables_;
   std::vector<std::string> unsearched_;
+
+  mutable std::once_flag branchesOnce_;
+  mutable BranchCount branches_;
 };
+
+// The space of `fft` under `filter`, built once and shared.
+[[nodiscard]] std::shared_ptr<const ConditionalSpace> spaceOf(const Env& env, const FFTConfig& fft,
+                                                              const AxisFilter& filter);
 
 }  // namespace tune
