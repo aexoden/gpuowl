@@ -22,7 +22,8 @@ struct Optimum {
 
 // Where a search may move: the named axes, and every axis whose options depend on one of them -- a free L2PERSIST frees
 // L2PERSISTPCT, a free INPLACE the keys of the layout it chooses -- everything else held where `around` has it, or at
-// its default where `around` does not name it.
+// its default where `around` does not name it.  What the named axes free is valued under the posterior mean, whatever
+// the draw: the draw's noise stays on the axes it was asked about.
 struct Subspace {
   UseConfig around{};
   std::vector<std::string> free{};  // axis names (Axis::name)

@@ -99,13 +99,22 @@ Problem problemOf(const Model& model, const Draw& draw, const Subject& subject, 
   const std::vector<BranchVariable>& vars = space.variables();
   size_t const n = vars.size();
 
+  // A variable freed only because an ancestor is -- what a free SHUFL_BYTES_W or INPLACE opens -- is valued under the
+  // posterior mean, not the draw, as is any pair it is part of: it moves where readings say it helps, here or on
+  // other FFTs, and otherwise ties to its default.  A draw over all of them would take the luckiest prior of each
+  // and predict a cost no configuration has.
   out.free.assign(n, !subspace);
+  std::vector<bool> follows(n, false);
   if (subspace) {
     for (size_t v = 0; v < n; ++v) {
-      out.free[v] = std::ranges::find(subspace->free, vars[v].axis.name) != subspace->free.end() ||
-        std::ranges::any_of(vars[v].ancestors, [&](size_t a) { return bool(out.free[a]); });
+      bool const named = std::ranges::find(subspace->free, vars[v].axis.name) != subspace->free.end();
+      follows[v] = !named && std::ranges::any_of(vars[v].ancestors, [&](size_t a) { return bool(out.free[a]); });
+      out.free[v] = named || follows[v];
     }
   }
+  bool const anyFollows = std::ranges::any_of(follows, [](bool f) { return f; });
+  Draw const mean = anyFollows ? model.mean() : Draw{};
+  auto drawFor = [&](bool follower) -> const Draw& { return follower ? mean : draw; };
 
   MinSum& problem = out.minsum;
   problem.unary.resize(n);
@@ -114,7 +123,7 @@ Problem problemOf(const Model& model, const Draw& draw, const Subject& subject, 
     std::vector<double> effect(var.axis.values.size(), 0);
     if (out.free[v]) {
       for (size_t p = 0; p < effect.size(); ++p) {
-        effect[p] = model.effectOf(draw, subject, var.axis.name, var.axis.label(p)) + MOVE_COST;
+        effect[p] = model.effectOf(drawFor(follows[v]), subject, var.axis.name, var.axis.label(p)) + MOVE_COST;
       }
     }
 
@@ -193,8 +202,8 @@ Problem problemOf(const Model& model, const Draw& draw, const Subject& subject, 
       std::vector<double> values(na * nb);
       for (size_t pa = 0; pa < na; ++pa) {
         for (size_t pb = 0; pb < nb; ++pb) {
-          values[pa * nb + pb] =
-            model.interactionOf(draw, subject, vars[a].axis.label(pa), vars[b].axis.label(pb), drawn);
+          values[pa * nb + pb] = model.interactionOf(drawFor(follows[a] || follows[b]), subject, vars[a].axis.label(pa),
+                                                     vars[b].axis.label(pb), drawn);
         }
       }
       // A pair the draw says nothing of is no edge for the optimiser to eliminate.

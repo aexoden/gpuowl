@@ -89,9 +89,9 @@ std::set<std::string> ancestry(const std::string& key) {
 }
 
 // By listing: every configuration reached from `around` by moving the axes `free` names, and any axis whose option
-// depends on one of theirs, each to every position it has there.
+// depends on one of theirs, each to every position it has there; with `moved`, the names of every axis that moved.
 std::set<UseConfig> listed(const Env& env, const FFTConfig& fft, const UseConfig& around,
-                           const std::vector<std::string>& free) {
+                           const std::vector<std::string>& free, std::set<std::string>* moved = nullptr) {
   std::set<std::string> freeKeys;
   for (const Axis& a : axesOf(env, fft, around, FILTER)) {
     if (std::ranges::find(free, a.name) != free.end()) { freeKeys.insert(a.option->key); }
@@ -109,6 +109,7 @@ std::set<UseConfig> listed(const Env& env, const FFTConfig& fft, const UseConfig
       if (done.contains(a.name) || !movable(a)) { continue; }
       std::set<std::string> next = done;
       next.insert(a.name);
+      if (moved) { moved->insert(a.name); }
       for (size_t p = 0; p < a.values.size(); ++p) {
         UseConfig moved = config;
         place(moved, a, p);
@@ -219,8 +220,10 @@ TEST(optimize_is_exact_against_listing_every_branch) {
   m.fit({});
   for (const Case& c : cases()) {
     Subject const s = ll(c.fft);
-    std::set<UseConfig> const all = listed(nvidia(), s.fft, c.around, c.free);
-    Subspace const sub{.around = c.around, .free = c.free};
+    // Naming every axis that moves, so that the draw values all of them (Subspace).
+    std::set<std::string> moved;
+    std::set<UseConfig> const all = listed(nvidia(), s.fft, c.around, c.free, &moved);
+    Subspace const sub{.around = c.around, .free = {moved.begin(), moved.end()}};
     for (u64 seed = 1; seed <= 10; ++seed) {
       Draw const d = m.draw(seed);
       double best = FORBIDDEN;
@@ -242,5 +245,33 @@ TEST(a_held_axis_keeps_a_position_the_space_has_no_state_for) {
   Subspace const sub{.around = {{"REGCF64", "77"}}, .free = {"L2PERSIST"}};
   for (u64 seed = 1; seed <= 5; ++seed) {
     CHECK(useValue(optimize(m, m.draw(seed), s, filter, &sub).options, "REGCF64", 0) == 77);
+  }
+}
+
+TEST(what_a_free_parent_opens_moves_only_where_readings_say) {
+  // Nothing measured: under the mean every dependent ties with its default, whatever the draw says of it.
+  Subject const s = ll("512:7:512:012");
+  Model m{nvidia()};
+  m.fit({});
+  for (u64 seed = 1; seed <= 10; ++seed) {
+    for (const char* parent : {"INPLACE", "SHUFL_BYTES_W", "TAIL_KERNELS"}) {
+      Subspace const sub{.around = {}, .free = {parent}};
+      UseConfig const o = optimize(m, m.draw(seed), s, FILTER, &sub).options;
+      CHECK(o.size() <= 1 && (o.empty() || o.begin()->first == parent));
+    }
+  }
+
+  // Read L2PERSISTPCT=25 winning under L2PERSIST=1, and the draw frees L2PERSIST: the dependent follows the readings.
+  std::vector<Observation> data;
+  for (int i = 0; i < 8; ++i) {
+    data.push_back(observe(s, {}, 1000));
+    data.push_back(observe(s, {{"L2PERSIST", "1"}}, 1050));
+    data.push_back(observe(s, {{"L2PERSIST", "1"}, {"L2PERSISTPCT", "25"}}, 900));
+  }
+  m.fit(data);
+  Subspace const sub{.around = {}, .free = {"L2PERSIST"}};
+  for (u64 seed = 1; seed <= 10; ++seed) {
+    CHECK(optimize(m, m.draw(seed), s, FILTER, &sub).options ==
+          (UseConfig{{"L2PERSIST", "1"}, {"L2PERSISTPCT", "25"}}));
   }
 }
