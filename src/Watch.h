@@ -34,8 +34,8 @@ struct StateReport {
   std::vector<std::string> lines{};  // what is published, one string per line, kind first
   u32 observations = 0;
   std::string spreads{};
-  std::string lanes{};     // each lane's time (Lanes.h)
-  std::string explored{};  // what the readings cover (Coverage.h), as of the last regret estimate
+  std::string lanes{};                // each lane's time (Lanes.h)
+  std::string explored{};             // what the readings cover (Coverage.h), as of the last regret estimate
   std::vector<std::string> faults{};  // configurations that failed or that a process died holding
 };
 
