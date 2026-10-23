@@ -5,6 +5,7 @@
 
 #include "test.h"
 
+#include "Explore.h"
 #include "FFTVariants.h"
 #include "Prior.h"
 #include "timeutil.h"
@@ -13,6 +14,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <map>
 #include <random>
 
 using namespace tune;
@@ -66,6 +68,7 @@ public:
 
   [[nodiscard]] std::string held(const Candidate&, const UseConfig&) const override { return {}; }
   [[nodiscard]] bool stopped() const override { return false; }
+  [[nodiscard]] u32 session() const override { return sess_; }
 
   u32 calls = 0;
 
@@ -117,4 +120,41 @@ TEST(the_loop_publishes_what_the_simulated_card_rewards) {
   double const published = SimDevice::truth(line->candidate->subject, line->reading->options);
   printf("loop: true cost there %.1f against the best %.1f (%+.2f%%)\n", published, best, (published / best - 1) * 100);
   CHECK(published <= best * 1.01);
+}
+
+TEST(the_lanes_measure_legal_sets_in_packets_of_their_own) {
+  TuneDB db;
+  CHECK(db.parse(std::string{TuneDB::HEADER} + '\n', "sim"));
+  u32 const env = db.internEnv(DbEnv{.gpu = "sim", .isNvidia = true, .cudaBackend = true, .computeCapability = 860});
+  u32 const sess = db.beginSession(env, "", 0, "");
+  RunScope const scope =
+    makeScope({.lo = 67'400'000, .hi = 67'600'000, .probe = 67'500'000, .kinds = {TestKind::PRP}}, {});
+  SimDevice device{db, sess};
+  (void)runLoop(device, db, env, nvidia(), scope,
+                {.stop = 0, .lanes = *parseTimetable("40/30/30/0"), .seed = 11, .regretEvery = 1000, .maxItems = 60});
+
+  std::map<std::string, u32> lanes;
+  std::map<u32, std::vector<const ItemRow*>> restarts;
+  for (const ItemRow& r : db.items()) {
+    ++lanes[r.lane];
+    const UseConfig* const options = db.findCfg(r.cfg);
+    CHECK(options != nullptr);
+    if (!options) { continue; }
+    FFTConfig const fft{r.fft};
+    // What a lane proposes is what the host would build.
+    CHECK(fitted(nvidia(), fft, *options) == *options);
+    if (r.what == "first-look") { CHECK(options->empty()); }
+    if (r.lane == "restarts") { restarts[r.packet].push_back(&r); }
+  }
+  CHECK(lanes["model"] > 0);
+  CHECK(lanes["coverage"] > 0);
+  CHECK(lanes["restarts"] > 0);
+  for (const auto& [packet, steps] : restarts) {
+    CHECK(packet > 0);
+    CHECK(steps.size() <= RESTART_PACKET);
+    for (size_t i = 0; i < steps.size(); ++i) {
+      CHECK_EQ(steps[i]->ordinal, u32(i + 1));
+      CHECK(steps[i]->fft == steps.front()->fft);
+    }
+  }
 }

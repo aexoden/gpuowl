@@ -1,0 +1,66 @@
+// Copyright (C) Jason Lynch
+
+// The lanes a tuning run's time is shared between (Explore.h), the timetable of their shares, and the time each has
+// had, as the database records it.
+
+#pragma once
+
+#include "TuneDB.h"
+
+#include <array>
+#include <optional>
+#include <string>
+#include <string_view>
+
+namespace tune {
+
+enum class Lane : u8 { Model, Coverage, Restarts, Interactions };
+inline constexpr size_t LANES = 4;
+
+[[nodiscard]] const char* toString(Lane lane);
+[[nodiscard]] std::optional<Lane> parseLane(std::string_view text);
+
+// The lane an item record names for work no lane chose: a gate reading, a configuration's second call.
+inline constexpr const char* DUTY = "duty";
+
+using LaneShares = std::array<double, LANES>;
+
+// Each lane's share of the elapsed tuning time: `start` at first, moving linearly to `end` over `rampSeconds`.
+struct Timetable {
+  LaneShares start{0.7, 0.2, 0.1, 0};
+  LaneShares end{0.3, 0.3, 0.2, 0.2};
+  double rampSeconds = 4 * 3600;
+
+  [[nodiscard]] LaneShares at(double elapsed) const;
+
+  // What each lane is owed after `elapsed` seconds: the integral of its share.
+  [[nodiscard]] LaneShares owed(double elapsed) const;
+
+  // Whether `lane` has a share at any time.
+  [[nodiscard]] bool serves(Lane lane) const { return start[size_t(lane)] > 0 || end[size_t(lane)] > 0; }
+
+  [[nodiscard]] bool operator==(const Timetable&) const = default;
+};
+
+// "70/20/10/0~30/30/20/20@4h" (percentages, model/coverage/restarts/interactions, at the start ~ at the end of the
+// ramp), "70/20/10/0" for one split throughout, or "model" for the model alone.  Each split must add up to 100.
+[[nodiscard]] std::optional<Timetable> parseTimetable(std::string_view text);
+[[nodiscard]] std::string toString(const Timetable& timetable);
+
+// The time the env's items took, per lane: from each item record to the next of its session, or to the session's last
+// record, and at least a second.  A session with no item records, from before lanes, counts its calls to the model.
+struct LaneTime {
+  LaneShares seconds{};
+  double duty = 0;
+
+  [[nodiscard]] double total() const;
+};
+[[nodiscard]] LaneTime laneTime(const TuneDB& db, u32 env);
+
+// "model 21.0 min (70%), coverage 6.2 min (21%), restarts 2.8 min (9%), interactions 0.0 min (0%); duty 1.5 min"
+[[nodiscard]] std::string toString(const LaneTime& time);
+
+// The lanes the furthest behind what they are owed first, the model breaking ties.
+[[nodiscard]] std::array<Lane, LANES> laneOrder(const Timetable& timetable, const LaneTime& time);
+
+}  // namespace tune

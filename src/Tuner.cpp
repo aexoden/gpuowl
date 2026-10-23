@@ -6,6 +6,7 @@
 #include "BuildId.h"
 #include "Coverage.h"
 #include "Dashboard.h"
+#include "Explore.h"
 #include "File.h"
 #include "fs.h"
 #include "GpuCommon.h"
@@ -17,6 +18,7 @@
 #include <chrono>
 #include <cinttypes>
 #include <cmath>
+#include <ctime>
 #include <map>
 
 namespace tune {
@@ -161,8 +163,24 @@ LoopResult runLoop(Device& device, TuneDB& db, u32 env, const Env& card, const R
                                  .means = &means};
     ++items;
 
+    // What each item is for, written before it is measured, from when its choosing began: its lane's time.
+    auto recordItem = [&](const std::string& lane, const std::string& what, u32 packet, u32 ordinal,
+                          const FFTConfig& fft, TestKind kind, const UseConfig& options, u64 began) {
+      (void)db.add(ItemRow{.sess = device.session(),
+                           .lane = lane,
+                           .what = what,
+                           .packet = packet,
+                           .ordinal = ordinal,
+                           .fft = fft.spec(),
+                           .kind = kind,
+                           .cfg = db.internCfg(options),
+                           .ts = began});
+    };
+    u64 const began = u64(std::time(nullptr));
+
     if (!publication.owedGates.empty()) {
       const GateItem& g = publication.owedGates.front();
+      recordItem(DUTY, "gate", 0, 0, g.fft, TestKind::PRP, g.options, began);
       ItemReport item{
         .n = items, .kind = "gate", .what = g.fft.spec(), .options = optionsText(g.options), .exponent = g.exponent};
       if (settings.watch) { settings.watch->measuring("gate " + item.what + " at " + std::to_string(g.exponent)); }
@@ -192,6 +210,7 @@ LoopResult runLoop(Device& device, TuneDB& db, u32 env, const Env& card, const R
 
     if (!publication.owedCalls.empty()) {
       const ConcludeItem& c = publication.owedCalls.front();
+      recordItem(DUTY, "second-call", 0, 0, c.candidate->subject.fft, c.candidate->subject.kind, c.options, began);
       callOf(*c.candidate, c.options, {.n = items, .kind = "second call", .why = "its second call"});
       continue;
     }
@@ -206,6 +225,7 @@ LoopResult runLoop(Device& device, TuneDB& db, u32 env, const Env& card, const R
       log("tune: T %.2f us/it over %s of the workload; expected regret %s%s\n", out.T,
           percent(publication.coverage()).c_str(), percent(out.regret).c_str(), inexact.c_str());
       log("tune: coverage: %s\n", toString(summarize(card, candidates, readings, filter)).c_str());
+      log("tune: lanes: %s\n", toString(laneTime(db, env)).c_str());
       if (settings.watch) { settings.watch->state(stateOf(publication, readings, model, db, out)); }
       if (settings.stop > 0 && out.regret <= settings.stop) {
         out.converged = true;
@@ -213,13 +233,33 @@ LoopResult runLoop(Device& device, TuneDB& db, u32 env, const Env& card, const R
       }
     }
 
-    std::optional<Choice> choice;
-    if (settings.sweep > 0 && std::uniform_real_distribution<double>{0, 1}(rng) < settings.sweep) {
-      choice = untriedStep(context, rng, true);
+    auto modelStep = [&]() -> std::optional<Proposal> {
+      std::optional<Choice> choice;
+      if (settings.sweep > 0 && std::uniform_real_distribution<double>{0, 1}(rng) < settings.sweep) {
+        choice = untriedStep(context, rng, true);
+      }
+      if (!choice) { choice = choose(context, rng); }
+      if (!choice && settings.stop == 0) { choice = untriedStep(context, rng); }
+      if (!choice) { return {}; }
+      return Proposal{.candidate = choice->candidate,
+                      .options = choice->options,
+                      .lane = Lane::Model,
+                      .what = "model",
+                      .predictedUs = choice->predictedUs,
+                      .why = choice->why};
+    };
+    std::optional<Proposal> proposal;
+    for (Lane const lane : laneOrder(settings.lanes, laneTime(db, env))) {
+      if (!settings.lanes.serves(lane)) { continue; }
+      switch (lane) {
+      case Lane::Model: proposal = modelStep(); break;
+      case Lane::Coverage: proposal = coverageStep(context, rng); break;
+      case Lane::Restarts: proposal = restartStep(context, db, env, rng); break;
+      case Lane::Interactions: break;
+      }
+      if (proposal) { break; }
     }
-    if (!choice) { choice = choose(context, rng); }
-    if (!choice && settings.stop == 0) { choice = untriedStep(context, rng); }
-    if (!choice) {
+    if (!proposal) {
       out.regret = expectedRegret(context, publication, rng, settings.regretDraws);
       out.converged = out.regret <= settings.stop;
       log("tune: no draw names anything not already well measured%s; expected regret %s\n",
@@ -227,8 +267,10 @@ LoopResult runLoop(Device& device, TuneDB& db, u32 env, const Env& card, const R
       break;
     }
 
-    callOf(*choice->candidate, choice->options,
-           {.n = items, .kind = "call", .predicted = choice->predictedUs, .why = choice->why});
+    recordItem(toString(proposal->lane), proposal->what, proposal->packet, proposal->ordinal,
+               proposal->candidate->subject.fft, proposal->candidate->subject.kind, proposal->options, began);
+    callOf(*proposal->candidate, proposal->options,
+           {.n = items, .kind = "call", .predicted = proposal->predictedUs, .why = proposal->why});
   }
   return out;
 }
@@ -255,6 +297,8 @@ public:
   void keepAnchor() override { bench_.keepAnchor(); }
 
   [[nodiscard]] bool stopped() const override { return bench_.stopped(); }
+
+  [[nodiscard]] u32 session() const override { return bench_.session(); }
 
 private:
   Bench& bench_;
@@ -329,6 +373,7 @@ RunOutcome runTune(GpuCommon shared, const TuneCommand& command) {
   LoopResult const result = runLoop(device, db, bench.envId(), card, *scope,
                                     {.stop = command.stop,
                                      .sweep = command.sweep,
+                                     .lanes = command.lanes,
                                      .seed = seed,
                                      .tailQueues = command.tailQueues,
                                      .publishTo = fs::current_path(),

@@ -6,6 +6,7 @@
 #pragma once
 
 #include "Axes.h"
+#include "Lanes.h"
 #include "Scope.h"
 
 #include <string>
@@ -35,6 +36,7 @@ struct TuneCommand {
   TailQueues tailQueues = TailQueues::Ntt;
   double stop = STOP;  // 0 to run until stopped
   double sweep = SWEEP;
+  Timetable lanes{};
   bool dashboard = false;  // display only: not part of the settings a run records
   u64 seed = 0;            // the draws' seed; 0 for one from the clock
 };

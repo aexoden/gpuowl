@@ -6,6 +6,7 @@
 #pragma once
 
 #include "Acquire.h"
+#include "Lanes.h"
 #include "Measure.h"
 #include "TuneCommand.h"
 #include "Watch.h"
@@ -39,11 +40,15 @@ public:
 
   // The device can measure nothing more, or a stop was asked for.
   [[nodiscard]] virtual bool stopped() const = 0;
+
+  // The session its records are written under.
+  [[nodiscard]] virtual u32 session() const = 0;
 };
 
 struct LoopSettings {
   double stop = STOP;
   double sweep = SWEEP;
+  Timetable lanes{};
   u64 seed = 1;
   TailQueues tailQueues = TailQueues::Ntt;
   u32 regretEvery = 32;  // calls between estimates of the regret

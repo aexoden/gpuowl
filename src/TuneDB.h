@@ -172,6 +172,21 @@ struct RefRow {
   u64 ts = 0;
 };
 
+// What the tuning loop chose to measure next and why, written before the attempt: the lane it served, what kind of
+// proposal it was, and for an item of a packet -- a run of calls that go together, such as a restart's local search --
+// the packet and its place in it.  An item's time is until the next item of its session, or the session's last record.
+struct ItemRow {
+  u32 sess = 0;
+  std::string lane{};  // a word
+  std::string what{};  // a word
+  u32 packet = 0;      // 0 for none
+  u32 ordinal = 0;
+  std::string fft{};
+  TestKind kind = TestKind::PRP;
+  u32 cfg = 0;
+  u64 ts = 0;
+};
+
 class TuneDB {
 public:
   static constexpr const char* DEFAULT_NAME = "tunedb.txt";
@@ -204,6 +219,7 @@ public:
   [[nodiscard]] const std::vector<AnchorRow>& anchors() const { return anchors_; }
   [[nodiscard]] const std::vector<RegsRow>& regs() const { return regs_; }
   [[nodiscard]] const std::vector<RefRow>& refs() const { return refs_; }
+  [[nodiscard]] const std::vector<ItemRow>& items() const { return items_; }
   [[nodiscard]] const std::vector<std::string>& unknownRows() const { return unknown_; }
 
   [[nodiscard]] const DbEnv* findEnv(u32 id) const;
@@ -231,6 +247,8 @@ public:
   [[nodiscard]] bool add(const AnchorRow& row);
   [[nodiscard]] bool add(const RegsRow& row);
   [[nodiscard]] bool add(const RefRow& row);
+  // Unlike the others, an item answers no attempt: it is written before one.
+  [[nodiscard]] bool add(const ItemRow& row);
 
   // The anchor an env is pinned to, as its earliest session that named one spells it, else as its earliest anchor
   // reading does; empty where it has none.
@@ -278,6 +296,7 @@ private:
   std::vector<AnchorRow> anchors_;
   std::vector<RegsRow> regs_;
   std::vector<RefRow> refs_;
+  std::vector<ItemRow> items_;
   std::vector<std::string> unknown_;
 
   // Per session, the attempt it has open, if any.
@@ -294,6 +313,7 @@ private:
 [[nodiscard]] std::string formatRow(const AnchorRow& row);
 [[nodiscard]] std::string formatRow(const RegsRow& row);
 [[nodiscard]] std::string formatRow(const RefRow& row);
+[[nodiscard]] std::string formatRow(const ItemRow& row);
 
 // Whether `locks`, in the form of Linux's /proc/locks, lists a lock held on the file at (major, minor, inode).
 [[nodiscard]] bool lockListed(std::string_view locks, u32 major, u32 minor, u64 inode);

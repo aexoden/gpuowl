@@ -351,6 +351,9 @@ named "config.txt" in the prpll run directory.
                          kinds=prp|ll|prp+ll test kinds to tune [prp]
                          stop=<P>%%|0        stop when the published choice is expected within P%% of the best [0.1%%]
                          sweep=<f>           the share of calls that read an option value not yet read, 0 to 1 [0.2]
+                         lanes=<shares>      time for the model / new FFTs / random restarts / interactions,
+                                             in %%, from the start ~ to the end of a ramp, or model for the model
+                                             alone [70/20/10/0~30/30/20/20@4h]
                          pfaShapes=ntt|all|none  prime-factor middles considered [ntt]
                          tailQueues=ntt|all|none FFTs offered TAIL_KERNELS 11 and 13 [ntt: NTTs on nVidia]
                          dashboard=1         a full-screen view of the run

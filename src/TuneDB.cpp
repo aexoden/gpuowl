@@ -341,6 +341,12 @@ std::string formatRow(const RefRow& row) {
     std::to_string(row.iters) + ' ' + hex16(row.res64) + ' ' + std::to_string(row.ts);
 }
 
+std::string formatRow(const ItemRow& row) {
+  return "item " + std::to_string(row.sess) + ' ' + row.lane + ' ' + row.what + ' ' + std::to_string(row.packet) + ' ' +
+    std::to_string(row.ordinal) + ' ' + row.fft + ' ' + toString(row.kind) + ' ' + std::to_string(row.cfg) + ' ' +
+    std::to_string(row.ts);
+}
+
 const DbEnv* TuneDB::findEnv(u32 id) const {
   auto const it = std::ranges::find(envs_, id, &DbEnv::id);
   return it == envs_.end() ? nullptr : &*it;
@@ -516,6 +522,17 @@ bool TuneDB::add(const RefRow& row) {
   return record(refs_, row);
 }
 
+bool TuneDB::add(const ItemRow& row) {
+  auto const word = [](const std::string& w) { return !w.empty() && w.find_first_of(" \t\"") == std::string::npos; };
+  auto const fft = parseFft(row.fft);
+  if (!word(row.lane) || !word(row.what) || !fft || !findSession(row.sess) || !findCfg(row.cfg)) { return false; }
+  ItemRow out = row;
+  out.fft = fft->spec();
+  if (!append(formatRow(out))) { return false; }
+  items_.push_back(std::move(out));
+  return true;
+}
+
 namespace {
 
 template<typename Rows, typename Id> u32 nextId(const Rows& rows, Id id) {
@@ -616,6 +633,7 @@ void TuneDB::clear() {
   anchors_.clear();
   regs_.clear();
   refs_.clear();
+  items_.clear();
   unknown_.clear();
   open_.clear();
 }
@@ -628,8 +646,8 @@ struct Shape {
   size_t fields;
 };
 
-constexpr Shape SHAPES[] = {{"cfg", 3},  {"call", 15},  {"try", 7},   {"done", 3},
-                            {"roe", 10}, {"anchor", 8}, {"regs", 12}, {"ref", 7}};
+constexpr Shape SHAPES[] = {{"cfg", 3},    {"call", 15}, {"try", 7}, {"done", 3}, {"roe", 10},
+                            {"anchor", 8}, {"regs", 12}, {"ref", 7}, {"item", 10}};
 
 }  // namespace
 
@@ -900,6 +918,25 @@ bool TuneDB::parse(std::string_view text, std::string_view name) {
           !add(
             RefRow{.sess = *sess, .fft = f[2], .exponent = *exponent, .iters = *iters, .res64 = *res64, .ts = *ts})) {
         refuse("malformed ref record");
+      }
+    } else if (tag == "item" && f.size() == 10) {
+      auto const sess = parseInt<u32>(f[1]);
+      auto const packet = parseInt<u32>(f[4]);
+      auto const ordinal = parseInt<u32>(f[5]);
+      auto const kind = parseTestKind(f[7]);
+      auto const cfg = parseInt<u32>(f[8]);
+      auto const ts = parseInt<u64>(f[9]);
+      if (!sess || !packet || !ordinal || !kind || !cfg || !ts ||
+          !add(ItemRow{.sess = *sess,
+                       .lane = std::string{f[2]},
+                       .what = std::string{f[3]},
+                       .packet = *packet,
+                       .ordinal = *ordinal,
+                       .fft = std::string{f[6]},
+                       .kind = *kind,
+                       .cfg = *cfg,
+                       .ts = *ts})) {
+        refuse("malformed item record");
       }
     } else if (std::ranges::none_of(SHAPES, [&](const Shape& s) { return tag == s.tag; })) {
       // A record kind a later build writes: kept, and written back where it was.

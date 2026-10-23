@@ -18,6 +18,8 @@ target_sources(prpll PRIVATE
   MinSum.cpp
   Branches.cpp
   Coverage.cpp
+  Lanes.cpp
+  Explore.cpp
   Optimize.cpp
   Scope.cpp
   TuneCommand.cpp

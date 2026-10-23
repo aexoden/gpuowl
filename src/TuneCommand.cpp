@@ -131,6 +131,13 @@ TuneCommand parseTuneCommand(std::string_view text) {
       std::optional<double> const share = parseDouble(value);
       if (!share || *share < 0 || *share > 1) { throw std::string{"-tune: sweep= takes a fraction from 0 to 1"}; }
       out.sweep = *share;
+    } else if (key == "lanes" && out.verb == TuneVerb::Run) {
+      std::optional<Timetable> const lanes = parseTimetable(value);
+      if (!lanes) {
+        throw std::string{"-tune: lanes= takes model, or shares of model/coverage/restarts/interactions adding up to "
+                          "100, as 70/20/10/0 or 70/20/10/0~30/30/20/20@4h"};
+      }
+      out.lanes = *lanes;
     } else if (key == "dashboard" && out.verb == TuneVerb::Run) {
       if (value != "0" && value != "1") { throw std::string{"-tune: dashboard= takes 0 or 1"}; }
       out.dashboard = value == "1";
