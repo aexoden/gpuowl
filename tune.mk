@@ -45,6 +45,7 @@ TESTSRCS = \
   test_Model.cpp \
   test_MinSum.cpp \
   test_Optimize.cpp \
+  test_Acquire.cpp \
   test_Scope.cpp \
   test_TuneEntry.cpp \
   test_Gate.cpp \

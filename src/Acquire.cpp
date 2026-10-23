@@ -3,6 +3,7 @@
 #include "Acquire.h"
 
 #include "Optimize.h"
+#include "Random.h"
 
 #include <algorithm>
 #include <atomic>
@@ -47,6 +48,10 @@ void lowerPriority() {
 std::string useText(const UseConfig& config, const std::string& key) {
   auto const it = config.find(key);
   return it == config.end() ? std::string{} : it->second;
+}
+
+u64 subjectHash(const Subject& subject) {
+  return fnv1a(subject.fft.spec() + toString(subject.kind) + subject.regime.label());
 }
 
 // Runs f(0) .. f(n-1) across the machine's threads.
@@ -158,7 +163,7 @@ public:
 
     std::vector<const Candidate*> out;
     for (size_t i = 0; i < SCREENED; ++i) { out.push_back(ranked[i].second); }
-    std::mt19937_64 rng{draw_.seed ^ E};
+    std::mt19937_64 rng{streamSeed(draw_.seed, "screen", E)};
     for (size_t i = 0; i < SCREEN_EXTRA; ++i) {
       out.push_back(ranked[SCREENED + rng() % (ranked.size() - SCREENED)].second);
     }
@@ -190,9 +195,8 @@ private:
     // from its best measured set there or else its defaults -- since the keys a branch opens (L2_STRIPING under
     // INPLACE=1, the layout keys under INPLACE=0) are no axes of the other's, and a search around one never reaches
     // them.
-    u64 const seed = draw_.seed ^ termHash(c.subject.fft.spec() + toString(c.subject.kind) + c.subject.regime.label());
     UseConfig start = around;
-    if (seed % 2) {
+    if (startsInOtherBranch(draw_.seed, c.subject)) {
       const Env& env = context_.model.env();
       std::string const here = useText(branchOf(env, c.subject.fft, around), "INPLACE");
       for (const Axis& axis : axesOf(env, c.subject.fft, around, filter)) {
@@ -212,7 +216,9 @@ private:
           place(other, axis, i);
           others.push_back(best ? best->options : fitted(env, c.subject.fft, other));
         }
-        if (!others.empty()) { start = others[(seed / 2) % others.size()]; }
+        if (!others.empty()) {
+          start = others[streamSeed(draw_.seed, "other branch", subjectHash(c.subject)) % others.size()];
+        }
       }
     }
 
@@ -224,7 +230,8 @@ private:
       mean = &computed;
     }
     offer(mean->options);
-    Subspace const subspace{.around = start, .free = someAxes(context_, c, start, seed)};
+    Subspace const subspace{
+      .around = start, .free = someAxes(context_, c, start, streamSeed(draw_.seed, "subspace", subjectHash(c.subject)))};
     offer(optimize(context_.model, draw_, c.subject, filter, &subspace).options);
     if (std::optional<UseConfig> const step = bestStep(c, around, filter)) { offer(*step); }
     return out;
@@ -304,7 +311,7 @@ private:
 DrawView takeDraw(const AcquireContext& context, std::mt19937_64& rng) {
   std::chi_squared_distribution<double> chi{DRAW_TAIL_DOF};
   double const tail = std::sqrt(DRAW_TAIL_DOF / std::max(chi(rng), 1e-9));
-  return DrawView{context, context.model.draw(rng() | 1, context.scale * tail)};
+  return DrawView{context, context.model.draw(drawSeed(rng), context.scale * tail)};
 }
 
 // The cheapest candidate at `E` under one draw.
@@ -328,6 +335,15 @@ bool wellMeasured(const Readings& readings, const Candidate& c, const UseConfig&
 }
 
 }  // namespace
+
+u64 drawSeed(std::mt19937_64& rng) {
+  u64 const seed = rng();
+  return seed ? seed : 1;
+}
+
+bool startsInOtherBranch(u64 seed, const Subject& subject) {
+  return streamSeed(seed, "start branch", subjectHash(subject)) & 1;
+}
 
 const Optimum* MeanOptima::find(const Candidate* c) const {
   std::lock_guard const lock{mutex_};

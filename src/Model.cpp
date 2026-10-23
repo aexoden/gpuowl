@@ -3,6 +3,7 @@
 #include "Model.h"
 
 #include "Prior.h"
+#include "Random.h"
 #include "TuneDB.h"
 
 #include <algorithm>
@@ -31,16 +32,6 @@ constexpr double SHRINK_UNDO = 1.25;
 constexpr double SPREAD_RANGE = 10;
 
 
-constexpr u64 FNV_OFFSET = 0xcbf29ce484222325ull;
-constexpr u64 FNV_PRIME = 0x100000001b3ull;
-
-u64 splitmix(u64 x) {
-  x += 0x9e3779b97f4a7c15ull;
-  x = (x ^ (x >> 30)) * 0xbf58476d1ce4e5b9ull;
-  x = (x ^ (x >> 27)) * 0x94d049bb133111ebull;
-  return x ^ (x >> 31);
-}
-
 // A standard normal variate determined by `key`, the same on every platform.
 double gaussian(u64 key) {
   u64 const a = splitmix(key);
@@ -67,11 +58,7 @@ std::string digit(u32 d) { return std::to_string(d); }
 
 }  // namespace
 
-u64 termHash(std::string_view text) {
-  u64 h = FNV_OFFSET;
-  for (unsigned char c : text) { h = (h ^ c) * FNV_PRIME; }
-  return h;
-}
+u64 termHash(std::string_view text) { return fnv1a(text); }
 
 Model::Model(Env env, ModelPrior prior) : env_{std::move(env)}, prior_{prior}, maxIterations_{SOLVE_MAX_ITERATIONS} {}
 

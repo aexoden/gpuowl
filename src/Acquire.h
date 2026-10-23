@@ -110,6 +110,13 @@ struct Choice {
   std::string why{};
 };
 
+// The seed of a posterior draw taken from `rng`: any value but 0, which is the mean's.
+[[nodiscard]] u64 drawSeed(std::mt19937_64& rng);
+
+// Whether the draw seeded `seed` starts exploring `subject` from another structural branch than its incumbent's: half
+// the time, independently for each draw and subject.
+[[nodiscard]] bool startsInOtherBranch(u64 seed, const Subject& subject);
+
 // The configuration to measure next; nothing where every draw at every point tried names one already well measured.
 [[nodiscard]] std::optional<Choice> choose(const AcquireContext& context, std::mt19937_64& rng);
 
