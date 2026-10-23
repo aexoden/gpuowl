@@ -24,6 +24,8 @@ Board busyBoard() {
              .lines = {"ll   633.8 1:256:7:512:202  to 72904352 INPLACE=0,LOADS=3200"},
              .observations = 170,
              .spreads = "type 0.5000 kind 0.1000",
+             .lanes = "model 21.0 min (70%), coverage 6.2 min (21%), restarts 2.8 min (9%), interactions 0.0 min (0%)",
+             .explored = "entries 23 of 140 read; branches 41 of 5321; positions 812 of 51234 (1.6%)",
              .faults = {"failed: 3:1K:8:256:202 ll -use LOADS=5"}};
   b.T = {690, 650, 640, 634};
   b.regret = {0.05, 0.01, 0.0057};
@@ -62,6 +64,9 @@ TEST(the_frame_shows_what_matters) {
   CHECK(all.find("PUBLISHED") != std::string::npos);
   CHECK(all.find("predicted/measured 0.984") != std::string::npos);
   CHECK(all.find("wrote tune-ll.txt") != std::string::npos);
+  CHECK(all.find("SEARCH") != std::string::npos);
+  CHECK(all.find("lanes model 21.0 min") != std::string::npos);
+  CHECK(all.find("entries 23 of 140 read") != std::string::npos);
 }
 
 TEST(item_lines_are_not_events) {

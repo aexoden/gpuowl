@@ -248,6 +248,12 @@ std::vector<Row> modelPanel(const Board& b, size_t width, size_t) {
           fit({{"  spreads " + b.state.spreads, Style::Dim}}, width, glyphs(b).ellipsis)};
 }
 
+std::vector<Row> searchPanel(const Board& b, size_t width, size_t) {
+  if (b.state.lanes.empty() && b.state.explored.empty()) { return {}; }
+  return {heading("SEARCH"), fit({{"  lanes " + b.state.lanes, Style::Plain}}, width, glyphs(b).ellipsis),
+          fit({{"  coverage " + b.state.explored, Style::Dim}}, width, glyphs(b).ellipsis)};
+}
+
 std::vector<Row> recentPanel(const Board& b, size_t width, size_t rows) {
   std::vector<Row> out{heading("RECENT")};
   for (const ItemReport& r : b.recent) {
@@ -328,7 +334,8 @@ std::vector<Row> frame(const Board& b, size_t rows, size_t cols) {
       std::string const bar = " " + std::string{g.bar} + " ";
       size_t const lw = (width - columns(bar)) / 2;
       size_t const rw = width - columns(bar) - lw;
-      std::vector<Row> const l = stack(b, {faultsPanel, publishedPanel, modelPanel, recentPanel}, lw, left);
+      std::vector<Row> const l =
+        stack(b, {faultsPanel, publishedPanel, modelPanel, searchPanel, recentPanel}, lw, left);
       std::vector<Row> const r = stack(b, {eventsPanel}, rw, left);
       for (size_t i = 0; i < left; ++i) {
         Row row = padded(i < l.size() ? l[i] : Row{}, lw);
@@ -338,7 +345,7 @@ std::vector<Row> frame(const Board& b, size_t rows, size_t cols) {
       }
     } else {
       std::vector<Row> const all =
-        stack(b, {faultsPanel, publishedPanel, modelPanel, recentPanel, eventsPanel}, width, left);
+        stack(b, {faultsPanel, publishedPanel, modelPanel, searchPanel, recentPanel, eventsPanel}, width, left);
       out.insert(out.end(), all.begin(), all.end());
     }
   }

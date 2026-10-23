@@ -99,14 +99,16 @@ void report(const ItemReport& item, Watch* watch) {
 }
 
 StateReport stateOf(const Publication& publication, const Readings& readings, const Model& model, const TuneDB& db,
-                    const LoopResult& sofar) {
+                    u32 env, const std::string& coverage, const LoopResult& sofar) {
   StateReport out{.T = publication.T(),
                   .coverage = publication.coverage(),
                   .regret = sofar.regret,
                   .calls = sofar.calls,
                   .gates = sofar.gateReadings,
                   .observations = u32(readings.observations().size()),
-                  .spreads = model.spreads()};
+                  .spreads = model.spreads(),
+                  .lanes = toString(laneTime(db, env)),
+                  .explored = coverage};
   for (const KindPublication& kind : publication.kinds) {
     for (const Line& line : kind.lines) {
       char buf[96];
@@ -138,6 +140,7 @@ LoopResult runLoop(Device& device, TuneDB& db, u32 env, const Env& card, const R
   Publisher publisher{settings.publishTo, settings.header};
   LoopResult out;
   u32 sinceRegret = settings.regretEvery;
+  std::string coverage = "not yet summed";
   u32 items = 0;
 
   while (!device.stopped() && !Signal::stopRequested() && (!settings.maxItems || items < settings.maxItems)) {
@@ -149,7 +152,7 @@ LoopResult runLoop(Device& device, TuneDB& db, u32 env, const Env& card, const R
     Publication const publication = publish(scope, candidates, readings);
     out.T = publication.T();
     publisher.write(publication, out.regret);
-    if (settings.watch) { settings.watch->state(stateOf(publication, readings, model, db, out)); }
+    if (settings.watch) { settings.watch->state(stateOf(publication, readings, model, db, env, coverage, out)); }
 
     // What the occupancy model offers each FFT's register limits, from its `regs` records; built before the search,
     // which asks from many threads.
@@ -237,9 +240,10 @@ LoopResult runLoop(Device& device, TuneDB& db, u32 env, const Env& card, const R
           " of " + std::to_string(counts.searches) + " searches";
       log("tune: T %.2f us/it over %s of the workload; expected regret %s%s\n", out.T,
           percent(publication.coverage()).c_str(), percent(out.regret).c_str(), inexact.c_str());
-      log("tune: coverage: %s\n", toString(summarize(card, candidates, readings, filter)).c_str());
+      coverage = toString(summarize(card, candidates, readings, filter));
+      log("tune: coverage: %s\n", coverage.c_str());
       log("tune: lanes: %s\n", toString(laneTime(db, env)).c_str());
-      if (settings.watch) { settings.watch->state(stateOf(publication, readings, model, db, out)); }
+      if (settings.watch) { settings.watch->state(stateOf(publication, readings, model, db, env, coverage, out)); }
       if (settings.stop > 0 && out.regret <= settings.stop) {
         out.converged = true;
         break;
