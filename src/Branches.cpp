@@ -2,10 +2,13 @@
 
 #include "Branches.h"
 
+#include "Random.h"
+
 #include <algorithm>
 #include <functional>
 #include <map>
 #include <mutex>
+#include <random>
 #include <set>
 #include <string>
 
@@ -88,23 +91,51 @@ ConditionalSpace::ConditionalSpace(const Env& env, const FFTConfig& fft, const A
       std::vector<u32> touches;
     };
     std::vector<Seen> seen;
-    std::vector<size_t> digits(ancestors.size(), 0);
+    auto configAt = [&](const std::vector<size_t>& digits) {
+      UseConfig config;
+      for (size_t i = 0; i < ancestors.size(); ++i) {
+        const BranchVariable& parent = variables_[ancestors[i]];
+        if (digits[i] != parent.inactive()) { place(config, parent.axis, digits[i]); }
+      }
+      return canonicalConfig(env_, fft_, config);
+    };
+
     size_t contexts = 1;
     for (size_t const a : ancestors) {
       contexts *= variables_[a].states();
       if (contexts > MAX_CONTEXTS) { break; }
     }
     if (contexts > MAX_CONTEXTS) {
-      unsearched_.push_back(option->key);
+      // Too many to list: whether it is unsearched or never applies here at all -- SMEM_SPILL, which depends on every
+      // register limit, needs a CUDA 13 driver -- is told by probing the defaults, every ancestor moved alone, and a
+      // sample of the rest.
+      std::vector<size_t> const defaults = statesOf({});
+      std::vector<size_t> base;
+      for (size_t const a : ancestors) { base.push_back(defaults[a]); }
+      std::vector<std::vector<size_t>> probes{base};
+      for (size_t i = 0; i < ancestors.size(); ++i) {
+        for (size_t s = 0; s < variables_[ancestors[i]].states(); ++s) {
+          probes.push_back(base);
+          probes.back()[i] = s;
+        }
+      }
+      std::mt19937_64 rng{fnv1a(option->key)};
+      for (size_t k = 0; k < CONTEXT_PROBES; ++k) {
+        std::vector<size_t> digits;
+        for (size_t const a : ancestors) { digits.push_back(rng() % variables_[a].states()); }
+        probes.push_back(std::move(digits));
+      }
+      if (std::ranges::any_of(probes, [&](const std::vector<size_t>& digits) {
+            return !axesOf(env_, fft_, configAt(digits), filter, *option).empty();
+          })) {
+        unsearched_.push_back(option->key);
+      }
       continue;
     }
+
+    std::vector<size_t> digits(ancestors.size(), 0);
     for (size_t context = 0; context < contexts; ++context) {
-      UseConfig config;
-      for (size_t i = 0; i < ancestors.size(); ++i) {
-        const BranchVariable& parent = variables_[ancestors[i]];
-        if (digits[i] != parent.inactive()) { place(config, parent.axis, digits[i]); }
-      }
-      UseConfig const canonical = canonicalConfig(env_, fft_, config);
+      UseConfig const canonical = configAt(digits);
       for (const Axis& axis : axesOf(env_, fft_, canonical, filter, *option)) {
         auto it = std::ranges::find(seen, axis.name, [](const Seen& s) { return s.axis.name; });
         if (it == seen.end()) {
@@ -122,7 +153,7 @@ ConditionalSpace::ConditionalSpace(const Env& env, const FFTConfig& fft, const A
     }
 
     for (Seen& s : seen) {
-      BranchVariable v{.axis = s.axis, .canBeInactive = false, .ancestors = ancestors, .contexts = {}, .steady = true};
+      BranchVariable v{.axis = s.axis, .canBeInactive = false, .ancestors = ancestors};
       v.axis.values.clear();
       for (const std::optional<Axis>& a : s.at) {
         if (!a) {
@@ -152,7 +183,9 @@ ConditionalSpace::ConditionalSpace(const Env& env, const FFTConfig& fft, const A
           reference = ref;
           touches = c.touches;
         }
-        v.contexts.push_back(std::move(c));
+        auto const kind = std::ranges::find(v.kinds, c);
+        v.contextKinds.push_back(u32(kind - v.kinds.begin()));
+        if (kind == v.kinds.end()) { v.kinds.push_back(std::move(c)); }
       }
       variables_.push_back(std::move(v));
     }
@@ -167,7 +200,7 @@ size_t ConditionalSpace::contextOf(size_t v, const std::vector<size_t>& states) 
 
 bool ConditionalSpace::legal(const std::vector<size_t>& states) const {
   for (size_t v = 0; v < variables_.size(); ++v) {
-    const BranchVariable::Context& c = variables_[v].contexts[contextOf(v, states)];
+    const BranchVariable::Context& c = variables_[v].context(contextOf(v, states));
     bool const ok = states[v] == variables_[v].inactive() ? !c.reference : c.reference && c.offered[states[v]];
     if (!ok) { return false; }
   }
@@ -184,7 +217,7 @@ UseConfig ConditionalSpace::configOf(const std::vector<size_t>& states) const {
 
 size_t ConditionalSpace::heldAt(size_t v, size_t context, const UseConfig& canonical) const {
   const BranchVariable& var = variables_[v];
-  const BranchVariable::Context& c = var.contexts[context];
+  const BranchVariable::Context& c = var.context(context);
   bool const named = var.axis.digit ? true : canonical.contains(var.axis.option->key);
   if (named) {
     auto const at = std::ranges::find(var.axis.values, positionOf(env_, fft_, canonical, var.axis));
@@ -200,7 +233,7 @@ std::vector<size_t> ConditionalSpace::statesOf(const UseConfig& config) const {
   std::vector<size_t> states(variables_.size(), 0);
   for (size_t v = 0; v < variables_.size(); ++v) {
     size_t const context = contextOf(v, states);
-    states[v] = variables_[v].contexts[context].reference ? heldAt(v, context, canonical) : variables_[v].inactive();
+    states[v] = variables_[v].context(context).reference ? heldAt(v, context, canonical) : variables_[v].inactive();
   }
   return states;
 }
@@ -215,7 +248,7 @@ bool ConditionalSpace::legalContext(size_t v, size_t context) const {
     context /= variables_[a].states();
   }
   for (size_t const a : var.ancestors) {
-    const BranchVariable::Context& c = variables_[a].contexts[contextOf(a, states)];
+    const BranchVariable::Context& c = variables_[a].context(contextOf(a, states));
     bool const ok = states[a] == variables_[a].inactive() ? !c.reference : c.reference && c.offered[states[a]];
     if (!ok) { return false; }
   }
@@ -256,7 +289,7 @@ BranchCount ConditionalSpace::legalBranches() const {
         return;
       }
       size_t const v = scope[i];
-      const BranchVariable::Context& c = variables_[v].contexts[contextOf(v, states)];
+      const BranchVariable::Context& c = variables_[v].context(contextOf(v, states));
       for (size_t s = 0; s < variables_[v].states(); ++s) {
         bool const ok = s == variables_[v].inactive() ? !c.reference : c.reference && c.offered[s];
         if (!ok) { continue; }

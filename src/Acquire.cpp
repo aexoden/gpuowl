@@ -3,20 +3,13 @@
 #include "Acquire.h"
 
 #include "Optimize.h"
+#include "Parallel.h"
 #include "Random.h"
 
 #include <algorithm>
-#include <atomic>
 #include <cmath>
 #include <limits>
 #include <map>
-#include <thread>
-
-#ifdef __linux__
-#include <sys/resource.h>
-#include <sys/syscall.h>
-#include <unistd.h>
-#endif
 
 namespace tune {
 
@@ -36,14 +29,6 @@ struct Valued {
   double value = NONE;  // log microseconds per iteration
 };
 
-// The model's work yields to anything else wanting the CPU: another tuner's timed loop on the same machine busy-waits
-// on its device, and a stall there is read as the configuration's cost.
-void lowerPriority() {
-#ifdef __linux__
-  (void)setpriority(PRIO_PROCESS, pid_t(syscall(SYS_gettid)), 19);
-#endif
-}
-
 // The value `config` gives `key`, as text; empty where it gives none.
 std::string useText(const UseConfig& config, const std::string& key) {
   auto const it = config.find(key);
@@ -52,23 +37,6 @@ std::string useText(const UseConfig& config, const std::string& key) {
 
 u64 subjectHash(const Subject& subject) {
   return fnv1a(subject.fft.spec() + toString(subject.kind) + subject.regime.label());
-}
-
-// Runs f(0) .. f(n-1) across the machine's threads.
-template<typename F> void parallelFor(size_t n, F&& f) {
-  size_t const threads = std::min<size_t>(n, std::max(1u, std::thread::hardware_concurrency()));
-  if (threads <= 1) {
-    for (size_t i = 0; i < n; ++i) { f(i); }
-    return;
-  }
-  std::atomic<size_t> next{0};
-  std::vector<std::jthread> pool;
-  for (size_t t = 0; t < threads; ++t) {
-    pool.emplace_back([&] {
-      lowerPriority();
-      for (size_t i; (i = next++) < n;) { f(i); }
-    });
-  }
 }
 
 // A few axes of `options` on `c`, chosen at random by `seed`.

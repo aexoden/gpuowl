@@ -2,6 +2,8 @@
 
 #include "Coverage.h"
 
+#include "Parallel.h"
+
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
@@ -97,8 +99,8 @@ PositionCoverage positionCoverage(const ConditionalSpace& space, const std::vect
 
   PositionCoverage out{.covered = covered.size(), .total = 0};
   for (size_t v = 0; v < vars.size(); ++v) {
-    for (size_t context = 0; context < vars[v].contexts.size(); ++context) {
-      const BranchVariable::Context& c = vars[v].contexts[context];
+    for (size_t context = 0; context < vars[v].contexts(); ++context) {
+      const BranchVariable::Context& c = vars[v].context(context);
       if (!c.reference || !space.legalContext(v, context)) { continue; }
       out.total += size_t(std::ranges::count(c.offered, true));
     }
@@ -108,26 +110,39 @@ PositionCoverage positionCoverage(const ConditionalSpace& space, const std::vect
 
 CoverageSummary summarize(const Env& env, const std::vector<std::vector<Candidate>>& candidates,
                           const Readings& readings, const std::function<AxisFilter(const Candidate&)>& filter) {
-  CoverageSummary out;
+  // A subject split into several candidates (one per interval) is one entry.
+  std::vector<const Candidate*> entries;
   std::set<ConfigKey> seen;
   for (const std::vector<Candidate>& kind : candidates) {
     for (const Candidate& c : kind) {
-      // A subject split into several candidates (one per interval) is one entry.
-      if (!seen.insert(Readings::keyOf(c.subject, {})).second) { continue; }
-      std::vector<const Reading*> const of = readings.of(c.subject);
-      std::shared_ptr<const ConditionalSpace> const space = spaceOf(env, c.subject.fft, filter(c));
-
-      ++out.entries;
-      size_t const visited = archiveOf(env, of).size();
-      out.entriesRead += visited > 0;
-      out.branchesVisited += visited;
-      BranchCount const legal = space->legalBranches();
-      out.branches.legal += legal.legal;
-      out.branches.complete = out.branches.complete && legal.complete;
-      PositionCoverage const p = positionCoverage(*space, of);
-      out.positions.covered += p.covered;
-      out.positions.total += p.total;
+      if (seen.insert(Readings::keyOf(c.subject, {})).second) { entries.push_back(&c); }
     }
+  }
+
+  // Building an entry's space is most of the cost, once per run: thousands of entries, across the machine's threads.
+  struct Entry {
+    size_t visited = 0;
+    BranchCount branches{};
+    PositionCoverage positions{};
+  };
+  std::vector<Entry> each(entries.size());
+  parallelFor(entries.size(), [&](size_t i) {
+    const Candidate& c = *entries[i];
+    std::vector<const Reading*> const of = readings.of(c.subject);
+    std::shared_ptr<const ConditionalSpace> const space = spaceOf(env, c.subject.fft, filter(c));
+    each[i] = {.visited = archiveOf(env, of).size(),
+               .branches = space->legalBranches(),
+               .positions = positionCoverage(*space, of)};
+  });
+
+  CoverageSummary out{.entries = entries.size()};
+  for (const Entry& e : each) {
+    out.entriesRead += e.visited > 0;
+    out.branchesVisited += e.visited;
+    out.branches.legal += e.branches.legal;
+    out.branches.complete = out.branches.complete && e.branches.complete;
+    out.positions.covered += e.positions.covered;
+    out.positions.total += e.positions.total;
   }
   return out;
 }

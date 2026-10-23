@@ -183,7 +183,27 @@ TEST(every_context_a_configuration_has_is_legal) {
   // Some contexts cannot happen: an ancestor at a state its own ancestors rule out.
   size_t illegal = 0;
   for (size_t v = 0; v < vars.size(); ++v) {
-    for (size_t c = 0; c < vars[v].contexts.size(); ++c) { illegal += !space->legalContext(v, c); }
+    for (size_t c = 0; c < vars[v].contexts(); ++c) { illegal += !space->legalContext(v, c); }
   }
   CHECK(illegal > 0);
+}
+
+TEST(an_option_with_too_many_contexts_is_unsearched_only_where_it_can_apply) {
+  // SMEM_SPILL depends on every register limit: seven of them on a two-part FFT, past MAX_CONTEXTS with four limits
+  // offered each.  It needs a CUDA 13 driver.
+  RegisterOffer offer;
+  for (const Option& o : allOptions()) {
+    if (o.key.starts_with("REG")) { offer[o.key] = {40, 48, 56, 64}; }
+  }
+  AxisFilter const filter{.tailQueues = TailQueues::All, .registers = &offer};
+  FFTConfig const fft = canonical(FFTConfig{"1:256:7:512:202"});
+  for (const char* driver : {"CUDA 12.4", "CUDA 13.0"}) {
+    Env env = nvidia();
+    env.computeCapability = 806;
+    env.driverVersion = driver;
+    ConditionalSpace const space{env, fft, filter};
+    bool const cuda13 = std::string{driver} == "CUDA 13.0";
+    CHECK_EQ(space.unsearched() == std::vector<std::string>{"SMEM_SPILL"}, cuda13);
+    CHECK_EQ(space.unsearched().empty(), !cuda13);
+  }
 }

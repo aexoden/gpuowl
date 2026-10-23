@@ -18,12 +18,17 @@ namespace {
 // which the mean of the model is everywhere nothing was measured -- goes to the default.
 constexpr double MOVE_COST = 1e-9;
 
+// The largest table elimination may build.  Fitted interactions across groups entangle a two-part FFT's options past
+// 2^20 entries (1:512:8:256:202 on the A4000), and every search on the FFTs of a 30-minute run fitted within 2^22, at
+// up to 72 ms a search over the whole space and 32 MB a table.
+constexpr size_t TABLE_LIMIT = size_t{1} << 22;
+
 std::atomic<u64> searches{0};
 std::atomic<u64> inexact{0};
 
 // The reference and kernel groups of a variable whose contributions do not depend on its ancestors.
 const BranchVariable::Context* steadyContext(const BranchVariable& v) {
-  for (const BranchVariable::Context& c : v.contexts) {
+  for (const BranchVariable::Context& c : v.kinds) {
     if (c.reference) { return &c; }
   }
   return nullptr;
@@ -102,9 +107,9 @@ Problem problemOf(const Model& model, const Draw& draw, const Subject& subject, 
     }
 
     std::vector<double> table;
-    table.reserve(var.contexts.size() * var.states());
-    for (size_t context = 0; context < var.contexts.size(); ++context) {
-      const BranchVariable::Context& c = var.contexts[context];
+    table.reserve(var.contexts() * var.states());
+    for (size_t context = 0; context < var.contexts(); ++context) {
+      const BranchVariable::Context& c = var.context(context);
       std::optional<size_t> const held =
         !out.free[v] && c.reference ? space.heldAt(v, context, out.around) : std::optional<size_t>{};
       for (size_t s = 0; s < var.states(); ++s) {
@@ -131,7 +136,8 @@ Problem problemOf(const Model& model, const Draw& draw, const Subject& subject, 
   for (size_t v = 0; v < n; ++v) {
     if (vars[v].steady) { continue; }
     Problem::Companion c{.var = problem.unary.size(), .classOf = {}, .kinds = {}};
-    for (const BranchVariable::Context& context : vars[v].contexts) {
+    for (size_t i = 0; i < vars[v].contexts(); ++i) {
+      const BranchVariable::Context& context = vars[v].context(i);
       auto const same = [&](const BranchVariable::Context* k) {
         return k ? context.reference && k->reference == context.reference && k->touches == context.touches
                  : !context.reference;
@@ -155,7 +161,7 @@ Problem problemOf(const Model& model, const Draw& draw, const Subject& subject, 
   // model says they share there.
   std::vector<std::set<u32>> touches(n);
   for (size_t v = 0; v < n; ++v) {
-    for (const BranchVariable::Context& c : vars[v].contexts) {
+    for (const BranchVariable::Context& c : vars[v].kinds) {
       if (c.reference) { touches[v].insert(c.touches); }
     }
   }
@@ -242,7 +248,7 @@ Optimum optimize(const Model& model, const Draw& draw, const Subject& subject, c
   const std::vector<BranchVariable>& vars = problem.space->variables();
   const UseConfig& around = problem.around;
 
-  MinSumResult const r = minimize(problem.minsum);
+  MinSumResult const r = minimize(problem.minsum, TABLE_LIMIT);
   ++searches;
   if (!r.exact || !problem.space->unsearched().empty()) { ++inexact; }
   if (!(r.value < FORBIDDEN)) {

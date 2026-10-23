@@ -25,6 +25,10 @@ namespace tune {
 // candidates, a few thousand.
 inline constexpr size_t MAX_CONTEXTS = size_t{1} << 16;
 
+// How many random contexts an option with more than MAX_CONTEXTS is probed at, besides its defaults and each ancestor
+// moved alone.
+inline constexpr size_t CONTEXT_PROBES = 4096;
+
 // How many leaves legalBranches() walks before it reports a lower bound.
 inline constexpr size_t MAX_BRANCH_WALK = size_t{1} << 20;
 
@@ -47,9 +51,16 @@ struct BranchVariable {
     std::vector<bool> offered{};        // per position
     std::optional<size_t> reference{};  // where nothing sets it; none where it is inactive
     u32 touches = 0;                    // Option::touchesFor
+
+    [[nodiscard]] bool operator==(const Context&) const = default;
   };
-  // Per assignment of the ancestors' states, the last ancestor fastest.
-  std::vector<Context> contexts{};
+  // The distinct contexts, and which of them each assignment of the ancestors' states is, the last ancestor fastest:
+  // thousands of assignments share a few dozen contexts.
+  std::vector<Context> kinds{};
+  std::vector<u32> contextKinds{};
+
+  [[nodiscard]] size_t contexts() const { return contextKinds.size(); }
+  [[nodiscard]] const Context& context(size_t i) const { return kinds[contextKinds[i]]; }
 
   // Whether its reference and the kernels it touches are the same wherever it is active: if so, what it contributes
   // does not depend on its ancestors beyond whether it is active.
@@ -66,8 +77,9 @@ public:
 
   [[nodiscard]] const std::vector<BranchVariable>& variables() const { return variables_; }
 
-  // The options left at their defaults because they depend on more than MAX_CONTEXTS assignments: a search of the
-  // space is exact only where this is empty.
+  // The options left at their defaults because they depend on more than MAX_CONTEXTS assignments, and were seen to
+  // apply in some of them: a search of the space is exact only where this is empty.  One seen in none of its probed
+  // assignments (CONTEXT_PROBES) is taken not to apply on this device at all.
   [[nodiscard]] const std::vector<std::string>& unsearched() const { return unsearched_; }
 
   // The context of `v` under `states`, which need hold only its ancestors' states.
