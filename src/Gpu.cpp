@@ -301,6 +301,7 @@ string clDefines(Args& args, cl_device_id id, FFTConfig fft, u32 nW, u32 nH, u64
   // These keys may be undocumented in help because they are either deprecated, experimental, or developer-only.
   initializer_list<string> const hiddenKeys = {
                               "BIGLIT",                 // Deprecated
+                              "ENABLE_SUBBARRIER",      // Experimental, nVidia: LDSbar syncs only its sub-workgroup, 1 = each, 2 = four in pairs (see base.cl)
                               "NONTEMPORAL",            // Deprecated
 			      "HOIST_W","HOIST_H",
 			      "LDSPAD_W","LDSPAD_H",
