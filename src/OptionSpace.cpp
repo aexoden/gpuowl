@@ -907,7 +907,7 @@ vector<Option> buildTable() {
          "LDSMUL_W", "LDSMUL_H",   // Shared LDS: slower where tried upstream, and unsafe with variant 2
          "ENABLE_FP32_VARIANT_2",  // Would widen the FP32 variant space
          "NO_INT128",              // For drivers without 128-bit integers; rusticl is detected without it
-         "CARRY96", "CARRY_SUB_X", "M61_SM120",
+         "CARRY96", "CARRY_SUB_X",
          "CS_FENCE", "CS_ATOMIC",  // carryFused's hand-offs between workgroups, needed where they default on
        }) {
     t.push_back({.key = key, .kind = Kind::Fixed});
