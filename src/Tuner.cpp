@@ -19,6 +19,7 @@
 #include <cinttypes>
 #include <cmath>
 #include <ctime>
+#include <limits>
 #include <map>
 
 namespace tune {
@@ -32,6 +33,12 @@ std::string percent(double fraction) {
   return buf;
 }
 
+std::string usText(double us) {
+  char buf[32];
+  snprintf(buf, sizeof(buf), "%.2f", us);
+  return buf;
+}
+
 std::string optionsText(const UseConfig& options) { return options.empty() ? "the defaults" : configText(options); }
 
 // The tune files as last written, so a file is rewritten only when what it says changes.
@@ -39,15 +46,22 @@ class Publisher {
 public:
   Publisher(fs::path dir, std::string header) : dir_{std::move(dir)}, header_{std::move(header)} {}
 
-  void write(const Publication& publication) {
+  // `regret` is the run's latest estimate, over every kind; infinite where there is none.
+  void write(const Publication& publication, double regret) {
     if (dir_.empty()) { return; }
     for (const KindPublication& kind : publication.kinds) {
       if (kind.lines.empty()) { continue; }
-      std::string const text = tuneFileText(kind, header_);
+      // Where the run stands, for whoever is watching the file: only what changes as the run learns, so the file is
+      // not rewritten on every call.
+      std::string const status = "T " + usText(kind.covered > 0 ? kind.T / kind.covered : 0.0) + " us/it over " +
+        percent(kind.covered) + " of the workload; expected regret " +
+        (std::isfinite(regret) ? percent(regret) + " (all kinds)" : std::string{"unknown"});
+      std::string const header = header_ + '\n' + status;
+      std::string const text = tuneFileText(kind, header);
       std::string& last = written_[kind.kind];
       if (text == last) { continue; }
       keepUsersFile(kind.kind);
-      writeTuneFile(dir_, kind, header_);
+      writeTuneFile(dir_, kind, header);
       last = text;
       log("tune: wrote %s: %zu lines, T %.2f us/it over %s of the workload\n", tuneFileName(kind.kind),
           kind.lines.size(), kind.covered > 0 ? kind.T / kind.covered : 0.0, percent(kind.covered).c_str());
@@ -135,7 +149,7 @@ LoopResult runLoop(Device& device, TuneDB& db, u32 env, const Env& card, const R
     model.fit(readings.observations());
     Publication const publication = publish(scope, candidates, readings);
     out.T = publication.T();
-    publisher.write(publication);
+    publisher.write(publication, out.regret);
     if (settings.watch) { settings.watch->state(stateOf(publication, readings, model, db, out)); }
 
     // What the occupancy model offers each FFT's register limits, from its `regs` records; built before the search,
@@ -428,7 +442,7 @@ bool runOffline(const TuneCommand& command, const Args& args) {
 
   if (command.verb == TuneVerb::Emit) {
     Publisher publisher{fs::current_path(), headerFor(*scope, command)};
-    publisher.write(publication);
+    publisher.write(publication, std::numeric_limits<double>::infinity());
   }
   return true;
 }
