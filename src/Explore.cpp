@@ -633,6 +633,36 @@ std::optional<Proposal> restartIn(const AcquireContext& context, const ExploreSe
 
 }  // namespace
 
+double expectedStartCost(const AcquireContext& context, const ExploreSettings& settings, double elapsed) {
+  std::vector<const Candidate*> const entries = entriesOf(context);
+  std::vector<double> const behindBy = behind(context, entries);
+  std::vector<size_t> reachable;
+  std::map<std::string, size_t> bucketSize;
+  auto bucketOf = [](const Candidate& c) {
+    return std::string{toString(c.subject.kind)} + '|' + std::to_string(int(c.subject.fft.shape.fft_type)) + '|' +
+      c.subject.fft.shape.spec();
+  };
+  for (size_t i = 0; i < entries.size(); ++i) {
+    if (behindBy[i] <= std::log(settings.reach.at(elapsed))) {
+      reachable.push_back(i);
+      ++bucketSize[bucketOf(*entries[i])];
+    }
+  }
+  double sum = 0;
+  double weights = 0;
+  for (size_t const i : reachable) {
+    // Half the starts draw an entry uniformly, half a bucket uniformly and an entry within it.
+    double const w =
+      0.5 / double(reachable.size()) + 0.5 / double(bucketSize.size() * bucketSize[bucketOf(*entries[i])]);
+    const Reading* const best = fastest(context, *entries[i]);
+    double const cost =
+      best ? best->mean : std::exp(context.model.predict(context.model.mean(), entries[i]->subject, {}));
+    sum += w * cost;
+    weights += w;
+  }
+  return weights > 0 ? sum / weights : 0;
+}
+
 std::optional<Proposal> restartStep(const AcquireContext& context, const ExploreSettings& settings, double elapsed,
                                     const TuneDB& db, u32 env, std::mt19937_64& rng) {
   return restartIn(context, settings, elapsed, db, env, rng,

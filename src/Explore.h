@@ -67,6 +67,11 @@ struct Proposal {
 [[nodiscard]] std::optional<Proposal> auditTrialStep(const AcquireContext& context, const ExploreSettings& settings,
                                                      double elapsed, const TuneDB& db, u32 env, std::mt19937_64& rng);
 
+// What a restart's call is expected to cost on average, in microseconds per iteration: the entries a start may draw
+// (within reach), each as likely as the draw makes it, at what it costs (measured, else as the model expects).  How
+// long an audit's trials take depends on it, since the reach lets them draw entries far dearer than the frontier.
+[[nodiscard]] double expectedStartCost(const AcquireContext& context, const ExploreSettings& settings, double elapsed);
+
 // The next item of the restarts lane: the open restart's next local step from its own best, or a new start.
 [[nodiscard]] std::optional<Proposal> restartStep(const AcquireContext& context, const ExploreSettings& settings,
                                                   double elapsed, const TuneDB& db, u32 env, std::mt19937_64& rng);

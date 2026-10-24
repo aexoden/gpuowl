@@ -105,13 +105,25 @@ std::optional<Proposal> endStep(const AcquireContext& context, const Publication
   AuditState const state = auditState(db, env, context.readings);
   if (!state.declared) {
     // As many trials as the time left holds at the campaign's pace so far, declared now and not changed after.
+    // A call's time goes with its cost: the trials' draws are scaled from what the campaign's calls cost so far.
     size_t items = 0;
     for (const ItemRow& r : db.items()) { items += db.envOf(r.sess) == env; }
     double const perItem = laneTime(db, env).total() / double(std::max<size_t>(1, items));
-    u32 const trials = u32(std::max(0.0, std::floor((budget - elapsed) / (RESTART_PACKET * perItem))));
+    double paid = 0;
+    double calls = 0;
+    for (const auto& [key, r] : context.readings.all()) {
+      if (!r.failed && r.calls > 0) {
+        paid += r.mean * r.calls;
+        calls += r.calls;
+      }
+    }
+    double const drawn = expectedStartCost(context, settings, elapsed);
+    double const scale = calls > 0 && drawn > 0 ? std::max(1.0, drawn / (paid / calls)) : 1;
+    u32 const trials = u32(std::max(0.0, std::floor((budget - elapsed) / (RESTART_PACKET * perItem * scale))));
     (void)db.add(AuditRow{.sess = sess, .trials = trials, .baseline = publication.T(), .target = target, .ts = now});
-    log("tune: audit: %u trials of %u calls declared for the %.0f minutes left, against T %s us/it\n", trials,
-        RESTART_PACKET, (budget - elapsed) / 60, usText(publication.T()).c_str());
+    log("tune: audit: %u trials of %u calls declared for the %.0f minutes left (a trial's call expected to take %.1fx "
+        "the campaign's so far), against T %s us/it\n",
+        trials, RESTART_PACKET, (budget - elapsed) / 60, scale, usText(publication.T()).c_str());
     if (trials == 0) { return {}; }
   } else if (state.done >= state.declared->trials) {
     return {};
