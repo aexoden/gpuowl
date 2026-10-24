@@ -989,7 +989,8 @@ bool TuneDB::parse(std::string_view text, std::string_view name) {
       auto const shared = parseInt<int>(f[6]);
       auto const threads = parseInt<int>(f[7]);
       auto const local = parseInt<int>(f[8]);
-      auto const plan = planned ? parsePlan(f[9], f[10]) : std::optional<RegisterPlan>{};
+      std::optional<RegisterPlan> plan;
+      if (planned) { plan = parsePlan(f[9], f[10]); }
       auto const cfg = parseInt<u32>(f[planned ? 11 : 9]);
       auto const ts = parseInt<u64>(f[planned ? 12 : 10]);
       if (!sess || !kind || !regs || !shared || !threads || !local || (planned && !plan) || !cfg || !ts ||
