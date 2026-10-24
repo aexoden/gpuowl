@@ -36,7 +36,8 @@ Board busyBoard() {
                          .options = "INPLACE=0",
                          .result = "640.0 us/it",
                          .measured = 640,
-                         .predicted = 630});
+                         .predicted = 600,
+                         .mean = 630});
   }
   b.events = {"21:00:00 wrote tune-ll.txt: 1 lines"};
   return b;
@@ -62,7 +63,7 @@ TEST(the_frame_shows_what_matters) {
   CHECK(all.find("expected regret 0.57%") != std::string::npos);
   CHECK(all.find("FAULTS") != std::string::npos);
   CHECK(all.find("PUBLISHED") != std::string::npos);
-  CHECK(all.find("predicted/measured 0.984") != std::string::npos);
+  CHECK(all.find("mean predicted/measured 0.984") != std::string::npos);
   CHECK(all.find("wrote tune-ll.txt") != std::string::npos);
   CHECK(all.find("SEARCH") != std::string::npos);
   CHECK(all.find("lanes model 21.0 min") != std::string::npos);

@@ -21,7 +21,8 @@ struct ItemReport {
   u64 exponent = 0;
   std::string result{};  // "505.4 us/it", "z 26.73", "nocompile"
   double measured = 0;   // microseconds per iteration; 0 where the item read none
-  double predicted = 0;  // what the model said before, where it said anything
+  double predicted = 0;  // what the draw that chose it said before, where one did
+  double mean = 0;       // what the posterior mean said before: the model's own estimate, unselected
   std::string why{};
 };
 

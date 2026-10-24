@@ -230,7 +230,9 @@ std::vector<Row> publishedPanel(const Board& b, size_t width, size_t rows) {
 std::vector<Row> modelPanel(const Board& b, size_t width, size_t) {
   std::vector<double> ratios;
   for (const ItemReport& r : b.recent) {
-    if (r.measured > 0 && r.predicted > 0) { ratios.push_back(r.predicted / r.measured); }
+    // The posterior mean's estimate, not the draw's that chose the set: that one is optimistic by its selection.
+    double const predicted = r.mean > 0 ? r.mean : r.predicted;
+    if (r.measured > 0 && predicted > 0) { ratios.push_back(predicted / r.measured); }
     if (ratios.size() == CALIBRATION_CALLS) { break; }
   }
   std::string calibration = "no predictions yet";
@@ -240,7 +242,7 @@ std::vector<Row> modelPanel(const Board& b, size_t width, size_t) {
     std::vector<double> errors;
     for (double const r : ratios) { errors.push_back(std::abs(std::log(r))); }
     std::ranges::nth_element(errors, errors.begin() + i64(errors.size() / 2));
-    calibration = format("last %zu calls: predicted/measured %.3f, median error %.1f%%", ratios.size(),
+    calibration = format("last %zu calls: mean predicted/measured %.3f, median error %.1f%%", ratios.size(),
                          std::exp(logs / double(ratios.size())), 100 * errors[errors.size() / 2]);
   }
   return {heading("MODEL", format("%u readings", b.state.observations)),

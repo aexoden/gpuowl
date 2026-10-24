@@ -354,6 +354,13 @@ std::string formatRow(const KresRow& row) {
     std::to_string(r.localBytes) + ' ' + std::to_string(row.cfg) + ' ' + std::to_string(row.ts);
 }
 
+std::string formatRow(const PredRow& row) {
+  char buf[96];
+  std::snprintf(buf, sizeof(buf), "pred %u %.2f %.2f %llu", row.sess, row.mean, row.draw,
+                static_cast<unsigned long long>(row.ts));
+  return buf;
+}
+
 const DbEnv* TuneDB::findEnv(u32 id) const {
   auto const it = std::ranges::find(envs_, id, &DbEnv::id);
   return it == envs_.end() ? nullptr : &*it;
@@ -529,6 +536,13 @@ bool TuneDB::add(const RefRow& row) {
   return record(refs_, row);
 }
 
+bool TuneDB::add(const PredRow& row) {
+  // Like an item, it answers no attempt.
+  if (!findSession(row.sess) || !(row.mean > 0) || !(row.draw > 0) || !append(formatRow(row))) { return false; }
+  preds_.push_back(row);
+  return true;
+}
+
 bool TuneDB::add(const KresRow& row) {
   if (row.key.empty() || row.key.find_first_of(" \t\"") != std::string::npos || !findCfg(row.cfg)) { return false; }
   return record(kres_, row);
@@ -647,6 +661,7 @@ void TuneDB::clear() {
   refs_.clear();
   items_.clear();
   kres_.clear();
+  preds_.clear();
   unknown_.clear();
   open_.clear();
 }
@@ -659,8 +674,8 @@ struct Shape {
   size_t fields;
 };
 
-constexpr Shape SHAPES[] = {{"cfg", 3},    {"call", 15}, {"try", 7}, {"done", 3},  {"roe", 10},
-                            {"anchor", 8}, {"regs", 12}, {"ref", 7}, {"item", 10}, {"kres", 11}};
+constexpr Shape SHAPES[] = {{"cfg", 3},   {"call", 15}, {"try", 7},   {"done", 3},  {"roe", 10}, {"anchor", 8},
+                            {"regs", 12}, {"ref", 7},   {"item", 10}, {"kres", 11}, {"pred", 5}};
 
 }  // namespace
 
@@ -931,6 +946,14 @@ bool TuneDB::parse(std::string_view text, std::string_view name) {
           !add(
             RefRow{.sess = *sess, .fft = f[2], .exponent = *exponent, .iters = *iters, .res64 = *res64, .ts = *ts})) {
         refuse("malformed ref record");
+      }
+    } else if (tag == "pred" && f.size() == 5) {
+      auto const sess = parseInt<u32>(f[1]);
+      auto const mean = parseDouble(f[2]);
+      auto const draw = parseDouble(f[3]);
+      auto const ts = parseInt<u64>(f[4]);
+      if (!sess || !mean || !draw || !ts || !add(PredRow{.sess = *sess, .mean = *mean, .draw = *draw, .ts = *ts})) {
+        refuse("malformed pred record");
       }
     } else if (tag == "kres" && f.size() == 11) {
       auto const sess = parseInt<u32>(f[1]);

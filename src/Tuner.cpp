@@ -91,7 +91,10 @@ private:
 };
 
 void report(const ItemReport& item, Watch* watch) {
-  std::string const predicted = item.predicted > 0 ? "predicted " + std::to_string(item.predicted).substr(0, 6) : "";
+  std::string predicted = item.predicted > 0 ? "predicted " + std::to_string(item.predicted).substr(0, 6) : "";
+  if (item.mean > 0 && std::abs(item.mean / item.predicted - 1) > 0.0005) {
+    predicted += ", mean " + std::to_string(item.mean).substr(0, 6);
+  }
   std::string const note = predicted.empty() ? item.why : item.why.empty() ? predicted : predicted + "; " + item.why;
   log("tune: %u. %s%s -use %s at %" PRIu64 ": %s%s\n", item.n, item.kind == "gate" ? "gate " : "", item.what.c_str(),
       item.options.c_str(), item.exponent, item.result.c_str(), note.empty() ? "" : (" (" + note + ")").c_str());
@@ -289,8 +292,10 @@ LoopResult runLoop(Device& device, TuneDB& db, u32 env, const Env& card, const R
 
     recordItem(toString(proposal->lane), proposal->what, proposal->packet, proposal->ordinal,
                proposal->candidate->subject.fft, proposal->candidate->subject.kind, proposal->options, began);
+    double const meanUs = std::exp(model.predict(model.mean(), proposal->candidate->subject, proposal->options));
+    (void)db.add(PredRow{.sess = device.session(), .mean = meanUs, .draw = proposal->predictedUs, .ts = began});
     callOf(*proposal->candidate, proposal->options,
-           {.n = items, .kind = "call", .predicted = proposal->predictedUs, .why = proposal->why});
+           {.n = items, .kind = "call", .predicted = proposal->predictedUs, .mean = meanUs, .why = proposal->why});
   }
   return out;
 }

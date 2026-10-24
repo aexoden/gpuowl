@@ -93,6 +93,7 @@ TEST(db_round_trips_every_record_in_order) {
                          .resources = {.regs = 128, .localBytes = 16, .sharedBytes = 8192, .threads = 256},
                          .cfg = f.cfg,
                          .ts = 1006}));
+  CHECK(f.db.add(PredRow{.sess = f.sess, .mean = 812.25, .draw = 700.5, .ts = 1007}));
 
   std::string const text = f.db.text();
   TuneDB back;
@@ -108,6 +109,8 @@ TEST(db_round_trips_every_record_in_order) {
   CHECK_EQ(back.kres().size(), size_t{1});
   CHECK_EQ(back.kres()[0].resources.localBytes, 16);
   CHECK_EQ(back.kres()[0].cfg, f.cfg);
+  CHECK_EQ(back.preds().size(), size_t{1});
+  CHECK(back.preds()[0].mean == 812.25 && back.preds()[0].draw == 700.5);
   CHECK_EQ(back.findSession(f.sess)->settings, std::string{"workload=67M-72M"});
   CHECK_EQ(back.envAnchor(f.env), std::string{"1K:13:256:202@67513549"});
   CHECK(back.envBaseline(f.env) != nullptr);
