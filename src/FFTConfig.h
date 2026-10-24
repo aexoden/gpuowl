@@ -100,11 +100,13 @@ struct FFTConfig {
 public:
   // uses, if given, receives the -use settings from the chosen FFT's tune.txt line
   // ll: for an LL test, which takes its FFTs from the LL lines of the tune file (TuneEntry::tunedLines).
-  static FFTConfig bestFit(const Args& args, u64 E, const std::string& spec, vector<KeyVal>* uses = nullptr, bool ll = false);
+  // errorChecked:  the work catches its own errors (PRP's Gerbicz check, proof verification), so an -fft that is too small for E is used anyway
+  static FFTConfig bestFit(const Args& args, u64 E, const std::string& spec, vector<KeyVal>* uses = nullptr, bool ll = false,
+                           bool errorChecked = true);
   // The same choice as a list:  one FFT for an -fft spec or a tune.txt line, else the untuned candidates in order of preference
   // (Task::execute tries the next when a GPU can't be built for one).  Throws "No FFT" if none can handle E.
   static vector<FFTConfig> bestFits(const Args& args, u64 E, const std::string& spec, vector<KeyVal>* uses = nullptr,
-                                    bool ll = false);
+                                    bool ll = false, bool errorChecked = true);
 
   // Which FP and NTT primes are involved in the FFT
   bool FFT_FP64;
