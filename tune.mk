@@ -119,4 +119,4 @@ $(BIN)/tests/%.o : tests/%.cpp $(DEPDIR)/%.d
 	$(COMPILE.cc) -Isrc $(OUTPUT_OPTION) $<
 	$(POSTCOMPILE)
 
-include $(wildcard $(patsubst %,$(DEPDIR)/%.d,$(basename $(TESTSRCS))))
+include $(wildcard $(patsubst %,$(DEPDIR)/%.d,$(basename $(TESTSRCS) bench_Sim.cpp)))
