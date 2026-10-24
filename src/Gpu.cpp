@@ -346,6 +346,7 @@ string clDefines(Args& args, cl_device_id id, FFTConfig fft, u32 nW, u32 nH, u64
                               "LOADS","STORES",
                               "WMUL",
                               "MULTI_Q",
+                              "SLEEP_WAIT",
                               // Read by the kernels too (cl/*.cl), so not unrecognized
                               "CARRY96", "CARRY_SUB_X", "DISABLE_MUL64", "DISABLE_NEW_ONEPAIRSQ", "ENABLE_ALT_MUL64",
                               "ENABLE_BARSYNC", "ENABLE_FP32_VARIANT_2", "ENABLE_MAD64", "ENABLE_RESTRICT", "FUSE_WEIGHT_BUTTERFLY",
@@ -1080,7 +1081,7 @@ Gpu::Gpu(GpuCommon s, FFTConfig fft, u64 E, const vector<KeyVal>& extraConf, boo
   nW(fft.shape.nW(args.radix8At256(fft.shape.spec(), false))),
   nH(fft.shape.nH(args.radix8At256(fft.shape.spec(), true))),
   useLongCarry{args.carry == CARRY_64},
-  queue{*shared.context, args.profile},
+  queue{*shared.context, args.profile, false, args.value("SLEEP_WAIT", -1)},
       
   compiler{args, shared.context, clDefines(args, shared.context->deviceId(), fft, nW, nH, E, logFftSize, tail_single_wide, tail_single_kernel, in_place, pad_size, wmul,
                                multi_q, l2_striping, graphs, zero_q)},
