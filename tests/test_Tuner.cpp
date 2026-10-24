@@ -8,7 +8,9 @@
 #include "Audit.h"
 #include "Explore.h"
 #include "FFTVariants.h"
+#include "File.h"
 #include "Prior.h"
+#include "Report.h"
 #include "timeutil.h"
 #include "Tuner.h"
 
@@ -17,6 +19,8 @@
 #include <cstdlib>
 #include <map>
 #include <random>
+
+#include <unistd.h>
 
 using namespace tune;
 
@@ -188,10 +192,22 @@ TEST(a_budget_ends_the_campaign_and_a_larger_one_resumes_it) {
     makeScope({.lo = 67'400'000, .hi = 67'600'000, .probe = 67'500'000, .kinds = {TestKind::PRP}}, {});
 
   // A simulated call takes 8 s: 10 minutes is about 75 of them.
+  fs::path const dir = fs::temp_directory_path() / ("prpll-test-budget-" + std::to_string(getpid()));
+  fs::remove_all(dir);
+  fs::create_directories(dir);
   SimDevice first{db, db.beginSession(env, "", 0, "")};
-  LoopResult const a = runLoop(first, db, env, nvidia(), scope,
-                               {.stop = 0, .budget = 600, .seed = 3, .regretEvery = 1000, .maxItems = 500});
+  LoopResult const a = runLoop(
+    first, db, env, nvidia(), scope,
+    {.stop = 0, .budget = 600, .seed = 3, .regretEvery = 1000, .maxItems = 500, .publishTo = dir, .settings = "sim"});
   CHECK(a.budgetSpent);
+  // The report beside the tune files says how the run ended.
+  std::string const report = File::openRead(dir / REPORT_FILE).readAll();
+  CHECK(report.find("\"state\": \"budget spent\"") != std::string::npos);
+  CHECK(report.find("\"settings\": \"sim\"") != std::string::npos);
+  CHECK(report.find("\"published\": [\n") != std::string::npos);
+  CHECK(std::ranges::count(report, '{') == std::ranges::count(report, '}'));
+  CHECK(std::ranges::count(report, '[') == std::ranges::count(report, ']'));
+  fs::remove_all(dir);
   CHECK(a.elapsed >= 600 && a.elapsed < 640);
   CHECK(first.calls > 50 && first.calls < 90);
 
@@ -240,7 +256,8 @@ TEST(the_end_of_a_budget_confirms_then_audits) {
 
   Readings const readings{db, env, nvidia()};
   std::vector<std::vector<Candidate>> const candidates{candidatesOf(nvidia(), scope, TestKind::PRP)};
-  std::vector<std::string> const report = auditReport(db, env, readings, publish(scope, candidates, readings), true);
+  Publication const published = publish(scope, candidates, readings);
+  std::vector<std::string> const report = auditReport(auditSummary(db, env, readings, published, true), true);
   CHECK(report.size() >= 3);
   for (const std::string& line : report) { printf("%s\n", line.c_str()); }
 }

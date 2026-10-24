@@ -22,6 +22,7 @@ TUNE_SRCS = \
   Lanes.cpp \
   Explore.cpp \
   Audit.cpp \
+  Report.cpp \
   Optimize.cpp \
   Scope.cpp \
   TuneCommand.cpp \

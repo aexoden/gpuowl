@@ -12,6 +12,7 @@
 #include "fs.h"
 #include "GpuCommon.h"
 #include "log.h"
+#include "Report.h"
 #include "Restart.h"
 #include "Signal.h"
 #include "version.h"
@@ -189,6 +190,8 @@ LoopResult runLoop(Device& device, TuneDB& db, u32 env, const Env& card, const R
   LoopResult out;
   u32 sinceRegret = settings.regretEvery;
   std::string coverage = "not yet summed";
+  std::optional<CoverageSummary> covered;
+  std::string lastReport;
   bool endPhase = false;
   bool auditDone = false;
   u32 items = 0;
@@ -243,7 +246,20 @@ LoopResult runLoop(Device& device, TuneDB& db, u32 env, const Env& card, const R
     out.elapsed = laneTime(db, env).total();
     if (settings.budget > 0 && out.elapsed >= settings.budget) {
       out.budgetSpent = true;
-      for (const std::string& line : auditReport(db, env, readings, publication, true)) {
+      // Its last word, from where it stands now: the report is otherwise written after the checks below.
+      lastReport = reportJson({.version = VERSION,
+                               .settings = settings.settings,
+                               .state = "budget spent",
+                               .elapsed = out.elapsed,
+                               .budget = settings.budget,
+                               .T = publication.T(),
+                               .regret = out.regret,
+                               .lanes = laneTime(db, env),
+                               .coverage = covered,
+                               .publication = &publication,
+                               .audit = auditSummary(db, env, readings, publication, true)});
+      writeReport(settings.publishTo, lastReport);
+      for (const std::string& line : auditReport(auditSummary(db, env, readings, publication, true), true)) {
         log("tune: %s\n", line.c_str());
       }
       break;
@@ -301,7 +317,8 @@ LoopResult runLoop(Device& device, TuneDB& db, u32 env, const Env& card, const R
           " of " + std::to_string(counts.searches) + " searches";
       log("tune: T %.2f us/it over %s of the workload; expected regret %s%s\n", out.T,
           percent(publication.coverage()).c_str(), percent(out.regret).c_str(), inexact.c_str());
-      coverage = toString(summarize(card, candidates, readings, filter));
+      covered = summarize(card, candidates, readings, filter);
+      coverage = toString(*covered);
       log("tune: coverage: %s\n", coverage.c_str());
       log("tune: lanes: %s\n", toString(laneTime(db, env)).c_str());
       if (settings.watch) { settings.watch->state(stateOf(publication, readings, model, db, env, coverage, out)); }
@@ -310,6 +327,23 @@ LoopResult runLoop(Device& device, TuneDB& db, u32 env, const Env& card, const R
         break;
       }
     }
+
+    // Where the run stands, rewritten each item; the coverage as of the last regret estimate.
+    auto report = [&](const char* state, bool budgetSpent) {
+      lastReport = reportJson({.version = VERSION,
+                               .settings = settings.settings,
+                               .state = state,
+                               .elapsed = out.elapsed,
+                               .budget = settings.budget,
+                               .T = publication.T(),
+                               .regret = out.regret,
+                               .lanes = laneTime(db, env),
+                               .coverage = covered,
+                               .publication = &publication,
+                               .audit = auditSummary(db, env, readings, publication, budgetSpent)});
+      writeReport(settings.publishTo, lastReport);
+    };
+    report("running", false);
 
     auto modelStep = [&]() -> std::optional<Proposal> {
       std::optional<Choice> choice;
@@ -332,7 +366,7 @@ LoopResult runLoop(Device& device, TuneDB& db, u32 env, const Env& card, const R
                          settings.budget, settings.target, rng);
       if (!proposal && auditState(db, env, readings).declared) {
         auditDone = true;
-        for (const std::string& line : auditReport(db, env, readings, publication, false)) {
+        for (const std::string& line : auditReport(auditSummary(db, env, readings, publication, false), false)) {
           log("tune: %s\n", line.c_str());
         }
       }
@@ -366,6 +400,15 @@ LoopResult runLoop(Device& device, TuneDB& db, u32 env, const Env& card, const R
     (void)db.add(PredRow{.sess = device.session(), .mean = meanUs, .draw = proposal->predictedUs, .ts = began});
     callOf(*proposal->candidate, proposal->options,
            {.n = items, .kind = "call", .predicted = proposal->predictedUs, .mean = meanUs, .why = proposal->why});
+  }
+  // A run stopped otherwise says so: the report written last, its state replaced.
+  if (!out.budgetSpent && !lastReport.empty() && !settings.publishTo.empty()) {
+    std::string const running = "\"state\": \"running\"";
+    if (size_t const at = lastReport.find(running); at != std::string::npos) {
+      lastReport.replace(at, running.size(),
+                         std::string{"\"state\": \""} + (out.converged ? "converged" : "stopped") + '"');
+    }
+    writeReport(settings.publishTo, lastReport);
   }
   return out;
 }
@@ -477,6 +520,7 @@ RunOutcome runTune(GpuCommon shared, const TuneCommand& command) {
                                      .tailQueues = command.tailQueues,
                                      .publishTo = fs::current_path(),
                                      .header = headerFor(*scope, command),
+                                     .settings = settingsWord(*scope, command),
                                      .watch = dashboard ? &*dashboard : nullptr});
   dashboard.reset();
 

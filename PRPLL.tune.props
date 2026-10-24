@@ -23,6 +23,7 @@
     <ClCompile Include=".\src\Lanes.cpp" />
     <ClCompile Include=".\src\Explore.cpp" />
     <ClCompile Include=".\src\Audit.cpp" />
+    <ClCompile Include=".\src\Report.cpp" />
     <ClCompile Include=".\src\Optimize.cpp" />
     <ClCompile Include=".\src\Scope.cpp" />
     <ClCompile Include=".\src\TuneCommand.cpp" />

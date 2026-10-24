@@ -39,8 +39,26 @@ struct AuditState {
                                               u32 env, u32 sess, u64 now, const ExploreSettings& settings,
                                               double elapsed, double budget, double target, std::mt19937_64& rng);
 
-// What the campaign can say at its end, a line each: the audit's trials, what they found, and the state it ends in.
-[[nodiscard]] std::vector<std::string> auditReport(const TuneDB& db, u32 env, const Readings& readings,
-                                                   const Publication& publication, bool budgetSpent);
+// What the campaign can say of its audit.
+struct AuditSummary {
+  enum class State : u8 { None, Running, FoundGains, Exhausted, NoTime, Complete };
+  State state = State::None;
+  bool declared = false;
+  u32 trials = 0;
+  u32 done = 0;
+  u32 failedStarts = 0;
+  double baseline = 0;  // T when declared
+  double target = 0;
+  double now = 0;                    // T now
+  double gain = 0;                   // 1 - now / baseline
+  double bound = 0;                  // where complete: the chance one trial finds the target, at 95%
+  std::vector<const Line*> found{};  // published lines an audit trial read first
+};
+[[nodiscard]] const char* toString(AuditSummary::State state);
+[[nodiscard]] AuditSummary auditSummary(const TuneDB& db, u32 env, const Readings& readings,
+                                        const Publication& publication, bool budgetSpent);
+
+// The same as the log gives it, a line each.
+[[nodiscard]] std::vector<std::string> auditReport(const AuditSummary& summary, bool budgetSpent);
 
 }  // namespace tune

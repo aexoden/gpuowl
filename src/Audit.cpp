@@ -135,20 +135,32 @@ std::optional<Proposal> endStep(const AcquireContext& context, const Publication
   return step;
 }
 
-std::vector<std::string> auditReport(const TuneDB& db, u32 env, const Readings& readings,
-                                     const Publication& publication, bool budgetSpent) {
-  AuditState const state = auditState(db, env, readings);
-  if (!state.declared) {
-    return {std::string{"audit: none; "} +
-            (budgetSpent ? "the budget ended before what is published was confirmed" : "not yet begun")};
+const char* toString(AuditSummary::State state) {
+  switch (state) {
+  case AuditSummary::State::None: return "none";
+  case AuditSummary::State::Running: return "running";
+  case AuditSummary::State::FoundGains: return "found gains";
+  case AuditSummary::State::Exhausted: return "budget exhausted";
+  case AuditSummary::State::NoTime: return "no time";
+  case AuditSummary::State::Complete: return "complete";
   }
+  return "?";
+}
+
+AuditSummary auditSummary(const TuneDB& db, u32 env, const Readings& readings, const Publication& publication,
+                          bool budgetSpent) {
+  AuditState const state = auditState(db, env, readings);
+  AuditSummary out{.now = publication.T()};
+  if (!state.declared) { return out; }
   const AuditRow& a = *state.declared;
-  double const now = publication.T();
-  double const gain = a.baseline > 0 ? 1 - now / a.baseline : 0;
-  std::vector<std::string> out;
-  out.push_back("audit: " + std::to_string(a.trials) + " trials declared against T " + usText(a.baseline) + "; " +
-                std::to_string(state.done) + " done" +
-                (state.failedStarts ? " (" + std::to_string(state.failedStarts) + " starts could not be read)" : ""));
+  out.declared = true;
+  out.trials = a.trials;
+  out.done = state.done;
+  out.failedStarts = state.failedStarts;
+  out.baseline = a.baseline;
+  out.target = a.target;
+  out.gain = a.baseline > 0 ? 1 - out.now / a.baseline : 0;
+
   // The published lines an audit trial read first.
   std::map<std::pair<std::string, std::string>, std::string> firstLane;
   for (const ItemRow& r : db.items()) {
@@ -157,38 +169,65 @@ std::vector<std::string> auditReport(const TuneDB& db, u32 env, const Readings& 
       firstLane.try_emplace({r.fft, configText(*options)}, r.lane);
     }
   }
-  u32 found = 0;
   for (const KindPublication& kind : publication.kinds) {
     for (const Line& line : kind.lines) {
       auto const it = firstLane.find({line.candidate->subject.fft.spec(), configText(line.reading->options)});
-      if (it != firstLane.end() && it->second == AUDIT) {
-        ++found;
-        out.push_back("audit: found " + line.candidate->subject.fft.spec() + " -use " +
-                      configText(line.reading->options) + " at " + usText(line.cost()) + " us/it");
-      }
+      if (it != firstLane.end() && it->second == AUDIT) { out.found.push_back(&line); }
     }
   }
 
-  // What moved T since the baseline: the trials' finds, or the search that went on around and after them.
-  out.push_back("audit: T now " + usText(now) + ", " + percentText(gain) + " below the baseline" +
-                (gain > 0 && found == 0 ? ", none of it found by a trial" : "") + "; the target is " +
-                percentText(a.target));
-
   bool const complete = state.done >= a.trials;
-  if (found > 0 && gain > a.target) {
-    out.push_back(std::string{"audit: found gains"} + (complete ? "" : ", the budget spent before every trial ran") +
-                  ": the search had not converged");
+  if (!out.found.empty() && out.gain > a.target) {
+    out.state = AuditSummary::State::FoundGains;
   } else if (!complete) {
-    out.push_back("audit: budget exhausted, " + std::to_string(state.done) + " of " + std::to_string(a.trials) +
-                  " trials run");
+    out.state = budgetSpent ? AuditSummary::State::Exhausted : AuditSummary::State::Running;
   } else if (a.trials == 0) {
-    out.push_back("audit: no time was left for a trial");
+    out.state = AuditSummary::State::NoTime;
   } else {
-    double const bound = 1 - std::pow(0.05, 1.0 / a.trials);
+    out.state = AuditSummary::State::Complete;
+    out.bound = 1 - std::pow(0.05, 1.0 / a.trials);
+  }
+  return out;
+}
+
+std::vector<std::string> auditReport(const AuditSummary& s, bool budgetSpent) {
+  if (!s.declared) {
+    return {std::string{"audit: none; "} +
+            (budgetSpent ? "the budget ended before what is published was confirmed" : "not yet begun")};
+  }
+  std::vector<std::string> out;
+  out.push_back("audit: " + std::to_string(s.trials) + " trials declared against T " + usText(s.baseline) + "; " +
+                std::to_string(s.done) + " done" +
+                (s.failedStarts ? " (" + std::to_string(s.failedStarts) + " starts could not be read)" : ""));
+  for (const Line* line : s.found) {
+    out.push_back("audit: found " + line->candidate->subject.fft.spec() + " -use " +
+                  configText(line->reading->options) + " at " + usText(line->cost()) + " us/it");
+  }
+  // What moved T since the baseline: the trials' finds, or the search that went on around and after them.
+  out.push_back("audit: T now " + usText(s.now) + ", " + percentText(s.gain) + " below the baseline" +
+                (s.gain > 0 && s.found.empty() ? ", none of it found by a trial" : "") + "; the target is " +
+                percentText(s.target));
+  switch (s.state) {
+  case AuditSummary::State::FoundGains:
+    out.push_back(std::string{"audit: found gains"} +
+                  (s.done < s.trials ? ", the budget spent before every trial ran" : "") +
+                  ": the search had not converged");
+    break;
+  case AuditSummary::State::Running:
+    out.push_back("audit: running, " + std::to_string(s.done) + " of " + std::to_string(s.trials) + " trials run");
+    break;
+  case AuditSummary::State::Exhausted:
+    out.push_back("audit: budget exhausted, " + std::to_string(s.done) + " of " + std::to_string(s.trials) +
+                  " trials run");
+    break;
+  case AuditSummary::State::NoTime: out.push_back("audit: no time was left for a trial"); break;
+  case AuditSummary::State::Complete:
     out.push_back("audit: complete: no trial improved the workload by more than the target; with 95% confidence one "
                   "trial of this generator does so with probability below " +
-                  percentText(bound) +
+                  percentText(s.bound) +
                   ".  Not a claim of an optimum: a narrow enough basin escapes any number of trials");
+    break;
+  case AuditSummary::State::None: break;
   }
   return out;
 }
