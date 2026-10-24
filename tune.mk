@@ -107,6 +107,13 @@ check: $(BIN)/prpll-test $(CHECKERS)
 $(BIN)/prpll-test: $(filter-out $(BIN)/main.o,$(OBJS)) $(TESTOBJS) | $(CHECKERS)
 	$(CXX) $(LDFLAGS) $(CXXFLAGS) -o $@ $^ $(LIBPATH) $(OPENCL_LIBS)
 
+# The loop against simulated cards whose optimum is known (tests/bench_Sim.cpp): hours of CPU, run by hand.
+.PHONY: sim
+sim: $(BIN)/prpll-sim
+
+$(BIN)/prpll-sim: $(filter-out $(BIN)/main.o,$(OBJS)) $(BIN)/tests/bench_Sim.o
+	$(CXX) $(LDFLAGS) $(CXXFLAGS) -o $@ $^ $(LIBPATH) $(OPENCL_LIBS)
+
 $(BIN)/tests/%.o : tests/%.cpp $(DEPDIR)/%.d
 	@mkdir -p $(BIN)/tests
 	$(COMPILE.cc) -Isrc $(OUTPUT_OPTION) $<
