@@ -3,6 +3,7 @@
 #include "Tuner.h"
 
 #include "Args.h"
+#include "Audit.h"
 #include "BuildId.h"
 #include "Coverage.h"
 #include "Dashboard.h"
@@ -145,6 +146,7 @@ LoopResult runLoop(Device& device, TuneDB& db, u32 env, const Env& card, const R
   u32 sinceRegret = settings.regretEvery;
   std::string coverage = "not yet summed";
   bool endPhase = false;
+  bool auditDone = false;
   u32 items = 0;
 
   while (!device.stopped() && !Signal::stopRequested() && (!settings.maxItems || items < settings.maxItems)) {
@@ -202,6 +204,9 @@ LoopResult runLoop(Device& device, TuneDB& db, u32 env, const Env& card, const R
     out.elapsed = laneTime(db, env).total();
     if (settings.budget > 0 && out.elapsed >= settings.budget) {
       out.budgetSpent = true;
+      for (const std::string& line : auditReport(db, env, readings, publication, true)) {
+        log("tune: %s\n", line.c_str());
+      }
       break;
     }
     if (settings.budget > 0 && !endPhase && out.elapsed >= settings.budget * (1 - settings.reserve)) {
@@ -283,10 +288,21 @@ LoopResult runLoop(Device& device, TuneDB& db, u32 env, const Env& card, const R
                       .why = choice->why};
     };
     std::optional<Proposal> proposal;
+    if (endPhase && !auditDone) {
+      proposal = endStep(context, publication, db, env, device.session(), began, settings.explore, out.elapsed,
+                         settings.budget, settings.target, rng);
+      if (!proposal && auditState(db, env, readings).declared) {
+        auditDone = true;
+        for (const std::string& line : auditReport(db, env, readings, publication, false)) {
+          log("tune: %s\n", line.c_str());
+        }
+      }
+    }
     LaneTime const time = laneTime(db, env);
     double elapsed = 0;
     for (double const s : time.seconds) { elapsed += s; }
     for (Lane const lane : laneOrder(settings.lanes, time)) {
+      if (proposal) { break; }
       if (!settings.lanes.serves(lane)) { continue; }
       switch (lane) {
       case Lane::Model: proposal = modelStep(); break;
@@ -304,8 +320,9 @@ LoopResult runLoop(Device& device, TuneDB& db, u32 env, const Env& card, const R
       break;
     }
 
-    recordItem(toString(proposal->lane), proposal->what, proposal->packet, proposal->ordinal,
-               proposal->candidate->subject.fft, proposal->candidate->subject.kind, proposal->options, began);
+    recordItem(proposal->record.empty() ? std::string{toString(proposal->lane)} : proposal->record, proposal->what,
+               proposal->packet, proposal->ordinal, proposal->candidate->subject.fft, proposal->candidate->subject.kind,
+               proposal->options, began);
     double const meanUs = std::exp(model.predict(model.mean(), proposal->candidate->subject, proposal->options));
     (void)db.add(PredRow{.sess = device.session(), .mean = meanUs, .draw = proposal->predictedUs, .ts = began});
     callOf(*proposal->candidate, proposal->options,
@@ -416,6 +433,7 @@ RunOutcome runTune(GpuCommon shared, const TuneCommand& command) {
                                      .explore = command.explore,
                                      .budget = command.budget,
                                      .reserve = command.reserve,
+                                     .target = command.target,
                                      .seed = seed,
                                      .tailQueues = command.tailQueues,
                                      .publishTo = fs::current_path(),

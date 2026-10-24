@@ -185,6 +185,16 @@ struct KresRow {
   u64 ts = 0;
 };
 
+// A budgeted campaign's audit, declared when its end phase has confirmed what is published: how many independent trials
+// it will run, never changed after, what the workload cost when it began, and the improvement that counts as one.
+struct AuditRow {
+  u32 sess = 0;
+  u32 trials = 0;
+  double baseline = 0;  // T, microseconds per iteration
+  double target = 0;    // a fraction of T
+  u64 ts = 0;
+};
+
 // What the model expected of the item before it: the posterior mean's estimate, and the draw's that chose it (the
 // same for a lane that asks no draw).  Written after the item record it belongs to.  The draw's is optimistic by its
 // selection; the mean's is what calibration is measured by.
@@ -245,6 +255,7 @@ public:
   [[nodiscard]] const std::vector<ItemRow>& items() const { return items_; }
   [[nodiscard]] const std::vector<KresRow>& kres() const { return kres_; }
   [[nodiscard]] const std::vector<PredRow>& preds() const { return preds_; }
+  [[nodiscard]] const std::vector<AuditRow>& audits() const { return audits_; }
   [[nodiscard]] const std::vector<std::string>& unknownRows() const { return unknown_; }
 
   [[nodiscard]] const DbEnv* findEnv(u32 id) const;
@@ -276,6 +287,7 @@ public:
   [[nodiscard]] bool add(const ItemRow& row);
   [[nodiscard]] bool add(const KresRow& row);
   [[nodiscard]] bool add(const PredRow& row);
+  [[nodiscard]] bool add(const AuditRow& row);
 
   // The anchor an env is pinned to, as its earliest session that named one spells it, else as its earliest anchor
   // reading does; empty where it has none.
@@ -326,6 +338,7 @@ private:
   std::vector<ItemRow> items_;
   std::vector<KresRow> kres_;
   std::vector<PredRow> preds_;
+  std::vector<AuditRow> audits_;
   std::vector<std::string> unknown_;
 
   // Per session, the attempt it has open, if any.
@@ -345,6 +358,7 @@ private:
 [[nodiscard]] std::string formatRow(const ItemRow& row);
 [[nodiscard]] std::string formatRow(const KresRow& row);
 [[nodiscard]] std::string formatRow(const PredRow& row);
+[[nodiscard]] std::string formatRow(const AuditRow& row);
 
 // Whether `locks`, in the form of Linux's /proc/locks, lists a lock held on the file at (major, minor, inode).
 [[nodiscard]] bool lockListed(std::string_view locks, u32 major, u32 minor, u64 inode);

@@ -359,6 +359,7 @@ named "config.txt" in the prpll run directory.
                          budget=<t>|0        tuning time for the campaign, every run of it counted, e.g. 2h or
                                              90m; stop= is not used under a budget [0: none]
                          reserve=<P>%%        the share of the budget kept for confirming what is published [25%%]
+                         target=<P>%%         the workload improvement an audit trial must make to count [0.5%%]
                          randomReach=<f>x@<t>|all  how far behind the best a random pick may reach, the factor
                                              doubling every <t> (30m, 2h) of tuning [1.5x@30m]
                          pfaShapes=ntt|all|none  prime-factor middles considered [ntt]

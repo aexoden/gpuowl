@@ -52,6 +52,9 @@ struct Reach {
 // The share of a budget kept for its end: fresh calls of what is published, then the audit.
 inline constexpr double RESERVE = 0.25;
 
+// The improvement of the workload's cost, as a fraction, that counts as the audit finding something.
+inline constexpr double TARGET = 0.005;
+
 // What the lanes beyond the model's are allowed.
 struct ExploreSettings {
   double contenders = CONTENDERS;

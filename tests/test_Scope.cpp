@@ -110,6 +110,9 @@ TEST(every_setting_is_accepted_where_it_belongs) {
   CHECK(near(parsed("budget=2h").budget, 7200));
   CHECK(near(parsed("").budget, 0));
   CHECK(near(parsed("reserve=10%").reserve, 0.1));
+  CHECK(near(parsed("").target, TARGET));
+  CHECK(near(parsed("target=0.1%").target, 0.001));
+  CHECK(!refusal("target=0.1").empty());
   CHECK(!refusal("budget=2").empty());
   CHECK(!refusal("reserve=100%").empty());
   CHECK(parsed("randomReach=2x@1h").explore.reach == (Reach{.start = 2, .doubling = 3600}));

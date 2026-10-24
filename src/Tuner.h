@@ -56,6 +56,7 @@ struct LoopSettings {
   ExploreSettings explore{};
   double budget = 0;  // tuning seconds for the campaign, every session counted (laneTime()); 0 for none
   double reserve = RESERVE;
+  double target = TARGET;
   u64 seed = 1;
   TailQueues tailQueues = TailQueues::Ntt;
   u32 regretEvery = 32;  // calls between estimates of the regret

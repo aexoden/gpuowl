@@ -354,6 +354,13 @@ std::string formatRow(const KresRow& row) {
     std::to_string(r.localBytes) + ' ' + std::to_string(row.cfg) + ' ' + std::to_string(row.ts);
 }
 
+std::string formatRow(const AuditRow& row) {
+  char buf[128];
+  std::snprintf(buf, sizeof(buf), "audit %u %u %.2f %.5f %llu", row.sess, row.trials, row.baseline, row.target,
+                static_cast<unsigned long long>(row.ts));
+  return buf;
+}
+
 std::string formatRow(const PredRow& row) {
   char buf[96];
   std::snprintf(buf, sizeof(buf), "pred %u %.2f %.2f %llu", row.sess, row.mean, row.draw,
@@ -536,6 +543,12 @@ bool TuneDB::add(const RefRow& row) {
   return record(refs_, row);
 }
 
+bool TuneDB::add(const AuditRow& row) {
+  if (!findSession(row.sess) || !(row.baseline > 0) || !(row.target >= 0) || !append(formatRow(row))) { return false; }
+  audits_.push_back(row);
+  return true;
+}
+
 bool TuneDB::add(const PredRow& row) {
   // Like an item, it answers no attempt.
   if (!findSession(row.sess) || !(row.mean > 0) || !(row.draw > 0) || !append(formatRow(row))) { return false; }
@@ -662,6 +675,7 @@ void TuneDB::clear() {
   items_.clear();
   kres_.clear();
   preds_.clear();
+  audits_.clear();
   unknown_.clear();
   open_.clear();
 }
@@ -675,7 +689,7 @@ struct Shape {
 };
 
 constexpr Shape SHAPES[] = {{"cfg", 3},   {"call", 15}, {"try", 7},   {"done", 3},  {"roe", 10}, {"anchor", 8},
-                            {"regs", 12}, {"ref", 7},   {"item", 10}, {"kres", 11}, {"pred", 5}};
+                            {"regs", 12}, {"ref", 7},   {"item", 10}, {"kres", 11}, {"pred", 5}, {"audit", 6}};
 
 }  // namespace
 
@@ -946,6 +960,16 @@ bool TuneDB::parse(std::string_view text, std::string_view name) {
           !add(
             RefRow{.sess = *sess, .fft = f[2], .exponent = *exponent, .iters = *iters, .res64 = *res64, .ts = *ts})) {
         refuse("malformed ref record");
+      }
+    } else if (tag == "audit" && f.size() == 6) {
+      auto const sess = parseInt<u32>(f[1]);
+      auto const trials = parseInt<u32>(f[2]);
+      auto const baseline = parseDouble(f[3]);
+      auto const target = parseDouble(f[4]);
+      auto const ts = parseInt<u64>(f[5]);
+      if (!sess || !trials || !baseline || !target || !ts ||
+          !add(AuditRow{.sess = *sess, .trials = *trials, .baseline = *baseline, .target = *target, .ts = *ts})) {
+        refuse("malformed audit record");
       }
     } else if (tag == "pred" && f.size() == 5) {
       auto const sess = parseInt<u32>(f[1]);

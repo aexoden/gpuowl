@@ -163,6 +163,13 @@ TuneCommand parseTuneCommand(std::string_view text) {
         throw std::string{"-tune: reserve= takes a percentage below 100%, such as reserve=25%"};
       }
       out.reserve = *share / 100;
+    } else if (key == "target" && out.verb == TuneVerb::Run) {
+      std::optional<double> const share =
+        value.ends_with('%') ? parseDouble(value.substr(0, value.size() - 1)) : std::optional<double>{};
+      if (!share || *share < 0 || *share >= 100) {
+        throw std::string{"-tune: target= takes a percentage, such as target=0.5%"};
+      }
+      out.target = *share / 100;
     } else if (key == "randomReach" && out.verb == TuneVerb::Run) {
       std::optional<Reach> const reach = parseReach(value);
       if (!reach) {

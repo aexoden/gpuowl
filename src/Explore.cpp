@@ -458,8 +458,18 @@ std::optional<Proposal> coverageStep(const AcquireContext& context, const Explor
   return {};
 }
 
-std::optional<Proposal> restartStep(const AcquireContext& context, const ExploreSettings& settings, double elapsed,
-                                    const TuneDB& db, u32 env, std::mt19937_64& rng) {
+namespace {
+
+// How a run of restarts goes: the lane word its items are recorded under, whether a restart still improving goes on,
+// and whether a start may recombine the seeds other items read.
+struct Packets {
+  const char* record;
+  bool extend;
+  bool recombine;
+};
+
+std::optional<Proposal> restartIn(const AcquireContext& context, const ExploreSettings& settings, double elapsed,
+                                  const TuneDB& db, u32 env, std::mt19937_64& rng, const Packets& how) {
   std::vector<const Candidate*> const entries = entriesOf(context);
   if (entries.empty()) { return {}; }
   const Env& card = context.model.env();
@@ -470,7 +480,7 @@ std::optional<Proposal> restartStep(const AcquireContext& context, const Explore
   for (const ItemRow& r : db.items()) {
     if (db.envOf(r.sess) != env) { continue; }
     top = std::max(top, r.packet);
-    if (r.lane == toString(Lane::Restarts) && r.packet) { restarts[r.packet].push_back(&r); }
+    if (r.lane == how.record && r.packet) { restarts[r.packet].push_back(&r); }
   }
   if (!restarts.empty()) {
     auto const& [packet, steps] = *restarts.rbegin();
@@ -495,7 +505,7 @@ std::optional<Proposal> restartStep(const AcquireContext& context, const Explore
       if (best && options && *options == best->options) { bestAt = i + 1; }
     }
     bool const improving = bestAt + 2 > steps.size();
-    if (best && (steps.size() < RESTART_PACKET || (improving && steps.size() < RESTART_MOST))) {
+    if (best && (steps.size() < RESTART_PACKET || (how.extend && improving && steps.size() < RESTART_MOST))) {
       std::shared_ptr<const ConditionalSpace> const space =
         spaceOf(card, candidate->subject.fft, context.filter(*candidate));
       Mutator const mutator{*space, rng};
@@ -521,7 +531,8 @@ std::optional<Proposal> restartStep(const AcquireContext& context, const Explore
                         .predictedUs = predictedUs(context, *candidate, options),
                         .why = "restart " + std::to_string(packet) + ", step " + std::to_string(ordinal) +
                           (ordinal > RESTART_PACKET ? " (still improving)" : " of " + std::to_string(RESTART_PACKET)) +
-                          " from its own best (" + std::to_string(best->mean).substr(0, 6) + " us/it)"};
+                          " from its own best (" + std::to_string(best->mean).substr(0, 6) + " us/it)",
+                        .record = how.record};
       }
     }
   }
@@ -557,7 +568,7 @@ std::optional<Proposal> restartStep(const AcquireContext& context, const Explore
     std::vector<size_t> states = defaults;
 
     std::string kind;
-    switch (std::uniform_int_distribution<int>{0, 2}(rng)) {
+    switch (std::uniform_int_distribution<int>{0, how.recombine ? 2 : 1}(rng)) {
     case 0:
       kind = "random";
       for (size_t v = 0; v < vars.size(); ++v) { states[v] = mutator.anyLegal(v, states); }
@@ -614,9 +625,26 @@ std::optional<Proposal> restartStep(const AcquireContext& context, const Explore
                     .packet = packet,
                     .ordinal = 1,
                     .predictedUs = predictedUs(context, *c, options),
-                    .why = "restart " + std::to_string(packet) + ": " + kind + " start"};
+                    .why = "restart " + std::to_string(packet) + ": " + kind + " start",
+                    .record = how.record};
   }
   return {};
+}
+
+}  // namespace
+
+std::optional<Proposal> restartStep(const AcquireContext& context, const ExploreSettings& settings, double elapsed,
+                                    const TuneDB& db, u32 env, std::mt19937_64& rng) {
+  return restartIn(context, settings, elapsed, db, env, rng,
+                   {.record = toString(Lane::Restarts), .extend = true, .recombine = true});
+}
+
+std::optional<Proposal> auditTrialStep(const AcquireContext& context, const ExploreSettings& settings, double elapsed,
+                                       const TuneDB& db, u32 env, std::mt19937_64& rng) {
+  std::optional<Proposal> p =
+    restartIn(context, settings, elapsed, db, env, rng, {.record = "audit", .extend = false, .recombine = false});
+  if (p) { p->why = "audit trial " + p->why.substr(std::string_view{"restart "}.size()); }
+  return p;
 }
 
 }  // namespace tune

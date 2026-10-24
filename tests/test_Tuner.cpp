@@ -5,6 +5,7 @@
 
 #include "test.h"
 
+#include "Audit.h"
 #include "Explore.h"
 #include "FFTVariants.h"
 #include "Prior.h"
@@ -201,4 +202,45 @@ TEST(a_budget_ends_the_campaign_and_a_larger_one_resumes_it) {
   CHECK(b.budgetSpent);
   CHECK(b.elapsed >= 900 && b.elapsed < 940);
   CHECK(second.calls > 25 && second.calls < 50);
+}
+
+TEST(the_end_of_a_budget_confirms_then_audits) {
+  TuneDB db;
+  CHECK(db.parse(std::string{TuneDB::HEADER} + '\n', "sim"));
+  u32 const env = db.internEnv(DbEnv{.gpu = "sim", .isNvidia = true, .cudaBackend = true, .computeCapability = 860});
+  RunScope const scope =
+    makeScope({.lo = 67'400'000, .hi = 67'600'000, .probe = 67'500'000, .kinds = {TestKind::PRP}}, {});
+  SimDevice device{db, db.beginSession(env, "", 0, "")};
+  LoopResult const r =
+    runLoop(device, db, env, nvidia(), scope,
+            {.stop = 0, .budget = 1800, .reserve = 0.4, .seed = 5, .regretEvery = 1000, .maxItems = 900});
+  CHECK(r.budgetSpent);
+
+  // Every published line read afresh CONFIRM_CALLS times before the audit was declared.
+  CHECK_EQ(db.audits().size(), size_t{1});
+  const AuditRow& audit = db.audits().front();
+  std::map<std::string, u32> confirmed;
+  for (const ItemRow& item : db.items()) {
+    if (item.lane == "confirm") {
+      CHECK(item.ts <= audit.ts);
+      ++confirmed[item.fft + '|' + std::to_string(item.cfg)];
+    }
+  }
+  CHECK(!confirmed.empty());
+  for (const auto& [line, calls] : confirmed) { CHECK(calls <= CONFIRM_CALLS); }
+
+  // No more trials than declared, each no longer than a restart's packet.
+  CHECK(audit.trials > 0);
+  std::map<u32, u32> trials;
+  for (const ItemRow& item : db.items()) {
+    if (item.lane == "audit") { ++trials[item.packet]; }
+  }
+  CHECK(!trials.empty() && trials.size() <= audit.trials);
+  for (const auto& [packet, steps] : trials) { CHECK(steps <= RESTART_PACKET); }
+
+  Readings const readings{db, env, nvidia()};
+  std::vector<std::vector<Candidate>> const candidates{candidatesOf(nvidia(), scope, TestKind::PRP)};
+  std::vector<std::string> const report = auditReport(db, env, readings, publish(scope, candidates, readings), true);
+  CHECK(report.size() >= 3);
+  for (const std::string& line : report) { printf("%s\n", line.c_str()); }
 }

@@ -46,6 +46,7 @@ struct Proposal {
   u32 ordinal = 0;
   double predictedUs = 0;  // under the posterior mean
   std::string why{};
+  std::string record{};  // the item record's lane word, where it is not the lane's own: "confirm", "audit"
 };
 
 // The next item of the coverage lane: a first look at an entry nothing has read, the next item of the least tried
@@ -60,6 +61,11 @@ struct Proposal {
 // What two moves do together is what single moves, and a model of their sum, cannot show.
 [[nodiscard]] std::optional<Proposal> interactionStep(const AcquireContext& context, const ExploreSettings& settings,
                                                       double elapsed, std::mt19937_64& rng);
+
+// The next step of the audit's trials: restarts as that lane's, but each exactly RESTART_PACKET steps and drawn
+// without reading other trials (no recombination), so that the trials are independent; items recorded as "audit".
+[[nodiscard]] std::optional<Proposal> auditTrialStep(const AcquireContext& context, const ExploreSettings& settings,
+                                                     double elapsed, const TuneDB& db, u32 env, std::mt19937_64& rng);
 
 // The next item of the restarts lane: the open restart's next local step from its own best, or a new start.
 [[nodiscard]] std::optional<Proposal> restartStep(const AcquireContext& context, const ExploreSettings& settings,
