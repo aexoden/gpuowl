@@ -88,7 +88,7 @@ std::vector<Landscape> scenarios() {
                             .factor = 0.80}}});
   {
     UseConfig const five{
-      {"HOIST_W", "1"}, {"ENABLE_RESTRICT", "1"}, {"L1CUDA", "1"}, {"OLD_FENCE", "0"}, {"MULTI_Q", "1"}};
+      {"HOIST_W", "1"}, {"ENABLE_RESTRICT", "1"}, {"L1CUDA", "1"}, {"OLD_FENCE", "0"}, {"ZEROHACK_H", "0"}};
     Landscape narrow{.name = "narrow", .base = jittered, .terms = {}};
     for (const auto& [key, value] : five) {
       narrow.terms.push_back({.name = key + "=" + value + " costs 1%",
