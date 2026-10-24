@@ -178,3 +178,27 @@ TEST(the_lanes_measure_legal_sets_in_packets_of_their_own) {
     }
   }
 }
+
+TEST(a_budget_ends_the_campaign_and_a_larger_one_resumes_it) {
+  TuneDB db;
+  CHECK(db.parse(std::string{TuneDB::HEADER} + '\n', "sim"));
+  u32 const env = db.internEnv(DbEnv{.gpu = "sim", .isNvidia = true, .cudaBackend = true, .computeCapability = 860});
+  RunScope const scope =
+    makeScope({.lo = 67'400'000, .hi = 67'600'000, .probe = 67'500'000, .kinds = {TestKind::PRP}}, {});
+
+  // A simulated call takes 8 s: 10 minutes is about 75 of them.
+  SimDevice first{db, db.beginSession(env, "", 0, "")};
+  LoopResult const a = runLoop(first, db, env, nvidia(), scope,
+                               {.stop = 0, .budget = 600, .seed = 3, .regretEvery = 1000, .maxItems = 500});
+  CHECK(a.budgetSpent);
+  CHECK(a.elapsed >= 600 && a.elapsed < 640);
+  CHECK(first.calls > 50 && first.calls < 90);
+
+  // Resumed with 15 minutes: about five more.
+  SimDevice second{db, db.beginSession(env, "", 1, "")};
+  LoopResult const b = runLoop(second, db, env, nvidia(), scope,
+                               {.stop = 0, .budget = 900, .seed = 4, .regretEvery = 1000, .maxItems = 500});
+  CHECK(b.budgetSpent);
+  CHECK(b.elapsed >= 900 && b.elapsed < 940);
+  CHECK(second.calls > 25 && second.calls < 50);
+}

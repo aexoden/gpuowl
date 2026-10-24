@@ -356,6 +356,9 @@ named "config.txt" in the prpll run directory.
                                              alone [70/20/10/0~30/30/20/20@4h]
                          contenders=<P>%%|all  how far behind the best an FFT may be and still have its structural
                                              variants explored [15%%]
+                         budget=<t>|0        tuning time for the campaign, every run of it counted, e.g. 2h or
+                                             90m; stop= is not used under a budget [0: none]
+                         reserve=<P>%%        the share of the budget kept for confirming what is published [25%%]
                          randomReach=<f>x@<t>|all  how far behind the best a random pick may reach, the factor
                                              doubling every <t> (30m, 2h) of tuning [1.5x@30m]
                          pfaShapes=ntt|all|none  prime-factor middles considered [ntt]

@@ -44,6 +44,14 @@ struct Reach {
 [[nodiscard]] std::optional<Reach> parseReach(std::string_view text);
 [[nodiscard]] std::string toString(const Reach& reach);
 
+// A span of tuning time: "48h", "90m", "2h30m"; nothing for text that is not one.
+[[nodiscard]] std::optional<double> parseDuration(std::string_view text);
+// "2h30m", "45m", "1h".
+[[nodiscard]] std::string durationText(double seconds);
+
+// The share of a budget kept for its end: fresh calls of what is published, then the audit.
+inline constexpr double RESERVE = 0.25;
+
 // What the lanes beyond the model's are allowed.
 struct ExploreSettings {
   double contenders = CONTENDERS;

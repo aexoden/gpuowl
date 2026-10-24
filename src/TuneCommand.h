@@ -38,6 +38,8 @@ struct TuneCommand {
   double sweep = SWEEP;
   Timetable lanes{};
   ExploreSettings explore{};
+  double budget = 0;  // tuning seconds for the campaign, every session of it counted; 0 for none
+  double reserve = RESERVE;
   bool dashboard = false;  // display only: not part of the settings a run records
   u64 seed = 0;            // the draws' seed; 0 for one from the clock
 };

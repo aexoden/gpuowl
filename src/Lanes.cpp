@@ -110,6 +110,36 @@ std::string toString(const Timetable& t) {
   return split(t.start) + '~' + split(t.end) + '@' + buf;
 }
 
+std::optional<double> parseDuration(std::string_view text) {
+  double seconds = 0;
+  bool any = false;
+  while (!text.empty()) {
+    double n = 0;
+    auto const [end, ec] = std::from_chars(text.data(), text.data() + text.size(), n);
+    if (ec != std::errc{} || end == text.data() + text.size() || n < 0) { return {}; }
+    char const unit = *end;
+    if (unit != 'h' && unit != 'm') { return {}; }
+    seconds += n * (unit == 'h' ? 3600 : 60);
+    any = true;
+    text.remove_prefix(size_t(end - text.data()) + 1);
+  }
+  if (!any) { return {}; }
+  return seconds;
+}
+
+std::string durationText(double seconds) {
+  long const minutes = std::lround(seconds / 60);
+  char buf[32];
+  if (minutes >= 60 && minutes % 60) {
+    std::snprintf(buf, sizeof(buf), "%ldh%ldm", minutes / 60, minutes % 60);
+  } else if (minutes >= 60) {
+    std::snprintf(buf, sizeof(buf), "%ldh", minutes / 60);
+  } else {
+    std::snprintf(buf, sizeof(buf), "%ldm", minutes);
+  }
+  return buf;
+}
+
 double Reach::at(double elapsed) const {
   if (!std::isfinite(start)) { return start; }
   return start * std::exp2(std::max(0.0, elapsed) / doubling);

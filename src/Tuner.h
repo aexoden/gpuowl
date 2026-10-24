@@ -54,6 +54,8 @@ struct LoopSettings {
   double sweep = SWEEP;
   Timetable lanes{};
   ExploreSettings explore{};
+  double budget = 0;  // tuning seconds for the campaign, every session counted (laneTime()); 0 for none
+  double reserve = RESERVE;
   u64 seed = 1;
   TailQueues tailQueues = TailQueues::Ntt;
   u32 regretEvery = 32;  // calls between estimates of the regret
@@ -69,7 +71,9 @@ struct LoopResult {
   u32 gateReadings = 0;
   double regret = std::numeric_limits<double>::infinity();
   double T = 0;
-  bool converged = false;  // ended because the regret fell below `stop`
+  bool converged = false;    // ended because the regret fell below `stop`
+  bool budgetSpent = false;  // ended because the campaign's tuning time reached its budget
+  double elapsed = 0;        // the campaign's tuning time at the end
 };
 
 // Runs the loop on `db`, whose env `env` the device measures.  The database is read again after every item.

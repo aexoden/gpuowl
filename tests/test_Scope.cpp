@@ -107,6 +107,11 @@ TEST(every_setting_is_accepted_where_it_belongs) {
   CHECK(near(parsed("contenders=5%").explore.contenders, 0.05));
   CHECK(std::isinf(parsed("contenders=all").explore.contenders));
   CHECK(parsed("").explore.reach == Reach{});
+  CHECK(near(parsed("budget=2h").budget, 7200));
+  CHECK(near(parsed("").budget, 0));
+  CHECK(near(parsed("reserve=10%").reserve, 0.1));
+  CHECK(!refusal("budget=2").empty());
+  CHECK(!refusal("reserve=100%").empty());
   CHECK(parsed("randomReach=2x@1h").explore.reach == (Reach{.start = 2, .doubling = 3600}));
   CHECK(std::isinf(parsed("randomReach=all").explore.reach.start));
   for (const char* bad : {"randomReach=0.5x@30m", "randomReach=2x", "randomReach=2x@0m", "randomReach=x@1h"}) {

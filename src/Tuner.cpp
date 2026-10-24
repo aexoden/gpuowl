@@ -144,6 +144,7 @@ LoopResult runLoop(Device& device, TuneDB& db, u32 env, const Env& card, const R
   LoopResult out;
   u32 sinceRegret = settings.regretEvery;
   std::string coverage = "not yet summed";
+  bool endPhase = false;
   u32 items = 0;
 
   while (!device.stopped() && !Signal::stopRequested() && (!settings.maxItems || items < settings.maxItems)) {
@@ -196,6 +197,19 @@ LoopResult runLoop(Device& device, TuneDB& db, u32 env, const Env& card, const R
                            .ts = began});
     };
     u64 const began = device.now();
+
+    // The budget counts every session of the campaign, so a run resumed with a larger one goes on where it stopped.
+    out.elapsed = laneTime(db, env).total();
+    if (settings.budget > 0 && out.elapsed >= settings.budget) {
+      out.budgetSpent = true;
+      break;
+    }
+    if (settings.budget > 0 && !endPhase && out.elapsed >= settings.budget * (1 - settings.reserve)) {
+      endPhase = true;
+      log("tune: %s of the %s budget used; the last %s are for confirming what is published\n",
+          durationText(out.elapsed).c_str(), durationText(settings.budget).c_str(),
+          durationText(settings.budget * settings.reserve).c_str());
+    }
 
     if (!publication.owedGates.empty()) {
       const GateItem& g = publication.owedGates.front();
@@ -396,10 +410,12 @@ RunOutcome runTune(GpuCommon shared, const TuneCommand& command) {
     log("tune: dashboard=1 needs stdout to be a terminal; running without it\n");
   }
   LoopResult const result = runLoop(device, db, bench.envId(), card, *scope,
-                                    {.stop = command.stop,
+                                    {.stop = command.budget > 0 ? 0 : command.stop,
                                      .sweep = command.sweep,
                                      .lanes = command.lanes,
                                      .explore = command.explore,
+                                     .budget = command.budget,
+                                     .reserve = command.reserve,
                                      .seed = seed,
                                      .tailQueues = command.tailQueues,
                                      .publishTo = fs::current_path(),
@@ -410,8 +426,12 @@ RunOutcome runTune(GpuCommon shared, const TuneCommand& command) {
   log("tune: %u calls and %u accuracy readings; T %.2f us/it; expected regret %s%s\n", result.calls,
       result.gateReadings, result.T, percent(result.regret).c_str(),
       result.converged       ? ", below the stop"
+        : result.budgetSpent ? ", the budget spent"
         : bench.deviceLost() ? ", stopped by a lost device"
                              : "");
+  if (command.budget > 0) {
+    log("tune: %s of the %s budget used\n", durationText(result.elapsed).c_str(), durationText(command.budget).c_str());
+  }
   return bench.deviceLost() ? RunOutcome::DeviceLost : RunOutcome::Ok;
 }
 

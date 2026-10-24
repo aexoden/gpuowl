@@ -122,3 +122,14 @@ TEST(a_random_pick_reaches_further_as_the_run_goes_on) {
   CHECK_EQ(toString(*parseReach("all")), std::string{"all"});
   for (const char* bad : {"", "1.5x", "0.9x@30m", "2x@30", "2x@0h", "x@1h", "2@1h"}) { CHECK(!parseReach(bad)); }
 }
+
+TEST(a_duration_reads_hours_and_minutes) {
+  CHECK(near(*parseDuration("2h"), 7200));
+  CHECK(near(*parseDuration("90m"), 5400));
+  CHECK(near(*parseDuration("2h30m"), 9000));
+  CHECK(near(*parseDuration("1.5h"), 5400));
+  for (const char* bad : {"", "2", "h", "2x", "-1h", "2h3"}) { CHECK(!parseDuration(bad)); }
+  CHECK_EQ(durationText(9000), std::string{"2h30m"});
+  CHECK_EQ(durationText(3600), std::string{"1h"});
+  CHECK_EQ(durationText(2700), std::string{"45m"});
+}

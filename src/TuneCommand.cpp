@@ -150,6 +150,19 @@ TuneCommand parseTuneCommand(std::string_view text) {
         }
         out.explore.contenders = *margin / 100;
       }
+    } else if (key == "budget" && out.verb == TuneVerb::Run) {
+      std::optional<double> const budget = value == "0" ? std::optional<double>{0} : parseDuration(value);
+      if (!budget) {
+        throw std::string{"-tune: budget= takes a span of tuning time, such as budget=2h or budget=90m, or 0"};
+      }
+      out.budget = *budget;
+    } else if (key == "reserve" && out.verb == TuneVerb::Run) {
+      std::optional<double> const share =
+        value.ends_with('%') ? parseDouble(value.substr(0, value.size() - 1)) : std::optional<double>{};
+      if (!share || *share < 0 || *share >= 100) {
+        throw std::string{"-tune: reserve= takes a percentage below 100%, such as reserve=25%"};
+      }
+      out.reserve = *share / 100;
     } else if (key == "randomReach" && out.verb == TuneVerb::Run) {
       std::optional<Reach> const reach = parseReach(value);
       if (!reach) {
