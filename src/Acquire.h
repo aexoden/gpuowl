@@ -29,6 +29,7 @@
 #pragma once
 
 #include "Candidates.h"
+#include "Lanes.h"
 #include "Model.h"
 #include "Optimize.h"
 #include "Publish.h"
@@ -99,6 +100,9 @@ struct AcquireContext {
 
   // Multiplies every draw's departure from the mean, for calibration.
   double scale = 1;
+
+  // The least a position new to a shape or a variant counts for (Lanes.h NEW_FLOOR).
+  double newFloor = NEW_FLOOR;
 
   // The mean optima of this fit; filled as candidates are first asked about.
   MeanOptima* means = nullptr;

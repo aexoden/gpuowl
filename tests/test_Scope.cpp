@@ -111,6 +111,9 @@ TEST(every_setting_is_accepted_where_it_belongs) {
   CHECK(near(parsed("").budget, 0));
   CHECK(near(parsed("reserve=10%").reserve, 0.1));
   CHECK(near(parsed("").target, TARGET));
+  CHECK(near(parsed("").newFloor, NEW_FLOOR));
+  CHECK(near(parsed("newFloor=0").newFloor, 0));
+  CHECK(!refusal("newFloor=2").empty());
   CHECK(near(parsed("target=0.1%").target, 0.001));
   CHECK(!refusal("target=0.1").empty());
   CHECK(!refusal("budget=2").empty());

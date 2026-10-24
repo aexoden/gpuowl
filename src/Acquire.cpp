@@ -49,8 +49,8 @@ std::vector<std::string> someAxes(const AcquireContext& context, const Candidate
   const Model& model = context.model;
   std::vector<std::pair<std::string, double>> axes;
   for (const Axis& a : axesOf(model.env(), c.subject.fft, options, context.filter(c))) {
-    double const otherShape = std::min(1.0, model.shapeDeparture(a.name) / model.effectSpread());
-    double const otherVariant = std::min(1.0, model.entryDeparture(a.name) / model.effectSpread());
+    double const otherShape = std::clamp(model.shapeDeparture(a.name) / model.effectSpread(), context.newFloor, 1.0);
+    double const otherVariant = std::clamp(model.entryDeparture(a.name) / model.effectSpread(), context.newFloor, 1.0);
     double untried = 0;
     for (size_t p = 0; p < a.values.size(); ++p) {
       if (p == a.reference) { continue; }
@@ -446,8 +446,10 @@ std::optional<Choice> untriedStep(const AcquireContext& context, std::mt19937_64
       }
       UseConfig const around = best ? best->options : UseConfig{};
       for (const Axis& axis : axesOf(model.env(), c->subject.fft, around, context.filter(*c))) {
-        double const otherShape = std::min(1.0, model.shapeDeparture(axis.name) / model.effectSpread());
-        double const otherVariant = std::min(1.0, model.entryDeparture(axis.name) / model.effectSpread());
+        double const otherShape =
+          std::clamp(model.shapeDeparture(axis.name) / model.effectSpread(), context.newFloor, 1.0);
+        double const otherVariant =
+          std::clamp(model.entryDeparture(axis.name) / model.effectSpread(), context.newFloor, 1.0);
         for (size_t p = 0; p < axis.values.size(); ++p) {
           if (p == axis.current) { continue; }
           std::string const label = axis.label(p);

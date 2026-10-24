@@ -170,6 +170,10 @@ TuneCommand parseTuneCommand(std::string_view text) {
         throw std::string{"-tune: target= takes a percentage, such as target=0.5%"};
       }
       out.target = *share / 100;
+    } else if (key == "newFloor" && out.verb == TuneVerb::Run) {
+      std::optional<double> const floor = parseDouble(value);
+      if (!floor || *floor < 0 || *floor > 1) { throw std::string{"-tune: newFloor= takes a fraction from 0 to 1"}; }
+      out.newFloor = *floor;
     } else if (key == "randomReach" && out.verb == TuneVerb::Run) {
       std::optional<Reach> const reach = parseReach(value);
       if (!reach) {

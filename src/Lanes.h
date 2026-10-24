@@ -55,6 +55,12 @@ inline constexpr double RESERVE = 0.25;
 // The improvement of the workload's cost, as a fraction, that counts as the audit finding something.
 inline constexpr double TARGET = 0.005;
 
+// The least a position read on other shapes, or other variants, but not this one counts as new in the model's
+// exploration (Acquire.cpp): as much as the axis's effect was learnt to vary between them, but no less.  An option
+// that cost 5% on every shape read so far is learnt not to vary, which would otherwise leave the shape where it saves
+// 10% unread for good.
+inline constexpr double NEW_FLOOR = 0.25;
+
 // What the lanes beyond the model's are allowed.
 struct ExploreSettings {
   double contenders = CONTENDERS;

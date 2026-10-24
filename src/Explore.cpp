@@ -127,6 +127,19 @@ public:
   }
 
   // A variable that can move, a structural one with probability `structural` where there is one.
+  // The structural variables that can move, the `index`th of them, round: every structural move tried in turn.
+  std::optional<size_t> structuralVariable(const std::vector<size_t>& states, size_t index) const {
+    std::vector<size_t> branching;
+    for (size_t v = 0; v < vars_.size(); ++v) {
+      const BranchVariable::Context& c = vars_[v].context(space_.contextOf(v, states));
+      if (c.reference && std::ranges::count(c.offered, true) >= 2 && vars_[v].axis.option->structural) {
+        branching.push_back(v);
+      }
+    }
+    if (branching.empty()) { return {}; }
+    return branching[index % branching.size()];
+  }
+
   std::optional<size_t> someVariable(const std::vector<size_t>& states, double structural) const {
     std::vector<size_t> plain;
     std::vector<size_t> branching;
@@ -279,6 +292,9 @@ std::optional<Proposal> branchStep(const AcquireContext& context, const std::vec
 constexpr double DEPENDENT_PAIR = 3;
 constexpr double GROUP_PAIR = 2;
 
+// And a pair the model has no interaction term for, at all: what it cannot represent, only a reading shows.
+constexpr double UNMODELLED_PAIR = 0.25;
+
 }  // namespace
 
 std::optional<Proposal> interactionStep(const AcquireContext& context, const ExploreSettings& settings, double elapsed,
@@ -330,8 +346,7 @@ std::optional<Proposal> interactionStep(const AcquireContext& context, const Exp
         double const weight = dependent                     ? DEPENDENT_PAIR
           : ou.group == ov.group                            ? GROUP_PAIR
           : Model::interact(ou, cu.touches, ov, cv.touches) ? 1
-                                                            : 0;
-        if (weight == 0) { continue; }
+                                                            : UNMODELLED_PAIR;
         for (size_t pu = 0; pu < cu.offered.size(); ++pu) {
           if (!cu.offered[pu] || pu == seed[u]) { continue; }
           for (size_t pv = 0; pv < cv.offered.size(); ++pv) {
@@ -440,7 +455,11 @@ std::optional<Proposal> coverageStep(const AcquireContext& context, const Explor
       options = transferred(context, c, rng);
     } else {
       std::vector<size_t> states = space->statesOf(base);
-      std::optional<size_t> const v = mutator.someVariable(states, kind == "structural" ? 1.0 : STRUCTURAL_MOVE);
+      // A structural item takes the entry's structural keys in turn, round after round, so that a branch only one
+      // key opens is reached on every entry looked at long enough; a mutation is drawn.
+      std::optional<size_t> const v = kind == "structural"
+        ? mutator.structuralVariable(states, (level[i] - 1) / std::size(KINDS) + attempt)
+        : mutator.someVariable(states, STRUCTURAL_MOVE);
       if (v && mutator.move(states, *v, false)) { options = space->configOf(states); }
     }
     if (options && fresh(context, c, *options)) {

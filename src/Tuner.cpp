@@ -224,6 +224,7 @@ LoopResult runLoop(Device& device, TuneDB& db, u32 env, const Env& card, const R
                                  .readings = readings,
                                  .filter = filter,
                                  .blocked = blocked,
+                                 .newFloor = settings.newFloor,
                                  .means = &means};
     ++items;
 
@@ -516,6 +517,7 @@ RunOutcome runTune(GpuCommon shared, const TuneCommand& command) {
                                      .budget = command.budget,
                                      .reserve = command.reserve,
                                      .target = command.target,
+                                     .newFloor = command.newFloor,
                                      .seed = seed,
                                      .tailQueues = command.tailQueues,
                                      .publishTo = fs::current_path(),
