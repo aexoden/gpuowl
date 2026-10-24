@@ -347,6 +347,13 @@ std::string formatRow(const ItemRow& row) {
     std::to_string(row.ts);
 }
 
+std::string formatRow(const KresRow& row) {
+  const KernelResources& r = row.resources;
+  return "kres " + std::to_string(row.sess) + ' ' + row.fft + ' ' + toString(row.kind) + ' ' + row.key + ' ' +
+    std::to_string(r.regs) + ' ' + std::to_string(r.sharedBytes) + ' ' + std::to_string(r.threads) + ' ' +
+    std::to_string(r.localBytes) + ' ' + std::to_string(row.cfg) + ' ' + std::to_string(row.ts);
+}
+
 const DbEnv* TuneDB::findEnv(u32 id) const {
   auto const it = std::ranges::find(envs_, id, &DbEnv::id);
   return it == envs_.end() ? nullptr : &*it;
@@ -522,6 +529,11 @@ bool TuneDB::add(const RefRow& row) {
   return record(refs_, row);
 }
 
+bool TuneDB::add(const KresRow& row) {
+  if (row.key.empty() || row.key.find_first_of(" \t\"") != std::string::npos || !findCfg(row.cfg)) { return false; }
+  return record(kres_, row);
+}
+
 bool TuneDB::add(const ItemRow& row) {
   auto const word = [](const std::string& w) { return !w.empty() && w.find_first_of(" \t\"") == std::string::npos; };
   auto const fft = parseFft(row.fft);
@@ -634,6 +646,7 @@ void TuneDB::clear() {
   regs_.clear();
   refs_.clear();
   items_.clear();
+  kres_.clear();
   unknown_.clear();
   open_.clear();
 }
@@ -646,8 +659,8 @@ struct Shape {
   size_t fields;
 };
 
-constexpr Shape SHAPES[] = {{"cfg", 3},    {"call", 15}, {"try", 7}, {"done", 3}, {"roe", 10},
-                            {"anchor", 8}, {"regs", 12}, {"ref", 7}, {"item", 10}};
+constexpr Shape SHAPES[] = {{"cfg", 3},    {"call", 15}, {"try", 7}, {"done", 3},  {"roe", 10},
+                            {"anchor", 8}, {"regs", 12}, {"ref", 7}, {"item", 10}, {"kres", 11}};
 
 }  // namespace
 
@@ -918,6 +931,25 @@ bool TuneDB::parse(std::string_view text, std::string_view name) {
           !add(
             RefRow{.sess = *sess, .fft = f[2], .exponent = *exponent, .iters = *iters, .res64 = *res64, .ts = *ts})) {
         refuse("malformed ref record");
+      }
+    } else if (tag == "kres" && f.size() == 11) {
+      auto const sess = parseInt<u32>(f[1]);
+      auto const kind = parseTestKind(f[3]);
+      auto const regs = parseInt<int>(f[5]);
+      auto const shared = parseInt<int>(f[6]);
+      auto const threads = parseInt<int>(f[7]);
+      auto const local = parseInt<int>(f[8]);
+      auto const cfg = parseInt<u32>(f[9]);
+      auto const ts = parseInt<u64>(f[10]);
+      if (!sess || !kind || !regs || !shared || !threads || !local || !cfg || !ts ||
+          !add(KresRow{.sess = *sess,
+                       .fft = std::string{f[2]},
+                       .kind = *kind,
+                       .key = std::string{f[4]},
+                       .resources = {.regs = *regs, .localBytes = *local, .sharedBytes = *shared, .threads = *threads},
+                       .cfg = *cfg,
+                       .ts = *ts})) {
+        refuse("malformed kres record");
       }
     } else if (tag == "item" && f.size() == 10) {
       auto const sess = parseInt<u32>(f[1]);

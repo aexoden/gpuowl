@@ -170,7 +170,7 @@ private:
   // agreed yet; empty where none can be agreed.
   [[nodiscard]] std::optional<u64> llReference(const FFTConfig& fft, u64 exponent, u32 nBlocks, u32 blockSize);
 
-  void recordRegisters(const FFTConfig& fft, TestKind kind, const Call& call);
+  void recordRegisters(const FFTConfig& fft, TestKind kind, const Call& call, u32 cfg);
 
   [[nodiscard]] bool deviceUsable();
   void lost(const FFTConfig& fft, TestKind kind, u64 exponent, const UseConfig& options, const std::string& what,

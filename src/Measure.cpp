@@ -486,14 +486,33 @@ Call Bench::runCall(const FFTConfig& fft, TestKind kind, u64 exponent, const Use
                         .buildSec = out.buildSec,
                         .timedSec = out.timedSec,
                         .ts = now()});
-  recordRegisters(fft, kind, out);
+  recordRegisters(fft, kind, out, cfg);
   return out;
 }
 
-void Bench::recordRegisters(const FFTConfig& fft, TestKind kind, const Call& call) {
+void Bench::recordRegisters(const FFTConfig& fft, TestKind kind, const Call& call, u32 cfg) {
+  auto const same = [](const KernelResources& a, const KernelResources& b) {
+    return a.regs == b.regs && a.localBytes == b.localBytes && a.sharedBytes == b.sharedBytes && a.threads == b.threads;
+  };
   for (const KernelUse& k : call.kernels) {
     // Only a build that left the kernel to the compiler says what the occupancy model should start from.
-    if (useValue(call.ran, k.key, 0) != 0 || db_.findRegs(envId_, fft.spec(), kind, k.key)) { continue; }
+    if (useValue(call.ran, k.key, 0) != 0) { continue; }
+    const RegsRow* const first = db_.findRegs(envId_, fft.spec(), kind, k.key);
+    bool const known =
+      (first && same(first->resources, k.resources)) || std::ranges::any_of(db_.kres(), [&](const KresRow& r) {
+        return db_.envOf(r.sess) == envId_ && r.fft == fft.spec() && r.kind == kind && r.key == k.key &&
+          same(r.resources, k.resources);
+      });
+    if (first && !known) {
+      (void)db_.add(KresRow{.sess = session_,
+                            .fft = fft.spec(),
+                            .kind = kind,
+                            .key = k.key,
+                            .resources = k.resources,
+                            .cfg = cfg,
+                            .ts = now()});
+    }
+    if (first) { continue; }
     (void)db_.add(RegsRow{.sess = session_,
                           .fft = fft.spec(),
                           .kind = kind,

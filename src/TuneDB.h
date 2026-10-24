@@ -172,6 +172,19 @@ struct RefRow {
   u64 ts = 0;
 };
 
+// A REG*-limited kernel's resources as one configuration built it, the key left to the compiler: written where they
+// differ from every such reading of the key before, so that what structural options do to a kernel's registers can be
+// seen, which the `regs` record of the first build cannot show.
+struct KresRow {
+  u32 sess = 0;
+  std::string fft{};
+  TestKind kind = TestKind::PRP;
+  std::string key{};
+  KernelResources resources{};
+  u32 cfg = 0;
+  u64 ts = 0;
+};
+
 // What the tuning loop chose to measure next and why, written before the attempt: the lane it served, what kind of
 // proposal it was, and for an item of a packet -- a run of calls that go together, such as a restart's local search --
 // the packet and its place in it.  An item's time is until the next item of its session, or the session's last record.
@@ -220,6 +233,7 @@ public:
   [[nodiscard]] const std::vector<RegsRow>& regs() const { return regs_; }
   [[nodiscard]] const std::vector<RefRow>& refs() const { return refs_; }
   [[nodiscard]] const std::vector<ItemRow>& items() const { return items_; }
+  [[nodiscard]] const std::vector<KresRow>& kres() const { return kres_; }
   [[nodiscard]] const std::vector<std::string>& unknownRows() const { return unknown_; }
 
   [[nodiscard]] const DbEnv* findEnv(u32 id) const;
@@ -249,6 +263,7 @@ public:
   [[nodiscard]] bool add(const RefRow& row);
   // Unlike the others, an item answers no attempt: it is written before one.
   [[nodiscard]] bool add(const ItemRow& row);
+  [[nodiscard]] bool add(const KresRow& row);
 
   // The anchor an env is pinned to, as its earliest session that named one spells it, else as its earliest anchor
   // reading does; empty where it has none.
@@ -297,6 +312,7 @@ private:
   std::vector<RegsRow> regs_;
   std::vector<RefRow> refs_;
   std::vector<ItemRow> items_;
+  std::vector<KresRow> kres_;
   std::vector<std::string> unknown_;
 
   // Per session, the attempt it has open, if any.
@@ -314,6 +330,7 @@ private:
 [[nodiscard]] std::string formatRow(const RegsRow& row);
 [[nodiscard]] std::string formatRow(const RefRow& row);
 [[nodiscard]] std::string formatRow(const ItemRow& row);
+[[nodiscard]] std::string formatRow(const KresRow& row);
 
 // Whether `locks`, in the form of Linux's /proc/locks, lists a lock held on the file at (major, minor, inode).
 [[nodiscard]] bool lockListed(std::string_view locks, u32 major, u32 minor, u64 inode);
