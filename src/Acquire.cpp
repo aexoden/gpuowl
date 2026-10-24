@@ -482,7 +482,8 @@ std::optional<Choice> untriedStep(const AcquireContext& context, std::mt19937_64
   return {};
 }
 
-double expectedRegret(const AcquireContext& context, const Publication& publication, std::mt19937_64& rng, u32 draws) {
+double expectedRegret(const AcquireContext& context, const Publication& publication, std::mt19937_64& rng, u32 draws,
+                      std::vector<RegretShare>* shares) {
   std::vector<double> regrets;
   for (u32 i = 0; i < draws; ++i) {
     DrawView view = takeDraw(context, rng);
@@ -497,8 +498,20 @@ double expectedRegret(const AcquireContext& context, const Publication& publicat
         const FFTConfig& fft = line->candidate->subject.fft;
         Subject const there{.fft = fft, .kind = grid.kind, .regime = regimeOf(fft, p.exponent)};
         double const published = std::exp(view.predict(there, line->reading->options));
-        double const best = std::exp(winnerAt(view, context.candidates[k], p.exponent).second.value);
+        auto const [winner, valued] = winnerAt(view, context.candidates[k], p.exponent);
+        double const best = std::exp(valued.value);
         excess += p.weight * std::max(0.0, published - best);
+        if (shares) {
+          const Reading* const r = winner ? context.readings.find(winner->subject, valued.options) : nullptr;
+          shares->push_back({.draw = i,
+                             .exponent = p.exponent,
+                             .weight = p.weight,
+                             .published = published,
+                             .best = best,
+                             .winner = winner,
+                             .options = valued.options,
+                             .measured = r && !r->failed && r->calls > 0});
+        }
         cost += p.weight * published;
       }
     }

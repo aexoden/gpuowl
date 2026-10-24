@@ -138,7 +138,19 @@ enum class Novelty : u8 { Type, Shape, Entry, Set };
 // what production would run costs more, under each draw, than the cheapest the draw sees, relative to its cost.  The
 // median, since one draw scaled far out by its heavy tail would otherwise decide it.
 // Infinite where some grid point has no line.
+// With `shares`, what each draw's regret is made of: per grid point, what is published there against what the draw
+// takes for the cheapest.
+struct RegretShare {
+  u32 draw = 0;
+  u64 exponent = 0;
+  double weight = 0;
+  double published = 0;  // microseconds per iteration, as the draw predicts the published set
+  double best = 0;       // the draw's cheapest there
+  const Candidate* winner = nullptr;
+  UseConfig options{};
+  bool measured = false;  // whether the winner's set has a successful reading
+};
 [[nodiscard]] double expectedRegret(const AcquireContext& context, const Publication& publication, std::mt19937_64& rng,
-                                    u32 draws);
+                                    u32 draws, std::vector<RegretShare>* shares = nullptr);
 
 }  // namespace tune
