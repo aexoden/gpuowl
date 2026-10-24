@@ -296,3 +296,51 @@ TEST(a_register_key_is_offered_the_plan_read_nearest_the_best_set) {
   auto const offers = registerOffers(db, env, nvidia(), candidates, readings);
   CHECK(offers.at(&c).at("REGCF64") == notInPlace.values());
 }
+
+TEST(an_audit_interrupted_is_resumed_not_declared_again) {
+  RunScope const scope =
+    makeScope({.lo = 67'400'000, .hi = 67'600'000, .probe = 67'500'000, .kinds = {TestKind::PRP}}, {});
+  LoopSettings settings{.stop = 0, .budget = 1800, .reserve = 0.4, .seed = 5, .regretEvery = 1000, .maxItems = 900};
+  auto fresh = [](TuneDB& db) {
+    CHECK(db.parse(std::string{TuneDB::HEADER} + '\n', "sim"));
+    return db.internEnv(DbEnv{.gpu = "sim", .isNvidia = true, .cudaBackend = true, .computeCapability = 860});
+  };
+
+  // Where an uninterrupted campaign declares its audit: the simulated card is the same every time.
+  u32 declaredAt = 0;
+  {
+    TuneDB db;
+    u32 const env = fresh(db);
+    SimDevice device{db, db.beginSession(env, "", 0, "")};
+    (void)runLoop(device, db, env, nvidia(), scope, settings);
+    CHECK_EQ(db.audits().size(), size_t{1});
+    for (const ItemRow& item : db.items()) {
+      declaredAt += item.ts < db.audits().front().ts || (item.ts == db.audits().front().ts && item.lane != "audit");
+    }
+  }
+
+  // The same campaign stopped a few items into its audit, then resumed in a session of its own.
+  TuneDB db;
+  u32 const env = fresh(db);
+  SimDevice first{db, db.beginSession(env, "", 0, "")};
+  LoopSettings stopped = settings;
+  stopped.maxItems = declaredAt + 5;
+  (void)runLoop(first, db, env, nvidia(), scope, stopped);
+  CHECK_EQ(db.audits().size(), size_t{1});
+  u32 const declared = db.audits().front().trials;
+  {
+    Readings const readings{db, env, nvidia()};
+    AuditState const midway = auditState(db, env, readings);
+    CHECK(midway.started > 0 && midway.done < declared);
+  }
+
+  SimDevice second{db, db.beginSession(env, "", 1, "")};
+  settings.seed = 6;
+  LoopResult const r = runLoop(second, db, env, nvidia(), scope, settings);
+  CHECK(r.budgetSpent);
+  CHECK_EQ(db.audits().size(), size_t{1});
+  Readings const readings{db, env, nvidia()};
+  AuditState const state = auditState(db, env, readings);
+  CHECK_EQ(state.started, declared);
+  CHECK_EQ(state.done, declared);
+}

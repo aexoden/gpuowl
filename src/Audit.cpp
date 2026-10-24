@@ -48,9 +48,8 @@ AuditState auditState(const TuneDB& db, u32 env, const Readings& readings) {
 
   std::map<u32, std::vector<const ItemRow*>> trials;
   for (const ItemRow& r : db.items()) {
-    if (db.envOf(r.sess) == env && r.lane == AUDIT && r.ts >= out.declared->ts && r.packet) {
-      trials[r.packet].push_back(&r);
-    }
+    // A campaign has one audit, so every audit item is its: no clock decides it, since sessions' clocks need not agree.
+    if (db.envOf(r.sess) == env && r.lane == AUDIT && r.packet) { trials[r.packet].push_back(&r); }
   }
   out.started = u32(trials.size());
   for (auto it = trials.begin(); it != trials.end(); ++it) {
