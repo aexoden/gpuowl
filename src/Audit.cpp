@@ -150,9 +150,6 @@ std::vector<std::string> auditReport(const TuneDB& db, u32 env, const Readings& 
   out.push_back("audit: " + std::to_string(a.trials) + " trials declared against T " + usText(a.baseline) + "; " +
                 std::to_string(state.done) + " done" +
                 (state.failedStarts ? " (" + std::to_string(state.failedStarts) + " starts could not be read)" : ""));
-  out.push_back("audit: T now " + usText(now) + ", " + percentText(gain) + " below the baseline; the target is " +
-                percentText(a.target));
-
   // The published lines an audit trial read first.
   std::map<std::pair<std::string, std::string>, std::string> firstLane;
   for (const ItemRow& r : db.items()) {
@@ -172,6 +169,11 @@ std::vector<std::string> auditReport(const TuneDB& db, u32 env, const Readings& 
       }
     }
   }
+
+  // What moved T since the baseline: the trials' finds, or the search that went on around and after them.
+  out.push_back("audit: T now " + usText(now) + ", " + percentText(gain) + " below the baseline" +
+                (gain > 0 && found == 0 ? ", none of it found by a trial" : "") + "; the target is " +
+                percentText(a.target));
 
   bool const complete = state.done >= a.trials;
   if (found > 0 && gain > a.target) {
