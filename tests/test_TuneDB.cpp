@@ -91,6 +91,7 @@ TEST(db_round_trips_every_record_in_order) {
                          .kind = TestKind::LL,
                          .key = "REGCF64",
                          .resources = {.regs = 128, .localBytes = 16, .sharedBytes = 8192, .threads = 256},
+                         .plan = RegisterPlan{.k0 = 1, .occupancies = {{1, 255}, {2, 128}}},
                          .cfg = f.cfg,
                          .ts = 1006}));
   CHECK(f.db.add(PredRow{.sess = f.sess, .mean = 812.25, .draw = 700.5, .ts = 1007}));
@@ -110,6 +111,13 @@ TEST(db_round_trips_every_record_in_order) {
   CHECK_EQ(back.kres().size(), size_t{1});
   CHECK_EQ(back.kres()[0].resources.localBytes, 16);
   CHECK_EQ(back.kres()[0].cfg, f.cfg);
+  CHECK(back.kres()[0].plan == (RegisterPlan{.k0 = 1, .occupancies = {{1, 255}, {2, 128}}}));
+  // The first of them were written without a plan.
+  TuneDB older;
+  CHECK(older.parse(text + "kres " + std::to_string(f.sess) + " 512:15:512:202 ll REGMI64 96 0 256 0 " +
+                      std::to_string(f.cfg) + " 1009\n",
+                    "older"));
+  CHECK(older.kres().size() == 2 && !older.kres()[1].plan);
   CHECK_EQ(back.preds().size(), size_t{1});
   CHECK(back.preds()[0].mean == 812.25 && back.preds()[0].draw == 700.5);
   CHECK_EQ(back.audits().size(), size_t{1});

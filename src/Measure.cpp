@@ -509,6 +509,7 @@ void Bench::recordRegisters(const FFTConfig& fft, TestKind kind, const Call& cal
                             .kind = kind,
                             .key = k.key,
                             .resources = k.resources,
+                            .plan = k.plan,
                             .cfg = cfg,
                             .ts = now()});
     }

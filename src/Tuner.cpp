@@ -134,6 +134,50 @@ StateReport stateOf(const Publication& publication, const Readings& readings, co
 
 }  // namespace
 
+std::map<const Candidate*, RegisterOffer> registerOffers(const TuneDB& db, u32 env, const Env& card,
+                                                         const std::vector<std::vector<Candidate>>& candidates,
+                                                         const Readings& readings) {
+  struct Read {
+    UseConfig options;  // canonical
+    UseConfig branch;
+    const RegisterPlan* plan;
+  };
+  std::map<std::string, std::map<std::string, std::vector<Read>>> plans;
+  auto read = [&](const std::string& fft, TestKind kind, const std::string& key, const UseConfig& options,
+                  const RegisterPlan* plan) {
+    FFTConfig const f{fft};
+    UseConfig const canonical = canonicalConfig(card, f, options);
+    plans[fft + '|' + toString(kind)][key].push_back(
+      {.options = canonical, .branch = branchOf(card, f, canonical), .plan = plan});
+  };
+  for (const RegsRow& r : db.regs()) {
+    if (db.envOf(r.sess) == env) { read(r.fft, r.kind, r.key, {}, &r.plan); }
+  }
+  for (const KresRow& r : db.kres()) {
+    const UseConfig* const options = db.findCfg(r.cfg);
+    if (db.envOf(r.sess) == env && r.plan && options) { read(r.fft, r.kind, r.key, *options, &*r.plan); }
+  }
+  std::map<const Candidate*, RegisterOffer> offers;
+  for (const std::vector<Candidate>& kind : candidates) {
+    for (const Candidate& c : kind) {
+      auto const it = plans.find(c.subject.fft.spec() + '|' + toString(c.subject.kind));
+      if (it == plans.end()) { continue; }
+      const Reading* best = nullptr;
+      for (const Reading* r : readings.of(c.subject)) {
+        if (!r->failed && r->calls > 0 && (!best || r->mean < best->mean)) { best = r; }
+      }
+      UseConfig const around = best ? best->options : UseConfig{};
+      UseConfig const branch = branchOf(card, c.subject.fft, around);
+      RegisterOffer& offer = offers[&c];
+      for (const auto& [key, reads] : it->second) {
+        auto const rank = [&](const Read& r) { return std::pair{r.branch != branch, axesApart(r.options, around)}; };
+        offer[key] = std::ranges::min(reads, {}, rank).plan->values();
+      }
+    }
+  }
+  return offers;
+}
+
 LoopResult runLoop(Device& device, TuneDB& db, u32 env, const Env& card, const RunScope& scope,
                    const LoopSettings& settings) {
   std::vector<std::vector<Candidate>> candidates;
@@ -160,15 +204,10 @@ LoopResult runLoop(Device& device, TuneDB& db, u32 env, const Env& card, const R
     publisher.write(publication, out.regret);
     if (settings.watch) { settings.watch->state(stateOf(publication, readings, model, db, env, coverage, out)); }
 
-    // What the occupancy model offers each FFT's register limits, from its `regs` records; built before the search,
-    // which asks from many threads.
-    std::map<std::string, RegisterOffer> offers;
-    for (const RegsRow& r : db.regs()) {
-      if (db.envOf(r.sess) == env) { offers[r.fft + '|' + toString(r.kind)].try_emplace(r.key, r.plan.values()); }
-    }
+    std::map<const Candidate*, RegisterOffer> const offers = registerOffers(db, env, card, candidates, readings);
     RegisterOffer const none{};
     auto filter = [&](const Candidate& c) {
-      auto const it = offers.find(c.subject.fft.spec() + '|' + toString(c.subject.kind));
+      auto const it = offers.find(&c);
       return AxisFilter{.tailQueues = settings.tailQueues, .registers = it == offers.end() ? &none : &it->second};
     };
     auto blocked = [&](const Candidate& c, const UseConfig& options) {

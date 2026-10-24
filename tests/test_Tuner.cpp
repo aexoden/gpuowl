@@ -244,3 +244,55 @@ TEST(the_end_of_a_budget_confirms_then_audits) {
   CHECK(report.size() >= 3);
   for (const std::string& line : report) { printf("%s\n", line.c_str()); }
 }
+
+TEST(a_register_key_is_offered_the_plan_read_nearest_the_best_set) {
+  TuneDB db;
+  CHECK(db.parse(std::string{TuneDB::HEADER} + '\n', "sim"));
+  u32 const env = db.internEnv(DbEnv{.gpu = "sim", .isNvidia = true, .cudaBackend = true, .computeCapability = 860});
+  u32 const sess = db.beginSession(env, "", 0, "");
+  RunScope const scope =
+    makeScope({.lo = 67'400'000, .hi = 67'600'000, .probe = 67'500'000, .kinds = {TestKind::PRP}}, {});
+  std::vector<std::vector<Candidate>> const candidates{candidatesOf(nvidia(), scope, TestKind::PRP)};
+  const Candidate& c = candidates.front().front();
+  std::string const fft = c.subject.fft.spec();
+
+  // The first build, at the defaults, and one in the INPLACE=0 branch that needed more registers.
+  RegisterPlan const first{.k0 = 3, .occupancies = {{3, 80}, {4, 64}}};
+  RegisterPlan const notInPlace{.k0 = 2, .occupancies = {{2, 128}, {3, 80}}};
+  KernelResources const resources{.regs = 80, .localBytes = 0, .sharedBytes = 0, .threads = 256};
+  CHECK(db.add(RegsRow{.sess = sess,
+                       .fft = fft,
+                       .kind = TestKind::PRP,
+                       .key = "REGCF64",
+                       .resources = resources,
+                       .plan = first,
+                       .ts = 1}));
+  u32 const off = db.internCfg({{"INPLACE", "0"}});
+  CHECK(db.add(KresRow{.sess = sess,
+                       .fft = fft,
+                       .kind = TestKind::PRP,
+                       .key = "REGCF64",
+                       .resources = {.regs = 128, .localBytes = 0, .sharedBytes = 0, .threads = 256},
+                       .plan = notInPlace,
+                       .cfg = off,
+                       .ts = 2}));
+
+  {
+    Readings const readings{db, env, nvidia()};
+    auto const offers = registerOffers(db, env, nvidia(), candidates, readings);
+    CHECK(offers.at(&c).at("REGCF64") == first.values());
+  }
+  // Once the best set is INPLACE=0, its plan.
+  CHECK(db.add(CallRow{.sess = sess,
+                       .fft = fft,
+                       .kind = TestKind::PRP,
+                       .exponent = c.timing,
+                       .cfg = off,
+                       .mean = 500,
+                       .sd = 0.5,
+                       .blocks = 4,
+                       .ts = 3}));
+  Readings const readings{db, env, nvidia()};
+  auto const offers = registerOffers(db, env, nvidia(), candidates, readings);
+  CHECK(offers.at(&c).at("REGCF64") == notInPlace.values());
+}

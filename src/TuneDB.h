@@ -181,6 +181,7 @@ struct KresRow {
   TestKind kind = TestKind::PRP;
   std::string key{};
   KernelResources resources{};
+  std::optional<RegisterPlan> plan{};  // what the occupancy model makes of them; none in the first such records
   u32 cfg = 0;
   u64 ts = 0;
 };

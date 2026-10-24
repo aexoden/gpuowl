@@ -14,6 +14,7 @@
 #include <ctime>
 #include <filesystem>
 #include <functional>
+#include <map>
 #include <optional>
 #include <string>
 
@@ -76,6 +77,13 @@ struct LoopResult {
   bool budgetSpent = false;  // ended because the campaign's tuning time reached its budget
   double elapsed = 0;        // the campaign's tuning time at the end
 };
+
+// What the occupancy model offers each candidate's register limits.  A kernel's registers move with the options -- a
+// structural branch, the access modes, hoisting -- so each key is offered the plan read nearest the candidate's best
+// set (`regs` and `kres` records): in its branch where there is one, else the fewest axes from it.
+[[nodiscard]] std::map<const Candidate*, RegisterOffer>
+registerOffers(const TuneDB& db, u32 env, const Env& card, const std::vector<std::vector<Candidate>>& candidates,
+               const Readings& readings);
 
 // Runs the loop on `db`, whose env `env` the device measures.  The database is read again after every item.
 LoopResult runLoop(Device& device, TuneDB& db, u32 env, const Env& card, const RunScope& scope,

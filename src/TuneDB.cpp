@@ -349,9 +349,10 @@ std::string formatRow(const ItemRow& row) {
 
 std::string formatRow(const KresRow& row) {
   const KernelResources& r = row.resources;
+  std::string const plan = row.plan ? std::to_string(row.plan->k0) + ' ' + planText(*row.plan) + ' ' : std::string{};
   return "kres " + std::to_string(row.sess) + ' ' + row.fft + ' ' + toString(row.kind) + ' ' + row.key + ' ' +
     std::to_string(r.regs) + ' ' + std::to_string(r.sharedBytes) + ' ' + std::to_string(r.threads) + ' ' +
-    std::to_string(r.localBytes) + ' ' + std::to_string(row.cfg) + ' ' + std::to_string(row.ts);
+    std::to_string(r.localBytes) + ' ' + plan + std::to_string(row.cfg) + ' ' + std::to_string(row.ts);
 }
 
 std::string formatRow(const AuditRow& row) {
@@ -688,8 +689,9 @@ struct Shape {
   size_t fields;
 };
 
-constexpr Shape SHAPES[] = {{"cfg", 3},   {"call", 15}, {"try", 7},   {"done", 3},  {"roe", 10}, {"anchor", 8},
-                            {"regs", 12}, {"ref", 7},   {"item", 10}, {"kres", 11}, {"pred", 5}, {"audit", 6}};
+constexpr Shape SHAPES[] = {{"cfg", 3},    {"call", 15}, {"try", 7},  {"done", 3},  {"roe", 10},
+                            {"anchor", 8}, {"regs", 12}, {"ref", 7},  {"item", 10}, {"kres", 11},
+                            {"kres", 13},  {"pred", 5},  {"audit", 6}};
 
 }  // namespace
 
@@ -743,10 +745,10 @@ bool TuneDB::parse(std::string_view text, std::string_view name) {
     const std::vector<std::string>& f = *fields;
     std::string const& tag = f[0];
 
-    for (const Shape& s : SHAPES) {
-      if (tag == s.tag && f.size() != s.fields) {
-        refuse(tag + " record has " + std::to_string(f.size()) + " fields, expected " + std::to_string(s.fields));
-      }
+    // A kind may have more than one shape: the first `kres` records were written without the plan.
+    bool const known = std::ranges::any_of(SHAPES, [&](const Shape& s) { return tag == s.tag; });
+    if (known && std::ranges::none_of(SHAPES, [&](const Shape& s) { return tag == s.tag && f.size() == s.fields; })) {
+      refuse(tag + " record has " + std::to_string(f.size()) + " fields, a number no " + tag + " record has");
     }
     size_t const before = lines_.size();
 
@@ -979,21 +981,24 @@ bool TuneDB::parse(std::string_view text, std::string_view name) {
       if (!sess || !mean || !draw || !ts || !add(PredRow{.sess = *sess, .mean = *mean, .draw = *draw, .ts = *ts})) {
         refuse("malformed pred record");
       }
-    } else if (tag == "kres" && f.size() == 11) {
+    } else if (tag == "kres" && (f.size() == 11 || f.size() == 13)) {
+      bool const planned = f.size() == 13;
       auto const sess = parseInt<u32>(f[1]);
       auto const kind = parseTestKind(f[3]);
       auto const regs = parseInt<int>(f[5]);
       auto const shared = parseInt<int>(f[6]);
       auto const threads = parseInt<int>(f[7]);
       auto const local = parseInt<int>(f[8]);
-      auto const cfg = parseInt<u32>(f[9]);
-      auto const ts = parseInt<u64>(f[10]);
-      if (!sess || !kind || !regs || !shared || !threads || !local || !cfg || !ts ||
+      auto const plan = planned ? parsePlan(f[9], f[10]) : std::optional<RegisterPlan>{};
+      auto const cfg = parseInt<u32>(f[planned ? 11 : 9]);
+      auto const ts = parseInt<u64>(f[planned ? 12 : 10]);
+      if (!sess || !kind || !regs || !shared || !threads || !local || (planned && !plan) || !cfg || !ts ||
           !add(KresRow{.sess = *sess,
                        .fft = std::string{f[2]},
                        .kind = *kind,
                        .key = std::string{f[4]},
                        .resources = {.regs = *regs, .localBytes = *local, .sharedBytes = *shared, .threads = *threads},
+                       .plan = plan,
                        .cfg = *cfg,
                        .ts = *ts})) {
         refuse("malformed kres record");
