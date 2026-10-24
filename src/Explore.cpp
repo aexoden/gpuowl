@@ -274,7 +274,106 @@ std::optional<Proposal> branchStep(const AcquireContext& context, const std::vec
   return {};
 }
 
+// How much likelier a pair is to be read together for being one option and what depends on it, or of one group, than
+// for sharing a kernel alone.
+constexpr double DEPENDENT_PAIR = 3;
+constexpr double GROUP_PAIR = 2;
+
 }  // namespace
+
+std::optional<Proposal> interactionStep(const AcquireContext& context, const ExploreSettings& settings, double elapsed,
+                                        std::mt19937_64& rng) {
+  std::vector<const Candidate*> const entries = entriesOf(context);
+  if (entries.empty()) { return {}; }
+  const Env& env = context.model.env();
+  std::vector<double> const behindBy = behind(context, entries);
+  std::vector<size_t> contenders;
+  for (size_t i = 0; i < entries.size(); ++i) {
+    if (behindBy[i] <= std::log1p(settings.contenders) && fastest(context, *entries[i])) { contenders.push_back(i); }
+  }
+
+  while (!contenders.empty()) {
+    auto const [i, random] = pick(contenders, behindBy, settings.reach.at(elapsed), rng);
+    std::erase(contenders, i);
+    const Candidate& c = *entries[i];
+    std::shared_ptr<const ConditionalSpace> const space = spaceOf(env, c.subject.fft, context.filter(c));
+    const std::vector<BranchVariable>& vars = space->variables();
+    std::vector<size_t> const seed = space->statesOf(fastest(context, c)->options);
+
+    // The position pairs this entry has read together, whatever else was set.
+    std::set<std::tuple<size_t, size_t, size_t, size_t>> together;
+    for (const Reading* r : context.readings.of(c.subject)) {
+      std::vector<size_t> const states = space->statesOf(r->options);
+      for (size_t u = 0; u < vars.size(); ++u) {
+        for (size_t v = u + 1; v < vars.size(); ++v) { together.emplace(u, states[u], v, states[v]); }
+      }
+    }
+
+    auto movable = [&](size_t v) {
+      if (vars[v].axis.option->structural || seed[v] == vars[v].inactive()) { return false; }
+      return std::ranges::count(vars[v].context(space->contextOf(v, seed)).offered, true) >= 2;
+    };
+    struct Cell {
+      size_t u, pu, v, pv;
+    };
+    std::vector<Cell> cells;
+    std::vector<double> weights;
+    for (size_t u = 0; u < vars.size(); ++u) {
+      if (!movable(u)) { continue; }
+      const BranchVariable::Context& cu = vars[u].context(space->contextOf(u, seed));
+      for (size_t v = u + 1; v < vars.size(); ++v) {
+        if (!movable(v)) { continue; }
+        const BranchVariable::Context& cv = vars[v].context(space->contextOf(v, seed));
+        const Option& ou = *vars[u].axis.option;
+        const Option& ov = *vars[v].axis.option;
+        bool const dependent = std::ranges::find(vars[v].ancestors, u) != vars[v].ancestors.end();
+        double const weight = dependent                     ? DEPENDENT_PAIR
+          : ou.group == ov.group                            ? GROUP_PAIR
+          : Model::interact(ou, cu.touches, ov, cv.touches) ? 1
+                                                            : 0;
+        if (weight == 0) { continue; }
+        for (size_t pu = 0; pu < cu.offered.size(); ++pu) {
+          if (!cu.offered[pu] || pu == seed[u]) { continue; }
+          for (size_t pv = 0; pv < cv.offered.size(); ++pv) {
+            if (!cv.offered[pv] || pv == seed[v] || together.contains({u, pu, v, pv})) { continue; }
+            cells.push_back({.u = u, .pu = pu, .v = v, .pv = pv});
+            weights.push_back(weight);
+          }
+        }
+      }
+    }
+
+    for (u32 attempt = 0; attempt < TRIES && !cells.empty(); ++attempt) {
+      size_t const k = std::discrete_distribution<size_t>{weights.begin(), weights.end()}(rng);
+      Cell const cell = cells[k];
+      weights[k] = 0;
+      std::vector<size_t> states = seed;
+      states[cell.u] = cell.pu;
+      settle(*space, states, cell.u);
+      const BranchVariable::Context& cv = vars[cell.v].context(space->contextOf(cell.v, states));
+      if (!cv.reference || !cv.offered[cell.pv]) { continue; }
+      states[cell.v] = cell.pv;
+      settle(*space, states, cell.v);
+      UseConfig const options = space->configOf(states);
+      if (branchOf(env, c.subject.fft, options) != branchOf(env, c.subject.fft, fastest(context, c)->options) ||
+          !fresh(context, c, options)) {
+        if (std::ranges::all_of(weights, [](double w) { return w == 0; })) { break; }
+        continue;
+      }
+      return Proposal{.candidate = &c,
+                      .options = options,
+                      .lane = Lane::Interactions,
+                      .what = "pair",
+                      .packet = 0,
+                      .ordinal = 1,
+                      .predictedUs = predictedUs(context, c, options),
+                      .why = "interactions: " + vars[cell.u].axis.label(cell.pu) + " with " +
+                        vars[cell.v].axis.label(cell.pv) + ", never read together here" +
+                        (random ? ", drawn at random" : "")};
+    }
+  }
+  return {};
+}
 
 std::optional<Proposal> coverageStep(const AcquireContext& context, const ExploreSettings& settings, double elapsed,
                                      std::mt19937_64& rng) {

@@ -55,6 +55,12 @@ struct Proposal {
 [[nodiscard]] std::optional<Proposal> coverageStep(const AcquireContext& context, const ExploreSettings& settings,
                                                    double elapsed, std::mt19937_64& rng);
 
+// The next item of the interactions lane: on a contender, from its fastest set, two options that interact -- one
+// depending on the other, of one group, or sharing a kernel -- moved together to positions never read together there.
+// What two moves do together is what single moves, and a model of their sum, cannot show.
+[[nodiscard]] std::optional<Proposal> interactionStep(const AcquireContext& context, const ExploreSettings& settings,
+                                                      double elapsed, std::mt19937_64& rng);
+
 // The next item of the restarts lane: the open restart's next local step from its own best, or a new start.
 [[nodiscard]] std::optional<Proposal> restartStep(const AcquireContext& context, const ExploreSettings& settings,
                                                   double elapsed, const TuneDB& db, u32 env, std::mt19937_64& rng);

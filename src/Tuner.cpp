@@ -275,7 +275,7 @@ LoopResult runLoop(Device& device, TuneDB& db, u32 env, const Env& card, const R
       case Lane::Model: proposal = modelStep(); break;
       case Lane::Coverage: proposal = coverageStep(context, settings.explore, elapsed, rng); break;
       case Lane::Restarts: proposal = restartStep(context, settings.explore, elapsed, db, env, rng); break;
-      case Lane::Interactions: break;
+      case Lane::Interactions: proposal = interactionStep(context, settings.explore, elapsed, rng); break;
       }
       if (proposal) { break; }
     }

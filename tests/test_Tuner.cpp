@@ -136,7 +136,7 @@ TEST(the_lanes_measure_legal_sets_in_packets_of_their_own) {
     makeScope({.lo = 67'400'000, .hi = 67'600'000, .probe = 67'500'000, .kinds = {TestKind::PRP}}, {});
   SimDevice device{db, sess};
   (void)runLoop(device, db, env, nvidia(), scope,
-                {.stop = 0, .lanes = *parseTimetable("40/30/30/0"), .seed = 11, .regretEvery = 1000, .maxItems = 60});
+                {.stop = 0, .lanes = *parseTimetable("30/25/25/20"), .seed = 11, .regretEvery = 1000, .maxItems = 60});
 
   std::map<std::string, u32> lanes;
   u32 branches = 0;
@@ -168,6 +168,7 @@ TEST(the_lanes_measure_legal_sets_in_packets_of_their_own) {
   CHECK(lanes["model"] > 0);
   CHECK(lanes["coverage"] > 0);
   CHECK(lanes["restarts"] > 0);
+  CHECK(lanes["interactions"] > 0);
   for (const auto& [packet, steps] : restarts) {
     CHECK(packet > 0);
     CHECK(steps.size() <= RESTART_MOST);
