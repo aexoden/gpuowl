@@ -2,6 +2,7 @@
 
 #include "test.h"
 
+#include "Axes.h"
 #include "FFTVariants.h"
 #include "Model.h"
 
@@ -128,4 +129,27 @@ TEST(model_pairs_only_within_a_group_or_a_shared_kernel) {
   };
   CHECK(Model::interact(env, fft, {}, find("ZEROHACK_W"), find("SHUFL_BYTES_W")));
   CHECK(!Model::interact(env, fft, {}, find("ZEROHACK_W"), find("INPLACE")));
+}
+
+TEST(a_few_huge_effects_do_not_widen_every_prior) {
+  // Twelve options a percent either way, and two that cost 40% -- a register limit that spills: the effects' spread is
+  // learnt as the small ones show it.
+  Subject const a = subject("1K:13:256:202");
+  std::vector<Axis> const axes = axesOf(nvidia(), a.fft, {});
+  CHECK(axes.size() >= 14);
+  std::vector<Observation> data;
+  for (int i = 0; i < 4; ++i) { data.push_back(obs(a, {}, 1000)); }
+  for (size_t k = 0; k < 14 && k < axes.size(); ++k) {
+    UseConfig options;
+    place(options, axes[k], axes[k].reference == 0 ? 1 : 0);
+    double const cost = k < 12 ? 1000 * (k % 2 ? 1.01 : 0.99) : 1400;
+    for (int i = 0; i < 4; ++i) { data.push_back(obs(a, fitted(nvidia(), a.fft, options), cost)); }
+  }
+  Model m{nvidia()};
+  m.fit(data);
+  CHECK(m.effectSpread() < 0.03);
+  // The huge ones are fitted all the same.
+  UseConfig huge;
+  place(huge, axes[12], axes[12].reference == 0 ? 1 : 0);
+  CHECK(std::abs(us(m.predict(m.mean(), a, fitted(nvidia(), a.fft, huge))) / 1400 - 1) < 0.02);
 }

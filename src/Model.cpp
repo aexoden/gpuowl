@@ -24,12 +24,16 @@ constexpr double SOLVE_TOLERANCE = 1e-6;
 constexpr u32 SOLVE_MAX_ITERATIONS = 300;
 
 // A group's spread is learnt from its terms read by at least SPREAD_READINGS observations, once there are
-// SPREAD_TERMS of them: the root mean square of those terms, a fitted term being shrunk toward zero by its prior by
-// about what SHRINK_UNDO undoes for a well-read one.  It stays within SPREAD_RANGE of the stated prior either way.
+// SPREAD_TERMS of them: the robust scale of those terms (their median magnitude), a fitted term being shrunk toward
+// zero by its prior by about what SHRINK_UNDO undoes for a well-read one.  It stays within SPREAD_RANGE of the stated
+// prior either way.
 constexpr u32 SPREAD_READINGS = 3;
 constexpr size_t SPREAD_TERMS = 5;
 constexpr double SHRINK_UNDO = 1.25;
 constexpr double SPREAD_RANGE = 10;
+
+// The median of |x| for x normal with unit spread: a group's spread is its terms' median magnitude over this.
+constexpr double MEDIAN_ABSOLUTE = 0.6744897501960817;
 
 
 // A standard normal variate determined by `key`, the same on every platform.
@@ -222,17 +226,19 @@ void Model::learnSpreads(const std::vector<Group>& groups, const std::vector<std
   for (u32 round = 0; round < 3; ++round) {
     bool moved = false;
     for (size_t g = 0; g < size_t(Group::Count); ++g) {
-      double ss = 0;
-      size_t n = 0;
+      // A robust scale, not the root mean square: a few huge terms -- register limits that spill, read by the lanes
+      // far from the optimum -- would otherwise widen the prior of every term of the group, and a draw over a dozen
+      // weakly shrunk effects predicts a saving no configuration has.  The huge terms are fitted all the same: their
+      // readings outweigh any prior.
+      std::vector<double> magnitudes;
       for (size_t j = 0; j < groups.size(); ++j) {
-        if (size_t(groups[j]) == g && readings[j] >= SPREAD_READINGS) {
-          ss += beta_[j] * beta_[j];
-          ++n;
-        }
+        if (size_t(groups[j]) == g && readings[j] >= SPREAD_READINGS) { magnitudes.push_back(std::abs(beta_[j])); }
       }
-      if (n < SPREAD_TERMS) { continue; }
+      if (magnitudes.size() < SPREAD_TERMS) { continue; }
+      std::ranges::nth_element(magnitudes, magnitudes.begin() + i64(magnitudes.size() / 2));
+      double const scale = magnitudes[magnitudes.size() / 2] / MEDIAN_ABSOLUTE;
       double const base = stated(Group(g));
-      double const sd = std::clamp(SHRINK_UNDO * std::sqrt(ss / double(n)), base / SPREAD_RANGE, base * SPREAD_RANGE);
+      double const sd = std::clamp(SHRINK_UNDO * scale, base / SPREAD_RANGE, base * SPREAD_RANGE);
       if (std::abs(sd / spreadOf(Group(g), base) - 1) < 0.1) { continue; }
       learnt_[g] = sd;
       for (size_t j = 0; j < groups.size(); ++j) {
