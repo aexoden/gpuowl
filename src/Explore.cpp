@@ -487,9 +487,9 @@ std::optional<Proposal> coverageStep(const AcquireContext& context, const Explor
   if (entries.empty()) { return {}; }
   std::vector<double> const behindBy = behind(context, entries);
 
-  // A third to the sweep of the near front, a third to the contenders' branches, a third to breadth; each lends its
-  // turn to the next.
-  int const turn = std::uniform_int_distribution<int>{0, 2}(rng);
+  // A share each to the sweep of the near front (where there is one), the contenders' branches, and breadth; each lends
+  // its turn to the next.
+  int const turn = std::uniform_int_distribution<int>{settings.sweepBand > 0 ? 0 : 1, 2}(rng);
   if (turn == 0) {
     if (std::optional<Proposal> p = sweepStep(context, entries, behindBy, settings)) { return p; }
   }

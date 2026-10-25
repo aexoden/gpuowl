@@ -61,10 +61,13 @@ inline constexpr double TARGET = 0.005;
 // 10% unread for good.
 inline constexpr double NEW_FLOOR = 0.25;
 
+// The width of the bands of the coverage lane's sweep of the near front, 0 for none: every single move from the best
+// set of each shape within the band of what else serves its exponent, the nearest first, then the next band, on to the
+// contenders.  Off by default: on simulated cards it reached the shapes it should without springing more traps in two
+// hours than the coverage lane's branches and breadth did, and it took a third of their time.
+inline constexpr double SWEEP_BAND = 0;
+
 // What the lanes beyond the model's are allowed.
-// The width of the coverage lane's sweep's bands: every single move from the best set of each entry within 5% of what
-// else serves its exponent, the nearest first, then within 10%, and so on to the contenders.  0 for no sweep.
-inline constexpr double SWEEP_BAND = 0.05;
 
 struct ExploreSettings {
   double contenders = CONTENDERS;
