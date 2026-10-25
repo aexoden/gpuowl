@@ -4,7 +4,7 @@
 // For each scenario and seed it runs the loop for a span of simulated tuning time, in chunks, and prints how far what
 // it publishes is from the optimum after each chunk.  No GPU; hours of CPU for a full run, so not part of `make check`.
 //
-//   prpll-sim [scenario|all] [seeds=N] [first=S] [minutes=M] [lanes=...]
+//   prpll-sim [scenario|all] [seeds=N] [first=S] [minutes=M] [lanes=...] [db=<prefix>: keep each run's database]
 //
 // Output lines, one per chunk: "<scenario> <seed> <minutes> <gap>", the gap being T over the optimum's T, less one;
 // then a summary per scenario.
@@ -108,7 +108,7 @@ struct Point {
   double gap;
 };
 
-std::vector<Point> run(const Landscape& l, u64 seed, double minutes, const Timetable& lanes) {
+std::vector<Point> run(const Landscape& l, u64 seed, double minutes, const Timetable& lanes, const std::string& keep) {
   RunScope const scope =
     makeScope({.lo = 67'400'000, .hi = 67'600'000, .probe = 67'500'000, .kinds = {TestKind::PRP}}, {});
   std::vector<std::vector<Candidate>> const candidates{candidatesOf(card(), scope, TestKind::PRP)};
@@ -130,6 +130,13 @@ std::vector<Point> run(const Landscape& l, u64 seed, double minutes, const Timet
                 out.back().gap);
     std::fflush(stdout);
   }
+  // The database, for looking into what the run did.
+  if (!keep.empty()) {
+    if (FILE* f = std::fopen((keep + '-' + l.name + '-' + std::to_string(seed) + ".txt").c_str(), "w")) {
+      std::fputs(db.text().c_str(), f);
+      std::fclose(f);
+    }
+  }
   return out;
 }
 
@@ -141,6 +148,7 @@ int main(int argc, char** argv) {
   u64 first = 1;
   double minutes = 60;
   Timetable lanes{};
+  std::string keep;
   for (int i = 1; i < argc; ++i) {
     std::string_view const a = argv[i];
     if (a.starts_with("seeds=")) {
@@ -149,6 +157,8 @@ int main(int argc, char** argv) {
       first = std::stoull(std::string{a.substr(6)});
     } else if (a.starts_with("minutes=")) {
       minutes = std::stod(std::string{a.substr(8)});
+    } else if (a.starts_with("db=")) {
+      keep = a.substr(3);
     } else if (a.starts_with("lanes=")) {
       std::optional<Timetable> const t = parseTimetable(a.substr(6));
       if (!t) {
@@ -182,7 +192,7 @@ int main(int argc, char** argv) {
     std::vector<double> atEnd;
     std::vector<double> toTarget;
     for (u64 seed = first; seed < first + seeds; ++seed) {
-      std::vector<Point> const points = run(l, seed, minutes, lanes);
+      std::vector<Point> const points = run(l, seed, minutes, lanes, keep);
       double g30 = points.front().gap;
       double reached = -1;
       for (const Point& p : points) {

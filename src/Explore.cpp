@@ -296,9 +296,11 @@ constexpr double GROUP_PAIR = 2;
 // And a pair the model has no interaction term for, at all: what it cannot represent, only a reading shows.
 constexpr double UNMODELLED_PAIR = 0.25;
 
-// The sweep's next item: in the narrowest band of entries that has one left, for the entry least behind, its defaults
-// where it was never read, else the first single move from its best set to a position the entry never read in that
-// context, structural keys first.  An entry is swept to the end before the next.
+// The sweep's next item: in the narrowest band of shapes that has one left, for the shape least behind, its defaults
+// where its least behind variant was never read, else the first single move from that variant's best set to a position
+// no variant of the shape has read in that context, structural keys first.  A shape is swept to the end before the
+// next.  By shape, not by entry: a shape's variants share most of what an option does (the model's shape terms), and
+// the near front can hold dozens of variants of a few shapes.
 std::optional<Proposal> sweepStep(const AcquireContext& context, const std::vector<const Candidate*>& entries,
                                   const std::vector<double>& behindBy, const ExploreSettings& settings) {
   if (!(settings.sweepBand > 0)) { return {}; }
@@ -306,13 +308,26 @@ std::optional<Proposal> sweepStep(const AcquireContext& context, const std::vect
   std::vector<size_t> order(entries.size());
   std::iota(order.begin(), order.end(), size_t{0});
   std::ranges::sort(order, {}, [&](size_t i) { return behindBy[i]; });
+  // Each shape's entries, the least behind first, which stands for the shape.
+  std::map<std::string, std::vector<size_t>> shapes;
+  std::vector<size_t> standing;
+  for (size_t const i : order) {
+    std::vector<size_t>& of =
+      shapes[std::string{toString(entries[i]->subject.kind)} + '|' + entries[i]->subject.fft.shape.spec()];
+    if (of.empty()) { standing.push_back(i); }
+    of.push_back(i);
+  }
 
   for (double band = settings.sweepBand; band < settings.contenders + settings.sweepBand; band += settings.sweepBand) {
     double const limit = std::log1p(std::min(band, settings.contenders));
-    for (size_t const i : order) {
+    for (size_t const i : standing) {
       if (behindBy[i] > limit) { break; }
       const Candidate& c = *entries[i];
       std::vector<const Reading*> const of = context.readings.of(c.subject);
+      std::vector<const Reading*> shapeOf;
+      for (size_t const j : shapes[std::string{toString(c.subject.kind)} + '|' + c.subject.fft.shape.spec()]) {
+        for (const Reading* r : context.readings.of(entries[j]->subject)) { shapeOf.push_back(r); }
+      }
       if (of.empty()) {
         if (context.blocked(c, {})) { continue; }
         return Proposal{.candidate = &c,
@@ -331,7 +346,7 @@ std::optional<Proposal> sweepStep(const AcquireContext& context, const std::vect
       std::shared_ptr<const ConditionalSpace> const space = spaceOf(env, c.subject.fft, context.filter(c));
       const std::vector<BranchVariable>& vars = space->variables();
       std::set<std::tuple<size_t, size_t, size_t>> read;
-      for (const Reading* r : of) {
+      for (const Reading* r : shapeOf) {
         std::vector<size_t> const states = space->statesOf(r->options);
         for (size_t v = 0; v < vars.size(); ++v) { read.emplace(v, space->contextOf(v, states), states[v]); }
       }
