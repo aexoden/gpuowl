@@ -170,6 +170,14 @@ TuneCommand parseTuneCommand(std::string_view text) {
         throw std::string{"-tune: target= takes a percentage, such as target=0.5%"};
       }
       out.target = *share / 100;
+    } else if (key == "frontSweep" && out.verb == TuneVerb::Run) {
+      std::optional<double> const band = value == "0" ? std::optional<double>{0}
+        : value.ends_with('%')                        ? parseDouble(value.substr(0, value.size() - 1))
+                                                      : std::optional<double>{};
+      if (!band || *band < 0) {
+        throw std::string{"-tune: frontSweep= takes a percentage, such as frontSweep=5%, or 0"};
+      }
+      out.explore.sweepBand = *band / 100;
     } else if (key == "newFloor" && out.verb == TuneVerb::Run) {
       std::optional<double> const floor = parseDouble(value);
       if (!floor || *floor < 0 || *floor > 1) { throw std::string{"-tune: newFloor= takes a fraction from 0 to 1"}; }

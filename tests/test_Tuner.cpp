@@ -170,6 +170,7 @@ TEST(the_lanes_measure_legal_sets_in_packets_of_their_own) {
     }
   }
   CHECK(branches > 0);
+  CHECK(std::ranges::any_of(db.items(), [](const ItemRow& r) { return r.what == "sweep"; }));
   CHECK(lanes["model"] > 0);
   CHECK(lanes["coverage"] > 0);
   CHECK(lanes["restarts"] > 0);

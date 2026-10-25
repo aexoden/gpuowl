@@ -112,6 +112,10 @@ TEST(every_setting_is_accepted_where_it_belongs) {
   CHECK(near(parsed("reserve=10%").reserve, 0.1));
   CHECK(near(parsed("").target, TARGET));
   CHECK(near(parsed("").newFloor, NEW_FLOOR));
+  CHECK(near(parsed("").explore.sweepBand, SWEEP_BAND));
+  CHECK(near(parsed("frontSweep=0").explore.sweepBand, 0));
+  CHECK(near(parsed("frontSweep=10%").explore.sweepBand, 0.1));
+  CHECK(!refusal("frontSweep=10").empty());
   CHECK(near(parsed("newFloor=0").newFloor, 0));
   CHECK(!refusal("newFloor=2").empty());
   CHECK(near(parsed("target=0.1%").target, 0.001));

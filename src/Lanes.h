@@ -62,9 +62,14 @@ inline constexpr double TARGET = 0.005;
 inline constexpr double NEW_FLOOR = 0.25;
 
 // What the lanes beyond the model's are allowed.
+// The width of the coverage lane's sweep's bands: every single move from the best set of each entry within 5% of what
+// else serves its exponent, the nearest first, then within 10%, and so on to the contenders.  0 for no sweep.
+inline constexpr double SWEEP_BAND = 0.05;
+
 struct ExploreSettings {
   double contenders = CONTENDERS;
   Reach reach{};
+  double sweepBand = SWEEP_BAND;
 };
 
 using LaneShares = std::array<double, LANES>;

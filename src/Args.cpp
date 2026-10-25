@@ -360,6 +360,8 @@ named "config.txt" in the prpll run directory.
                                              90m; stop= is not used under a budget [0: none]
                          reserve=<P>%%        the share of the budget kept for confirming what is published [25%%]
                          target=<P>%%         the workload improvement an audit trial must make to count [0.5%%]
+                         frontSweep=<P>%%|0   the band width in which every single change of the FFTs nearest
+                                             the best is tried, nearest first, widening to contenders= [5%%]
                          newFloor=<f>        the least an option value untried on a shape counts for when the
                                              model explores, 0 to 1, 0 for none [0.25]
                          randomReach=<f>x@<t>|all  how far behind the best a random pick may reach, the factor

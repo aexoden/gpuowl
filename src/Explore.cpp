@@ -8,6 +8,7 @@
 #include <algorithm>
 #include <cmath>
 #include <map>
+#include <numeric>
 #include <set>
 
 namespace tune {
@@ -295,6 +296,79 @@ constexpr double GROUP_PAIR = 2;
 // And a pair the model has no interaction term for, at all: what it cannot represent, only a reading shows.
 constexpr double UNMODELLED_PAIR = 0.25;
 
+// The sweep's next item: in the narrowest band of entries that has one left, for the entry least behind, its defaults
+// where it was never read, else the first single move from its best set to a position the entry never read in that
+// context, structural keys first.  An entry is swept to the end before the next.
+std::optional<Proposal> sweepStep(const AcquireContext& context, const std::vector<const Candidate*>& entries,
+                                  const std::vector<double>& behindBy, const ExploreSettings& settings) {
+  if (!(settings.sweepBand > 0)) { return {}; }
+  const Env& env = context.model.env();
+  std::vector<size_t> order(entries.size());
+  std::iota(order.begin(), order.end(), size_t{0});
+  std::ranges::sort(order, {}, [&](size_t i) { return behindBy[i]; });
+
+  for (double band = settings.sweepBand; band < settings.contenders + settings.sweepBand; band += settings.sweepBand) {
+    double const limit = std::log1p(std::min(band, settings.contenders));
+    for (size_t const i : order) {
+      if (behindBy[i] > limit) { break; }
+      const Candidate& c = *entries[i];
+      std::vector<const Reading*> const of = context.readings.of(c.subject);
+      if (of.empty()) {
+        if (context.blocked(c, {})) { continue; }
+        return Proposal{.candidate = &c,
+                        .options = {},
+                        .lane = Lane::Coverage,
+                        .what = "sweep",
+                        .packet = 0,
+                        .ordinal = 1,
+                        .predictedUs = predictedUs(context, c, {}),
+                        .why = "coverage: sweep within " + std::to_string(int(std::round(band * 100))) +
+                          "%, the entry's defaults"};
+      }
+      const Reading* const best = fastest(context, c);
+      if (!best) { continue; }
+
+      std::shared_ptr<const ConditionalSpace> const space = spaceOf(env, c.subject.fft, context.filter(c));
+      const std::vector<BranchVariable>& vars = space->variables();
+      std::set<std::tuple<size_t, size_t, size_t>> read;
+      for (const Reading* r : of) {
+        std::vector<size_t> const states = space->statesOf(r->options);
+        for (size_t v = 0; v < vars.size(); ++v) { read.emplace(v, space->contextOf(v, states), states[v]); }
+      }
+      std::vector<size_t> const seed = space->statesOf(best->options);
+      std::vector<size_t> byKind;
+      for (bool const structural : {true, false}) {
+        for (size_t v = 0; v < vars.size(); ++v) {
+          if (vars[v].axis.option->structural == structural) { byKind.push_back(v); }
+        }
+      }
+      for (size_t const v : byKind) {
+        if (seed[v] == vars[v].inactive()) { continue; }
+        size_t const at = space->contextOf(v, seed);
+        const BranchVariable::Context& ctx = vars[v].context(at);
+        for (size_t p = 0; p < ctx.offered.size(); ++p) {
+          if (!ctx.offered[p] || p == seed[v] || read.contains({v, at, p})) { continue; }
+          std::vector<size_t> states = seed;
+          states[v] = p;
+          settle(*space, states, v);
+          UseConfig const options = space->configOf(states);
+          if (!fresh(context, c, options)) { continue; }
+          return Proposal{.candidate = &c,
+                          .options = options,
+                          .lane = Lane::Coverage,
+                          .what = "sweep",
+                          .packet = 0,
+                          .ordinal = u32(of.size()) + 1,
+                          .predictedUs = predictedUs(context, c, options),
+                          .why = "coverage: sweep within " + std::to_string(int(std::round(band * 100))) + "%, " +
+                            vars[v].axis.label(p) + " from the entry's best"};
+        }
+      }
+    }
+  }
+  return {};
+}
+
 }  // namespace
 
 std::optional<Proposal> interactionStep(const AcquireContext& context, const ExploreSettings& settings, double elapsed,
@@ -398,8 +472,13 @@ std::optional<Proposal> coverageStep(const AcquireContext& context, const Explor
   if (entries.empty()) { return {}; }
   std::vector<double> const behindBy = behind(context, entries);
 
-  // Half to the contenders' branches, half to breadth; either lends its turn to the other.
-  bool const branches = std::bernoulli_distribution{0.5}(rng);
+  // A third to the sweep of the near front, a third to the contenders' branches, a third to breadth; each lends its
+  // turn to the next.
+  int const turn = std::uniform_int_distribution<int>{0, 2}(rng);
+  if (turn == 0) {
+    if (std::optional<Proposal> p = sweepStep(context, entries, behindBy, settings)) { return p; }
+  }
+  bool const branches = turn <= 1;
   if (branches) {
     if (std::optional<Proposal> p = branchStep(context, entries, behindBy, contenders, reach, rng)) { return p; }
   }
