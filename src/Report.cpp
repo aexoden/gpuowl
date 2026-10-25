@@ -96,6 +96,17 @@ std::string reportJson(const RunReport& r) {
       out += std::string{i ? ", " : ""} + "{\"fft\": " + jsonString(a.found[i]->candidate->subject.fft.spec()) +
         ", \"options\": " + jsonString(configText(a.found[i]->reading->options)) + "}";
     }
+    out += "], \"confirmed\": [";
+    bool firstConfirmed = true;
+    for (const AuditSummary::Confirmed& c : a.confirmed) {
+      if (c.fresh.calls == 0) { continue; }
+      out += std::string{firstConfirmed ? "" : ", "} +
+        "{\"fft\": " + jsonString(c.line->candidate->subject.fft.spec()) +
+        ", \"options\": " + jsonString(configText(c.line->reading->options)) +
+        ", \"pooledUsPerIt\": " + number(c.line->reading->mean) + ", \"freshUsPerIt\": " + number(c.fresh.mean) +
+        ", \"freshCalls\": " + std::to_string(c.fresh.calls) + "}";
+      firstConfirmed = false;
+    }
     out += "]}\n";
   } else {
     out += "  \"audit\": null\n";

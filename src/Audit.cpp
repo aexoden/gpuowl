@@ -65,39 +65,113 @@ AuditState auditState(const TuneDB& db, u32 env, const Readings& readings) {
   return out;
 }
 
+std::vector<Finalist> finalists(const AcquireContext& context, const Publication& publication, double target) {
+  std::vector<Finalist> out;
+  auto const add = [&](const Candidate* c, const UseConfig& options, bool rival) {
+    bool const known = std::ranges::any_of(out, [&](const Finalist& f) {
+      return f.candidate->subject.fft.spec() == c->subject.fft.spec() && f.candidate->subject.kind == c->subject.kind &&
+        f.options == options;
+    });
+    if (!known) { out.push_back({.candidate = c, .options = options, .rival = rival}); }
+  };
+  for (size_t k = 0; k < context.scope.grids.size() && k < context.candidates.size(); ++k) {
+    const KindPublication* const kind = publication.of(context.scope.grids[k].kind);
+    if (!kind) { continue; }
+    // The candidates read at all: a few hundred of thousands.
+    std::vector<std::pair<const Candidate*, std::vector<const Reading*>>> read;
+    for (const Candidate& c : context.candidates[k]) {
+      std::vector<const Reading*> of = context.readings.of(c.subject);
+      std::erase_if(of, [](const Reading* r) { return r->failed || r->calls == 0; });
+      if (!of.empty()) { read.emplace_back(&c, std::move(of)); }
+    }
+    for (const Line& line : kind->lines) {
+      add(line.candidate, line.reading->options, false);
+      // Its closest rival over the points it holds.
+      const Candidate* rival = nullptr;
+      const Reading* rivalReading = nullptr;
+      double closest = 1 + 2 * target;
+      for (const GridPoint& p : context.scope.grids[k].points) {
+        if (kind->at(p.exponent) != &line) { continue; }
+        for (const auto& [c, of] : read) {
+          if (!c->interval.contains(p.exponent)) { continue; }
+          for (const Reading* r : of) {
+            if (r == line.reading) { continue; }
+            if (double const ratio = r->mean / line.reading->mean; ratio < closest) {
+              closest = ratio;
+              rival = c;
+              rivalReading = r;
+            }
+          }
+        }
+      }
+      if (rival) { add(rival, rivalReading->options, true); }
+    }
+  }
+  // The lines first: a rival already a line is confirmed as one.
+  std::ranges::stable_partition(out, [](const Finalist& f) { return !f.rival; });
+  return out;
+}
+
+FreshCalls freshCalls(const TuneDB& db, u32 env) {
+  // A confirmation item's call is the next call of its session of the same set.
+  std::map<u32, std::vector<const CallRow*>> bySession;
+  for (const CallRow& call : db.calls()) {
+    if (db.envOf(call.sess) == env) { bySession[call.sess].push_back(&call); }
+  }
+  FreshCalls out;
+  std::map<std::tuple<std::string, TestKind, u32>, double> sums;
+  for (const ItemRow& item : db.items()) {
+    if (db.envOf(item.sess) != env || item.lane != CONFIRM) { continue; }
+    const std::vector<const CallRow*>& calls = bySession[item.sess];
+    auto it = std::ranges::lower_bound(calls, item.ts, {}, &CallRow::ts);
+    for (; it != calls.end(); ++it) {
+      if ((*it)->fft == item.fft && (*it)->kind == item.kind && (*it)->cfg == item.cfg) { break; }
+    }
+    if (it == calls.end()) { continue; }
+    auto const key = std::tuple{item.fft, item.kind, item.cfg};
+    ++out[key].calls;
+    if ((*it)->ok()) { sums[key] += (*it)->cost(); }
+  }
+  for (auto& [key, fresh] : out) { fresh.mean = sums[key] / fresh.calls; }
+  return out;
+}
+
+Fresh freshOf(const FreshCalls& fresh, const TuneDB& db, const std::string& fft, TestKind kind,
+              const UseConfig& options) {
+  auto const it = fresh.find({fft, kind, db.findCfgId(options)});
+  return it == fresh.end() ? Fresh{} : it->second;
+}
+
 std::optional<Proposal> endStep(const AcquireContext& context, const Publication& publication, TuneDB& db, u32 env,
                                 u32 sess, u64 now, const ExploreSettings& settings, double elapsed, double budget,
                                 double target, std::mt19937_64& rng) {
-  // Fresh calls of what is published, the least confirmed line first.
-  const Line* least = nullptr;
-  u32 leastCalls = CONFIRM_CALLS;
-  for (const KindPublication& kind : publication.kinds) {
-    for (const Line& line : kind.lines) {
-      std::string const text = configText(line.reading->options);
-      u32 calls = 0;
-      for (const ItemRow& r : db.items()) {
-        const UseConfig* const options = db.findCfg(r.cfg);
-        calls += db.envOf(r.sess) == env && r.lane == CONFIRM && r.fft == line.candidate->subject.fft.spec() &&
-          r.kind == kind.kind && options && configText(*options) == text;
-      }
-      if (calls < leastCalls) {
-        least = &line;
-        leastCalls = calls;
-      }
+  // Fresh calls of what is published, and of each line's closest rival: the least confirmed first.
+  std::optional<Finalist> least;
+  u32 leastShort = 0;  // calls owed
+  u32 leastCalls = 0;
+  FreshCalls const fresh = freshCalls(db, env);
+  for (const Finalist& f : finalists(context, publication, target)) {
+    u32 const owed = f.rival ? RIVAL_CALLS : CONFIRM_CALLS;
+    u32 const calls = freshOf(fresh, db, f.candidate->subject.fft.spec(), f.candidate->subject.kind, f.options).calls;
+    if (calls < owed && (!least || calls < leastCalls)) {
+      least = f;
+      leastShort = owed;
+      leastCalls = calls;
     }
   }
   if (least) {
     const Candidate& c = *least->candidate;
-    double const mean = std::exp(context.model.predict(context.model.mean(), c.subject, least->reading->options));
+    double const mean = std::exp(context.model.predict(context.model.mean(), c.subject, least->options));
     return Proposal{.candidate = &c,
-                    .options = least->reading->options,
+                    .options = least->options,
                     .lane = Lane::Model,
-                    .what = "line",
+                    .what = least->rival ? "rival" : "line",
                     .packet = 0,
                     .ordinal = leastCalls + 1,
                     .predictedUs = mean,
-                    .why = "confirming a published line, fresh call " + std::to_string(leastCalls + 1) + " of " +
-                      std::to_string(CONFIRM_CALLS),
+                    .why = std::string{"confirming "} +
+                      (least->rival ? "a published line's closest rival" : "a published line") + ", fresh call " +
+                      std::to_string(leastCalls + 1) + " of " + std::to_string(leastShort),
                     .record = CONFIRM};
   }
 
@@ -176,6 +250,15 @@ AuditSummary auditSummary(const TuneDB& db, u32 env, const Readings& readings, c
     }
   }
 
+  FreshCalls const fresh = freshCalls(db, env);
+  for (const KindPublication& kind : publication.kinds) {
+    for (const Line& line : kind.lines) {
+      out.confirmed.push_back(
+        {.line = &line,
+         .fresh = freshOf(fresh, db, line.candidate->subject.fft.spec(), kind.kind, line.reading->options)});
+    }
+  }
+
   bool const complete = state.done >= a.trials;
   if (!out.found.empty() && out.gain > a.target) {
     out.state = AuditSummary::State::FoundGains;
@@ -199,6 +282,12 @@ std::vector<std::string> auditReport(const AuditSummary& s, bool budgetSpent) {
   out.push_back("audit: " + std::to_string(s.trials) + " trials declared against T " + usText(s.baseline) + "; " +
                 std::to_string(s.done) + " done" +
                 (s.failedStarts ? " (" + std::to_string(s.failedStarts) + " starts could not be read)" : ""));
+  for (const AuditSummary::Confirmed& c : s.confirmed) {
+    if (c.fresh.calls == 0) { continue; }
+    out.push_back("confirmed: " + c.line->candidate->subject.fft.spec() + " " + usText(c.line->reading->mean) +
+                  " us/it over all its calls, " + usText(c.fresh.mean) + " over " + std::to_string(c.fresh.calls) +
+                  " fresh ones (" + percentText(c.fresh.mean / c.line->reading->mean - 1) + ")");
+  }
   for (const Line* line : s.found) {
     out.push_back("audit: found " + line->candidate->subject.fft.spec() + " -use " +
                   configText(line->reading->options) + " at " + usText(line->cost()) + " us/it");

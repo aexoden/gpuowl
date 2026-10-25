@@ -13,15 +13,38 @@
 #include "Publish.h"
 #include "TuneDB.h"
 
+#include <map>
 #include <optional>
 #include <random>
 #include <string>
+#include <tuple>
 #include <vector>
 
 namespace tune {
 
-// How many fresh calls each published line has in the end phase before the audit is declared.
+// How many fresh calls each published line has in the end phase before the audit is declared, and each line's closest
+// rival: a set of another candidate, holding one of the line's points, measured within twice the target of it.
 inline constexpr u32 CONFIRM_CALLS = 4;
+inline constexpr u32 RIVAL_CALLS = 2;
+
+// What the end phase reads afresh: every published line, and each line's closest rival.
+struct Finalist {
+  const Candidate* candidate = nullptr;
+  UseConfig options{};
+  bool rival = false;
+};
+[[nodiscard]] std::vector<Finalist> finalists(const AcquireContext& context, const Publication& publication,
+                                              double target);
+
+// A finalist's fresh calls: what the end phase measured of it, apart from the exploration's own calls.
+struct Fresh {
+  u32 calls = 0;
+  double mean = 0;
+};
+using FreshCalls = std::map<std::tuple<std::string, TestKind, u32>, Fresh>;  // by FFT, kind and cfg
+[[nodiscard]] FreshCalls freshCalls(const TuneDB& db, u32 env);
+[[nodiscard]] Fresh freshOf(const FreshCalls& fresh, const TuneDB& db, const std::string& fft, TestKind kind,
+                            const UseConfig& options);
 
 // Where the env's end phase stands, from its records.
 struct AuditState {
@@ -53,6 +76,13 @@ struct AuditSummary {
   double gain = 0;                   // 1 - now / baseline
   double bound = 0;                  // where complete: the chance one trial finds the target, at 95%
   std::vector<const Line*> found{};  // published lines an audit trial read first
+
+  // Each published line's fresh calls beside its pooled mean, to show what choosing the fastest of many cost.
+  struct Confirmed {
+    const Line* line = nullptr;
+    Fresh fresh{};
+  };
+  std::vector<Confirmed> confirmed{};
 };
 [[nodiscard]] const char* toString(AuditSummary::State state);
 [[nodiscard]] AuditSummary auditSummary(const TuneDB& db, u32 env, const Readings& readings,
