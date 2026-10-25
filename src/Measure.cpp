@@ -487,6 +487,14 @@ Call Bench::runCall(const FFTConfig& fft, TestKind kind, u64 exponent, const Use
                         .timedSec = out.timedSec,
                         .ts = now()});
   recordRegisters(fft, kind, out, cfg);
+  std::vector<std::string> spilled;
+  for (const KernelUse& k : out.kernels) {
+    if (k.resources.localBytes > 0 && std::ranges::find(spilled, k.key) == spilled.end()) { spilled.push_back(k.key); }
+  }
+  if (out.ok() && !spilled.empty()) {
+    (void)db_.add(
+      SpillRow{.sess = session_, .fft = fft.spec(), .kind = kind, .cfg = cfg, .keys = spilled, .ts = now()});
+  }
   return out;
 }
 

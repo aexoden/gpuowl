@@ -67,11 +67,11 @@ u64 termHash(std::string_view text) { return fnv1a(text); }
 Model::Model(Env env, ModelPrior prior) : env_{std::move(env)}, prior_{prior}, maxIterations_{SOLVE_MAX_ITERATIONS} {}
 
 std::string Model::spreads() const {
-  static constexpr const char* NAMES[] = {"type",       "kind",        "shape",       "variant", "entry",   "effect",
-                                          "effectType", "effectShape", "effectEntry", "pair",    "residual"};
+  static constexpr const char* NAMES[] = {"type",       "kind",        "shape",       "variant", "entry",    "effect",
+                                          "effectType", "effectShape", "effectEntry", "pair",    "residual", "spill"};
   double const stated[] = {prior_.type,        prior_.kind,   prior_.shape,      prior_.variant,
                            prior_.entry,       prior_.effect, prior_.effectType, prior_.effectShape,
-                           prior_.effectEntry, prior_.pair,   prior_.residual};
+                           prior_.effectEntry, prior_.pair,   prior_.residual,   prior_.spill};
   std::string out;
   for (size_t g = 0; g < size_t(Group::Count); ++g) {
     char buf[64];
@@ -151,6 +151,9 @@ std::vector<Model::Term> Model::termsOf(const Subject& s, const UseConfig& optio
     }
   }
 
+  if (std::string const spill = s.fft.spec() + '|' + configText(canonical); spilled_.contains(spill)) {
+    add("S|" + spill, Group::Spill, prior_.spill);
+  }
   add("R|" + entry + '|' + configText(canonical), Group::Residual, prior_.residual);
   return out;
 }
@@ -165,6 +168,13 @@ void Model::fit(std::span<const Observation> observations) {
   cols_.clear();
   y_.clear();
   w_.clear();
+
+  spilled_.clear();
+  for (const Observation& o : observations) {
+    if (!o.spilled.empty()) {
+      spilled_.insert(o.fft.spec() + '|' + configText(canonicalConfig(env_, o.fft, o.options)));
+    }
+  }
 
   std::vector<Group> groups;
   std::vector<std::string> axes;
@@ -219,6 +229,7 @@ void Model::learnSpreads(const std::vector<Group>& groups, const std::vector<std
     case Group::EffectEntry: return prior_.effectEntry;
     case Group::Pair: return prior_.pair;
     case Group::Residual: return prior_.residual;
+    case Group::Spill: return prior_.spill;
     default: return 0.0;
     }
   };
@@ -382,8 +393,11 @@ bool Model::measuredAt(const Subject& s, const std::string& label) const {
 double Model::predict(const Draw& draw, const Subject& subject, const UseConfig& options, bool withResidual) const {
   double out = offsetOf(subject.fft) + centre_;
   std::vector<Term> const terms = termsOf(subject, options);
-  // The residual is the last term.
-  for (size_t i = 0; i + (withResidual ? 0 : 1) < terms.size(); ++i) { out += value(draw, terms[i]); }
+  for (const Term& t : terms) {
+    // A configuration's own terms are no part of the energy.
+    if (!withResidual && (t.group == Group::Residual || t.group == Group::Spill)) { continue; }
+    out += value(draw, t);
+  }
   return out;
 }
 

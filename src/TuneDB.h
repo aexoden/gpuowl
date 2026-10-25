@@ -186,6 +186,17 @@ struct KresRow {
   u64 ts = 0;
 };
 
+// A build of a configuration whose REG*-limited kernels spilled registers to local memory: which keys.  Such a call
+// costs two to four times what it would without the spill, which is the spill's, not its options'.
+struct SpillRow {
+  u32 sess = 0;
+  std::string fft{};
+  TestKind kind = TestKind::PRP;
+  u32 cfg = 0;
+  std::vector<std::string> keys{};
+  u64 ts = 0;
+};
+
 // A budgeted campaign's audit, declared when its end phase has confirmed what is published: how many independent trials
 // it will run, never changed after, what the workload cost when it began, and the improvement that counts as one.
 struct AuditRow {
@@ -257,6 +268,7 @@ public:
   [[nodiscard]] const std::vector<KresRow>& kres() const { return kres_; }
   [[nodiscard]] const std::vector<PredRow>& preds() const { return preds_; }
   [[nodiscard]] const std::vector<AuditRow>& audits() const { return audits_; }
+  [[nodiscard]] const std::vector<SpillRow>& spills() const { return spills_; }
   [[nodiscard]] const std::vector<std::string>& unknownRows() const { return unknown_; }
 
   [[nodiscard]] const DbEnv* findEnv(u32 id) const;
@@ -289,6 +301,7 @@ public:
   [[nodiscard]] bool add(const KresRow& row);
   [[nodiscard]] bool add(const PredRow& row);
   [[nodiscard]] bool add(const AuditRow& row);
+  [[nodiscard]] bool add(const SpillRow& row);
 
   // The anchor an env is pinned to, as its earliest session that named one spells it, else as its earliest anchor
   // reading does; empty where it has none.
@@ -340,6 +353,7 @@ private:
   std::vector<KresRow> kres_;
   std::vector<PredRow> preds_;
   std::vector<AuditRow> audits_;
+  std::vector<SpillRow> spills_;
   std::vector<std::string> unknown_;
 
   // Per session, the attempt it has open, if any.
@@ -360,6 +374,7 @@ private:
 [[nodiscard]] std::string formatRow(const KresRow& row);
 [[nodiscard]] std::string formatRow(const PredRow& row);
 [[nodiscard]] std::string formatRow(const AuditRow& row);
+[[nodiscard]] std::string formatRow(const SpillRow& row);
 
 // Whether `locks`, in the form of Linux's /proc/locks, lists a lock held on the file at (major, minor, inode).
 [[nodiscard]] bool lockListed(std::string_view locks, u32 major, u32 minor, u64 inode);

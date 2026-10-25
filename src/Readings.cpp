@@ -63,13 +63,28 @@ Readings::Readings(const TuneDB& db, u32 env, const Env& device) {
     }
   }
 
+  // Which builds spilled: by FFT, kind and canonical set, whatever the exponent.
+  std::map<std::tuple<std::string, TestKind, std::string>, std::vector<std::string>> spilled;
+  for (const SpillRow& row : db.spills()) {
+    std::optional<FFTConfig> const fft = parseFft(row.fft);
+    const UseConfig* const recorded = db.findCfg(row.cfg);
+    if (db.envOf(row.sess) != env || !fft || !recorded) { continue; }
+    spilled[{fft->spec(), row.kind, configText(canonicalConfig(device, *fft, *recorded))}] = row.keys;
+  }
+
   for (auto& [key, taken] : costs) {
     double const least = std::ranges::min(taken, {}, &Taken::cost).cost;
     std::erase_if(taken, [&](const Taken& t) { return t.cost > least * DISTURBED; });
     const Reading& r = readings_.at(key);
     for (const Taken& t : taken) {
-      observations_.push_back(
-        {.fft = r.fft, .kind = r.kind, .regime = r.regime, .options = r.options, .cost = t.cost, .relSem = t.relSem});
+      auto const spill = spilled.find({r.fft.spec(), r.kind, key.options});
+      observations_.push_back({.fft = r.fft,
+                               .kind = r.kind,
+                               .regime = r.regime,
+                               .options = r.options,
+                               .cost = t.cost,
+                               .relSem = t.relSem,
+                               .spilled = spill == spilled.end() ? std::vector<std::string>{} : spill->second});
     }
   }
 

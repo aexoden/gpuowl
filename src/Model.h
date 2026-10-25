@@ -34,6 +34,7 @@
 #include <algorithm>
 #include <array>
 #include <map>
+#include <set>
 #include <span>
 #include <string>
 #include <unordered_map>
@@ -54,6 +55,7 @@ struct ModelPrior {
   double effectEntry = 0.01;  // its departure on one entry
   double pair = 0.02;         // an interaction, per FFT type
   double residual = 0.005;    // one configuration, against everything above
+  double spill = 1.0;         // a configuration whose build spilled registers
   double callNoise = 0.008;   // one call, against the configuration's cost
   double noiseFloor = 0.002;  // whatever a call's own blocks say
 };
@@ -63,9 +65,10 @@ struct Observation {
   FFTConfig fft;
   TestKind kind = TestKind::PRP;
   Regime regime{};
-  UseConfig options{};  // canonical
-  double cost = 0;      // microseconds per iteration, drift-corrected
-  double relSem = 0;    // the call's own standard error relative to its mean, from its blocks
+  UseConfig options{};                 // canonical
+  double cost = 0;                     // microseconds per iteration, drift-corrected
+  double relSem = 0;                   // the call's own standard error relative to its mean, from its blocks
+  std::vector<std::string> spilled{};  // REG* keys whose kernels spilled registers in this build
 };
 
 // What the model is asked about.
@@ -107,8 +110,8 @@ public:
   // A draw from the posterior, its departure from the mean multiplied by `scale`.
   [[nodiscard]] Draw draw(u64 seed, double scale = 1) const;
 
-  // The predicted log cost (natural log of microseconds per iteration); without the configuration's residual, what
-  // energy() and its terms below add up to.
+  // The predicted log cost (natural log of microseconds per iteration); without the configuration's own terms (its
+  // residual, and its spill where its build spilled), what energy() and its terms below add up to.
   [[nodiscard]] double predict(const Draw& draw, const Subject& subject, const UseConfig& options,
                                bool withResidual = true) const;
 
@@ -190,6 +193,7 @@ private:
     EffectEntry,
     Pair,
     Residual,
+    Spill,
     Count
   };
 
@@ -245,6 +249,12 @@ private:
   std::map<std::pair<Group, std::string>, double> axisLearnt_;
 
   std::vector<double> beta_;
+
+  // "<FFT spec>|<configuration>" of every build that spilled registers: such a configuration has a term of its own,
+  // wide enough for the spill's two- to fourfold cost, which would otherwise be shared among the options read with it
+  // and inflate every effect.  Of the configuration, not of the REG* value: whether a limit spills depends on what else
+  // the kernel is built with.
+  std::set<std::string> spilled_;
   mutable u32 lastIterations_ = 0;
   u32 maxIterations_ = 0;
 };

@@ -153,3 +153,33 @@ TEST(a_few_huge_effects_do_not_widen_every_prior) {
   place(huge, axes[12], axes[12].reference == 0 ? 1 : 0);
   CHECK(std::abs(us(m.predict(m.mean(), a, fitted(nvidia(), a.fft, huge))) / 1400 - 1) < 0.02);
 }
+
+TEST(a_spill_is_the_spills_not_its_options) {
+  // ZEROHACK_W=0 saves 4% on both FFTs, and REGCF64=7 nothing; on a, a build with both spilled and cost four times as
+  // much.
+  Subject const a = subject("1K:13:256:202");
+  Subject const b = subject("512:15:512:202");
+  auto fitWith = [&](bool marked) {
+    std::vector<Observation> data;
+    for (int i = 0; i < 4; ++i) {
+      data.push_back(obs(a, {}, 1000));
+      data.push_back(obs(a, {{"ZEROHACK_W", "0"}}, 960));
+      data.push_back(obs(a, {{"REGCF64", "7"}}, 1000));
+      data.push_back(obs(b, {}, 800));
+      Observation spill = obs(a, {{"REGCF64", "7"}, {"ZEROHACK_W", "0"}}, 3840);
+      if (marked) { spill.spilled = {"REGCF64"}; }
+      data.push_back(spill);
+    }
+    Model m{nvidia()};
+    m.fit(data);
+    return m;
+  };
+  Model const unmarked = fitWith(false);
+  Model const marked = fitWith(true);
+  auto saving = [&](const Model& m) { return 1 - us(m.predict(m.mean(), b, {{"ZEROHACK_W", "0"}})) / 800; };
+  // Unmarked, the spill is shared with ZEROHACK_W=0, which then looks dearer than it is elsewhere.
+  CHECK(saving(unmarked) < 0.03);
+  CHECK(saving(marked) > 0.03 && saving(marked) < 0.05);
+  // And the configuration that spilled is predicted as it was read.
+  CHECK(std::abs(us(marked.predict(marked.mean(), a, {{"REGCF64", "7"}, {"ZEROHACK_W", "0"}})) / 3840 - 1) < 0.05);
+}

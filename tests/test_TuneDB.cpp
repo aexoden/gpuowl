@@ -96,6 +96,12 @@ TEST(db_round_trips_every_record_in_order) {
                          .ts = 1006}));
   CHECK(f.db.add(PredRow{.sess = f.sess, .mean = 812.25, .draw = 700.5, .ts = 1007}));
   CHECK(f.db.add(AuditRow{.sess = f.sess, .trials = 25, .baseline = 641.87, .target = 0.005, .ts = 1008}));
+  CHECK(f.db.add(SpillRow{.sess = f.sess,
+                          .fft = "512:15:512:202",
+                          .kind = TestKind::LL,
+                          .cfg = f.cfg,
+                          .keys = {"REGCF64", "REGTS64"},
+                          .ts = 1009}));
 
   std::string const text = f.db.text();
   TuneDB back;
@@ -121,6 +127,7 @@ TEST(db_round_trips_every_record_in_order) {
   CHECK_EQ(back.preds().size(), size_t{1});
   CHECK(back.preds()[0].mean == 812.25 && back.preds()[0].draw == 700.5);
   CHECK_EQ(back.audits().size(), size_t{1});
+  CHECK(back.spills().size() == 1 && back.spills()[0].keys == (std::vector<std::string>{"REGCF64", "REGTS64"}));
   CHECK(back.audits()[0].trials == 25 && back.audits()[0].baseline == 641.87 && back.audits()[0].target == 0.005);
   CHECK_EQ(back.findSession(f.sess)->settings, std::string{"workload=67M-72M"});
   CHECK_EQ(back.envAnchor(f.env), std::string{"1K:13:256:202@67513549"});

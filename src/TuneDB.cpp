@@ -355,6 +355,13 @@ std::string formatRow(const KresRow& row) {
     std::to_string(r.localBytes) + ' ' + plan + std::to_string(row.cfg) + ' ' + std::to_string(row.ts);
 }
 
+std::string formatRow(const SpillRow& row) {
+  std::string keys;
+  for (const std::string& k : row.keys) { keys += (keys.empty() ? "" : ",") + k; }
+  return "spill " + std::to_string(row.sess) + ' ' + row.fft + ' ' + toString(row.kind) + ' ' +
+    std::to_string(row.cfg) + ' ' + keys + ' ' + std::to_string(row.ts);
+}
+
 std::string formatRow(const AuditRow& row) {
   char buf[128];
   std::snprintf(buf, sizeof(buf), "audit %u %u %.2f %.5f %llu", row.sess, row.trials, row.baseline, row.target,
@@ -544,6 +551,14 @@ bool TuneDB::add(const RefRow& row) {
   return record(refs_, row);
 }
 
+bool TuneDB::add(const SpillRow& row) {
+  if (row.keys.empty() || !findCfg(row.cfg)) { return false; }
+  for (const std::string& k : row.keys) {
+    if (k.empty() || k.find_first_of(" \t\",") != std::string::npos) { return false; }
+  }
+  return record(spills_, row);
+}
+
 bool TuneDB::add(const AuditRow& row) {
   if (!findSession(row.sess) || !(row.baseline > 0) || !(row.target >= 0) || !append(formatRow(row))) { return false; }
   audits_.push_back(row);
@@ -677,6 +692,7 @@ void TuneDB::clear() {
   kres_.clear();
   preds_.clear();
   audits_.clear();
+  spills_.clear();
   unknown_.clear();
   open_.clear();
 }
@@ -689,9 +705,9 @@ struct Shape {
   size_t fields;
 };
 
-constexpr Shape SHAPES[] = {{"cfg", 3},    {"call", 15}, {"try", 7},  {"done", 3},  {"roe", 10},
-                            {"anchor", 8}, {"regs", 12}, {"ref", 7},  {"item", 10}, {"kres", 11},
-                            {"kres", 13},  {"pred", 5},  {"audit", 6}};
+constexpr Shape SHAPES[] = {{"cfg", 3},    {"call", 15}, {"try", 7},   {"done", 3},  {"roe", 10},
+                            {"anchor", 8}, {"regs", 12}, {"ref", 7},   {"item", 10}, {"kres", 11},
+                            {"kres", 13},  {"pred", 5},  {"audit", 6}, {"spill", 7}};
 
 }  // namespace
 
@@ -962,6 +978,22 @@ bool TuneDB::parse(std::string_view text, std::string_view name) {
           !add(
             RefRow{.sess = *sess, .fft = f[2], .exponent = *exponent, .iters = *iters, .res64 = *res64, .ts = *ts})) {
         refuse("malformed ref record");
+      }
+    } else if (tag == "spill" && f.size() == 7) {
+      auto const sess = parseInt<u32>(f[1]);
+      auto const kind = parseTestKind(f[3]);
+      auto const cfg = parseInt<u32>(f[4]);
+      auto const ts = parseInt<u64>(f[6]);
+      std::vector<std::string> keys;
+      for (std::string_view rest = f[5]; !rest.empty();) {
+        size_t const comma = std::min(rest.find(','), rest.size());
+        keys.emplace_back(rest.substr(0, comma));
+        rest.remove_prefix(std::min(comma + 1, rest.size()));
+      }
+      if (!sess || !kind || !cfg || !ts ||
+          !add(
+            SpillRow{.sess = *sess, .fft = std::string{f[2]}, .kind = *kind, .cfg = *cfg, .keys = keys, .ts = *ts})) {
+        refuse("malformed spill record");
       }
     } else if (tag == "audit" && f.size() == 6) {
       auto const sess = parseInt<u32>(f[1]);
