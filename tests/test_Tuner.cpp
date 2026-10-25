@@ -204,13 +204,14 @@ TEST(a_budget_ends_the_campaign_and_a_larger_one_resumes_it) {
   SimDevice first{db, db.beginSession(env, "", 0, "")};
   LoopResult const a = runLoop(
     first, db, env, nvidia(), scope,
-    {.stop = 0, .budget = 600, .seed = 3, .regretEvery = 1000, .maxItems = 500, .publishTo = dir, .settings = "sim"});
+    {.stop = 0, .budget = 600, .seed = 3, .regretEvery = 30, .maxItems = 500, .publishTo = dir, .settings = "sim"});
   CHECK(a.budgetSpent);
   // The report beside the tune files says how the run ended.
   std::string const report = File::openRead(dir / REPORT_FILE).readAll();
   CHECK(report.find("\"state\": \"budget spent\"") != std::string::npos);
   CHECK(report.find("\"settings\": \"sim\"") != std::string::npos);
   CHECK(report.find("\"published\": [\n") != std::string::npos);
+  CHECK(report.find("\"outstanding\": {\"entriesUnread\": ") != std::string::npos);
   CHECK(std::ranges::count(report, '{') == std::ranges::count(report, '}'));
   CHECK(std::ranges::count(report, '[') == std::ranges::count(report, ']'));
   fs::remove_all(dir);

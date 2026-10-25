@@ -191,6 +191,7 @@ LoopResult runLoop(Device& device, TuneDB& db, u32 env, const Env& card, const R
   u32 sinceRegret = settings.regretEvery;
   std::string coverage = "not yet summed";
   std::optional<CoverageSummary> covered;
+  std::optional<Outstanding> left;
   std::string lastReport;
   bool endPhase = false;
   bool auditDone = false;
@@ -257,6 +258,7 @@ LoopResult runLoop(Device& device, TuneDB& db, u32 env, const Env& card, const R
                                .regret = out.regret,
                                .lanes = laneTime(db, env),
                                .coverage = covered,
+                               .outstanding = left,
                                .publication = &publication,
                                .audit = auditSummary(db, env, readings, publication, true)});
       writeReport(settings.publishTo, lastReport);
@@ -321,6 +323,8 @@ LoopResult runLoop(Device& device, TuneDB& db, u32 env, const Env& card, const R
       covered = summarize(card, candidates, readings, filter);
       coverage = toString(*covered);
       log("tune: coverage: %s\n", coverage.c_str());
+      left = outstanding(context, settings.explore, out.elapsed);
+      log("tune: outstanding: %s\n", toString(*left).c_str());
       log("tune: lanes: %s\n", toString(laneTime(db, env)).c_str());
       if (settings.watch) { settings.watch->state(stateOf(publication, readings, model, db, env, coverage, out)); }
       if (settings.stop > 0 && out.regret <= settings.stop) {
@@ -340,6 +344,7 @@ LoopResult runLoop(Device& device, TuneDB& db, u32 env, const Env& card, const R
                                .regret = out.regret,
                                .lanes = laneTime(db, env),
                                .coverage = covered,
+                               .outstanding = left,
                                .publication = &publication,
                                .audit = auditSummary(db, env, readings, publication, budgetSpent)});
       writeReport(settings.publishTo, lastReport);

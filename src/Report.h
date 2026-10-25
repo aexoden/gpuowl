@@ -7,6 +7,7 @@
 
 #include "Audit.h"
 #include "Coverage.h"
+#include "Explore.h"
 #include "Lanes.h"
 #include "Publish.h"
 
@@ -28,6 +29,7 @@ struct RunReport {
   double regret = 0;  // the model's search-gap estimate: no evidence of coverage
   LaneTime lanes{};
   std::optional<CoverageSummary> coverage{};
+  std::optional<Outstanding> outstanding{};  // as of the last regret estimate
   const Publication* publication = nullptr;
   std::optional<AuditSummary> audit{};
 };

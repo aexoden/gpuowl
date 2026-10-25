@@ -67,6 +67,15 @@ std::string reportJson(const RunReport& r) {
       ", \"positionsTotal\": " + std::to_string(c.positions.total) + "},\n";
   }
 
+  if (r.outstanding) {
+    const Outstanding& o = *r.outstanding;
+    out += "  \"outstanding\": {\"entriesUnread\": " + std::to_string(o.unread) +
+      ", \"entriesUnreadWithinReach\": " + std::to_string(o.unreadWithinReach) +
+      ", \"contenders\": " + std::to_string(o.contenders) +
+      ", \"contenderBranches\": " + std::to_string(o.contenderBranches) +
+      ", \"leastDevelopedBranchSets\": " + std::to_string(o.leastDeveloped) + "},\n";
+  }
+
   out += "  \"published\": [";
   bool first = true;
   if (r.publication) {

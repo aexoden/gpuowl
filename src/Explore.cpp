@@ -746,6 +746,35 @@ std::optional<Proposal> restartIn(const AcquireContext& context, const ExploreSe
 
 }  // namespace
 
+Outstanding outstanding(const AcquireContext& context, const ExploreSettings& settings, double elapsed) {
+  std::vector<const Candidate*> const entries = entriesOf(context);
+  std::vector<double> const behindBy = behind(context, entries);
+  Outstanding out{.leastDeveloped = SIZE_MAX};
+  for (size_t i = 0; i < entries.size(); ++i) {
+    std::vector<const Reading*> const of = context.readings.of(entries[i]->subject);
+    if (of.empty()) {
+      ++out.unread;
+      out.unreadWithinReach += behindBy[i] <= std::log(settings.reach.at(elapsed));
+      continue;
+    }
+    if (!(behindBy[i] <= std::log1p(settings.contenders)) || !fastest(context, *entries[i])) { continue; }
+    ++out.contenders;
+    for (const BranchArchive& a : archiveOf(context.model.env(), of)) {
+      ++out.contenderBranches;
+      out.leastDeveloped = std::min(out.leastDeveloped, a.configurations);
+    }
+  }
+  if (out.leastDeveloped == SIZE_MAX) { out.leastDeveloped = 0; }
+  return out;
+}
+
+std::string toString(const Outstanding& o) {
+  return std::to_string(o.unread) + " entries unread (" + std::to_string(o.unreadWithinReach) + " within reach); " +
+    std::to_string(o.contenders) + " contenders, " + std::to_string(o.contenderBranches) +
+    " branches, the least developed with " + std::to_string(o.leastDeveloped) +
+    (o.leastDeveloped == 1 ? " set" : " sets");
+}
+
 double expectedStartCost(const AcquireContext& context, const ExploreSettings& settings, double elapsed) {
   std::vector<const Candidate*> const entries = entriesOf(context);
   std::vector<double> const behindBy = behind(context, entries);

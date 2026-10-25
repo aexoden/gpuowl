@@ -72,6 +72,19 @@ struct Proposal {
 // long an audit's trials take depends on it, since the reach lets them draw entries far dearer than the frontier.
 [[nodiscard]] double expectedStartCost(const AcquireContext& context, const ExploreSettings& settings, double elapsed);
 
+// What the lanes have left: the work a longer run would turn to.
+struct Outstanding {
+  size_t unread = 0;             // entries never read
+  size_t unreadWithinReach = 0;  // of those, the ones a random pick could draw now
+  size_t contenders = 0;
+  size_t contenderBranches = 0;
+  size_t leastDeveloped = 0;  // the fewest sets read in any contender's branch
+};
+[[nodiscard]] Outstanding outstanding(const AcquireContext& context, const ExploreSettings& settings, double elapsed);
+
+// "1734 entries unread (412 within reach); 23 contenders, 61 branches, the least developed with 1 set"
+[[nodiscard]] std::string toString(const Outstanding& o);
+
 // The next item of the restarts lane: the open restart's next local step from its own best, or a new start.
 [[nodiscard]] std::optional<Proposal> restartStep(const AcquireContext& context, const ExploreSettings& settings,
                                                   double elapsed, const TuneDB& db, u32 env, std::mt19937_64& rng);
