@@ -316,6 +316,37 @@ TEST(a_register_key_is_offered_the_plan_read_nearest_the_best_set) {
                        .sd = 0.5,
                        .blocks = 4,
                        .ts = 3}));
+  {
+    Readings const readings{db, env, nvidia()};
+    auto const offers = registerOffers(db, env, nvidia(), candidates, readings);
+    CHECK(offers.at(&c).at("REGCF64") == notInPlace.values());
+  }
+
+  // A value that only ever spilled on this FFT is no longer offered; one read without spilling comes back.
+  int const v = notInPlace.values().front();
+  auto readAt = [&](const UseConfig& options, bool spilled, u64 ts) {
+    u32 const cfg = db.internCfg(options);
+    CHECK(db.add(CallRow{.sess = sess,
+                         .fft = fft,
+                         .kind = TestKind::PRP,
+                         .exponent = c.timing,
+                         .cfg = cfg,
+                         .mean = 900,
+                         .sd = 0.5,
+                         .blocks = 4,
+                         .ts = ts}));
+    if (spilled) {
+      CHECK(
+        db.add(SpillRow{.sess = sess, .fft = fft, .kind = TestKind::PRP, .cfg = cfg, .keys = {"REGCF64"}, .ts = ts}));
+    }
+  };
+  readAt({{"INPLACE", "0"}, {"REGCF64", std::to_string(v)}}, true, 4);
+  {
+    Readings const readings{db, env, nvidia()};
+    auto const offers = registerOffers(db, env, nvidia(), candidates, readings);
+    CHECK(std::ranges::find(offers.at(&c).at("REGCF64"), v) == offers.at(&c).at("REGCF64").end());
+  }
+  readAt({{"INPLACE", "0"}, {"REGCF64", std::to_string(v)}, {"ZEROHACK_W", "0"}}, false, 5);
   Readings const readings{db, env, nvidia()};
   auto const offers = registerOffers(db, env, nvidia(), candidates, readings);
   CHECK(offers.at(&c).at("REGCF64") == notInPlace.values());

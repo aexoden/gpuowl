@@ -22,6 +22,8 @@
 #include <cmath>
 #include <limits>
 #include <map>
+#include <set>
+#include <tuple>
 
 namespace tune {
 
@@ -158,6 +160,25 @@ std::map<const Candidate*, RegisterOffer> registerOffers(const TuneDB& db, u32 e
     const UseConfig* const options = db.findCfg(r.cfg);
     if (db.envOf(r.sess) == env && r.plan && options) { read(r.fft, r.kind, r.key, *options, &*r.plan); }
   }
+  // Each REG* value's builds on each FFT: whether any spilled, and whether any did not.
+  std::map<std::pair<std::string, u32>, std::vector<std::string>> spilledKeys;
+  for (const SpillRow& r : db.spills()) {
+    if (db.envOf(r.sess) == env) { spilledKeys[{r.fft, r.cfg}] = r.keys; }
+  }
+  std::set<std::tuple<std::string, std::string, int>> spilledAt;
+  std::set<std::tuple<std::string, std::string, int>> cleanAt;
+  for (const CallRow& call : db.calls()) {
+    const UseConfig* const options = db.findCfg(call.cfg);
+    if (db.envOf(call.sess) != env || !call.ok() || !options) { continue; }
+    auto const spilled = spilledKeys.find({call.fft, call.cfg});
+    for (const auto& [key, value] : *options) {
+      if (!Args::isRegisterKey(key)) { continue; }
+      bool const spill =
+        spilled != spilledKeys.end() && std::ranges::find(spilled->second, key) != spilled->second.end();
+      (spill ? spilledAt : cleanAt).emplace(call.fft, key, std::atoi(value.c_str()));
+    }
+  }
+
   std::map<const Candidate*, RegisterOffer> offers;
   for (const std::vector<Candidate>& kind : candidates) {
     for (const Candidate& c : kind) {
@@ -172,7 +193,14 @@ std::map<const Candidate*, RegisterOffer> registerOffers(const TuneDB& db, u32 e
       RegisterOffer& offer = offers[&c];
       for (const auto& [key, reads] : it->second) {
         auto const rank = [&](const Read& r) { return std::pair{r.branch != branch, axesApart(r.options, around)}; };
-        offer[key] = std::ranges::min(reads, {}, rank).plan->values();
+        std::vector<int> values = std::ranges::min(reads, {}, rank).plan->values();
+        // Less what only ever spilled on this FFT: such a call cannot win, and on a run's first half hour a fifth to
+        // two fifths of the calls went to them.
+        std::erase_if(values, [&](int v) {
+          auto const key_ = std::tuple{c.subject.fft.spec(), key, v};
+          return spilledAt.contains(key_) && !cleanAt.contains(key_);
+        });
+        offer[key] = std::move(values);
       }
     }
   }
