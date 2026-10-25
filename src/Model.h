@@ -31,6 +31,7 @@
 #include "OptionSpace.h"
 #include "TestKind.h"
 
+#include <algorithm>
 #include <array>
 #include <map>
 #include <span>
@@ -131,7 +132,16 @@ public:
   // The same for two options touching the kernel groups `ta` and `tb` (Option::touchesFor), and whether their
   // interaction is drawn before anything has measured it.
   [[nodiscard]] static bool interact(const Option& a, u32 ta, const Option& b, u32 tb);
-  [[nodiscard]] static bool drawnTogether(const Option& a, const Option& b) { return a.group == b.group; }
+  [[nodiscard]] static bool drawnTogether(const Option& a, const Option& b) {
+    return a.group == b.group || dependent(a, b);
+  }
+
+  // Whether one of the options depends on the other (Option::dependsOn): what a dependent does may change with its
+  // parent's value -- L2_STRIPING with MULTI_Q, SHUFL_BYTES_H with TAIL_KERNELS -- across groups and kernels as well.
+  [[nodiscard]] static bool dependent(const Option& a, const Option& b) {
+    return std::ranges::find(a.dependsOn, b.key) != a.dependsOn.end() ||
+      std::ranges::find(b.dependsOn, a.key) != b.dependsOn.end();
+  }
 
   [[nodiscard]] const Env& env() const { return env_; }
 

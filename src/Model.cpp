@@ -97,7 +97,7 @@ bool Model::interact(const Env& env, const FFTConfig& fft, const UseConfig& back
 bool Model::interact(const Option& oa, u32 ta, const Option& ob, u32 tb) {
   // A key searched alone caps one kernel, launched on its own, so its effect adds to the rest's.
   if (oa.alone || ob.alone) { return false; }
-  if (oa.group == ob.group) { return true; }
+  if (oa.group == ob.group || dependent(oa, ob)) { return true; }
   // Keys that reach every kernel would join everything to everything; across groups they act through their own
   // effects and the entry's departures from them.
   if ((ta | tb) & KG_GLOBAL) { return false; }
