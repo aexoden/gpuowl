@@ -28,8 +28,8 @@ class Device {
 public:
   virtual ~Device() = default;
 
-  // One recorded call of `options` on `candidate`, at its timing exponent.
-  virtual Call call(const Candidate& candidate, const UseConfig& options) = 0;
+  // One recorded call of `options` on `candidate`, at its timing exponent, timing `blocks` blocks.
+  virtual Call call(const Candidate& candidate, const UseConfig& options, u32 blocks) = 0;
 
   // One recorded rounding-error reading.
   virtual RoeCheck roe(const FFTConfig& fft, const UseConfig& options, u64 exponent) = 0;
@@ -59,6 +59,7 @@ struct LoopSettings {
   double reserve = RESERVE;
   double target = TARGET;
   double newFloor = NEW_FLOOR;
+  double shortCalls = SHORT_CALLS;  // 0 for none
   u64 seed = 1;
   TailQueues tailQueues = TailQueues::Ntt;
   u32 regretEvery = 32;  // calls between estimates of the regret

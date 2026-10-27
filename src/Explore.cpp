@@ -7,6 +7,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <limits>
 #include <map>
 #include <numeric>
 #include <set>
@@ -40,12 +41,26 @@ const Reading* fastest(const AcquireContext& context, const Candidate& c) {
 
 // How much dearer than what else serves its timing exponent an entry is, in log units: measured where it has been,
 // else as the posterior mean expects of its defaults.
+// An entry's log cost: its fastest reading, else its defaults as the mean predicts them.
+double logCostOf(const AcquireContext& context, const Candidate& entry) {
+  const Reading* const best = fastest(context, entry);
+  return best ? std::log(best->mean) : context.model.predict(context.model.mean(), entry.subject, {});
+}
+
+// The least log cost among the entries serving `c`'s timing exponent for its kind.
+double frontierAt(const AcquireContext& context, const std::vector<const Candidate*>& entries, const Candidate& c) {
+  double out = std::numeric_limits<double>::infinity();
+  for (const Candidate* e : entries) {
+    if (e->subject.kind == c.subject.kind && e->interval.contains(c.timing)) {
+      out = std::min(out, logCostOf(context, *e));
+    }
+  }
+  return out;
+}
+
 std::vector<double> behind(const AcquireContext& context, const std::vector<const Candidate*>& entries) {
   std::vector<double> value(entries.size());
-  for (size_t i = 0; i < entries.size(); ++i) {
-    const Reading* const best = fastest(context, *entries[i]);
-    value[i] = best ? std::log(best->mean) : context.model.predict(context.model.mean(), entries[i]->subject, {});
-  }
+  for (size_t i = 0; i < entries.size(); ++i) { value[i] = logCostOf(context, *entries[i]); }
   std::vector<double> out(entries.size());
   for (size_t i = 0; i < entries.size(); ++i) {
     double frontier = value[i];
@@ -618,7 +633,10 @@ std::optional<Proposal> restartIn(const AcquireContext& context, const ExploreSe
       if (best && options && *options == best->options) { bestAt = i + 1; }
     }
     bool const improving = bestAt + 2 > steps.size();
-    if (best && (steps.size() < RESTART_PACKET || (how.extend && improving && steps.size() < RESTART_MOST))) {
+    bool const hopeless = how.extend && best &&
+      std::log(best->mean) - frontierAt(context, entries, *candidate) > std::log1p(settings.restartCut);
+    if (best && !hopeless &&
+        (steps.size() < RESTART_PACKET || (how.extend && improving && steps.size() < RESTART_MOST))) {
       std::shared_ptr<const ConditionalSpace> const space =
         spaceOf(card, candidate->subject.fft, context.filter(*candidate));
       Mutator const mutator{*space, rng};

@@ -364,6 +364,10 @@ named "config.txt" in the prpll run directory.
                                              the best is tried, nearest first, widening to contenders= [0: none]
                          newFloor=<f>        the least an option value untried on a shape counts for when the
                                              model explores, 0 to 1, 0 for none [0.25]
+                         restartCut=<P>%%|all  how far behind the best a restart's best may be for it to go on
+                                             past its start [50%%]
+                         shortCalls=<f>x|0   time fewer blocks of a call predicted to cost <f> times what is
+                                             published there [2x]
                          randomReach=<f>x@<t>|all  how far behind the best a random pick may reach, the factor
                                              doubling every <t> (30m, 2h) of tuning [1.5x@30m]
                          pfaShapes=ntt|all|none  prime-factor middles considered [ntt]

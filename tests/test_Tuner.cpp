@@ -40,7 +40,7 @@ public:
     return us;
   }
 
-  Call call(const Candidate& c, const UseConfig& options) override {
+  Call call(const Candidate& c, const UseConfig& options, u32 blocks) override {
     double const us = truth(c.subject, options) * (1 + 0.003 * noise_(rng_));
     Call out;
     out.core.stats = {.mean = us, .sd = us * 0.001, .n = 4};
@@ -52,9 +52,10 @@ public:
                           .cfg = cfg,
                           .mean = us,
                           .sd = us * 0.001,
-                          .blocks = 4,
-                          .ts = clock_ += 8}));
+                          .blocks = blocks,
+                          .ts = clock_ += 2 * blocks}));
     ++calls;
+    taken.emplace_back(us, blocks);
     return out;
   }
 
@@ -74,10 +75,11 @@ public:
   [[nodiscard]] std::string held(const Candidate&, const UseConfig&) const override { return {}; }
   [[nodiscard]] bool stopped() const override { return false; }
   [[nodiscard]] u32 session() const override { return sess_; }
-  // A call takes 8 s and a gate reading 3, whatever the machine running the test is doing.
+  // A call takes 2 s a block and a gate reading 3, whatever the machine running the test is doing.
   [[nodiscard]] u64 now() const override { return clock_; }
 
   u32 calls = 0;
+  std::vector<std::pair<double, u32>> taken;  // each call's cost and blocks
 
 private:
   TuneDB& db_;
@@ -190,6 +192,54 @@ TEST(the_lanes_measure_legal_sets_in_packets_of_their_own) {
   }
 }
 
+TEST(a_restart_far_behind_stops_at_its_start_and_a_call_far_behind_is_short) {
+  struct Run {
+    u32 cut = 0;  // restarts that stopped at their start, the last one aside
+    std::vector<std::pair<double, u32>> taken;
+  };
+  auto run = [](double restartCut, double shortCalls) {
+    TuneDB db;
+    CHECK(db.parse(std::string{TuneDB::HEADER} + '\n', "sim"));
+    u32 const env = db.internEnv(DbEnv{.gpu = "sim", .isNvidia = true, .cudaBackend = true, .computeCapability = 860});
+    RunScope const scope =
+      makeScope({.lo = 67'400'000, .hi = 67'600'000, .probe = 67'500'000, .kinds = {TestKind::PRP}}, {});
+    SimDevice device{db, db.beginSession(env, "", 0, "")};
+    (void)runLoop(device, db, env, nvidia(), scope,
+                  {.stop = 0,
+                   .lanes = *parseTimetable("20/40/40/0"),
+                   .explore = {.reach = *parseReach("all"), .restartCut = restartCut},
+                   .shortCalls = shortCalls,
+                   .seed = 5,
+                   .regretEvery = 1000,
+                   .maxItems = 80});
+    std::map<u32, u32> steps;
+    for (const ItemRow& r : db.items()) {
+      if (r.lane == "restarts") { ++steps[r.packet]; }
+    }
+    Run out{.cut = 0, .taken = device.taken};
+    if (!steps.empty()) { steps.erase(std::prev(steps.end())); }
+    for (const auto& [packet, n] : steps) { out.cut += n == 1; }
+    return out;
+  };
+
+  Run const on = run(RESTART_CUT, SHORT_CALLS);
+  Run const off = run(std::numeric_limits<double>::infinity(), 0);
+  CHECK(on.cut > 0);
+  CHECK_EQ(off.cut, 0u);
+
+  double const cheapest = std::ranges::min_element(on.taken)->first;
+  u32 shortened = 0;
+  for (auto const& [us, blocks] : on.taken) {
+    if (blocks == SHORT_BLOCKS) {
+      ++shortened;
+      // The published line it was weighed against costs at least the cheapest call.
+      CHECK(us > 1.5 * cheapest);
+    }
+  }
+  CHECK(shortened > 0);
+  CHECK(std::ranges::all_of(off.taken, [](auto const& t) { return t.second == BLOCKS_PER_CALL; }));
+}
+
 TEST(a_budget_ends_the_campaign_and_a_larger_one_resumes_it) {
   TuneDB db;
   CHECK(db.parse(std::string{TuneDB::HEADER} + '\n', "sim"));
@@ -197,7 +247,7 @@ TEST(a_budget_ends_the_campaign_and_a_larger_one_resumes_it) {
   RunScope const scope =
     makeScope({.lo = 67'400'000, .hi = 67'600'000, .probe = 67'500'000, .kinds = {TestKind::PRP}}, {});
 
-  // A simulated call takes 8 s: 10 minutes is about 75 of them.
+  // A simulated call of four blocks takes 8 s: 10 minutes is about 75 of them.
   fs::path const dir = fs::temp_directory_path() / ("prpll-test-budget-" + std::to_string(getpid()));
   fs::remove_all(dir);
   fs::create_directories(dir);

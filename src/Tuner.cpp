@@ -317,12 +317,12 @@ LoopResult runLoop(Device& device, TuneDB& db, u32 env, const Env& card, const R
       continue;
     }
 
-    auto callOf = [&](const Candidate& c, const UseConfig& options, ItemReport item) {
+    auto callOf = [&](const Candidate& c, const UseConfig& options, ItemReport item, u32 blocks = BLOCKS_PER_CALL) {
       item.what = std::string{toString(c.subject.kind)} + ' ' + c.subject.fft.spec();
       item.options = optionsText(options);
       item.exponent = c.timing;
       if (settings.watch) { settings.watch->measuring(item.what + " -use " + item.options); }
-      Call const call = device.call(c, options);
+      Call const call = device.call(c, options, blocks);
       ++out.calls;
       ++sinceRegret;
       char us[32];
@@ -432,8 +432,12 @@ LoopResult runLoop(Device& device, TuneDB& db, u32 env, const Env& card, const R
                proposal->options, began);
     double const meanUs = std::exp(model.predict(model.mean(), proposal->candidate->subject, proposal->options));
     (void)db.add(PredRow{.sess = device.session(), .mean = meanUs, .draw = proposal->predictedUs, .ts = began});
+    const KindPublication* const kind = publication.of(proposal->candidate->subject.kind);
+    const Line* const there = kind ? kind->at(proposal->candidate->timing) : nullptr;
+    bool const far = settings.shortCalls > 0 && there && meanUs > settings.shortCalls * there->cost();
     callOf(*proposal->candidate, proposal->options,
-           {.n = items, .kind = "call", .predicted = proposal->predictedUs, .mean = meanUs, .why = proposal->why});
+           {.n = items, .kind = "call", .predicted = proposal->predictedUs, .mean = meanUs, .why = proposal->why},
+           far ? SHORT_BLOCKS : BLOCKS_PER_CALL);
   }
   // A run stopped otherwise says so: the report written last, its state replaced.
   if (!out.budgetSpent && !lastReport.empty() && !settings.publishTo.empty()) {
@@ -454,8 +458,8 @@ class BenchDevice final : public Device {
 public:
   explicit BenchDevice(Bench& bench) : bench_{bench} {}
 
-  Call call(const Candidate& candidate, const UseConfig& options) override {
-    return bench_.call(candidate.subject.fft, candidate.subject.kind, candidate.timing, options);
+  Call call(const Candidate& candidate, const UseConfig& options, u32 blocks) override {
+    return bench_.call(candidate.subject.fft, candidate.subject.kind, candidate.timing, options, blocks);
   }
 
   RoeCheck roe(const FFTConfig& fft, const UseConfig& options, u64 exponent) override {
@@ -551,6 +555,7 @@ RunOutcome runTune(GpuCommon shared, const TuneCommand& command) {
                                      .reserve = command.reserve,
                                      .target = command.target,
                                      .newFloor = command.newFloor,
+                                     .shortCalls = command.shortCalls,
                                      .seed = seed,
                                      .tailQueues = command.tailQueues,
                                      .publishTo = fs::current_path(),

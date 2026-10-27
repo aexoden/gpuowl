@@ -118,6 +118,15 @@ TEST(every_setting_is_accepted_where_it_belongs) {
   CHECK(!refusal("frontSweep=10").empty());
   CHECK(near(parsed("newFloor=0").newFloor, 0));
   CHECK(!refusal("newFloor=2").empty());
+  CHECK(near(parsed("").explore.restartCut, RESTART_CUT));
+  CHECK(near(parsed("restartCut=30%").explore.restartCut, 0.3));
+  CHECK(std::isinf(parsed("restartCut=all").explore.restartCut));
+  CHECK(!refusal("restartCut=0.3").empty());
+  CHECK(near(parsed("").shortCalls, SHORT_CALLS));
+  CHECK(near(parsed("shortCalls=3x").shortCalls, 3));
+  CHECK(near(parsed("shortCalls=0").shortCalls, 0));
+  CHECK(!refusal("shortCalls=0.5x").empty());
+  CHECK(!refusal("shortCalls=2").empty());
   CHECK(near(parsed("target=0.1%").target, 0.001));
   CHECK(!refusal("target=0.1").empty());
   CHECK(!refusal("budget=2").empty());

@@ -67,12 +67,23 @@ inline constexpr double NEW_FLOOR = 0.25;
 // hours than the coverage lane's branches and breadth did, and it took a third of their time.
 inline constexpr double SWEEP_BAND = 0;
 
+// How far behind what else serves its exponent a restart's best may be for the restart to go on past its start.  One
+// that far behind makes no line, and on a slow FFT each of its steps costs as much as the FFT is slow: on two cards a
+// day into a run, restarts were most of the time spent on FFTs over twice the cost of the best.
+inline constexpr double RESTART_CUT = 0.5;
+
+// A call predicted to cost this many times what is published at its exponent times SHORT_BLOCKS blocks rather than
+// BLOCKS_PER_CALL: its reading need only show the FFT far behind, and each block costs as much as the FFT is slow.
+inline constexpr double SHORT_CALLS = 2;
+inline constexpr u32 SHORT_BLOCKS = 2;
+
 // What the lanes beyond the model's are allowed.
 
 struct ExploreSettings {
   double contenders = CONTENDERS;
   Reach reach{};
   double sweepBand = SWEEP_BAND;
+  double restartCut = RESTART_CUT;
 };
 
 using LaneShares = std::array<double, LANES>;

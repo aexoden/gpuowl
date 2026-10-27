@@ -182,6 +182,25 @@ TuneCommand parseTuneCommand(std::string_view text) {
       std::optional<double> const floor = parseDouble(value);
       if (!floor || *floor < 0 || *floor > 1) { throw std::string{"-tune: newFloor= takes a fraction from 0 to 1"}; }
       out.newFloor = *floor;
+    } else if (key == "restartCut" && out.verb == TuneVerb::Run) {
+      if (value == "all") {
+        out.explore.restartCut = std::numeric_limits<double>::infinity();
+      } else {
+        std::optional<double> const margin =
+          value.ends_with('%') ? parseDouble(value.substr(0, value.size() - 1)) : std::optional<double>{};
+        if (!margin || *margin < 0) {
+          throw std::string{"-tune: restartCut= takes a percentage, such as restartCut=50%, or all"};
+        }
+        out.explore.restartCut = *margin / 100;
+      }
+    } else if (key == "shortCalls" && out.verb == TuneVerb::Run) {
+      std::optional<double> const factor = value == "0" ? std::optional<double>{0}
+        : value.ends_with('x')                          ? parseDouble(value.substr(0, value.size() - 1))
+                                                        : std::optional<double>{};
+      if (!factor || (*factor != 0 && *factor < 1)) {
+        throw std::string{"-tune: shortCalls= takes a factor of at least 1, such as shortCalls=2x, or 0"};
+      }
+      out.shortCalls = *factor;
     } else if (key == "randomReach" && out.verb == TuneVerb::Run) {
       std::optional<Reach> const reach = parseReach(value);
       if (!reach) {

@@ -120,13 +120,14 @@ inline double optimalT(const Landscape& l, const Env& env, const RunScope& scope
   return T;
 }
 
-// The card itself: each call 8 s and each gate reading 3 s on its own clock, whatever the machine running it does.
+// The card itself: each call 2 s a block and each gate reading 3 s on its own clock, whatever the machine running it
+// does.
 class Card final : public Device {
 public:
   Card(const Landscape& landscape, const Env& env, TuneDB& db, u32 sess, u64 seed) :
     landscape_{landscape}, env_{env}, db_{db}, sess_{sess}, rng_{seed} {}
 
-  Call call(const Candidate& c, const UseConfig& options) override {
+  Call call(const Candidate& c, const UseConfig& options, u32 blocks) override {
     double const us = truth(landscape_, env_, c.subject.fft, options) * (1 + landscape_.noise * noise_(rng_));
     Call out;
     out.core.stats = {.mean = us, .sd = us * 0.001, .n = 4};
@@ -137,8 +138,8 @@ public:
                           .cfg = db_.internCfg(options),
                           .mean = us,
                           .sd = us * 0.001,
-                          .blocks = 4,
-                          .ts = clock_ += 8});
+                          .blocks = blocks,
+                          .ts = clock_ += 2 * blocks});
     ++calls;
     return out;
   }
