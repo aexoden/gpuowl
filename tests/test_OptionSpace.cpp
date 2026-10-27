@@ -595,6 +595,12 @@ TEST(lds_budget) {
   CHECK(applicable(e, "512:15:512:101", {{"LDSPAD_H", "0"}, {"SHUFL_BYTES_H", "4"}}, "LDSSWIZ_H"));
   CHECK(!applicable(e, "50:512:8:1K:202", {{"LDSPAD_H", "0"}, {"SHUFL_BYTES_H", "4"}}, "LDSSWIZ_H"));
   CHECK(applicable(e, "50:512:8:2K:202", {{"LDSPAD_H", "0"}, {"SHUFL_BYTES_H", "4"}}, "LDSSWIZ_H"));
+
+  // Radix 8 at 256 is a workgroup of 32, which shufl.cl refuses to swizzle.
+  CHECK(applicable(e, "1:256:14:256:202", {{"LDSPAD_W", "0"}, {"LDSPAD_H", "0"}}, "LDSSWIZ_W"));
+  CHECK(!applicable(e, "1:256:14:256:202", {{"LDSPAD_W", "0"}, {"256RADIX8_W", "1"}}, "LDSSWIZ_W"));
+  CHECK(applicable(e, "1:256:14:256:202", {{"LDSPAD_H", "0"}}, "LDSSWIZ_H"));
+  CHECK(!applicable(e, "1:256:14:256:202", {{"LDSPAD_H", "0"}, {"256RADIX8_H", "1"}}, "LDSSWIZ_H"));
 }
 
 TEST(hoist) {

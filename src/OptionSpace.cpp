@@ -141,11 +141,16 @@ int effectiveLdsPadW(const Env& e, const FFTConfig& f, const UseConfig& d) {
   return ldsPadWFits(e, f, d) ? useValue(d, "LDSPAD_W", 1) : 0;
 }
 
+// shufl.cl refuses LDSSWIZ below a workgroup of 64, which radix 8 at 256 makes 32.
+bool ldsSwizFits(u32 size, u32 radix) { return size / radix >= 64; }
+
 int effectiveLdsSwizW(const Env& e, const FFTConfig& f, const UseConfig& d) {
-  return effectiveLdsPadW(e, f, d) == 0 ? useValue(d, "LDSSWIZ_W", 0) : 0;
+  return effectiveLdsPadW(e, f, d) == 0 && ldsSwizFits(f.shape.width, radixW(f, d)) ? useValue(d, "LDSSWIZ_W", 0) : 0;
 }
 
-int effectiveLdsSwizH(const UseConfig& d) { return useValue(d, "LDSPAD_H", 1) == 0 ? useValue(d, "LDSSWIZ_H", 0) : 0; }
+int effectiveLdsSwizH(const FFTConfig& f, const UseConfig& d) {
+  return useValue(d, "LDSPAD_H", 1) == 0 && ldsSwizFits(f.shape.height, radixH(f, d)) ? useValue(d, "LDSSWIZ_H", 0) : 0;
+}
 
 u32 heightLdsBlocks(const UseConfig& d) { return useValue(d, "TAIL_KERNELS", 2) % 10 < 2 ? 1 : 2; }
 
@@ -204,7 +209,7 @@ u32 swizRecomputeTouches(const Env& e, const FFTConfig& f, const UseConfig& d) {
   if (swizRecomputeReached(f, f.shape.width, radixW(f, d), shuflBytesW(d), effectiveLdsSwizW(e, f, d))) {
     touches |= KG_WIDTH | KG_CARRY;
   }
-  if (swizRecomputeReached(f, f.shape.height, radixH(f, d), shuflBytesH(d), effectiveLdsSwizH(d))) {
+  if (swizRecomputeReached(f, f.shape.height, radixH(f, d), shuflBytesH(d), effectiveLdsSwizH(f, d))) {
     touches |= KG_HEIGHT | KG_TAIL;
   }
   return touches;
@@ -675,10 +680,11 @@ vector<Option> buildTable() {
   t.push_back({.key = "LDSSWIZ_W",
                .group = Group::Width,
                .touches = KG_WIDTH | KG_CARRY,
-               .dependsOn = {"SHUFL_BYTES_W", "LDSPAD_W", "WMUL"},
+               .dependsOn = {"SHUFL_BYTES_W", "LDSPAD_W", "WMUL", "256RADIX8_W"},
                .applies =
                  [](const Env& e, const FFTConfig& f, const UseConfig& d) {
-                   return ldsSwizReached(f, f.shape.width, shuflBytesW(d)) && effectiveLdsPadW(e, f, d) == 0;
+                   return ldsSwizReached(f, f.shape.width, shuflBytesW(d)) && effectiveLdsPadW(e, f, d) == 0 &&
+                     ldsSwizFits(f.shape.width, radixW(f, d));
                  },
                .values = {0, 1},
                .defaultValue = 0});
@@ -776,10 +782,11 @@ vector<Option> buildTable() {
   t.push_back({.key = "LDSSWIZ_H",
                .group = Group::Height,
                .touches = KG_HEIGHT | KG_TAIL,
-               .dependsOn = {"SHUFL_BYTES_H", "LDSPAD_H"},
+               .dependsOn = {"SHUFL_BYTES_H", "LDSPAD_H", "256RADIX8_H"},
                .applies =
                  [](const Env&, const FFTConfig& f, const UseConfig& d) {
-                   return ldsSwizReached(f, f.shape.height, shuflBytesH(d)) && useValue(d, "LDSPAD_H", 1) == 0;
+                   return ldsSwizReached(f, f.shape.height, shuflBytesH(d)) && useValue(d, "LDSPAD_H", 1) == 0 &&
+                     ldsSwizFits(f.shape.height, radixH(f, d));
                  },
                .values = {0, 1},
                .defaultValue = 0});
