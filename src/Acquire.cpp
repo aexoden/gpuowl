@@ -10,6 +10,7 @@
 #include <cmath>
 #include <limits>
 #include <map>
+#include <set>
 
 namespace tune {
 
@@ -136,6 +137,25 @@ public:
       out.push_back(ranked[SCREENED + rng() % (ranked.size() - SCREENED)].second);
     }
     return out;
+  }
+
+  // Works out what each draw makes of every candidate any point of the grids screens in, all in one spread over the
+  // threads: point by point, too few are new to keep them busy.
+  static void valueAll(std::vector<DrawView>& views, const AcquireContext& context) {
+    std::vector<std::pair<DrawView*, const Candidate*>> todo;
+    for (DrawView& view : views) {
+      std::set<const Candidate*> seen;
+      for (size_t k = 0; k < context.scope.grids.size() && k < context.candidates.size(); ++k) {
+        for (const GridPoint& p : context.scope.grids[k].points) {
+          for (const Candidate* c : view.screen(context.candidates[k], p.exponent)) {
+            if (!view.cache_.contains(c) && seen.insert(c).second) { todo.emplace_back(&view, c); }
+          }
+        }
+      }
+    }
+    std::vector<Valued> values(todo.size());
+    parallelFor(todo.size(), [&](size_t i) { values[i] = todo[i].first->work(*todo[i].second); });
+    for (size_t i = 0; i < todo.size(); ++i) { todo[i].first->cache_.emplace(todo[i].second, std::move(values[i])); }
   }
 
 private:
@@ -486,9 +506,20 @@ std::optional<Choice> untriedStep(const AcquireContext& context, std::mt19937_64
 
 double expectedRegret(const AcquireContext& context, const Publication& publication, std::mt19937_64& rng, u32 draws,
                       std::vector<RegretShare>* shares) {
+  for (size_t k = 0; k < context.scope.grids.size() && k < context.candidates.size(); ++k) {
+    const KindPublication* const pub = publication.of(context.scope.grids[k].kind);
+    for (const GridPoint& p : context.scope.grids[k].points) {
+      if (!pub || !pub->at(p.exponent)) { return NONE; }
+    }
+  }
+  std::vector<DrawView> views;
+  views.reserve(draws);
+  for (u32 i = 0; i < draws; ++i) { views.push_back(takeDraw(context, rng)); }
+  DrawView::valueAll(views, context);
+
   std::vector<double> regrets;
   for (u32 i = 0; i < draws; ++i) {
-    DrawView view = takeDraw(context, rng);
+    DrawView& view = views[i];
     double excess = 0;
     double cost = 0;
     for (size_t k = 0; k < context.scope.grids.size() && k < context.candidates.size(); ++k) {
