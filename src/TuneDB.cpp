@@ -20,6 +20,7 @@
 #include <iterator>
 #include <limits>
 #include <system_error>
+#include <unordered_set>
 
 #ifdef _WIN32
 #include <io.h>
@@ -184,10 +185,14 @@ std::optional<FFTConfig> parseFft(std::string_view spec) {
   if (!width || !middle || !height) { return {}; }
 
   // Only what FFTShape can name: a spec it would refuse, or read as some other shape, names no FFT.
+  // Every call row is parsed each time the readings are rebuilt, so the shapes are listed once.
+  static std::unordered_set<std::string> const shapes = [] {
+    std::unordered_set<std::string> out;
+    for (const FFTShape& s : FFTShape::allShapes()) { out.insert(s.spec()); }
+    return out;
+  }();
   FFTShape const shape{type, *width, *middle, *height};
-  if (!std::ranges::any_of(FFTShape::allShapes(), [&](const FFTShape& s) { return s.spec() == shape.spec(); })) {
-    return {};
-  }
+  if (!shapes.contains(shape.spec())) { return {}; }
 
   u32 variant = LAST_VARIANT;
   if (parts.size() >= 4) {
