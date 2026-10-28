@@ -84,7 +84,7 @@ std::string reportJson(const RunReport& r) {
         char reach[32];
         std::snprintf(reach, sizeof(reach), "%" PRIu64, line.reach());
         out += std::string{first ? "\n" : ",\n"} + "    {\"kind\": " + jsonString(toString(kind.kind)) +
-          ", \"fft\": " + jsonString(line.candidate->subject.fft.spec()) +
+          ", \"fft\": " + jsonString(line.subject.fft.spec()) +
           ", \"options\": " + jsonString(configText(line.reading->options)) + ", \"usPerIt\": " + number(line.cost()) +
           ", \"maxExponent\": " + reach + "}";
         first = false;
@@ -102,7 +102,7 @@ std::string reportJson(const RunReport& r) {
       ", \"discoveryBound95\": " + (a.state == AuditSummary::State::Complete ? number(a.bound) : std::string{"null"}) +
       ", \"found\": [";
     for (size_t i = 0; i < a.found.size(); ++i) {
-      out += std::string{i ? ", " : ""} + "{\"fft\": " + jsonString(a.found[i]->candidate->subject.fft.spec()) +
+      out += std::string{i ? ", " : ""} + "{\"fft\": " + jsonString(a.found[i]->subject.fft.spec()) +
         ", \"options\": " + jsonString(configText(a.found[i]->reading->options)) + "}";
     }
     out += "], \"confirmed\": [";
@@ -110,7 +110,7 @@ std::string reportJson(const RunReport& r) {
     for (const AuditSummary::Confirmed& c : a.confirmed) {
       if (c.fresh.calls == 0) { continue; }
       out += std::string{firstConfirmed ? "" : ", "} +
-        "{\"fft\": " + jsonString(c.line->candidate->subject.fft.spec()) +
+        "{\"fft\": " + jsonString(c.line->subject.fft.spec()) +
         ", \"options\": " + jsonString(configText(c.line->reading->options)) +
         ", \"pooledUsPerIt\": " + number(c.line->reading->mean) + ", \"freshUsPerIt\": " + number(c.fresh.mean) +
         ", \"freshCalls\": " + std::to_string(c.fresh.calls) + "}";

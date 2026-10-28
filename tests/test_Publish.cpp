@@ -4,6 +4,7 @@
 
 #include "FFTVariants.h"
 #include "Publish.h"
+#include "Report.h"
 
 #include <optional>
 #include <string>
@@ -158,6 +159,17 @@ TEST(a_line_outside_the_run_stays_published) {
   CHECK(prp.written.front().candidate == nullptr);
   CHECK(prp.covered == 0);
   CHECK(tuneFileText(prp, "").find("1K:13:256:202 # ") != std::string::npos);
+}
+
+TEST(the_report_names_a_line_the_run_does_not_hold) {
+  Fixture f;
+  f.call("1K:13:256:202", {}, 800);
+  f.roe("1K:13:256:202", {}, f.published().owedGates.at(0).exponent, 24.4);
+  f.moveAbove();
+
+  Publication const p = f.published();
+  CHECK(!p.of(TestKind::PRP)->lines.empty());
+  CHECK(reportJson({.state = "running", .publication = &p}).find("\"fft\": \"1K:13:256:202\"") != std::string::npos);
 }
 
 TEST(an_fft_has_a_line_for_each_reach_a_cheaper_set_falls_short_of) {
