@@ -528,7 +528,7 @@ double expectedRegret(const AcquireContext& context, const Publication& publicat
       for (const GridPoint& p : grid.points) {
         const Line* const line = pub ? pub->at(p.exponent) : nullptr;
         if (!line) { return NONE; }
-        const FFTConfig& fft = line->candidate->subject.fft;
+        const FFTConfig& fft = line->subject.fft;
         Subject const there{.fft = fft, .kind = grid.kind, .regime = regimeOf(fft, p.exponent)};
         double const published = std::exp(view.predict(there, line->reading->options));
         auto const [winner, valued] = winnerAt(view, context.candidates[k], p.exponent);

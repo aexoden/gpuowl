@@ -53,7 +53,7 @@ public:
   void write(const Publication& publication, double regret) {
     if (dir_.empty()) { return; }
     for (const KindPublication& kind : publication.kinds) {
-      if (kind.lines.empty()) { continue; }
+      if (kind.written.empty()) { continue; }
       // Where the run stands, for whoever is watching the file: only what changes as the run learns, so the file is
       // not rewritten on every call.
       std::string const status = "T " + usText(kind.covered > 0 ? kind.T / kind.covered : 0.0) + " us/it over " +
@@ -67,7 +67,7 @@ public:
       writeTuneFile(dir_, kind, header);
       last = text;
       log("tune: wrote %s: %zu lines, T %.2f us/it over %s of the workload\n", tuneFileName(kind.kind),
-          kind.lines.size(), kind.covered > 0 ? kind.T / kind.covered : 0.0, percent(kind.covered).c_str());
+          kind.written.size(), kind.covered > 0 ? kind.T / kind.covered : 0.0, percent(kind.covered).c_str());
     }
   }
 
@@ -117,10 +117,10 @@ StateReport stateOf(const Publication& publication, const Readings& readings, co
                   .lanes = toString(laneTime(db, env)),
                   .explored = coverage};
   for (const KindPublication& kind : publication.kinds) {
-    for (const Line& line : kind.lines) {
+    for (const Line& line : kind.written) {
       char buf[96];
       snprintf(buf, sizeof(buf), "%s %7.1f %-16s to %" PRIu64 " ", toString(kind.kind), line.cost(),
-               line.candidate->subject.fft.spec().c_str(), line.reach());
+               line.subject.fft.spec().c_str(), line.reach());
       out.lines.push_back(buf + optionsText(line.reading->options));
     }
   }
@@ -211,6 +211,8 @@ LoopResult runLoop(Device& device, TuneDB& db, u32 env, const Env& card, const R
                    const LoopSettings& settings) {
   std::vector<std::vector<Candidate>> candidates;
   for (const Grid& g : scope.grids) { candidates.push_back(candidatesOf(card, scope, g.kind)); }
+  Carried const carried = carriedLines(db, env, scope.grids);
+  if (carried.size()) { log("tune: %zu lines carried from earlier builds of this card\n", carried.size()); }
 
   Model model{card};
   std::mt19937_64 rng{settings.seed};
@@ -231,7 +233,7 @@ LoopResult runLoop(Device& device, TuneDB& db, u32 env, const Env& card, const R
 
     Readings const readings{db, env, card};
     model.fit(readings.observations());
-    Publication const publication = publish(scope, candidates, readings);
+    Publication const publication = publish(scope, candidates, readings, &carried);
     out.T = publication.T();
     publisher.write(publication, out.regret);
     if (settings.watch) { settings.watch->state(stateOf(publication, readings, model, db, env, coverage, out)); }
@@ -600,13 +602,14 @@ bool runOffline(const TuneCommand& command, const Args& args) {
   std::vector<std::vector<Candidate>> candidates;
   for (const Grid& g : scope->grids) { candidates.push_back(candidatesOf(card, *scope, g.kind)); }
   Readings const readings{db, env->id, card};
-  Publication const publication = publish(*scope, candidates, readings);
+  Carried const carried = carriedLines(db, env->id, scope->grids);
+  Publication const publication = publish(*scope, candidates, readings, &carried);
 
   for (const KindPublication& kind : publication.kinds) {
-    log("tune: %s: %zu lines, T %.2f us/it over %s of the workload\n", toString(kind.kind), kind.lines.size(),
+    log("tune: %s: %zu lines, T %.2f us/it over %s of the workload\n", toString(kind.kind), kind.written.size(),
         kind.covered > 0 ? kind.T / kind.covered : 0.0, percent(kind.covered).c_str());
-    for (const Line& line : kind.lines) {
-      log("tune:   %8.1f %s -use %s up to %" PRIu64 " (%s)\n", line.cost(), line.candidate->subject.fft.spec().c_str(),
+    for (const Line& line : kind.written) {
+      log("tune:   %8.1f %s -use %s up to %" PRIu64 " (%s)\n", line.cost(), line.subject.fft.spec().c_str(),
           optionsText(line.reading->options).c_str(), line.reach(), toString(line.accuracy.state));
     }
   }

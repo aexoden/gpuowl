@@ -85,6 +85,8 @@ std::vector<Finalist> finalists(const AcquireContext& context, const Publication
       if (!of.empty()) { read.emplace_back(&c, std::move(of)); }
     }
     for (const Line& line : kind->lines) {
+      // A line of an FFT the run does not hold cannot be called by it.
+      if (!line.candidate) { continue; }
       add(line.candidate, line.reading->options, false);
       // Its closest rival over the points it holds.
       const Candidate* rival = nullptr;
@@ -245,7 +247,7 @@ AuditSummary auditSummary(const TuneDB& db, u32 env, const Readings& readings, c
   }
   for (const KindPublication& kind : publication.kinds) {
     for (const Line& line : kind.lines) {
-      auto const it = firstLane.find({line.candidate->subject.fft.spec(), configText(line.reading->options)});
+      auto const it = firstLane.find({line.subject.fft.spec(), configText(line.reading->options)});
       if (it != firstLane.end() && it->second == AUDIT) { out.found.push_back(&line); }
     }
   }
@@ -255,7 +257,7 @@ AuditSummary auditSummary(const TuneDB& db, u32 env, const Readings& readings, c
     for (const Line& line : kind.lines) {
       out.confirmed.push_back(
         {.line = &line,
-         .fresh = freshOf(fresh, db, line.candidate->subject.fft.spec(), kind.kind, line.reading->options)});
+         .fresh = freshOf(fresh, db, line.subject.fft.spec(), kind.kind, line.reading->options)});
     }
   }
 
@@ -284,12 +286,12 @@ std::vector<std::string> auditReport(const AuditSummary& s, bool budgetSpent) {
                 (s.failedStarts ? " (" + std::to_string(s.failedStarts) + " starts could not be read)" : ""));
   for (const AuditSummary::Confirmed& c : s.confirmed) {
     if (c.fresh.calls == 0) { continue; }
-    out.push_back("confirmed: " + c.line->candidate->subject.fft.spec() + " " + usText(c.line->reading->mean) +
+    out.push_back("confirmed: " + c.line->subject.fft.spec() + " " + usText(c.line->reading->mean) +
                   " us/it over all its calls, " + usText(c.fresh.mean) + " over " + std::to_string(c.fresh.calls) +
                   " fresh ones (" + percentText(c.fresh.mean / c.line->reading->mean - 1) + ")");
   }
   for (const Line* line : s.found) {
-    out.push_back("audit: found " + line->candidate->subject.fft.spec() + " -use " +
+    out.push_back("audit: found " + line->subject.fft.spec() + " -use " +
                   configText(line->reading->options) + " at " + usText(line->cost()) + " us/it");
   }
   // What moved T since the baseline: the trials' finds, or the search that went on around and after them.

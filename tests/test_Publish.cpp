@@ -28,13 +28,13 @@ struct Fixture {
     scope = makeScope({.lo = 66'000'000, .hi = 70'000'000, .probe = 67'000'000, .kinds = {TestKind::PRP}}, {});
   }
 
-  void call(const char* spec, UseConfig options, double us, int times = 2) {
+  void call(const char* spec, UseConfig options, double us, int times = 2, u64 exponent = 0) {
     u32 const cfg = db.internCfg(options);
     for (int i = 0; i < times; ++i) {
       CHECK(db.add(CallRow{.sess = sess,
                            .fft = spec,
                            .kind = TestKind::PRP,
-                           .exponent = scope.probe,
+                           .exponent = exponent ? exponent : scope.probe,
                            .cfg = cfg,
                            .mean = us + 0.1 * i,
                            .sd = 0.2,
@@ -58,10 +58,23 @@ struct Fixture {
   std::vector<std::vector<Candidate>> candidates;
   std::optional<Readings> readings;
 
-  [[nodiscard]] Publication published() {
+  [[nodiscard]] Publication published(const Carried* carried = nullptr) {
     candidates = {candidatesOf(nvidia(), scope, TestKind::PRP)};
     readings.emplace(db, env, nvidia());
-    return publish(scope, candidates, *readings);
+    return publish(scope, candidates, *readings, carried);
+  }
+
+  // A run over a range the FFTs read so far hold none of.
+  void moveAbove() {
+    scope = makeScope({.lo = 150'000'000, .hi = 160'000'000, .probe = 155'000'000, .kinds = {TestKind::PRP}}, {});
+  }
+
+  // Where the gate first reads an FP64 set of 1K:13:256: its table top.
+  [[nodiscard]] u64 top() {
+    call("1K:13:256:202", {{"ZEROHACK_H", "0"}}, 2000);
+    Publication const p = published();
+    CHECK_EQ(p.owedGates.size(), size_t{1});
+    return p.owedGates.empty() ? 0 : p.owedGates.front().exponent;
   }
 };
 
@@ -98,7 +111,7 @@ TEST(a_line_needs_its_calls_and_its_gate) {
   Publication const two = f.published();
   const KindPublication& prp = *two.of(TestKind::PRP);
   CHECK_EQ(prp.lines.size(), size_t{1});  // the NTT reaches further only at a higher cost, so it is on the frontier
-  CHECK_EQ(prp.lines.front().candidate->subject.fft.spec(), std::string{"1K:13:256:202"});
+  CHECK_EQ(prp.lines.front().subject.fft.spec(), std::string{"1K:13:256:202"});
   CHECK(two.owedGates.empty());
   CHECK(prp.T > 800 * prp.covered && prp.T < 820 * prp.covered);
 }
@@ -129,4 +142,84 @@ TEST(a_failed_configuration_is_never_a_line) {
                          .ts = 1}));
   f.call("3:1K:8:256:202", {}, 900);
   CHECK(f.published().of(TestKind::PRP)->lines.empty());
+}
+
+TEST(a_line_outside_the_run_stays_published) {
+  Fixture f;
+  f.call("1K:13:256:202", {}, 800);
+  f.roe("1K:13:256:202", {}, f.published().owedGates.at(0).exponent, 24.4);
+  f.moveAbove();
+
+  Publication const p = f.published();
+  const KindPublication& prp = *p.of(TestKind::PRP);
+  CHECK_EQ(prp.written.size(), size_t{1});
+  if (prp.written.empty()) { return; }
+  CHECK_EQ(prp.written.front().subject.fft.spec(), std::string{"1K:13:256:202"});
+  CHECK(prp.written.front().candidate == nullptr);
+  CHECK(prp.covered == 0);
+  CHECK(tuneFileText(prp, "").find("1K:13:256:202 # ") != std::string::npos);
+}
+
+TEST(an_fft_has_a_line_for_each_reach_a_cheaper_set_falls_short_of) {
+  Fixture f;
+  u64 const top = f.top();
+  f.call("1K:13:256:202", {}, 800);
+  f.call("1K:13:256:202", {{"ZEROHACK_W", "0"}}, 780);
+  f.roe("1K:13:256:202", {}, top, 24.4);
+  f.roe("1K:13:256:202", {{"ZEROHACK_W", "0"}}, top, 10);
+  u64 const lowered = top - top / 200;
+  f.roe("1K:13:256:202", {{"ZEROHACK_W", "0"}}, lowered, 24.4);
+
+  for (bool const outside : {false, true}) {
+    if (outside) { f.moveAbove(); }
+    Publication const p = f.published();
+    const std::vector<Line>& written = p.of(TestKind::PRP)->written;
+    CHECK_EQ(written.size(), size_t{2});
+    if (written.size() != 2) { return; }
+    CHECK(written[0].reading->options == (UseConfig{{"ZEROHACK_W", "0"}}));
+    CHECK_EQ(written[0].reach(), lowered);
+    CHECK(written[1].reading->options.empty());
+    CHECK(written[1].reach() > top);
+  }
+}
+
+TEST(outside_the_run_an_unsettled_gate_publishes_its_highest_safe_reading) {
+  Fixture f;
+  u64 const top = f.top();
+  f.call("1K:13:256:202", {}, 800);
+  f.roe("1K:13:256:202", {}, top, 10);
+  f.roe("1K:13:256:202", {}, 100'000'000, 24.4);
+  CHECK(f.published().of(TestKind::PRP)->written.empty());
+
+  f.moveAbove();
+  const std::vector<Line>& written = f.published().of(TestKind::PRP)->written;
+  CHECK_EQ(written.size(), size_t{1});
+  if (written.empty()) { return; }
+  CHECK_EQ(written.front().reach(), u64{100'000'000});
+}
+
+TEST(an_earlier_builds_line_is_written_until_this_build_has_one) {
+  Fixture f;
+  f.call("1K:13:256:202", {}, 800);
+  f.roe("1K:13:256:202", {}, f.published().owedGates.at(0).exponent, 24.4);
+
+  f.env =
+    f.db.internEnv(DbEnv{.gpu = "card", .isNvidia = true, .cudaBackend = true, .computeCapability = 860, .build = 7});
+  f.sess = f.db.beginSession(f.env, "", 0, "");
+  Carried const carried = carriedLines(f.db, f.env, f.scope.grids);
+  CHECK_EQ(carried.size(), size_t{1});
+
+  Publication const before = f.published(&carried);
+  const KindPublication& old = *before.of(TestKind::PRP);
+  CHECK(old.lines.empty());
+  CHECK(old.covered == 0);
+  CHECK_EQ(old.written.size(), size_t{1});
+
+  f.call("1K:13:256:202", {}, 900);
+  f.roe("1K:13:256:202", {}, f.published(&carried).owedGates.at(0).exponent, 24.4);
+  Publication const after = f.published(&carried);
+  const std::vector<Line>& written = after.of(TestKind::PRP)->written;
+  CHECK_EQ(written.size(), size_t{1});
+  if (written.empty()) { return; }
+  CHECK(written.front().cost() > 850);
 }
