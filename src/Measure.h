@@ -13,11 +13,14 @@
 #include "Occupancy.h"
 #include "OptionSpace.h"
 #include "Stats.h"
+#include "Telemetry.h"
 #include "TestKind.h"
 #include "timeutil.h"
 #include "TuneDB.h"
 
+#include <chrono>
 #include <functional>
+#include <memory>
 #include <optional>
 #include <set>
 #include <string>
@@ -48,6 +51,9 @@ struct Call {
   std::vector<KernelUse> kernels{};  // REG-limited kernels; empty where the device's limits are not modelled
   double buildSec = 0;               // building the Gpu, a compile included on a cold kernel cache
   double timedSec = 0;
+  std::chrono::steady_clock::time_point timedFrom{};  // the timed blocks (IterSamples)
+  std::chrono::steady_clock::time_point timedTo{};
+  std::optional<WindowPower> power{};  // what the card drew over them, where it says
 
   [[nodiscard]] bool ok() const { return status == Status::Ok && core.stats.n > 0; }
   [[nodiscard]] double mean() const { return core.stats.mean; }
@@ -63,6 +69,10 @@ inline constexpr u32 CALL_WARMUP_BLOCKS = 1;
 // moment after the idle that building a Gpu leaves (an RTX 5070 Ti read its first block 1.2-2% low, settling from about
 // 0.8 s); production runs at the clock it settles to.
 inline constexpr double CALL_HEAT_SEC = 1.0;
+
+// How often a session reads the card (Telemetry.h), and how many seconds of readings it keeps.
+inline constexpr double SAMPLE_PERIOD = 0.1;
+inline constexpr double SAMPLE_KEEP = 60;
 
 [[nodiscard]] constexpr u64 callIterations(u32 nBlocks, u32 blockSize) {
   return u64(CALL_WARMUP_BLOCKS + nBlocks) * blockSize;
@@ -187,6 +197,10 @@ private:
   TuneDB& db_;
   Env env_;
   u32 blockSize_ = 1000;
+
+  // The card's own readings, for what each call drew; none where the card cannot be read.
+  std::unique_ptr<Telemetry> telemetry_;
+  std::unique_ptr<Sampler> sampler_;
 
   AnchorSpec anchor_{};
   AnchorState anchorState_{};

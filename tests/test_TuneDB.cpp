@@ -169,6 +169,38 @@ TEST(db_interns_equal_option_sets_and_envs_once) {
   CHECK(back.findEnv(f.env) && back.findEnv(f.env)->tag.empty());
 }
 
+TEST(db_keeps_what_a_call_drew) {
+  Fixture f;
+  CHECK(f.db.add(f.call(800)));
+  PowerRow const drew{.sess = f.sess,
+                      .fft = "512:15:512:202",
+                      .kind = TestKind::LL,
+                      .exponent = 67'513'549,
+                      .cfg = f.cfg,
+                      .mjPerIt = 168.25,
+                      .watts = 210.3,
+                      .capW = 250,
+                      .smMHz = 1328,
+                      .counted = true,
+                      .ts = 1001};
+  CHECK(f.db.add(drew));
+  CHECK(f.db.text().find("power 1 512:15:512:202 ll 67513549 1 168.2500 210.3 250.0 1328 counter 1001\n") !=
+        std::string::npos);
+
+  TuneDB back;
+  CHECK(back.parse(f.db.text(), "power"));
+  CHECK_EQ(back.powers().size(), size_t{1});
+  if (back.powers().empty()) { return; }
+  CHECK(back.powers().front().counted);
+  CHECK(std::abs(back.powers().front().mjPerIt - 168.25) < 1e-9);
+  CHECK_EQ(back.text(), f.db.text());
+
+  PowerRow none = drew;
+  none.watts = 0;
+  CHECK(!f.db.add(none));
+  CHECK(!back.parse(f.db.text() + "power 1 512:15:512:202 ll 67513549 1 168.25 210.3 250 1328 guessed 1002\n", "bad"));
+}
+
 TEST(db_names_what_a_process_died_holding) {
   Fixture f;
   TryRow const attempt{

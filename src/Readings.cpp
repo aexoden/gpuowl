@@ -29,12 +29,26 @@ ConfigKey Readings::keyOf(const Subject& subject, const UseConfig& options) {
     .fft = subject.fft.spec(), .kind = subject.kind, .regime = subject.regime.label(), .options = configText(options)};
 }
 
-Readings::Readings(const TuneDB& db, u32 env, const Env& device) {
+Readings::Readings(const TuneDB& db, u32 env, const Env& device, double powerHold) {
   struct Taken {
     double cost;
     double relSem;
   };
   std::map<ConfigKey, std::vector<Taken>> costs;
+
+  // What each call drew, by what it shares with its call record.
+  using CallOf = std::tuple<u32, std::string, TestKind, u64, u32, u64>;
+  std::map<CallOf, const PowerRow*> powers;
+  for (const PowerRow& p : db.powers()) {
+    if (db.envOf(p.sess) == env) { powers[{p.sess, p.fft, p.kind, p.exponent, p.cfg, p.ts}] = &p; }
+  }
+  struct Drawn {
+    double mj = 0;
+    double watts = 0;
+    u32 n = 0;
+    u32 bound = 0;
+  };
+  std::map<ConfigKey, Drawn> drawn;
 
   for (const CallRow& row : db.calls()) {
     if (db.envOf(row.sess) != env) { continue; }
@@ -54,8 +68,24 @@ Readings::Readings(const TuneDB& db, u32 env, const Env& device) {
     switch (row.status) {
     case Status::Ok:
       if (row.ok()) {
+        double cost = row.cost();
+        auto const p = powers.find({row.sess, row.fft, row.kind, row.exponent, row.cfg, row.ts});
+        if (p != powers.end()) {
+          Drawn& d = drawn[key];
+          d.mj += p->second->mjPerIt;
+          d.watts += p->second->watts;
+          ++d.n;
+          // Millijoules per iteration over watts is milliseconds per iteration.
+          if (powerHold > 0 && p->second->capW > 0) {
+            double const bound = p->second->mjPerIt * 1000 / (powerHold * p->second->capW);
+            if (bound > cost) {
+              cost = bound;
+              ++d.bound;
+            }
+          }
+        }
         costs[key].push_back(
-          {.cost = row.cost(), .relSem = row.mean > 0 ? row.sd / row.mean / std::sqrt(double(row.blocks)) : 0});
+          {.cost = cost, .relSem = row.mean > 0 ? row.sd / row.mean / std::sqrt(double(row.blocks)) : 0});
       }
       break;
     case Status::Lost: break;  // says nothing of the configuration
@@ -104,6 +134,13 @@ Readings::Readings(const TuneDB& db, u32 env, const Env& device) {
       se = std::sqrt(ss / double(c.size() - 1) / double(c.size()));
     }
     r.se = std::max(se, r.mean * SE_FLOOR);
+  }
+
+  for (auto const& [key, d] : drawn) {
+    Reading& r = readings_.at(key);
+    r.mjPerIt = d.mj / d.n;
+    r.watts = d.watts / d.n;
+    r.powerBound = d.bound;
   }
 
   for (const RoeRow& row : db.roes()) {

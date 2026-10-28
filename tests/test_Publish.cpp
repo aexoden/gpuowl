@@ -327,3 +327,39 @@ TEST(lines_are_carried_only_under_the_same_tag) {
   CHECK(other != f.env);
   CHECK_EQ(carriedLines(f.db, other).size(), size_t{0});
 }
+
+TEST(a_call_at_the_power_limit_costs_its_energy_over_what_the_card_holds) {
+  Fixture f;
+  u64 const E = 60'000'000;
+  f.call("3:1K:8:256:202", {}, 900, 2, E);
+  // 198 mJ an iteration at a 220 W limit: 198 / (0.95 * 220) ms, some 947 us, where the calls timed 900.
+  CHECK(f.db.add(PowerRow{.sess = f.sess,
+                          .fft = "3:1K:8:256:202",
+                          .kind = TestKind::PRP,
+                          .exponent = E,
+                          .cfg = f.db.internCfg({}),
+                          .mjPerIt = 198,
+                          .watts = 220,
+                          .capW = 220,
+                          .smMHz = 2500,
+                          .ts = 1}));
+  FFTConfig const fft{"3:1K:8:256:202"};
+  Subject const subject{.fft = fft, .kind = TestKind::PRP, .regime = regimeOf(fft, E)};
+
+  Readings const held{f.db, f.env, nvidia(), HOLD_SHARE};
+  const Reading* const r = held.find(subject, {});
+  CHECK(r != nullptr);
+  if (!r) { return; }
+  CHECK(std::abs(r->mean - 198'000 / (HOLD_SHARE * 220)) < 1e-6);
+  CHECK_EQ(r->powerBound, 2u);
+  CHECK(std::abs(r->mjPerIt - 198) < 1e-9 && std::abs(r->watts - 220) < 1e-9);
+  for (const Observation& o : held.observations()) { CHECK(o.cost > 940); }
+
+  Readings const timed{f.db, f.env, nvidia(), 0};
+  const Reading* const t = timed.find(subject, {});
+  CHECK(t && t->mean < 901 && t->powerBound == 0);
+
+  // Where the card can hold the whole limit, 198 mJ an iteration at 220 W is the 900 us the calls timed.
+  Readings const loose{f.db, f.env, nvidia(), 1.0};
+  CHECK(loose.find(subject, {}) && loose.find(subject, {})->mean < 901);
+}

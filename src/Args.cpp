@@ -378,6 +378,10 @@ named "config.txt" in the prpll run directory.
                          tailQueues=ntt|all|none FFTs offered TAIL_KERNELS 11 and 13 [ntt: NTTs on nVidia]
                          tag=<word>          a name for card settings the tuner cannot see, such as locked clocks:
                                              readings under another tag are kept apart, and so are their lines
+                         powerHold=<f>|off   the share of its power limit a card holds under sustained load: a call
+                                             costs at least the energy of an iteration over it, which a short call
+                                             at the limit does not show; trust it only where -measure says it
+                                             holds, as power readings can lag behind a call (0.95 is typical) [off]
                          dashboard=1         a full-screen view of the run
                      Verbs, which open no device: status (where tunedb.txt stands), emit (write the tune files it
                      supports), scope (the exponents a run would tune for).

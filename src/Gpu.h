@@ -21,6 +21,7 @@
 #include <filesystem>
 #include <cmath>
 #include <atomic>
+#include <chrono>
 
 struct PRPResult;
 class Task;
@@ -56,6 +57,10 @@ struct IterSamples {
 
   // Iterations behind res64, warm-up included.
   u64 iters = 0;
+
+  // When the timed blocks began and ended, for what the card read meanwhile (Telemetry.h).
+  std::chrono::steady_clock::time_point timedFrom{};
+  std::chrono::steady_clock::time_point timedTo{};
 };
 
 struct ZAvg {

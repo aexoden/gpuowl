@@ -317,6 +317,13 @@ std::string formatRow(const CallRow& row) {
     std::to_string(row.ts);
 }
 
+std::string formatRow(const PowerRow& row) {
+  return "power " + std::to_string(row.sess) + ' ' + row.fft + ' ' + toString(row.kind) + ' ' +
+    std::to_string(row.exponent) + ' ' + std::to_string(row.cfg) + ' ' + fixed(row.mjPerIt, 4) + ' ' +
+    fixed(row.watts, 1) + ' ' + fixed(row.capW, 1) + ' ' + fixed(row.smMHz, 0) + ' ' +
+    (row.counted ? "counter" : "readings") + ' ' + std::to_string(row.ts);
+}
+
 std::string formatRow(const TryRow& row) {
   return "try " + std::to_string(row.sess) + ' ' + row.fft + ' ' + toString(row.kind) + ' ' +
     std::to_string(row.exponent) + ' ' + std::to_string(row.cfg) + ' ' + std::to_string(row.ts);
@@ -525,6 +532,14 @@ bool TuneDB::add(const CallRow& row) {
   return record(calls_, row);
 }
 
+bool TuneDB::add(const PowerRow& row) {
+  if (!findCfg(row.cfg) || row.exponent == 0 || !(row.mjPerIt > 0) || !(row.watts > 0) || !(row.capW >= 0) ||
+      !(row.smMHz >= 0)) {
+    return false;
+  }
+  return record(powers_, row);
+}
+
 bool TuneDB::add(const TryRow& row) {
   if (!findCfg(row.cfg) || row.exponent == 0) { return false; }
   if (!record(tries_, row)) { return false; }
@@ -700,6 +715,7 @@ void TuneDB::clear() {
   preds_.clear();
   audits_.clear();
   spills_.clear();
+  powers_.clear();
   unknown_.clear();
   open_.clear();
 }
@@ -714,7 +730,7 @@ struct Shape {
 
 constexpr Shape SHAPES[] = {{"cfg", 3},    {"call", 15}, {"try", 7},   {"done", 3},  {"roe", 10},
                             {"anchor", 8}, {"regs", 12}, {"ref", 7},   {"item", 10}, {"kres", 11},
-                            {"kres", 13},  {"pred", 5},  {"audit", 6}, {"spill", 7}};
+                            {"kres", 13},  {"pred", 5},  {"audit", 6}, {"spill", 7}, {"power", 12}};
 
 }  // namespace
 
@@ -987,6 +1003,31 @@ bool TuneDB::parse(std::string_view text, std::string_view name) {
           !add(
             RefRow{.sess = *sess, .fft = f[2], .exponent = *exponent, .iters = *iters, .res64 = *res64, .ts = *ts})) {
         refuse("malformed ref record");
+      }
+    } else if (tag == "power" && f.size() == 12) {
+      auto const sess = parseInt<u32>(f[1]);
+      auto const kind = parseTestKind(f[3]);
+      auto const exponent = parseInt<u64>(f[4]);
+      auto const cfg = parseInt<u32>(f[5]);
+      auto const mj = parsePositive(f[6]);
+      auto const watts = parsePositive(f[7]);
+      auto const cap = parseNonNegative(f[8]);
+      auto const sm = parseNonNegative(f[9]);
+      bool const source = f[10] == "counter" || f[10] == "readings";
+      auto const ts = parseInt<u64>(f[11]);
+      if (!sess || !kind || !exponent || !cfg || !mj || !watts || !cap || !sm || !source || !ts ||
+          !add(PowerRow{.sess = *sess,
+                        .fft = std::string{f[2]},
+                        .kind = *kind,
+                        .exponent = *exponent,
+                        .cfg = *cfg,
+                        .mjPerIt = *mj,
+                        .watts = *watts,
+                        .capW = *cap,
+                        .smMHz = *sm,
+                        .counted = f[10] == "counter",
+                        .ts = *ts})) {
+        refuse("malformed power record");
       }
     } else if (tag == "spill" && f.size() == 7) {
       auto const sess = parseInt<u32>(f[1]);

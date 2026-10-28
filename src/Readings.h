@@ -7,6 +7,7 @@
 
 #include "Eligibility.h"
 #include "Model.h"
+#include "Telemetry.h"
 #include "TuneDB.h"
 
 #include <map>
@@ -36,9 +37,15 @@ struct Reading {
   u64 exponent = 0;     // where it was last called
 
   u32 calls = 0;        // that read a cost
-  double mean = 0;      // of the calls' drift-corrected costs, microseconds per iteration
+  double mean = 0;      // of the calls' costs (drift-corrected, and as the power limit holds them), us/it
   double se = 0;        // standard error of that mean, between calls; a floor where there is one call
   bool failed = false;  // a call computed wrongly, failed to build, or the device refused it
+
+  // What the calls drew, where the card says (PowerRow): the mean energy of an iteration in millijoules and power in
+  // watts, and how many calls' costs the power limit set rather than their timing.
+  double mjPerIt = NAN;
+  double watts = NAN;
+  u32 powerBound = 0;
 
   // What a published line costs: the mean, pessimistically by its error bar.
   [[nodiscard]] double pessimistic() const;
@@ -54,7 +61,8 @@ struct RoeReading {
 
 class Readings {
 public:
-  Readings(const TuneDB& db, u32 env, const Env& device);
+  // `powerHold`: POWER_HOLD, as a run's powerHold= setting has it.
+  Readings(const TuneDB& db, u32 env, const Env& device, double powerHold = POWER_HOLD);
 
   [[nodiscard]] const std::map<ConfigKey, Reading>& all() const { return readings_; }
 

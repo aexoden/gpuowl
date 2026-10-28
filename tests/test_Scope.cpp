@@ -142,6 +142,17 @@ TEST(every_setting_is_accepted_where_it_belongs) {
   CHECK(parsed("").tag.empty());
   CHECK(!refusal("tag=875 mhz").empty());
   CHECK(!refusal("tag=a/b").empty());
+  CHECK(near(parsed("").powerHold, POWER_HOLD));
+  CHECK(near(parsed("powerHold=0.9").powerHold, 0.9));
+  CHECK(near(parsed("powerHold=off").powerHold, 0));
+  CHECK(near(parsed("status,powerHold=off").powerHold, 0));
+  CHECK(!refusal("powerHold=1.5").empty());
+  CHECK(!refusal("powerHold=95%").empty());
+  for (const char* word : {"powerHold=0.875", "powerHold=off"}) {
+    TuneCommand const held = parsed(word);
+    CHECK(near(parsed(settingsWord(makeScope(held.scope, {}), held).c_str()).powerHold, held.powerHold));
+  }
+  CHECK(settingsWord(makeScope(parsed("").scope, {}), parsed("")).find("powerHold") == std::string::npos);
   // A run records its tag with its settings, which a later status reads back.
   TuneCommand const tagged = parsed("workload=60M-80M,tag=875mhz");
   CHECK_EQ(parsed(settingsWord(makeScope(tagged.scope, {}), tagged).c_str()).tag, std::string{"875mhz"});

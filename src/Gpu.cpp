@@ -2951,6 +2951,7 @@ IterSamples Gpu::timeIters(u32 nBlocks, u32 blockSize, u32 warmupBlocks, double 
   IterSamples out;
   out.usPerIt.reserve(nBlocks);
 
+  out.timedFrom = std::chrono::steady_clock::now();
   Timer t;
   for (u32 b = 0; b < nBlocks; ++b) {
     modMul(bufCheck, bufData, leadIn);
@@ -2964,6 +2965,7 @@ IterSamples Gpu::timeIters(u32 nBlocks, u32 blockSize, u32 warmupBlocks, double 
 
     if (Signal::stopRequested()) { throw "stop requested"; }
   }
+  out.timedTo = std::chrono::steady_clock::now();
 
   out.res64 = dataResidue();
   out.checkOk = doCheck(blockSize);
@@ -3004,6 +3006,7 @@ IterSamples Gpu::timeItersLL(u32 nBlocks, u32 blockSize, u32 warmupBlocks, doubl
   IterSamples out;
   out.usPerIt.reserve(nBlocks);
 
+  out.timedFrom = std::chrono::steady_clock::now();
   Timer t;
   for (u32 b = 0; b < nBlocks; ++b) {
     block();
@@ -3012,6 +3015,7 @@ IterSamples Gpu::timeItersLL(u32 nBlocks, u32 blockSize, u32 warmupBlocks, doubl
 
     if (Signal::stopRequested()) { throw "stop requested"; }
   }
+  out.timedTo = std::chrono::steady_clock::now();
 
   out.res64 = dataResidue();
   out.iters = u64(warmupBlocks + nBlocks) * blockSize;

@@ -243,7 +243,7 @@ LoopResult runLoop(Device& device, TuneDB& db, u32 env, const Env& card, const R
     device.keepAnchor();
     if (device.stopped()) { break; }
 
-    Readings const readings{db, env, card};
+    Readings const readings{db, env, card, settings.powerHold};
     model.fit(readings.observations());
     Publication const publication = publish(scope, candidates, readings, &carried);
     out.T = publication.T();
@@ -582,6 +582,7 @@ RunOutcome runTune(GpuCommon shared, const TuneCommand& command) {
                                      .target = command.target,
                                      .newFloor = command.newFloor,
                                      .shortCalls = command.shortCalls,
+                                     .powerHold = command.powerHold,
                                      .seed = seed,
                                      .tailQueues = command.tailQueues,
                                      .publishTo = fs::current_path(),
@@ -627,7 +628,7 @@ bool runOffline(const TuneCommand& command, const Args& args) {
 
   std::vector<std::vector<Candidate>> candidates;
   for (const Grid& g : scope->grids) { candidates.push_back(candidatesOf(card, *scope, g.kind)); }
-  Readings const readings{db, env->id, card};
+  Readings const readings{db, env->id, card, command.powerHold};
   Carried const carried = carriedLines(db, env->id);
   Publication const publication = publish(*scope, candidates, readings, &carried);
 

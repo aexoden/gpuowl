@@ -3,6 +3,7 @@
 #include "Telemetry.h"
 
 #include "gpuid.h"
+#include "timeutil.h"
 
 #include <algorithm>
 #include <charconv>
@@ -50,10 +51,33 @@ using NvmlTemperature = int (*)(NvmlDevice, int, unsigned*);
 using NvmlPower = int (*)(NvmlDevice, unsigned*);
 using NvmlReasons = int (*)(NvmlDevice, unsigned long long*);
 
+// nvmlFieldValue_t, for nvmlDeviceGetFieldValues.
+struct NvmlFieldValue {
+  unsigned fieldId = 0;
+  unsigned scopeId = 0;
+  long long timestamp = 0;
+  long long latencyUsec = 0;
+  int valueType = 0;   // nvmlValueType_t
+  int nvmlReturn = 0;  // nvmlReturn_t
+  union {
+    double d;
+    unsigned ui;
+    unsigned long ul;
+    unsigned long long ull;
+    long long sll;
+    int si;
+  } value{};
+};
+using NvmlFields = int (*)(NvmlDevice, int, NvmlFieldValue*);
+
 constexpr int NVML_SUCCESS = 0;
 constexpr int NVML_CLOCK_SM = 1;
 constexpr int NVML_CLOCK_MEM = 2;
 constexpr int NVML_TEMPERATURE_GPU = 0;
+
+// The power drawn now, in milliwatts, rather than nvmlDeviceGetPowerUsage's figure, which on many cards is an average
+// over the last second or more.  Drivers from about R530.
+constexpr unsigned NVML_FI_DEV_POWER_INSTANT = 186;
 
 class Nvml final : public Telemetry {
 public:
@@ -76,6 +100,9 @@ public:
     // Renamed from throttle reasons to clock event reasons; drivers keep both names.
     out->reasons_ = NvmlReasons(sym("nvmlDeviceGetCurrentClocksEventReasons"));
     if (!out->reasons_) { out->reasons_ = NvmlReasons(sym("nvmlDeviceGetCurrentClocksThrottleReasons")); }
+    // Millijoules since the driver last loaded; Volta and later.  Older cards answer only power readings.
+    out->energy_ = NvmlReasons(sym("nvmlDeviceGetTotalEnergyConsumption"));
+    out->fields_ = NvmlFields(sym("nvmlDeviceGetFieldValues"));
     if (!init || !byBusId || !count || !byIndex || !out->clock_) {
       why = "libnvidia-ml.so.1 lacks the functions read here";
       return nullptr;
@@ -102,7 +129,25 @@ public:
                         : "NVML has no card at " + bdf;
       return nullptr;
     }
+    out->instant_ = out->instantPowerW().has_value();
     return out;
+  }
+
+  // The instantaneous power field, where the driver answers it.
+  std::optional<double> instantPowerW() const {
+    if (!fields_) { return {}; }
+    NvmlFieldValue f;
+    f.fieldId = NVML_FI_DEV_POWER_INSTANT;
+    if (fields_(device_, 1, &f) != NVML_SUCCESS || f.nvmlReturn != NVML_SUCCESS) { return {}; }
+    switch (f.valueType) {
+    case 0: return f.value.d / 1000;
+    case 1: return f.value.ui / 1000.0;
+    case 2: return double(f.value.ul) / 1000;
+    case 3: return double(f.value.ull) / 1000;
+    case 4: return double(f.value.sll) / 1000;
+    case 5: return f.value.si / 1000.0;
+    default: return {};
+    }
   }
 
   std::optional<CardSample> read() override {
@@ -115,15 +160,24 @@ public:
     }
     if (clock_(device_, NVML_CLOCK_MEM, &v) == NVML_SUCCESS) { s.memMHz = v; }
     if (temperature_ && temperature_(device_, NVML_TEMPERATURE_GPU, &v) == NVML_SUCCESS) { s.tempC = v; }
-    if (power_ && power_(device_, &v) == NVML_SUCCESS) { s.powerW = v / 1000.0; }
+    if (std::optional<double> const now = instant_ ? instantPowerW() : std::nullopt) {
+      s.powerW = *now;
+    } else if (power_ && power_(device_, &v) == NVML_SUCCESS) {
+      s.powerW = v / 1000.0;
+    }
     if (cap_ && cap_(device_, &v) == NVML_SUCCESS) { s.capW = v / 1000.0; }
     if (unsigned long long bits = 0; reasons_ && reasons_(device_, &bits) == NVML_SUCCESS) { s.held = bits; }
+    if (unsigned long long mj = 0; energy_ && energy_(device_, &mj) == NVML_SUCCESS) { s.energyJ = double(mj) / 1000; }
     if (!any) { return {}; }
     return s;
   }
 
-  std::string source() const override { return "NVML, " + busId_; }
+  std::string source() const override {
+    return "NVML, " + busId_ + (instant_ ? ", instantaneous power" : ", averaged power") +
+      (energy_ ? ", energy counter" : "");
+  }
   bool saysWhy() const override { return reasons_ != nullptr; }
+  bool instantPower() const override { return instant_; }
 
 private:
   Nvml() = default;
@@ -135,6 +189,9 @@ private:
   NvmlPower power_ = nullptr;
   NvmlPower cap_ = nullptr;
   NvmlReasons reasons_ = nullptr;
+  NvmlReasons energy_ = nullptr;
+  NvmlFields fields_ = nullptr;
+  bool instant_ = false;
 };
 
 #endif
@@ -177,6 +234,7 @@ public:
       if (!p) { p = readNumber(hwmon_ / "power1_input"); }
       if (p) { s.powerW = *p / 1e6; }
       if (auto c = readNumber(hwmon_ / "power1_cap")) { s.capW = *c / 1e6; }
+      if (auto e = readNumber(hwmon_ / "energy1_input")) { s.energyJ = *e / 1e6; }  // microjoules, where amdgpu has it
     }
     return s;
   }
@@ -218,8 +276,27 @@ std::unique_ptr<Telemetry> openTelemetry(const std::string& bdf, bool nvidia, bo
   return nullptr;
 }
 
-Sampler::Sampler(Telemetry* telemetry, double period)
-  : telemetry_{telemetry}, start_{std::chrono::steady_clock::now()} {
+std::unique_ptr<Telemetry> openTelemetryFor(cl_device_id id, std::string& why) {
+  return openTelemetry(pciAddressOf(id), isNvidiaGpu(id), isAmdGpu(id), why);
+}
+
+std::string pciAddressOf(cl_device_id id) {
+  std::string bdf = getBdfFromDevice(id);
+  if (!bdf.empty()) { return bdf; }
+  constexpr cl_device_info PCI_BUS_ID_NV = 0x4008;
+  constexpr cl_device_info PCI_SLOT_ID_NV = 0x4009;
+  u32 bus = 0, slot = 0;  // cl_uint
+  if (clGetDeviceInfo(id, PCI_BUS_ID_NV, sizeof(bus), &bus, nullptr) == CL_SUCCESS &&
+      clGetDeviceInfo(id, PCI_SLOT_ID_NV, sizeof(slot), &slot, nullptr) == CL_SUCCESS) {
+    char buf[16];
+    snprintf(buf, sizeof(buf), "%02x:%02x.%x", bus, slot >> 3, slot & 7);
+    return buf;
+  }
+  return {};
+}
+
+Sampler::Sampler(Telemetry* telemetry, double period, double keep)
+  : telemetry_{telemetry}, keep_{keep}, start_{std::chrono::steady_clock::now()} {
   if (!telemetry_) { return; }
   thread_ = std::jthread{[this, period](std::stop_token stop) {
     while (!stop.stop_requested()) {
@@ -227,6 +304,10 @@ Sampler::Sampler(Telemetry* telemetry, double period)
         s->t = now();
         std::lock_guard lock{mutex_};
         samples_.push_back(*s);
+        // Dropped a batch at a time, so the vector is not shifted on every sample.
+        if (keep_ > 0 && samples_.front().t < s->t - 2 * keep_) {
+          std::erase_if(samples_, [&](const CardSample& old) { return old.t < s->t - keep_; });
+        }
       }
       std::this_thread::sleep_for(std::chrono::duration<double>(period));
     }
@@ -240,7 +321,11 @@ Sampler::~Sampler() {
   }
 }
 
-double Sampler::now() const { return std::chrono::duration<double>(std::chrono::steady_clock::now() - start_).count(); }
+double Sampler::now() const { return at(std::chrono::steady_clock::now()); }
+
+double Sampler::at(std::chrono::steady_clock::time_point t) const {
+  return std::chrono::duration<double>(t - start_).count();
+}
 
 std::vector<CardSample> Sampler::between(double from, double to) const {
   std::lock_guard lock{mutex_};
@@ -249,6 +334,84 @@ std::vector<CardSample> Sampler::between(double from, double to) const {
     if (s.t >= from && s.t <= to) { out.push_back(s); }
   }
   return out;
+}
+
+bool Sampler::waitPast(double t, double most) const {
+  if (!telemetry_) { return false; }
+  for (Timer waited; waited.at() < most; std::this_thread::sleep_for(std::chrono::milliseconds(10))) {
+    std::lock_guard lock{mutex_};
+    if (!samples_.empty() && samples_.back().t > t) { return true; }
+  }
+  return false;
+}
+
+std::optional<WindowPower> powerOver(std::span<const CardSample> samples, double from, double to, bool instant) {
+  if (!(to > from) || samples.empty()) { return {}; }
+  WindowPower out;
+
+  // The energy counter at `t`, between the samples either side of it.
+  auto energyAt = [&](double t) -> std::optional<double> {
+    const CardSample* before = nullptr;
+    const CardSample* after = nullptr;
+    for (const CardSample& s : samples) {
+      if (std::isnan(s.energyJ)) { continue; }
+      if (s.t <= t) {
+        before = &s;
+      } else {
+        after = &s;
+        break;
+      }
+    }
+    if (!before || !after) { return {}; }
+    return before->energyJ + (after->energyJ - before->energyJ) * (t - before->t) / (after->t - before->t);
+  };
+  std::optional<double> const e0 = energyAt(from);
+  std::optional<double> const e1 = energyAt(to);
+
+  // The samples inside the window, or the nearest one where none is.
+  std::vector<const CardSample*> inside;
+  for (const CardSample& s : samples) {
+    if (s.t >= from && s.t <= to) { inside.push_back(&s); }
+  }
+  bool const between = inside.empty();
+  if (between) {
+    double const mid = (from + to) / 2;
+    inside.push_back(&*std::ranges::min_element(samples, {}, [&](const CardSample& s) { return std::abs(s.t - mid); }));
+  }
+
+  if (e0 && e1 && *e1 >= *e0) { out.counterWatts = (*e1 - *e0) / (to - from); }
+  double sum = 0;
+  u32 n = 0;
+  for (const CardSample* s : inside) {
+    if (!std::isnan(s->powerW)) {
+      sum += s->powerW;
+      ++n;
+    }
+  }
+  if (n) { out.readingWatts = sum / n; }
+  out.readings = between ? 0 : n;
+
+  bool const byReadings = std::isnan(out.counterWatts) || (instant && out.readings >= INSTANT_READINGS);
+  if (byReadings && std::isnan(out.readingWatts)) { return {}; }
+  out.counted = !byReadings;
+  out.watts = byReadings ? out.readingWatts : out.counterWatts;
+  out.joules = out.watts * (to - from);
+  std::vector<double> caps, clocks;
+  for (const CardSample* s : inside) {
+    if (!std::isnan(s->capW)) { caps.push_back(s->capW); }
+    if (!std::isnan(s->smMHz)) { clocks.push_back(s->smMHz); }
+  }
+  out.capW = median(caps);
+  out.smMHz = median(clocks);
+  return out;
+}
+
+std::optional<WindowPower> powerOver(const Sampler& sampler, std::chrono::steady_clock::time_point from,
+                                     std::chrono::steady_clock::time_point to) {
+  double const a = sampler.at(from);
+  double const b = sampler.at(to);
+  std::vector<CardSample> const samples = sampler.between(a - 1, b + 1);
+  return powerOver(samples, a, b, sampler.instantPower());
 }
 
 std::optional<double> currentDpmMHz(std::string_view ppDpm) {

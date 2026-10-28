@@ -187,6 +187,23 @@ struct KresRow {
   u64 ts = 0;
 };
 
+// What the card drew over a call's timed blocks, written beside its call record (the same session, configuration and
+// time): the energy an iteration took, the mean power, the limit in force and the clock it ran at.  Where a card holds
+// to its power limit, an iteration costs at least its energy over the power it can hold (Readings).
+struct PowerRow {
+  u32 sess = 0;
+  std::string fft{};
+  TestKind kind = TestKind::PRP;
+  u64 exponent = 0;
+  u32 cfg = 0;
+  double mjPerIt = 0;     // millijoules per iteration
+  double watts = 0;       // mean over the timed blocks
+  double capW = 0;        // the power limit in force; 0 where the card does not say
+  double smMHz = 0;       // 0 where the card does not say
+  bool counted = false;   // from the card's energy counter, rather than its power readings
+  u64 ts = 0;
+};
+
 // A build of a configuration whose REG*-limited kernels spilled registers to local memory: which keys.  Such a call
 // costs two to four times what it would without the spill, which is the spill's, not its options'.
 struct SpillRow {
@@ -270,6 +287,7 @@ public:
   [[nodiscard]] const std::vector<PredRow>& preds() const { return preds_; }
   [[nodiscard]] const std::vector<AuditRow>& audits() const { return audits_; }
   [[nodiscard]] const std::vector<SpillRow>& spills() const { return spills_; }
+  [[nodiscard]] const std::vector<PowerRow>& powers() const { return powers_; }
   [[nodiscard]] const std::vector<std::string>& unknownRows() const { return unknown_; }
 
   [[nodiscard]] const DbEnv* findEnv(u32 id) const;
@@ -303,6 +321,7 @@ public:
   [[nodiscard]] bool add(const PredRow& row);
   [[nodiscard]] bool add(const AuditRow& row);
   [[nodiscard]] bool add(const SpillRow& row);
+  [[nodiscard]] bool add(const PowerRow& row);
 
   // The anchor an env is pinned to, as its earliest session that named one spells it, else as its earliest anchor
   // reading does; empty where it has none.
@@ -355,6 +374,7 @@ private:
   std::vector<PredRow> preds_;
   std::vector<AuditRow> audits_;
   std::vector<SpillRow> spills_;
+  std::vector<PowerRow> powers_;
   std::vector<std::string> unknown_;
 
   // Per session, the attempt it has open, if any.
@@ -376,6 +396,7 @@ private:
 [[nodiscard]] std::string formatRow(const PredRow& row);
 [[nodiscard]] std::string formatRow(const AuditRow& row);
 [[nodiscard]] std::string formatRow(const SpillRow& row);
+[[nodiscard]] std::string formatRow(const PowerRow& row);
 
 // Whether `locks`, in the form of Linux's /proc/locks, lists a lock held on the file at (major, minor, inode).
 [[nodiscard]] bool lockListed(std::string_view locks, u32 major, u32 minor, u64 inode);

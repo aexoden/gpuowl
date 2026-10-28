@@ -82,10 +82,13 @@ TEST(minutes_are_whole_and_weighted_by_their_blocks) {
 
 TEST(a_soak_settles_at_the_first_minute_like_the_one_before) {
   std::vector<double> const warming{100, 101, 101.5, 101.55, 101.56};
-  CHECK(!settledAt(warming, 0.00005).has_value());
-  CHECK(settledAt(warming, 0.0001) == std::optional<size_t>{4});
-  CHECK(settledAt(warming, 0.001) == std::optional<size_t>{3});
-  CHECK(!settledAt(std::vector<double>{100}, 0.01).has_value());
+  // Two pairs in a row must agree.
+  CHECK(!settledAt(warming, 0.0001).has_value());
+  CHECK(settledAt(warming, 0.001) == std::optional<size_t>{4});
+  CHECK(settledAt(warming, 0.02) == std::optional<size_t>{2});
+  CHECK(!settledAt(std::vector<double>{100, 100}, 0.01).has_value());
+  // The 4070 SUPER's soak: minutes 3 and 4 agreed, and the card then read 206.4 for good.
+  CHECK(!settledAt(std::vector<double>{200.182, 203.35, 205.335, 205.538, 206.4}, 0.001).has_value());
 }
 
 TEST(the_verdict_names_optimistic_and_wandering_cards) {
@@ -159,4 +162,83 @@ TEST(a_card_with_nothing_to_read_reads_nothing) {
   CHECK(!why.empty());
   Sampler const none{nullptr, 0.01};
   CHECK(none.between(0, 1e9).empty());
+  CHECK(!none.waitPast(0, 0.01));
+}
+
+TEST(a_window_draws_by_the_energy_counter_where_there_is_one) {
+  // 200 W throughout, counted: 20 J per tenth of a second.
+  std::vector<CardSample> counted;
+  for (int i = 0; i <= 20; ++i) {
+    counted.push_back({.t = i * 0.1, .smMHz = 2000, .powerW = 150, .capW = 220, .energyJ = 1000 + 20.0 * i});
+  }
+  std::optional<WindowPower> const p = powerOver(counted, 0.35, 1.15);
+  CHECK(p.has_value());
+  if (!p) { return; }
+  CHECK(p->counted);
+  CHECK(std::abs(p->joules - 160) < 1e-9);
+  CHECK(std::abs(p->watts - 200) < 1e-9);  // the counter, not the 150 W the readings say
+  CHECK(near(p->capW, 220) && near(p->smMHz, 2000));
+
+  // Without the counter the readings inside are averaged.
+  std::vector<CardSample> read;
+  for (int i = 0; i <= 20; ++i) { read.push_back({.t = i * 0.1, .powerW = i < 10 ? 100.0 : 300.0}); }
+  std::optional<WindowPower> const q = powerOver(read, 0.75, 1.25);
+  CHECK(q && !q->counted && std::abs(q->watts - (100 + 100 + 300 + 300 + 300) / 5.0) < 1e-9);
+
+  // A window between two readings takes the nearer one; no readings, no answer.
+  std::optional<WindowPower> const r = powerOver(read, 1.52, 1.56);
+  CHECK(r && near(r->watts, 300));
+  CHECK(!powerOver(std::vector<CardSample>{}, 0, 1).has_value());
+  CHECK(!powerOver(read, 1, 1).has_value());
+
+  // Instantaneous readings, three or more inside the window, are taken over the counter; both are kept.
+  std::optional<WindowPower> const now = powerOver(counted, 0.35, 1.15, true);
+  CHECK(now && !now->counted && near(now->watts, 150) && now->readings == 8);
+  CHECK(now && std::abs(now->counterWatts - 200) < 1e-9 && near(now->readingWatts, 150));
+  std::optional<WindowPower> const few = powerOver(counted, 0.35, 0.55, true);
+  CHECK(few && few->counted && few->readings == 2);
+}
+
+TEST(the_verdict_checks_the_tuners_power_aware_cost) {
+  MeasureArgs const args = parseMeasureArgs("2:512:4:512:202");
+  // The 4070 SUPER's NTT: calls at 194.6 us/it, here drawing 220 W; sustained 206.5 at 208 of 220 W.
+  MeasureResult r;
+  r.bursts = {194.4, 194.6, 194.8};
+  r.burstWatts.taken = {219, 220, 221};
+  r.sustained = {206.4, 206.5, 206.5};
+  r.hot = {199};
+  r.settled = 3;
+  r.sustainedWatts = 208;
+  r.sustainedCard.capW = 220;
+  r.sustainedCard.smMedian = 2370;
+  MeasureVerdict const v = judge(r, args, "nvidia", "04:00.0");
+  CHECK(v.optimistic);
+  CHECK(std::abs(v.burstMJ - 220 * 194.6 / 1000) < 1e-9);
+  CHECK(std::abs(v.held - 208.0 / 220) < 1e-9);
+  CHECK(std::abs(v.estimate - v.burstMJ * 1000 / (HOLD_SHARE * 220)) < 1e-9);
+  CHECK(std::abs(v.estimateGap) < args.gap);
+  CHECK(has(v.lines, "its energy sets it"));
+  CHECK(has(v.lines, "power-aware cost comes within the gap"));
+  CHECK(has(v.lines, "held 208 W of its 220 W limit: 0.945"));
+  CHECK(!has(v.lines, "which it cannot be"));
+  CHECK(measureJson(args, "", 72'729'143, "NVML", r, v).find("\"burstWatts\": [219, 220, 221]") != std::string::npos);
+}
+
+TEST(a_calls_energy_below_a_sustained_iterations_is_named_a_lagging_sensor) {
+  // The 4070 SUPER as it read: calls at 196.7 us/it said 185 W, 36.5 mJ an iteration, against 42.9 sustained.
+  MeasureResult r;
+  r.bursts = {196.5, 196.7, 196.9};
+  r.burstWatts.taken = {181, 185.7, 215};
+  r.burstWatts.counter = r.burstWatts.taken;
+  r.burstWatts.readings = {70, 78, 90};
+  r.sustained = {206.4, 206.4, 206.4};
+  r.hot = {198.4};
+  r.settled = 4;
+  r.sustainedWatts = 207.7;
+  r.sustainedCard.capW = 220;
+  MeasureVerdict const v = judge(r, parseMeasureArgs("2:512:4:512:202"), "nvidia", "04:00.0");
+  CHECK(v.optimistic);
+  CHECK(near(v.estimate, v.burst));  // its energy would not set the cost
+  CHECK(has(v.lines, "which it cannot be"));
+  CHECK(has(v.lines, "by the energy counter: 186 W, by the power readings: 78 W"));
 }

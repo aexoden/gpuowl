@@ -31,9 +31,6 @@ namespace {
 // that a minute holds several.
 constexpr double CHUNK_SEC = 10;
 
-// How often the card is read.
-constexpr double SAMPLE_SEC = 0.25;
-
 std::vector<std::string_view> splitComma(std::string_view text) {
   std::vector<std::string_view> out;
   while (true) {
@@ -98,21 +95,6 @@ std::string cardJson(const CardSummary& s) {
     number(s.powerMedian) + ", \"capW\": " + number(s.capW) + ", \"heldShare\": " + held + "}";
 }
 
-// The card's PCI address: AMD's topology query (which the CUDA backend answers too), else NVIDIA's OpenCL extension.
-std::string bdfOf(cl_device_id id) {
-  std::string bdf = getBdfFromDevice(id);
-  if (!bdf.empty()) { return bdf; }
-  constexpr cl_device_info PCI_BUS_ID_NV = 0x4008;
-  constexpr cl_device_info PCI_SLOT_ID_NV = 0x4009;
-  u32 bus = 0, slot = 0;  // cl_uint
-  if (clGetDeviceInfo(id, PCI_BUS_ID_NV, sizeof(bus), &bus, nullptr) == CL_SUCCESS &&
-      clGetDeviceInfo(id, PCI_SLOT_ID_NV, sizeof(slot), &slot, nullptr) == CL_SUCCESS) {
-    char buf[16];
-    snprintf(buf, sizeof(buf), "%02x:%02x.%x", bus, slot >> 3, slot & 7);
-    return buf;
-  }
-  return {};
-}
 
 }  // namespace
 
@@ -188,8 +170,9 @@ std::vector<double> minuteMeans(std::span<const Chunk> chunks, double from) {
 }
 
 std::optional<size_t> settledAt(std::span<const double> minutes, double settle) {
-  for (size_t m = 1; m < minutes.size(); ++m) {
-    if (std::abs(minutes[m] / minutes[m - 1] - 1) <= settle) { return m; }
+  auto agrees = [&](size_t m) { return std::abs(minutes[m] / minutes[m - 1] - 1) <= settle; };
+  for (size_t m = 2; m < minutes.size(); ++m) {
+    if (agrees(m) && agrees(m - 1)) { return m; }
   }
   return {};
 }
@@ -216,6 +199,59 @@ MeasureVerdict judge(const MeasureResult& r, const MeasureArgs& args, std::strin
   v.lines.push_back(buf);
   snprintf(buf, sizeof(buf), "the sustained minutes lie within %s of each other", pct(v.spread).c_str());
   v.lines.push_back(buf);
+
+  // Watts times microseconds per iteration is microjoules per iteration.
+  auto said = [](const std::vector<double>& watts) {
+    std::vector<double> out;
+    for (double const w : watts) {
+      if (!std::isnan(w)) { out.push_back(w); }
+    }
+    return median(std::move(out));
+  };
+  v.burstWatts = said(r.burstWatts.taken);
+  v.burstMJ = v.burstWatts * v.burst / 1000;
+  v.sustainedWatts = r.sustainedWatts;
+  v.sustainedMJ = v.sustainedWatts * v.sustained / 1000;
+  v.capW = r.sustainedCard.capW;
+  v.held = v.sustainedWatts / v.capW;
+  v.estimate = v.burst;
+  if (!std::isnan(v.burstMJ) && v.capW > 0) {
+    v.estimate = std::max(v.burst, v.burstMJ * 1000 / (HOLD_SHARE * v.capW));
+  }
+  v.estimateGap = v.sustained / v.estimate - 1;
+  if (!std::isnan(v.burstWatts)) {
+    snprintf(buf, sizeof(buf), "a call drew %.0f W, %.2f mJ an iteration; sustained, %.0f W and %.2f mJ", v.burstWatts,
+             v.burstMJ, v.sustainedWatts, v.sustainedMJ);
+    v.lines.push_back(buf);
+    auto w = [](double watts) {
+      char text[32] = "none";
+      if (!std::isnan(watts)) { snprintf(text, sizeof(text), "%.0f W", watts); }
+      return std::string{text};
+    };
+    v.lines.push_back("a call's power by the energy counter: " + w(said(r.burstWatts.counter)) +
+                      ", by the power readings: " + w(said(r.burstWatts.readings)) + "; with no idle before it, " +
+                      w(said(r.hotWatts.counter)) + " and " + w(said(r.hotWatts.readings)));
+  }
+  if (!std::isnan(v.held)) {
+    snprintf(buf, sizeof(buf), "sustained, the card held %.0f W of its %.0f W limit: %.3f of it", v.sustainedWatts,
+             v.capW, v.held);
+    v.lines.push_back(buf);
+    snprintf(buf, sizeof(buf),
+             "costed by its energy over %.2f of the limit (-tune powerHold=%.2f), a call here reads %.2f us/it (%s); "
+             "the card sustains %s %s",
+             HOLD_SHARE, HOLD_SHARE, v.estimate, v.estimate > v.burst ? "its energy sets it" : "its timing sets it",
+             pct(std::abs(v.estimateGap)).c_str(), v.estimateGap >= 0 ? "more" : "less");
+    v.lines.push_back(buf);
+  }
+  // At higher clocks and voltage a call's iteration cannot take less energy than a sustained one: where it reads so,
+  // the card's power readings lag behind a call this short, and a cost built on them would be wrong.
+  if (v.burstMJ < v.sustainedMJ * (1 - args.gap)) {
+    snprintf(buf, sizeof(buf),
+             "a call's energy reads %s below a sustained iteration's, which it cannot be: the card's power readings "
+             "lag behind a call this short, and powerHold= would not rank configurations by them here",
+             pct(1 - v.burstMJ / v.sustainedMJ).c_str());
+    v.lines.push_back(buf);
+  }
   if (!r.settled) {
     v.lines.push_back("the soak ran out of time before two minutes agreed: the card may not have settled; a longer "
                       "soak= says");
@@ -231,6 +267,13 @@ MeasureVerdict judge(const MeasureResult& r, const MeasureArgs& args, std::strin
                     (v.optimistic ? " -- the tuner's short calls run faster than this card sustains, and can rank "
                                     "configurations as production would not"
                                   : " -- one minute's speed is not the next's, which the tuner's readings carry"));
+  if (v.optimistic && !v.wandering && v.estimate > v.burst && std::abs(v.estimateGap) <= args.gap) {
+    snprintf(buf, sizeof(buf),
+             "the power-aware cost comes within the gap of what the card sustains here: tuning with powerHold=%.2f "
+             "ranks this configuration as production would; locking the clocks would too, at some speed",
+             HOLD_SHARE);
+    v.lines.push_back(buf);
+  }
   double const sm = r.sustainedCard.smMedian;
   if (!std::isnan(sm) && vendor == "nvidia") {
     u32 const lock = u32(sm) / 15 * 15;
@@ -264,11 +307,19 @@ std::string measureJson(const MeasureArgs& args, const std::string& options, u64
     (r.settled ? std::to_string(*r.settled) : std::string{"null"}) + ",\n";
   out += "  \"sustainedMinutesUsPerIt\": " + numbers(r.sustained) + ",\n";
   out += "  \"hotBurstsUsPerIt\": " + numbers(r.hot) + ",\n";
+  out += "  \"burstWatts\": " + numbers(r.burstWatts.taken) + ", \"burstCounterWatts\": " +
+    numbers(r.burstWatts.counter) + ", \"burstReadingWatts\": " + numbers(r.burstWatts.readings) + ",\n";
+  out += "  \"hotWatts\": " + numbers(r.hotWatts.taken) + ", \"hotCounterWatts\": " + numbers(r.hotWatts.counter) +
+    ", \"hotReadingWatts\": " + numbers(r.hotWatts.readings) + ",\n";
   out += "  \"burstCard\": " + cardJson(r.burstCard) + ",\n";
   out += "  \"sustainedCard\": " + cardJson(r.sustainedCard) + ",\n";
   out += "  \"verdict\": {\"burst\": " + number(v.burst) + ", \"hot\": " + number(v.hot) + ", \"sustained\": " +
     number(v.sustained) + ", \"burstGap\": " + number(v.burstGap) + ", \"hotGap\": " + number(v.hotGap) +
-    ", \"spread\": " + number(v.spread) + ", \"optimistic\": " + (v.optimistic ? "true" : "false") +
+    ", \"spread\": " + number(v.spread) + ", \"burstWatts\": " + number(v.burstWatts) + ", \"burstMJPerIt\": " +
+    number(v.burstMJ) + ", \"sustainedWatts\": " + number(v.sustainedWatts) + ", \"sustainedMJPerIt\": " +
+    number(v.sustainedMJ) + ", \"capW\": " + number(v.capW) + ", \"heldShare\": " + number(v.held) +
+    ", \"estimate\": " + number(v.estimate) + ", \"estimateGap\": " + number(v.estimateGap) +
+    ", \"optimistic\": " + (v.optimistic ? "true" : "false") +
     ", \"wandering\": " + (v.wandering ? "true" : "false") + "}\n";
   return out + "}\n";
 }
@@ -286,12 +337,12 @@ bool runMeasure(GpuCommon shared, const MeasureArgs& args) {
   cl_device_id const id = shared.context->deviceId();
   bool const nvidia = isNvidiaGpu(id);
   bool const amd = isAmdGpu(id);
-  std::string const bdf = bdfOf(id);
+  std::string const bdf = pciAddressOf(id);
   std::string why;
   std::unique_ptr<Telemetry> const telemetry = openTelemetry(bdf, nvidia, amd, why);
   std::string const source = telemetry ? telemetry->source() : "none: " + why;
   bool const saysWhy = telemetry && telemetry->saysWhy();
-  Sampler const sampler{telemetry.get(), SAMPLE_SEC};
+  Sampler const sampler{telemetry.get(), SAMPLE_PERIOD};
 
   log("measure: %s %s at %" PRIu64 ", block %u, with %s (config.txt, the command line and its tune.txt line)\n",
       fft.spec().c_str(), toString(args.kind), E, blockSize, options.empty() ? "no -use settings" : options.c_str());
@@ -312,24 +363,41 @@ bool runMeasure(GpuCommon shared, const MeasureArgs& args) {
 
   MeasureResult r;
   try {
-    // As the tuner calls: a Gpu built afresh, a second of heat, a warm-up block and four timed ones.
-    auto bursts = [&](double idle, std::vector<double>& into, const char* what) {
-      double const from = sampler.now();
+    // As the tuner calls: a Gpu built afresh, a second of heat, a warm-up block and four timed ones.  What the card
+    // read is taken over the timed blocks alone, as the tuner takes it, not over the idle and the build around them.
+    auto bursts = [&](double idle, std::vector<double>& into, CallWatts& watts, const char* what) {
+      std::vector<CardSample> seen;
       for (u32 i = 0; i < args.bursts; ++i) {
         for (Timer t; t.at() < idle;) {
           if (Signal::stopRequested()) { throw "stop requested"; }
           std::this_thread::sleep_for(std::chrono::milliseconds(50));
         }
-        double const begin = sampler.now();
         auto gpu = Gpu::make(E, shared, fft, {}, false, uses);
-        into.push_back(checked(timed(*gpu, BLOCKS_PER_CALL, CALL_HEAT_SEC)));
-        log("measure: %s %u: %.2f us/it%s\n", what, i + 1, into.back(), cardLine(begin, sampler.now()).c_str());
+        Call const call = timed(*gpu, BLOCKS_PER_CALL, CALL_HEAT_SEC);
+        into.push_back(checked(call));
+        double const from = sampler.at(call.timedFrom);
+        double const to = sampler.at(call.timedTo);
+        (void)sampler.waitPast(to, 5 * SAMPLE_PERIOD);
+        std::vector<CardSample> const window = sampler.between(from, to);
+        seen.insert(seen.end(), window.begin(), window.end());
+        std::optional<WindowPower> const power = powerOver(sampler, call.timedFrom, call.timedTo);
+        watts.taken.push_back(power ? power->watts : NAN);
+        watts.counter.push_back(power ? power->counterWatts : NAN);
+        watts.readings.push_back(power ? power->readingWatts : NAN);
+        char drew[128] = "";
+        if (power) {
+          snprintf(drew, sizeof(drew), ", %.0f W by the %s (counter %.0f, %u readings %.0f), %.2f mJ/it", power->watts,
+                   power->counted ? "counter" : "readings", power->counterWatts, power->readings, power->readingWatts,
+                   power->watts * into.back() / 1000);
+        }
+        std::string const card = toString(summarizeCard(window), saysWhy);
+        log("measure: %s %u: %.2f us/it%s%s\n", what, i + 1, into.back(), drew,
+            card.empty() ? "" : ("; " + card).c_str());
       }
-      return std::pair{from, sampler.now()};
+      return seen;
     };
 
-    auto const [burstFrom, burstTo] = bursts(args.idle, r.bursts, "burst");
-    r.burstCard = summarizeCard(sampler.between(burstFrom, burstTo));
+    r.burstCard = summarizeCard(bursts(args.idle, r.bursts, r.burstWatts, "burst"));
 
     auto gpu = Gpu::make(E, shared, fft, {}, false, uses);
     u32 const chunkBlocks = std::max(2u, u32(std::lround(CHUNK_SEC / (median(r.bursts) * blockSize * 1e-6))));
@@ -365,10 +433,16 @@ bool runMeasure(GpuCommon shared, const MeasureArgs& args) {
     r.sustained = squareOn(sustainedFrom, "sustained", [&](const std::vector<double>& minutes, double) {
       return minutes.size() >= args.minutes;
     });
-    r.sustainedCard = summarizeCard(sampler.between(sustainedFrom, sampler.now()));
+    double const sustainedTo = sampler.now();
+    r.sustainedCard = summarizeCard(sampler.between(sustainedFrom, sustainedTo));
+    std::vector<CardSample> const around = sampler.between(sustainedFrom - 1, sustainedTo + 1);
+    bool const instant = sampler.instantPower();
+    if (std::optional<WindowPower> const power = powerOver(around, sustainedFrom, sustainedTo, instant)) {
+      r.sustainedWatts = power->watts;
+    }
     gpu.reset();
 
-    (void)bursts(0, r.hot, "hot burst");
+    (void)bursts(0, r.hot, r.hotWatts, "hot burst");
   } catch (const char* what) {
     log("measure: stopped: %s\n", what);
     return false;

@@ -59,8 +59,18 @@ struct Chunk {
 // whole once a chunk has ended after it; a whole minute in which no chunk ended (one longer than a minute) is skipped.
 [[nodiscard]] std::vector<double> minuteMeans(std::span<const Chunk> chunks, double from);
 
-// The first minute that reads within `settle` of the one before it; nothing where none does yet.
+// The first minute that reads within `settle` of the one before it, as that one did of the one before it: one pair
+// alone can agree while the card is still warming (a 4070 SUPER read 205.3 then 205.5, then 206.4 for good).
+// Nothing where none does yet.
 [[nodiscard]] std::optional<size_t> settledAt(std::span<const double> minutes, double settle);
+
+// What each call of a round drew over its timed blocks: as taken (WindowPower::watts), by the energy counter and by
+// the power readings; NaN where the card did not say.  The two disagree where the card's readings lag behind a call.
+struct CallWatts {
+  std::vector<double> taken;
+  std::vector<double> counter;
+  std::vector<double> readings;
+};
 
 // What the four ways read, and what the card said meanwhile.
 struct MeasureResult {
@@ -69,8 +79,11 @@ struct MeasureResult {
   std::optional<size_t> settled;  // the soak minute it settled at; nothing where it ran out of time first
   std::vector<double> sustained;  // per minute
   std::vector<double> hot;        // per call
-  CardSummary burstCard;
+  CardSummary burstCard;          // over the bursts' timed blocks alone
   CardSummary sustainedCard;
+  CallWatts burstWatts;            // per call, over its timed blocks
+  CallWatts hotWatts;
+  double sustainedWatts = NAN;     // over the sustained minutes
 };
 
 [[nodiscard]] double median(std::vector<double> v);
@@ -82,6 +95,20 @@ struct MeasureVerdict {
   double burstGap = 0;   // sustained / burst - 1: how much faster a burst reads than the card sustains
   double hotGap = 0;     // the same for the hot bursts
   double spread = 0;     // (max - min) / median of the sustained minutes
+
+  // What the card drew, where it says: watts and millijoules per iteration in the bursts and sustained, its power
+  // limit, and the share of that limit it held for long.
+  double burstWatts = NAN;
+  double burstMJ = NAN;
+  double sustainedWatts = NAN;
+  double sustainedMJ = NAN;
+  double capW = NAN;
+  double held = NAN;
+  // What the tuner reckons a call here costs (Readings: its timing, or its energy over HOLD_SHARE of the limit,
+  // whichever is more), and how far what the card sustains is from it.
+  double estimate = 0;
+  double estimateGap = 0;
+
   bool optimistic = false;
   bool wandering = false;
   std::vector<std::string> lines;  // what it means, and what to do

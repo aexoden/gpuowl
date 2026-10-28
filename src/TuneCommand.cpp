@@ -67,6 +67,15 @@ std::string percentText(double fraction) {
   return fraction == 0 ? "0" : buf;
 }
 
+// ",powerHold=<f>" or ",powerHold=off" where the setting is not the default, which a settings word leaves out.
+std::string powerHoldText(const TuneCommand& command) {
+  if (command.powerHold == POWER_HOLD) { return {}; }
+  if (command.powerHold == 0) { return ",powerHold=off"; }
+  char buf[32];
+  snprintf(buf, sizeof(buf), ",powerHold=%g", command.powerHold);
+  return buf;
+}
+
 }  // namespace
 
 const char* toString(TuneVerb verb) {
@@ -210,6 +219,12 @@ TuneCommand parseTuneCommand(std::string_view text) {
                           "randomReach=1.5x@30m, or all"};
       }
       out.explore.reach = *reach;
+    } else if (key == "powerHold" && out.verb != TuneVerb::Scope) {
+      std::optional<double> const hold = value == "off" ? std::optional<double>{0} : parseDouble(value);
+      if (!hold || *hold < 0 || *hold > 1) {
+        throw std::string{"-tune: powerHold= takes the share of the power limit a card holds, such as 0.95, or off"};
+      }
+      out.powerHold = *hold;
     } else if (key == "tag") {
       if (!std::ranges::all_of(value, [](char c) { return std::isalnum(u8(c)) || c == '.' || c == '_' || c == '-'; })) {
         throw std::string{"-tune: tag= takes a word of letters, digits, '.', '_' and '-', such as tag=875mhz"};
@@ -242,7 +257,7 @@ std::string settingsWord(const RunScope& scope, const TuneCommand& command) {
   return "workload=" + std::to_string(scope.lo) + '-' + std::to_string(scope.hi) +
     ",probe=" + std::to_string(scope.probe) + ",probeWeight=" + weight + ",kinds=" + kinds +
     ",pfaShapes=" + toString(scope.pfaShapes) + ",tailQueues=" + toString(command.tailQueues) +
-    ",stop=" + percentText(command.stop) + (command.tag.empty() ? "" : ",tag=" + command.tag);
+    ",stop=" + percentText(command.stop) + (command.tag.empty() ? "" : ",tag=" + command.tag) + powerHoldText(command);
 }
 
 }  // namespace tune

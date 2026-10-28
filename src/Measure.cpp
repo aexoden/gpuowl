@@ -64,6 +64,8 @@ Call summarize(const IterSamples& samples) {
            .res64 = samples.res64,
            .checkOk = samples.checkOk,
            .iters = samples.iters};
+  out.timedFrom = samples.timedFrom;
+  out.timedTo = samples.timedTo;
   if (!samples.checkOk) { out.status = Status::Err; }
   return out;
 }
@@ -149,6 +151,13 @@ Bench::Bench(GpuCommon shared, TuneDB& db, const Env& env) :
   env_{env},
   blockSize_{args_.blockSize} {
   shared_.args = &args_;
+  if (shared_.context) {
+    std::string why;
+    telemetry_ = openTelemetryFor(shared_.context->deviceId(), why);
+    log("measure: card readings: %s\n", telemetry_ ? telemetry_->source().c_str() : ("none, " + why).c_str());
+    // A call's timed blocks last about a second, so the card is read often enough to bracket them closely.
+    sampler_ = std::make_unique<Sampler>(telemetry_.get(), SAMPLE_PERIOD, SAMPLE_KEEP);
+  }
 }
 
 bool Bench::begin(u64 probe, const std::string& settings, std::string machine, std::string tag) {
@@ -470,8 +479,14 @@ Call Bench::runCall(const FFTConfig& fft, TestKind kind, u64 exponent, const Use
     }
   }
 
+  // What the card drew over the timed blocks, once it has been read past their end.
+  if (out.ok() && sampler_ && sampler_->waitPast(sampler_->at(out.timedTo), 5 * SAMPLE_PERIOD)) {
+    out.power = powerOver(*sampler_, out.timedFrom, out.timedTo);
+  }
+
   // Keyed on what the kernels were built with.
   u32 const cfg = db_.internCfg(builtAs(env_, fft, out.ran.empty() ? options : out.ran));
+  u64 const ts = now();
   (void)db_.add(CallRow{.sess = session_,
                         .fft = fft.spec(),
                         .kind = kind,
@@ -485,7 +500,21 @@ Call Bench::runCall(const FFTConfig& fft, TestKind kind, u64 exponent, const Use
                         .drift = anchorState_.ratio,
                         .buildSec = out.buildSec,
                         .timedSec = out.timedSec,
-                        .ts = now()});
+                        .ts = ts});
+  if (out.power && !out.usPerIt.empty()) {
+    double const iterations = double(out.usPerIt.size()) * blockSize;
+    (void)db_.add(PowerRow{.sess = session_,
+                           .fft = fft.spec(),
+                           .kind = kind,
+                           .exponent = exponent,
+                           .cfg = cfg,
+                           .mjPerIt = out.power->joules * 1000 / iterations,
+                           .watts = out.power->watts,
+                           .capW = std::isnan(out.power->capW) ? 0 : out.power->capW,
+                           .smMHz = std::isnan(out.power->smMHz) ? 0 : out.power->smMHz,
+                           .counted = out.power->counted,
+                           .ts = ts});
+  }
   recordRegisters(fft, kind, out, cfg);
   std::vector<std::string> spilled;
   for (const KernelUse& k : out.kernels) {
