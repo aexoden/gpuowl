@@ -44,7 +44,7 @@ struct Reach {
 [[nodiscard]] std::optional<Reach> parseReach(std::string_view text);
 [[nodiscard]] std::string toString(const Reach& reach);
 
-// A span of tuning time: "48h", "90m", "2h30m"; nothing for text that is not one.
+// A span of time: "48h", "90m", "2h30m", "30s"; nothing for text that is not one.
 [[nodiscard]] std::optional<double> parseDuration(std::string_view text);
 // "2h30m", "45m", "1h".
 [[nodiscard]] std::string durationText(double seconds);

@@ -2,6 +2,7 @@
 
 #include "Args.h"
 #include "TuneCommand.h"
+#include "Qualify.h"
 #include "File.h"
 #include "clwrap.h"
 #include "gpuid.h"
@@ -380,6 +381,19 @@ named "config.txt" in the prpll run directory.
                          dashboard=1         a full-screen view of the run
                      Verbs, which open no device: status (where tunedb.txt stands), emit (write the tune files it
                      supports), scope (the exponents a run would tune for).
+-measure <fft>[,<setting>=<value>...] : whether this card runs as fast under sustained load as the tuner's short
+                     calls read.  Times <fft> (with the -use settings production would give it) in calls as the tuner
+                     makes them, then squares without a break until it settles, then for some minutes more, then in
+                     calls again; reads the card's clocks, temperature, power and throttling (NVML, amdgpu sysfs)
+                     throughout, says whether the card needs its clocks locked, and writes measure-report.json.
+                     Takes about 20 minutes.  Settings:
+                         kind=prp|ll [prp]   exp=<E> [the largest prime the FFT holds]
+                         bursts=<n> [6]      calls in each round of calls
+                         idle=<t> [5s]       idle before each of the first calls, as between the tuner's calls
+                         soak=<t> [15m]      the most the soak runs     settle=<p>%% [0.1%%] when a minute settles it
+                         minutes=<n> [5]     sustained minutes
+                         gap=<p>%% [1%%]       calls this much faster than sustained read optimistically
+                         spread=<p>%% [0.5%%]  sustained minutes this far apart wander
 -oldtune <options> : The previous tuner.  Looks for best settings to include in config.txt.  Times many FFTs to find fastest one to test exponents -- written to tune.txt.
                      An -fft <spec> can be given on the command line to limit which FFTs are timed.
                      Options are not required.  If present, the options are a comma separated list from below.
@@ -536,6 +550,11 @@ void Args::parse(const string& line) {
     } else if (key == "-oldtune") {
       doTune = true;
       if (!s.empty()) { checkTuneOptions(s); tune = s; }
+    } else if (key == "-measure") {
+      // Validated now, so that a mistyped setting is a usage error rather than a failure once the device is open.
+      doMeasure = true;
+      measureSpec = s;
+      (void) tune::parseMeasureArgs(measureSpec);
     } else if (key == "-tune") {
       // Validated now, so that a mistyped setting is a usage error rather than a failure once the device is open.
       doTuneCommand = true;

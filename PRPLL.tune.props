@@ -34,5 +34,7 @@
     <ClCompile Include=".\src\Acquire.cpp" />
     <ClCompile Include=".\src\Tuner.cpp" />
     <ClCompile Include=".\src\Dashboard.cpp" />
+    <ClCompile Include=".\src\Telemetry.cpp" />
+    <ClCompile Include=".\src\Qualify.cpp" />
   </ItemGroup>
 </Project>

@@ -118,8 +118,8 @@ std::optional<double> parseDuration(std::string_view text) {
     auto const [end, ec] = std::from_chars(text.data(), text.data() + text.size(), n);
     if (ec != std::errc{} || end == text.data() + text.size() || n < 0) { return {}; }
     char const unit = *end;
-    if (unit != 'h' && unit != 'm') { return {}; }
-    seconds += n * (unit == 'h' ? 3600 : 60);
+    if (unit != 'h' && unit != 'm' && unit != 's') { return {}; }
+    seconds += n * (unit == 'h' ? 3600 : unit == 'm' ? 60 : 1);
     any = true;
     text.remove_prefix(size_t(end - text.data()) + 1);
   }

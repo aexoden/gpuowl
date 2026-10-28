@@ -67,6 +67,10 @@ public:
   // -tune: the settings word tune::parseTuneCommand reads.
   string tuneCommand;
   bool doTuneCommand{};
+
+  // -measure: the FFT and settings word tune::parseMeasureArgs reads.
+  string measureSpec;
+  bool doMeasure{};
   bool doZtune{};
   bool carryTune{};
   bool logROE{};

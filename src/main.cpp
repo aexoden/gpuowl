@@ -20,6 +20,7 @@
 #include "Tuner.h"
 #include "TuneCommand.h"
 #include "TuneEntry.h"
+#include "Qualify.h"
 
 #include <atomic>
 #include <cctype>
@@ -250,7 +251,9 @@ int main(int argc, char **argv) {
     shared.bufCache = &bufCache;
     shared.background = &background;
 
-    if (tuneCommand) {
+    if (args.doMeasure) {
+      exitCode = tune::runMeasure(shared, tune::parseMeasureArgs(args.measureSpec)) ? EXIT_OK : EXIT_FAILED;
+    } else if (tuneCommand) {
       switch (tune::runTune(shared, *tuneCommand)) {
         case tune::RunOutcome::Ok: break;
         case tune::RunOutcome::Failed: exitCode = EXIT_FAILED; break;

@@ -32,7 +32,9 @@ TUNE_SRCS = \
   Publish.cpp \
   Acquire.cpp \
   Tuner.cpp \
-  Dashboard.cpp
+  Dashboard.cpp \
+  Telemetry.cpp \
+  Qualify.cpp
 
 TESTSRCS = \
   test_main.cpp \
@@ -58,6 +60,7 @@ TESTSRCS = \
   test_TuneEntry.cpp \
   test_Gate.cpp \
   test_Publish.cpp \
+  test_Qualify.cpp \
   test_Tuner.cpp \
   test_Dashboard.cpp
 

@@ -32,4 +32,6 @@ target_sources(prpll PRIVATE
   Acquire.cpp
   Tuner.cpp
   Dashboard.cpp
+  Telemetry.cpp
+  Qualify.cpp
   )
