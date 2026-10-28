@@ -2,22 +2,24 @@
 
 // What the measurements support publishing, and what production would then run.
 //
-// The tune files hold everything known, whatever range a run tunes: an FFT outside it keeps the lines an earlier run
-// found.  An FFT's lines are its option sets read at least MIN_CALLS times with no failure, in one carry regime, whose
-// accuracy is known, each reaching further than every cheaper one.  Production takes, at each exponent, the cheapest
-// line that holds it, so that is what the objective T sums: per test kind, over the run's grid, the weight of each
-// point times the cost of the line production would run there.
+// The tune file holds everything known, whatever range a run tunes: an FFT outside it keeps the lines an earlier run
+// found.  A line is one configuration -- FFT, test kind, carry regime and option set -- over the exponents it runs in
+// that regime: no line ever stands for a configuration it was not measured as.  An FFT's lines in one regime are its
+// option sets read at least MIN_CALLS times with no failure, whose accuracy is known, each reaching further than every
+// cheaper one.  Production takes, at each exponent, the cheapest line that holds it, so that is what the objective T
+// sums: per test kind, over the run's grid, the weight of each point times the cost of the line production would run
+// there.
 
 #pragma once
 
 #include "Candidates.h"
 #include "Gate.h"
 #include "Readings.h"
+#include "TuneEntry.h"
 
 #include <deque>
 #include <filesystem>
 #include <map>
-#include <span>
 #include <string>
 #include <vector>
 
@@ -25,13 +27,16 @@ namespace tune {
 
 struct Line {
   Subject subject;
-  const Candidate* candidate = nullptr;  // where the run holds the FFT
+  const Candidate* candidate = nullptr;  // where the run holds the subject
   const Reading* reading = nullptr;
-  Verdict accuracy{};  // its reach is the line's: outside the run, an unsettled gate's highest safe reading
+  Verdict accuracy{};  // outside the run, an unsettled gate's highest safe reading
+  Interval interval{};  // the exponents the line holds: one regime of the FFT, up to where the accuracy holds
+  bool carried = false;  // an earlier build's reading, which this build has not settled yet
 
   [[nodiscard]] double cost() const { return reading->pessimistic(); }
-  [[nodiscard]] u64 reach() const { return accuracy.reach; }
-  [[nodiscard]] bool holds(u64 E) const;
+  [[nodiscard]] u64 lo() const { return interval.lo; }
+  [[nodiscard]] u64 reach() const { return interval.hi; }
+  [[nodiscard]] bool holds(u64 E) const { return interval.contains(E); }
 };
 
 // A reading the gate owes before a line can be published: of `options` on `fft`, at `exponent`.
@@ -42,14 +47,17 @@ struct GateItem {
   double weight = 0;  // of the grid points the line would serve, which orders the items
 };
 
-// A call owed before a line can be published: a reading that would be one, short of its calls.
+// A call owed before a line can be published: a reading that would be one, short of its calls, or a line an earlier
+// build published that this build has to read for itself before anything replaces it.
 struct ConcludeItem {
   const Candidate* candidate = nullptr;
   UseConfig options{};
+  bool carried = false;
 };
 
 struct KindPublication {
   TestKind kind = TestKind::PRP;
+  bool tuned = false;         // the run tunes this kind: T and the owed items are of it
   std::vector<Line> lines;    // this build's frontier, cheapest first
   std::vector<Line> written;  // the frontier the tune file holds: those and the lines carried from earlier builds
   double T = 0;               // the weighted cost production would run, over the points some line holds
@@ -60,19 +68,20 @@ struct KindPublication {
 };
 
 struct Publication {
-  std::vector<KindPublication> kinds;
+  std::vector<KindPublication> kinds;  // the run's kinds, in the order of its grids, then any other kind read
   std::vector<GateItem> owedGates;      // heaviest first
   std::vector<ConcludeItem> owedCalls;  // heaviest first
 
   [[nodiscard]] const KindPublication* of(TestKind kind) const;
 
-  // T summed over the kinds, and the share of their weight it covers (1 when every point has a line).
+  // T summed over the kinds, and the share of the tuned kinds' weight it covers (1 when every point has a line).
   [[nodiscard]] double T() const;
   [[nodiscard]] double coverage() const;
 };
 
-// The lines of earlier builds of the same card, for the FFTs this build has none of yet: each FFT's from the newest
-// build with a line for it.  They are written, but kept out of T, so an old build's costs never stand in the way of
+// The lines of earlier builds of the same card, under the same tag: each configuration's from the newest build that
+// published it, as long as this build's option table still names its options as they were.  They are written until
+// this build has read the configuration itself, but kept out of T, so an old build's costs never stand in the way of
 // measuring this one's.  The lines refer to `readings`.
 struct Carried {
   std::deque<Readings> readings;
@@ -81,19 +90,22 @@ struct Carried {
   [[nodiscard]] size_t size() const;
 };
 
-[[nodiscard]] Carried carriedLines(const TuneDB& db, u32 env, std::span<const Grid> grids);
+[[nodiscard]] Carried carriedLines(const TuneDB& db, u32 env);
 
 // `candidates` per kind, in the order of scope.grids.
 [[nodiscard]] Publication publish(const RunScope& scope, const std::vector<std::vector<Candidate>>& candidates,
                                   const Readings& readings, const Carried* carried = nullptr);
 
-// The tune file production reads for `kind`: tune.txt for PRP, tune-ll.txt for LL.
-[[nodiscard]] const char* tuneFileName(TestKind kind);
+// The file production reads.  It opens with "# TUNE_FILE_MAGIC, build <fingerprint>" (TuneEntry.h): production knows
+// the format by it, and warns where the build named is not its own.
+inline constexpr const char* TUNE_FILE = "tune.txt";
 
-// Upstream's tune.txt lines: "<cost> <spec> # <reach>, KEY=VAL, ...", the written frontier cheapest first.
-[[nodiscard]] std::string tuneFileText(const KindPublication& kind, const std::string& header);
+// One line per configuration, every kind, the cheapest of each kind first:
+//   "<cost> <spec> <kind> <regime> <lo>-<hi> # KEY=VAL, ..."
+// under "# prpll tune v2, build <fingerprint>" and `header`, a comment line per line of it.
+[[nodiscard]] std::string tuneFileText(const Publication& publication, const std::string& header);
 
 // Writes it to `dir`, through a temporary and a rename.
-void writeTuneFile(const fs::path& dir, const KindPublication& kind, const std::string& header);
+void writeTuneFile(const fs::path& dir, const Publication& publication, const std::string& header);
 
 }  // namespace tune

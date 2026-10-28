@@ -265,10 +265,11 @@ bool DbEnv::sameCard(const DbEnv& other) const {
   return gpu == other.gpu && driver == other.driver && isAmd == other.isAmd && isNvidia == other.isNvidia &&
     cudaBackend == other.cudaBackend && noAsm == other.noAsm && pdlLaunch == other.pdlLaunch &&
     computeCapability == other.computeCapability && hasFP64 == other.hasFP64 && amdBuiltins == other.amdBuiltins &&
-    maxWorkGroupSize == other.maxWorkGroupSize && amdWavefront == other.amdWavefront && machine == other.machine;
+    maxWorkGroupSize == other.maxWorkGroupSize && amdWavefront == other.amdWavefront && machine == other.machine &&
+    tag == other.tag;
 }
 
-DbEnv dbEnvOf(const Env& env, std::string machine) {
+DbEnv dbEnvOf(const Env& env, std::string machine, std::string tag) {
   return DbEnv{.gpu = env.deviceName,
                .driver = env.driverVersion,
                .isAmd = env.isAmd,
@@ -282,7 +283,8 @@ DbEnv dbEnvOf(const Env& env, std::string machine) {
                .maxWorkGroupSize = env.maxWorkGroupSize,
                .amdWavefront = env.amdWavefront,
                .machine = std::move(machine),
-               .build = buildFingerprint()};
+               .build = buildFingerprint(),
+               .tag = std::move(tag)};
 }
 
 std::string formatRow(const DbEnv& row) {
@@ -292,7 +294,7 @@ std::string formatRow(const DbEnv& row) {
     " noasm=" + (row.noAsm ? "1" : "0") + " pdl=" + (row.pdlLaunch ? "1" : "0") + " fp64=" + (row.hasFP64 ? "1" : "0") +
     " builtins=" + (row.amdBuiltins ? "1" : "0") + " wg=" + std::to_string(row.maxWorkGroupSize) +
     " wave=" + std::to_string(row.amdWavefront) + " machine=" + (row.machine.empty() ? "-" : quoted(row.machine)) +
-    " build=" + hex16(row.build);
+    " build=" + hex16(row.build) + (row.tag.empty() ? "" : " tag=" + quoted(row.tag));
 }
 
 std::string formatCfgRow(u32 id, const UseConfig& config) {
@@ -820,6 +822,8 @@ bool TuneDB::parse(std::string_view text, std::string_view name) {
           auto const b = parseInt<u64>(value, 16);
           ok = b.has_value();
           if (b) { row.build = *b; }
+        } else if (key == "tag") {
+          row.tag = value;
         }
       }
       if (!ok) {

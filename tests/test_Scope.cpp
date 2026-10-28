@@ -137,6 +137,15 @@ TEST(every_setting_is_accepted_where_it_belongs) {
     CHECK(!refusal(bad).empty());
   }
   CHECK(!refusal("contenders=0.05").empty());
+  CHECK_EQ(parsed("tag=875mhz").tag, std::string{"875mhz"});
+  CHECK_EQ(parsed("emit,tag=a.b_c-1").tag, std::string{"a.b_c-1"});
+  CHECK(parsed("").tag.empty());
+  CHECK(!refusal("tag=875 mhz").empty());
+  CHECK(!refusal("tag=a/b").empty());
+  // A run records its tag with its settings, which a later status reads back.
+  TuneCommand const tagged = parsed("workload=60M-80M,tag=875mhz");
+  CHECK_EQ(parsed(settingsWord(makeScope(tagged.scope, {}), tagged).c_str()).tag, std::string{"875mhz"});
+  CHECK(settingsWord(makeScope(parsed("").scope, {}), parsed("")).find("tag=") == std::string::npos);
 }
 
 TEST(scope_settings_are_read_off_the_subcommand) {

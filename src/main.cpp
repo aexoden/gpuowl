@@ -19,6 +19,7 @@
 #include "GpuFault.h"
 #include "Tuner.h"
 #include "TuneCommand.h"
+#include "TuneEntry.h"
 
 #include <atomic>
 #include <cctype>
@@ -255,6 +256,10 @@ int main(int argc, char **argv) {
         case tune::RunOutcome::Failed: exitCode = EXIT_FAILED; break;
         case tune::RunOutcome::DeviceLost: exitCode = restartOrReport(); break;
       }
+    } else if (args.doTune && TuneEntry::tunerFile(args)) {
+      log("-oldtune would rewrite tune.txt, which -tune wrote with test kinds, carry regimes and exponent ranges it "
+          "cannot keep.  Move tune.txt aside first.\n");
+      exitCode = EXIT_FAILED;
     } else if (args.doCtune || args.doTune || args.doZtune || args.carryTune) {
       Tune tune{shared};
 

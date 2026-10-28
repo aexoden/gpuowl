@@ -44,7 +44,7 @@ std::string usText(double us) {
 
 std::string optionsText(const UseConfig& options) { return options.empty() ? "the defaults" : configText(options); }
 
-// The tune files as last written, so a file is rewritten only when what it says changes.
+// The tune file as last written, so it is rewritten only when what it says changes.
 class Publisher {
 public:
   Publisher(fs::path dir, std::string header) : dir_{std::move(dir)}, header_{std::move(header)} {}
@@ -52,34 +52,42 @@ public:
   // `regret` is the run's latest estimate, over every kind; infinite where there is none.
   void write(const Publication& publication, double regret) {
     if (dir_.empty()) { return; }
+    size_t lines = 0;
+    for (const KindPublication& kind : publication.kinds) { lines += kind.written.size(); }
+    if (!lines) { return; }
+    // Where the run stands, for whoever is watching the file: only what changes as the run learns, so the file is not
+    // rewritten on every call.
+    std::string header = header_;
     for (const KindPublication& kind : publication.kinds) {
-      if (kind.written.empty()) { continue; }
-      // Where the run stands, for whoever is watching the file: only what changes as the run learns, so the file is
-      // not rewritten on every call.
-      std::string const status = "T " + usText(kind.covered > 0 ? kind.T / kind.covered : 0.0) + " us/it over " +
-        percent(kind.covered) + " of the workload; expected regret " +
-        (std::isfinite(regret) ? percent(regret) + " (all kinds)" : std::string{"unknown"});
-      std::string const header = header_ + '\n' + status;
-      std::string const text = tuneFileText(kind, header);
-      std::string& last = written_[kind.kind];
-      if (text == last) { continue; }
-      keepUsersFile(kind.kind);
-      writeTuneFile(dir_, kind, header);
-      last = text;
-      log("tune: wrote %s: %zu lines, T %.2f us/it over %s of the workload\n", tuneFileName(kind.kind),
-          kind.written.size(), kind.covered > 0 ? kind.T / kind.covered : 0.0, percent(kind.covered).c_str());
+      if (!kind.tuned) { continue; }
+      header += std::string{"\nT "} + toString(kind.kind) + ' ' +
+        usText(kind.covered > 0 ? kind.T / kind.covered : 0.0) + " us/it over " + percent(kind.covered) +
+        " of the workload";
     }
+    header +=
+      "; expected regret " + (std::isfinite(regret) ? percent(regret) + " (all kinds)" : std::string{"unknown"});
+    std::string const text = tuneFileText(publication, header);
+    if (text == written_) { return; }
+    keepUsersFile();
+    writeTuneFile(dir_, publication, header);
+    written_ = text;
+    log("tune: wrote %s: %zu lines, T %.2f us/it over %s of the workload\n", TUNE_FILE, lines, publication.T(),
+        percent(publication.coverage()).c_str());
   }
 
 private:
-  // A tune file this tuner did not write is copied aside once before it is first replaced.
-  void keepUsersFile(TestKind kind) {
-    fs::path const path = dir_ / tuneFileName(kind);
-    if (written_.contains(kind) && !written_[kind].empty()) { return; }
+  // A tune file this tuner did not write is copied aside once before it is first replaced, and a tune-ll.txt beside
+  // it is named as no longer read.
+  void keepUsersFile() {
+    if (!written_.empty()) { return; }
+    if (std::error_code ec; fs::exists(dir_ / "tune-ll.txt", ec)) {
+      log("tune: tune-ll.txt is not read beside a tune.txt this tuner wrote, which holds the LL lines itself\n");
+    }
+    fs::path const path = dir_ / TUNE_FILE;
     File in = File::openRead(path);
     if (!in) { return; }
     std::string const text = in.readAll();
-    if (text.starts_with("# " + header_.substr(0, header_.find('\n')))) { return; }
+    if (text.starts_with(std::string{"# "} + TUNE_FILE_MAGIC)) { return; }
     fs::path const aside = path + std::string{".before-tune"};
     std::error_code ec;
     if (!fs::exists(aside, ec)) {
@@ -91,7 +99,7 @@ private:
 
   fs::path dir_;
   std::string header_;
-  std::map<TestKind, std::string> written_;
+  std::string written_;
 };
 
 void report(const ItemReport& item, Watch* watch) {
@@ -118,9 +126,10 @@ StateReport stateOf(const Publication& publication, const Readings& readings, co
                   .explored = coverage};
   for (const KindPublication& kind : publication.kinds) {
     for (const Line& line : kind.written) {
-      char buf[96];
-      snprintf(buf, sizeof(buf), "%s %7.1f %-16s to %" PRIu64 " ", toString(kind.kind), line.cost(),
-               line.subject.fft.spec().c_str(), line.reach());
+      char buf[128];
+      snprintf(buf, sizeof(buf), "%s %7.1f %-16s %s %" PRIu64 "-%" PRIu64 "%s ", toString(kind.kind), line.cost(),
+               line.subject.fft.spec().c_str(), line.subject.regime.label().c_str(), line.lo(), line.reach(),
+               line.carried ? " (earlier build)" : "");
       out.lines.push_back(buf + optionsText(line.reading->options));
     }
   }
@@ -211,8 +220,11 @@ LoopResult runLoop(Device& device, TuneDB& db, u32 env, const Env& card, const R
                    const LoopSettings& settings) {
   std::vector<std::vector<Candidate>> candidates;
   for (const Grid& g : scope.grids) { candidates.push_back(candidatesOf(card, scope, g.kind)); }
-  Carried const carried = carriedLines(db, env, scope.grids);
+  Carried const carried = carriedLines(db, env);
   if (carried.size()) { log("tune: %zu lines carried from earlier builds of this card\n", carried.size()); }
+  // Owed calls the device refused without recording a reading (one an earlier process died holding, say), which this
+  // run would otherwise be owed again at every item.
+  std::set<std::pair<const Candidate*, std::string>> refused;
 
   Model model{card};
   std::mt19937_64 rng{settings.seed};
@@ -332,12 +344,23 @@ LoopResult runLoop(Device& device, TuneDB& db, u32 env, const Env& card, const R
       item.result = call.ok() ? us : toString(call.status);
       item.measured = call.ok() ? call.mean() : 0;
       report(item, settings.watch);
+      return call;
     };
 
-    if (!publication.owedCalls.empty()) {
-      const ConcludeItem& c = publication.owedCalls.front();
-      recordItem(DUTY, "second-call", 0, 0, c.candidate->subject.fft, c.candidate->subject.kind, c.options, began);
-      callOf(*c.candidate, c.options, {.n = items, .kind = "second call", .why = "its second call"});
+    auto const owed = std::ranges::find_if(publication.owedCalls, [&](const ConcludeItem& c) {
+      return !refused.contains({c.candidate, configText(c.options)}) && !blocked(*c.candidate, c.options);
+    });
+    if (owed != publication.owedCalls.end()) {
+      const ConcludeItem& c = *owed;
+      recordItem(DUTY, c.carried ? "reread" : "second-call", 0, 0, c.candidate->subject.fft,
+                 c.candidate->subject.kind, c.options, began);
+      Call const call = callOf(*c.candidate, c.options,
+                               {.n = items,
+                                .kind = c.carried ? "reread" : "second call",
+                                .why = c.carried ? "an earlier build's line, read by this one" : "its second call"});
+      if (call.status == Status::Unsupported || call.status == Status::Lost) {
+        refused.emplace(c.candidate, configText(c.options));
+      }
       continue;
     }
 
@@ -484,7 +507,8 @@ private:
 
 std::string headerFor(const RunScope& scope, const TuneCommand& command) {
   return std::string{"written by prpll "} + VERSION + " -tune " + settingsWord(scope, command) +
-    "\nfrom tunedb.txt; each line's maximum exponent is how far its settings were found to be accurate";
+    "\nfrom tunedb.txt; each line is one configuration over the exponents it runs in its carry regime, up to where its "
+    "settings were found to be accurate";
 }
 
 void reportScope(const RunScope& scope) {
@@ -529,7 +553,7 @@ RunOutcome runTune(GpuCommon shared, const TuneCommand& command) {
 
   Env const card = detectEnv(*shared.context, args);
   Bench bench{shared, db, card};
-  if (!bench.begin(scope->probe, settingsWord(*scope, command))) {
+  if (!bench.begin(scope->probe, settingsWord(*scope, command), {}, command.tag)) {
     log("tune: could not open a session in %s\n", path.string().c_str());
     return RunOutcome::Failed;
   }
@@ -588,13 +612,15 @@ bool runOffline(const TuneCommand& command, const Args& args) {
   TuneDB db;
   if (!db.load(path)) { return false; }
 
-  // The env this binary's kernels were measured on; with several cards, the one most recently measured.
+  // The env this binary's kernels were measured on under the tag named; with several cards, the one most recently
+  // measured.
   const DbEnv* env = nullptr;
   for (const DbEnv& e : db.envs()) {
-    if (e.build == buildFingerprint()) { env = &e; }
+    if (e.build == buildFingerprint() && e.tag == command.tag) { env = &e; }
   }
   if (!env) {
-    log("tune: %s has no readings of this build's kernels\n", path.string().c_str());
+    log("tune: %s has no readings of this build's kernels%s\n", path.string().c_str(),
+        command.tag.empty() ? "" : (" under tag=" + command.tag).c_str());
     return false;
   }
   Env const card = env->toEnv();
@@ -602,15 +628,20 @@ bool runOffline(const TuneCommand& command, const Args& args) {
   std::vector<std::vector<Candidate>> candidates;
   for (const Grid& g : scope->grids) { candidates.push_back(candidatesOf(card, *scope, g.kind)); }
   Readings const readings{db, env->id, card};
-  Carried const carried = carriedLines(db, env->id, scope->grids);
+  Carried const carried = carriedLines(db, env->id);
   Publication const publication = publish(*scope, candidates, readings, &carried);
 
   for (const KindPublication& kind : publication.kinds) {
-    log("tune: %s: %zu lines, T %.2f us/it over %s of the workload\n", toString(kind.kind), kind.written.size(),
-        kind.covered > 0 ? kind.T / kind.covered : 0.0, percent(kind.covered).c_str());
+    if (kind.tuned) {
+      log("tune: %s: %zu lines, T %.2f us/it over %s of the workload\n", toString(kind.kind), kind.written.size(),
+          kind.covered > 0 ? kind.T / kind.covered : 0.0, percent(kind.covered).c_str());
+    } else {
+      log("tune: %s: %zu lines, a kind this workload does not tune\n", toString(kind.kind), kind.written.size());
+    }
     for (const Line& line : kind.written) {
-      log("tune:   %8.1f %s -use %s up to %" PRIu64 " (%s)\n", line.cost(), line.subject.fft.spec().c_str(),
-          optionsText(line.reading->options).c_str(), line.reach(), toString(line.accuracy.state));
+      log("tune:   %8.1f %s %s %" PRIu64 "-%" PRIu64 " -use %s (%s%s)\n", line.cost(), line.subject.fft.spec().c_str(),
+          line.subject.regime.label().c_str(), line.lo(), line.reach(), optionsText(line.reading->options).c_str(),
+          toString(line.accuracy.state), line.carried ? ", an earlier build's" : "");
     }
   }
   log("tune: %zu accuracy readings and %zu calls owed before more lines can be published\n",

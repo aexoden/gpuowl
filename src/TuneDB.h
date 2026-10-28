@@ -64,10 +64,11 @@ struct DbEnv {
   u32 amdWavefront = 0;
   std::string machine{};  // which physical card, as a PCI address; empty where the platform cannot tell
   u64 build = 0;          // the kernels that were measured (BuildId.h)
+  std::string tag{};      // -tune tag=: the user's word for settings of the card the tuner cannot see, its clocks say
 
   [[nodiscard]] Env toEnv() const;
 
-  // The same card under the same driver and backend, whatever kernels were built for it.
+  // The same card under the same driver, backend and tag, whatever kernels were built for it.
   [[nodiscard]] bool sameCard(const DbEnv& other) const;
 
   // Everything a reading's meaning depends on, the kernel build included: readings of two envs that differ here are
@@ -75,7 +76,7 @@ struct DbEnv {
   [[nodiscard]] bool sameMachine(const DbEnv& other) const { return sameCard(other) && build == other.build; }
 };
 
-[[nodiscard]] DbEnv dbEnvOf(const Env& env, std::string machine = {});
+[[nodiscard]] DbEnv dbEnvOf(const Env& env, std::string machine = {}, std::string tag = {});
 
 struct SessRow {
   u32 id = 0;

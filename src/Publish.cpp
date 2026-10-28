@@ -2,6 +2,7 @@
 
 #include "Publish.h"
 
+#include "BuildId.h"
 #include "CycleFile.h"
 
 #include <algorithm>
@@ -15,97 +16,144 @@ namespace tune {
 
 namespace {
 
-// Each FFT's candidate carrying the most weight: the regime its line is chosen in.
-std::map<std::string, const Candidate*> mainCandidates(const std::vector<Candidate>& candidates) {
+constexpr TestKind KINDS[] = {TestKind::PRP, TestKind::LL};
+
+// A subject's FFT and regime, which is what one line of the file can stand for.
+std::string placeOf(const Subject& subject) { return subject.fft.spec() + ' ' + subject.regime.label(); }
+
+// The run's candidate of each FFT and regime: the heaviest, should there be two.
+std::map<std::string, const Candidate*> heldCandidates(const std::vector<Candidate>& candidates) {
   std::map<std::string, const Candidate*> out;
   for (const Candidate& c : candidates) {
-    auto [it, fresh] = out.try_emplace(c.subject.fft.spec(), &c);
+    auto [it, fresh] = out.try_emplace(placeOf(c.subject), &c);
     if (!fresh && c.weight() > it->second->weight()) { it->second = &c; }
   }
   return out;
 }
 
-// Each FFT read for `kind` that the run does not hold, in the regime it has the most calls in: where an earlier run
-// spent its time on it.
-std::map<std::string, Subject> unheldSubjects(const Readings& readings, TestKind kind,
-                                              const std::map<std::string, const Candidate*>& held) {
-  std::map<std::pair<std::string, std::string>, std::pair<Subject, u32>> calls;
-  for (auto const& [key, r] : readings.all()) {
-    if (key.kind != kind || r.failed || r.calls == 0 || held.contains(key.fft)) { continue; }
-    auto [it, fresh] =
-      calls.try_emplace({key.fft, key.regime}, Subject{.fft = r.fft, .kind = kind, .regime = r.regime}, 0);
-    it->second.second += r.calls;
-  }
-  std::map<std::string, std::pair<Subject, u32>> most;
-  for (auto const& [at, read] : calls) {
-    auto [it, fresh] = most.try_emplace(at.first, read);
-    if (!fresh && read.second > it->second.second) { it->second = read; }
-  }
+// Each FFT and regime read for `kind` that the run does not hold.
+std::vector<Subject> unheldSubjects(const Readings& readings, TestKind kind,
+                                    const std::map<std::string, const Candidate*>& held) {
   std::map<std::string, Subject> out;
-  for (auto const& [spec, read] : most) { out.emplace(spec, read.first); }
-  return out;
+  for (auto const& [key, r] : readings.all()) {
+    if (key.kind != kind || r.failed || r.calls == 0) { continue; }
+    Subject const subject{.fft = r.fft, .kind = kind, .regime = r.regime};
+    if (!held.contains(placeOf(subject))) { out.try_emplace(placeOf(subject), subject); }
+  }
+  std::vector<Subject> subjects;
+  for (auto& [place, subject] : out) { subjects.push_back(std::move(subject)); }
+  return subjects;
+}
+
+// The exponents the subject's FFT runs in the subject's regime; nothing where it never does.
+std::optional<Interval> spanOf(const Subject& subject) {
+  for (const Interval& i : intervals(subject.fft, minExp(subject.fft), maxExp(subject.fft))) {
+    if (i.regime == subject.regime) { return i; }
+  }
+  return {};
 }
 
 struct FftFront {
   std::vector<Line> lines;   // cheapest first
-  std::optional<Line> owed;  // the cheapest set waiting for its gate, where the run holds the FFT
+  std::optional<Line> owed;  // the cheapest set waiting for its gate, where the run holds the subject
 };
 
-// One FFT's frontier: each set, cheapest first, that reaches further than every cheaper one.  Where the run holds the
-// FFT (`c`), a set whose gate the run owes waits for it; elsewhere nothing will settle that gate, so the set reaches as
-// far as its highest safe reading.
+// One FFT's frontier in one regime: each set, cheapest first, that reaches further than every cheaper one.  Where the
+// run holds the subject (`c`), a set whose gate the run owes waits for it; elsewhere nothing will settle that gate, so
+// the set reaches as far as its highest safe reading.
 FftFront frontOf(const Subject& subject, const Candidate* c, const Readings& readings) {
+  FftFront out;
+  std::optional<Interval> const span = spanOf(subject);
+  if (!span) { return out; }
+
   std::vector<const Reading*> rs = readings.of(subject);
   std::erase_if(rs, [](const Reading* r) { return r->failed || r->calls < MIN_CALLS; });
   std::ranges::sort(rs, {}, &Reading::pessimistic);
 
-  u64 const lowest = minExp(subject.fft);
-  u64 const table = maxExp(subject.fft);
-  FftFront out;
   u64 reached = 0;
   for (const Reading* r : rs) {
-    if (reached >= table) { break; }
+    if (reached >= span->hi) { break; }
     std::vector<RoeReading> const roes = readings.roes(subject.fft, r->options);
     if (c) {
       Verdict const v = verdictOf(subject.fft, roes, c->points.front().exponent);
       if (v.state == Accuracy::Owed) {
-        if (!out.owed) { out.owed = Line{.subject = subject, .candidate = c, .reading = r, .accuracy = v}; }
+        if (!out.owed) {
+          out.owed = Line{.subject = subject, .candidate = c, .reading = r, .accuracy = v, .interval = *span};
+        }
         continue;
       }
     }
-    Verdict const v = verdictOf(subject.fft, roes, lowest);
-    if (v.state == Accuracy::Rejected || v.reach < lowest || v.reach <= reached) { continue; }
-    out.lines.push_back({.subject = subject, .candidate = c, .reading = r, .accuracy = v});
-    reached = v.reach;
+    Verdict const v = verdictOf(subject.fft, roes, span->lo);
+    u64 const hi = std::min(v.reach, span->hi);
+    if (v.state == Accuracy::Rejected || hi < span->lo || hi <= reached) { continue; }
+    out.lines.push_back({.subject = subject,
+                         .candidate = c,
+                         .reading = r,
+                         .accuracy = v,
+                         .interval = {.lo = span->lo, .hi = hi, .regime = subject.regime}});
+    reached = hi;
   }
   return out;
 }
 
-// Every FFT's front, the run's candidates in their main regime.
+// Every FFT's front in every regime read, the run's candidates first.
 std::vector<FftFront> frontsOf(const Readings& readings, TestKind kind,
                                const std::map<std::string, const Candidate*>& held) {
   std::vector<FftFront> out;
-  for (auto const& [spec, c] : held) { out.push_back(frontOf(c->subject, c, readings)); }
-  for (auto const& [spec, subject] : unheldSubjects(readings, kind, held)) {
+  for (auto const& [place, c] : held) { out.push_back(frontOf(c->subject, c, readings)); }
+  for (const Subject& subject : unheldSubjects(readings, kind, held)) {
     out.push_back(frontOf(subject, nullptr, readings));
   }
   return out;
 }
 
-// The frontier as production reads it (TuneEntry::update): cheapest first, a line dropped where a cheaper one reaches
-// at least as far.
+// Whether the disjoint, ordered spans `covered` hold every exponent of [lo, hi].
+bool coveredThroughout(const std::vector<std::pair<u64, u64>>& covered, u64 lo, u64 hi) {
+  for (auto const& [a, b] : covered) {
+    if (a > lo) { return false; }
+    if (b >= lo) {
+      if (b >= hi) { return true; }
+      lo = b + 1;
+    }
+  }
+  return false;
+}
+
+void cover(std::vector<std::pair<u64, u64>>& covered, u64 lo, u64 hi) {
+  covered.emplace_back(lo, hi);
+  std::ranges::sort(covered);
+  std::vector<std::pair<u64, u64>> merged;
+  for (auto const& [a, b] : covered) {
+    if (!merged.empty() && a <= merged.back().second + 1) {
+      merged.back().second = std::max(merged.back().second, b);
+    } else {
+      merged.emplace_back(a, b);
+    }
+  }
+  covered = std::move(merged);
+}
+
+// The frontier as production reads it: cheapest first, a line kept where it is the cheapest at some exponent it
+// holds, and dropped where cheaper lines hold every one of them.
 std::vector<Line> frontier(std::vector<Line> lines) {
   std::ranges::stable_sort(lines, {}, &Line::cost);
   std::vector<Line> out;
-  for (const Line& line : lines) {
-    if (out.empty() || line.reach() > out.back().reach()) { out.push_back(line); }
+  std::vector<std::pair<u64, u64>> covered;
+  for (Line& line : lines) {
+    if (coveredThroughout(covered, line.lo(), line.reach())) { continue; }
+    cover(covered, line.lo(), line.reach());
+    out.push_back(std::move(line));
   }
   return out;
 }
 
-}  // namespace
+// Whether this build has settled the configuration a carried line stands for: read it MIN_CALLS times, or seen it fail.
+bool settled(const Readings& readings, const Line& line) {
+  const Reading* const r = readings.find(line.subject, line.reading->options);
+  return r && (r->failed || r->calls >= MIN_CALLS);
+}
 
-bool Line::holds(u64 E) const { return E >= minExp(subject.fft) && E <= reach(); }
+}  // namespace
 
 const Line* KindPublication::at(u64 E) const {
   for (const Line& line : lines) {
@@ -126,10 +174,14 @@ double Publication::T() const {
 }
 
 double Publication::coverage() const {
-  if (kinds.empty()) { return 0; }
   double sum = 0;
-  for (const KindPublication& k : kinds) { sum += k.covered; }
-  return sum / double(kinds.size());
+  u32 n = 0;
+  for (const KindPublication& k : kinds) {
+    if (!k.tuned) { continue; }
+    sum += k.covered;
+    ++n;
+  }
+  return n ? sum / n : 0;
 }
 
 size_t Carried::size() const {
@@ -138,29 +190,35 @@ size_t Carried::size() const {
   return n;
 }
 
-Carried carriedLines(const TuneDB& db, u32 env, std::span<const Grid> grids) {
+Carried carriedLines(const TuneDB& db, u32 env) {
   Carried out;
   const DbEnv* const now = db.findEnv(env);
   if (!now) { return out; }
+  Env const card = now->toEnv();
   std::vector<const DbEnv*> earlier;
   for (const DbEnv& e : db.envs()) {
     if (e.id != env && e.sameCard(*now)) { earlier.push_back(&e); }
   }
   std::ranges::sort(earlier, std::greater{}, &DbEnv::id);
 
-  std::map<TestKind, std::set<std::string>> taken;
+  std::set<ConfigKey> taken;
   for (const DbEnv* e : earlier) {
     const Readings& readings = out.readings.emplace_back(db, e->id, e->toEnv());
-    for (const Grid& grid : grids) {
-      std::vector<Line>& lines = out.lines[grid.kind];
-      std::set<std::string>& specs = taken[grid.kind];
-      std::set<std::string> fresh;
-      for (FftFront& f : frontsOf(readings, grid.kind, {})) {
-        if (f.lines.empty() || specs.contains(f.lines.front().subject.fft.spec())) { continue; }
-        fresh.insert(f.lines.front().subject.fft.spec());
-        std::ranges::move(f.lines, std::back_inserter(lines));
+    for (TestKind const kind : KINDS) {
+      std::vector<Line>& lines = out.lines[kind];
+      std::set<ConfigKey> fresh;
+      for (FftFront& f : frontsOf(readings, kind, {})) {
+        for (Line& line : f.lines) {
+          // Options this build's table no longer names as they were would not run as they were measured.
+          if (canonicalConfig(card, line.subject.fft, line.reading->options) != line.reading->options) { continue; }
+          ConfigKey const key = Readings::keyOf(line.subject, line.reading->options);
+          if (taken.contains(key)) { continue; }
+          fresh.insert(key);
+          line.carried = true;
+          lines.push_back(std::move(line));
+        }
       }
-      specs.merge(fresh);
+      taken.merge(fresh);
     }
   }
   return out;
@@ -170,20 +228,38 @@ Publication publish(const RunScope& scope, const std::vector<std::vector<Candida
                     const Readings& readings, const Carried* carried) {
   Publication out;
 
-  for (size_t ki = 0; ki < scope.grids.size() && ki < candidates.size(); ++ki) {
-    const Grid& grid = scope.grids[ki];
-    KindPublication pub{.kind = grid.kind, .lines = {}, .written = {}};
-    std::map<std::string, const Candidate*> const held = mainCandidates(candidates[ki]);
+  // This build's lines and the carried ones it has not settled, of one kind.
+  auto linesOf = [&](TestKind kind, const std::map<std::string, const Candidate*>& held, std::vector<Line>& owed) {
     std::vector<Line> lines;
-    std::vector<Line> owed;
-    for (FftFront& f : frontsOf(readings, grid.kind, held)) {
+    for (FftFront& f : frontsOf(readings, kind, held)) {
       std::ranges::move(f.lines, std::back_inserter(lines));
       if (f.owed) { owed.push_back(*f.owed); }
     }
+    std::vector<Line> withCarried = lines;
+    if (carried) {
+      if (auto const it = carried->lines.find(kind); it != carried->lines.end()) {
+        for (const Line& line : it->second) {
+          if (settled(readings, line)) { continue; }
+          Line copy = line;
+          auto const c = held.find(placeOf(line.subject));
+          copy.candidate = c == held.end() ? nullptr : c->second;
+          withCarried.push_back(std::move(copy));
+        }
+      }
+    }
+    return std::pair{std::move(lines), std::move(withCarried)};
+  };
+
+  for (size_t ki = 0; ki < scope.grids.size() && ki < candidates.size(); ++ki) {
+    const Grid& grid = scope.grids[ki];
+    KindPublication pub{.kind = grid.kind, .tuned = true, .lines = {}, .written = {}};
+    std::map<std::string, const Candidate*> const held = heldCandidates(candidates[ki]);
+    std::vector<Line> owed;
+    auto [lines, withCarried] = linesOf(grid.kind, held, owed);
 
     // The cheapest reading by its mean, where it is short of its calls: a second call may make it a line.
     std::vector<std::pair<ConcludeItem, double>> short_;
-    for (auto const& [spec, c] : held) {
+    for (auto const& [place, c] : held) {
       const Reading* best = nullptr;
       for (const Reading* r : readings.of(c->subject)) {
         if (!r->failed && r->calls > 0 && (!best || r->mean < best->mean)) { best = r; }
@@ -193,17 +269,8 @@ Publication publish(const RunScope& scope, const std::vector<std::vector<Candida
       }
     }
 
-    pub.lines = frontier(lines);
-    if (carried) {
-      if (auto const it = carried->lines.find(grid.kind); it != carried->lines.end()) {
-        std::set<std::string> specs;
-        for (const Line& line : lines) { specs.insert(line.subject.fft.spec()); }
-        for (const Line& line : it->second) {
-          if (!specs.contains(line.subject.fft.spec())) { lines.push_back(line); }
-        }
-      }
-    }
-    pub.written = frontier(std::move(lines));
+    pub.lines = frontier(std::move(lines));
+    pub.written = frontier(std::move(withCarried));
 
     for (const GridPoint& p : grid.points) {
       if (const Line* line = pub.at(p.exponent)) {
@@ -227,10 +294,27 @@ Publication publish(const RunScope& scope, const std::vector<std::vector<Candida
           {.fft = line.subject.fft, .options = line.reading->options, .exponent = line.accuracy.next, .weight = w});
       }
     }
+    // A carried line the tune file holds is read by this build before anything else replaces it, wherever the run
+    // holds its FFT and regime.
+    for (const Line& line : pub.written) {
+      if (line.carried && line.candidate) {
+        out.owedCalls.push_back({.candidate = line.candidate, .options = line.reading->options, .carried = true});
+      }
+    }
     for (auto const& [item, mean] : short_) {
       if (wouldServe(item.candidate, mean) > 0) { out.owedCalls.push_back(item); }
     }
     out.kinds.push_back(std::move(pub));
+  }
+
+  // The kinds the run does not tune keep their lines too: the file holds every kind.
+  for (TestKind const kind : KINDS) {
+    if (out.of(kind)) { continue; }
+    std::vector<Line> owed;
+    auto [lines, withCarried] = linesOf(kind, {}, owed);
+    if (withCarried.empty()) { continue; }
+    out.kinds.push_back(
+      {.kind = kind, .tuned = false, .lines = frontier(std::move(lines)), .written = frontier(std::move(withCarried))});
   }
 
   std::ranges::sort(out.owedGates, std::greater{}, &GateItem::weight);
@@ -238,28 +322,37 @@ Publication publish(const RunScope& scope, const std::vector<std::vector<Candida
   return out;
 }
 
-const char* tuneFileName(TestKind kind) { return kind == TestKind::LL ? "tune-ll.txt" : "tune.txt"; }
-
-std::string tuneFileText(const KindPublication& kind, const std::string& header) {
-  std::string out;
+std::string tuneFileText(const Publication& publication, const std::string& header) {
+  char buf[160];
+  snprintf(buf, sizeof(buf), "# %s, build %016" PRIx64 "\n", TUNE_FILE_MAGIC, buildFingerprint());
+  std::string out = buf;
   for (size_t at = 0; at < header.size();) {
     size_t const eol = std::min(header.find('\n', at), header.size());
     out += "# " + header.substr(at, eol - at) + '\n';
     at = eol + 1;
   }
-  for (const Line& line : kind.written) {
-    char buf[128];
-    snprintf(buf, sizeof(buf), "%6.1f %14s # %" PRIu64, line.cost(), line.subject.fft.spec().c_str(), line.reach());
-    out += buf;
-    for (const auto& [key, value] : line.reading->options) { out += ", " + key + '=' + value; }
-    out += '\n';
+  for (TestKind const kind : KINDS) {
+    const KindPublication* const pub = publication.of(kind);
+    if (!pub) { continue; }
+    for (const Line& line : pub->written) {
+      snprintf(buf, sizeof(buf), "%6.1f %14s %s %s %" PRIu64 "-%" PRIu64, line.cost(),
+               line.subject.fft.spec().c_str(), toString(kind), line.subject.regime.label().c_str(), line.lo(),
+               line.reach());
+      out += buf;
+      std::string sep = " # ";
+      for (const auto& [key, value] : line.reading->options) {
+        out += sep + key + '=' + value;
+        sep = ", ";
+      }
+      out += '\n';
+    }
   }
   return out;
 }
 
-void writeTuneFile(const fs::path& dir, const KindPublication& kind, const std::string& header) {
-  CycleFile file{dir / tuneFileName(kind.kind)};
-  file->write(tuneFileText(kind, header));
+void writeTuneFile(const fs::path& dir, const Publication& publication, const std::string& header) {
+  CycleFile file{dir / TUNE_FILE};
+  file->write(tuneFileText(publication, header));
 }
 
 }  // namespace tune

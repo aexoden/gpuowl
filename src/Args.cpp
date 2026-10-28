@@ -341,8 +341,11 @@ named "config.txt" in the prpll run directory.
   -use STATS=<val> : enable carry statistics collection & logging (developers), for the kernel according to <val>:
                      1 = CarryFused, 2 = CarryFusedMul, 4 = CarryA, 8 = CarryMul
 
--tune [<verb>][,<setting>=<value>...] : finds the fastest FFT and -use settings for the exponents you test on this
-                     GPU and writes them to tune.txt (PRP) and tune-ll.txt (LL).  Measurements are kept in tunedb.txt;
+)"
+         // Two literals: MSVC refuses any one string literal of more than 16380 bytes.
+         R"(-tune [<verb>][,<setting>=<value>...] : finds the fastest FFT and -use settings for the exponents you test on this
+                     GPU and writes them to tune.txt, one line per configuration (FFT, test kind, carry regime and
+                     -use settings) over the exponents it holds.  Measurements are kept in tunedb.txt;
                      Ctrl-C stops cleanly and running it again resumes.  -use settings from config.txt and the command
                      line are set aside while measuring.  One comma-separated word:
                          workload=<lo>-<hi>  exponents to tune for, e.g. 100M-400M [from worktodo, else 100M-400M]
@@ -372,6 +375,8 @@ named "config.txt" in the prpll run directory.
                                              doubling every <t> (30m, 2h) of tuning [1.5x@30m]
                          pfaShapes=ntt|all|none  prime-factor middles considered [ntt]
                          tailQueues=ntt|all|none FFTs offered TAIL_KERNELS 11 and 13 [ntt: NTTs on nVidia]
+                         tag=<word>          a name for card settings the tuner cannot see, such as locked clocks:
+                                             readings under another tag are kept apart, and so are their lines
                          dashboard=1         a full-screen view of the run
                      Verbs, which open no device: status (where tunedb.txt stands), emit (write the tune files it
                      supports), scope (the exponents a run would tune for).

@@ -80,13 +80,15 @@ std::string reportJson(const RunReport& r) {
   bool first = true;
   if (r.publication) {
     for (const KindPublication& kind : r.publication->kinds) {
-      for (const Line& line : kind.lines) {
-        char reach[32];
-        std::snprintf(reach, sizeof(reach), "%" PRIu64, line.reach());
+      for (const Line& line : kind.written) {
+        char range[64];
+        std::snprintf(range, sizeof(range), "\"minExponent\": %" PRIu64 ", \"maxExponent\": %" PRIu64, line.lo(),
+                      line.reach());
         out += std::string{first ? "\n" : ",\n"} + "    {\"kind\": " + jsonString(toString(kind.kind)) +
           ", \"fft\": " + jsonString(line.subject.fft.spec()) +
+          ", \"regime\": " + jsonString(line.subject.regime.label()) +
           ", \"options\": " + jsonString(configText(line.reading->options)) + ", \"usPerIt\": " + number(line.cost()) +
-          ", \"maxExponent\": " + reach + "}";
+          ", " + range + ", \"earlierBuild\": " + (line.carried ? "true" : "false") + "}";
         first = false;
       }
     }

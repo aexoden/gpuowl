@@ -6,6 +6,7 @@
 #include "Publish.h"
 #include "Report.h"
 
+#include <algorithm>
 #include <optional>
 #include <string>
 
@@ -29,12 +30,13 @@ struct Fixture {
     scope = makeScope({.lo = 66'000'000, .hi = 70'000'000, .probe = 67'000'000, .kinds = {TestKind::PRP}}, {});
   }
 
-  void call(const char* spec, UseConfig options, double us, int times = 2, u64 exponent = 0) {
+  void call(const char* spec, UseConfig options, double us, int times = 2, u64 exponent = 0,
+            TestKind kind = TestKind::PRP) {
     u32 const cfg = db.internCfg(options);
     for (int i = 0; i < times; ++i) {
       CHECK(db.add(CallRow{.sess = sess,
                            .fft = spec,
-                           .kind = TestKind::PRP,
+                           .kind = kind,
                            .exponent = exponent ? exponent : scope.probe,
                            .cfg = cfg,
                            .mean = us + 0.1 * i,
@@ -117,18 +119,18 @@ TEST(a_line_needs_its_calls_and_its_gate) {
   CHECK(prp.T > 800 * prp.covered && prp.T < 820 * prp.covered);
 }
 
-TEST(the_tune_file_names_the_reach_and_the_options) {
+TEST(the_tune_file_names_the_kind_the_regime_the_range_and_the_options) {
   Fixture f;
   f.call("1K:13:256:202", {{"ZEROHACK_W", "0"}}, 800);
   Publication const owed = f.published();
   CHECK_EQ(owed.owedGates.size(), size_t{1});
   f.roe("1K:13:256:202", {{"ZEROHACK_W", "0"}}, owed.owedGates.at(0).exponent, 24.4);
 
-  std::string const text = tuneFileText(*f.published().of(TestKind::PRP), "written by a test");
-  CHECK(text.starts_with("# written by a test\n"));
-  CHECK(text.find("1K:13:256:202 # ") != std::string::npos);
-  CHECK(text.find(", ZEROHACK_W=0\n") != std::string::npos);
-  CHECK_EQ(std::string{tuneFileName(TestKind::LL)}, std::string{"tune-ll.txt"});
+  std::string const text = tuneFileText(f.published(), "written by a test");
+  CHECK(text.starts_with(std::string{"# "} + TUNE_FILE_MAGIC + ", build "));
+  CHECK(text.find("\n# written by a test\n") != std::string::npos);
+  // At 67M this FFT runs a long carry, which it does up to 80768068 and no further, whatever its table says.
+  CHECK(text.find("1K:13:256:202 prp long32 20447231-80768068 # ZEROHACK_W=0\n") != std::string::npos);
 }
 
 TEST(a_failed_configuration_is_never_a_line) {
@@ -158,7 +160,7 @@ TEST(a_line_outside_the_run_stays_published) {
   CHECK_EQ(prp.written.front().subject.fft.spec(), std::string{"1K:13:256:202"});
   CHECK(prp.written.front().candidate == nullptr);
   CHECK(prp.covered == 0);
-  CHECK(tuneFileText(prp, "").find("1K:13:256:202 # ") != std::string::npos);
+  CHECK(tuneFileText(p, "").find("1K:13:256:202 prp long32 ") != std::string::npos);
 }
 
 TEST(the_report_names_a_line_the_run_does_not_hold) {
@@ -175,8 +177,10 @@ TEST(the_report_names_a_line_the_run_does_not_hold) {
 TEST(an_fft_has_a_line_for_each_reach_a_cheaper_set_falls_short_of) {
   Fixture f;
   u64 const top = f.top();
-  f.call("1K:13:256:202", {}, 800);
-  f.call("1K:13:256:202", {{"ZEROHACK_W", "0"}}, 780);
+  // Read in the regime that runs up to the table top, above the long carry the run's own range is in.
+  u64 const E = 100'000'000;
+  f.call("1K:13:256:202", {}, 800, 2, E);
+  f.call("1K:13:256:202", {{"ZEROHACK_W", "0"}}, 780, 2, E);
   f.roe("1K:13:256:202", {}, top, 24.4);
   f.roe("1K:13:256:202", {{"ZEROHACK_W", "0"}}, top, 10);
   u64 const lowered = top - top / 200;
@@ -192,6 +196,8 @@ TEST(an_fft_has_a_line_for_each_reach_a_cheaper_set_falls_short_of) {
     CHECK_EQ(written[0].reach(), lowered);
     CHECK(written[1].reading->options.empty());
     CHECK(written[1].reach() > top);
+    CHECK_EQ(written[0].lo(), written[1].lo());
+    CHECK_EQ(written[0].subject.regime.label(), std::string{"short32"});
   }
 }
 
@@ -200,17 +206,74 @@ TEST(outside_the_run_an_unsettled_gate_publishes_its_highest_safe_reading) {
   u64 const top = f.top();
   f.call("1K:13:256:202", {}, 800);
   f.roe("1K:13:256:202", {}, top, 10);
-  f.roe("1K:13:256:202", {}, 100'000'000, 24.4);
+  f.roe("1K:13:256:202", {}, 75'000'000, 24.4);
   CHECK(f.published().of(TestKind::PRP)->written.empty());
 
   f.moveAbove();
-  const std::vector<Line>& written = f.published().of(TestKind::PRP)->written;
+  Publication const p = f.published();
+  const std::vector<Line>& written = p.of(TestKind::PRP)->written;
   CHECK_EQ(written.size(), size_t{1});
   if (written.empty()) { return; }
-  CHECK_EQ(written.front().reach(), u64{100'000'000});
+  CHECK_EQ(written.front().reach(), u64{75'000'000});
 }
 
-TEST(an_earlier_builds_line_is_written_until_this_build_has_one) {
+TEST(each_regime_of_an_fft_is_a_line_of_its_own) {
+  Fixture f;
+  // An NTT needs no gate.  Read in two carry regimes, it has two lines, each with its own cost and range.
+  f.call("3:1K:8:256:202", {}, 900, 2, 60'000'000);
+  f.call("3:1K:8:256:202", {}, 950, 2, 90'000'000);
+
+  Publication const p = f.published();
+  const std::vector<Line>& written = p.of(TestKind::PRP)->written;
+  CHECK_EQ(written.size(), size_t{2});
+  if (written.size() != 2) { return; }
+  CHECK_EQ(written[0].subject.regime.label(), std::string{"short32"});
+  CHECK_EQ(written[0].lo(), u64{48'234'494});
+  CHECK_EQ(written[0].reach(), u64{78'434'408});
+  CHECK_EQ(written[1].subject.regime.label(), std::string{"short64"});
+  CHECK_EQ(written[1].lo(), u64{78'434'409});
+  CHECK(written[1].cost() > 949);
+  const Line* const at70M = p.of(TestKind::PRP)->at(70'000'000);
+  CHECK(at70M && at70M->subject.regime.label() == "short32");
+  CHECK(p.of(TestKind::PRP)->at(30'000'000) == nullptr);  // its long carry was never read
+  std::string const text = tuneFileText(p, "");
+  CHECK(text.find("3:1K:8:256:202 prp short32 48234494-78434408\n") != std::string::npos);
+  CHECK(text.find("3:1K:8:256:202 prp short64 78434409-99992208\n") != std::string::npos);
+}
+
+TEST(a_line_is_dropped_only_where_cheaper_lines_hold_all_of_it) {
+  Fixture f;
+  f.call("1K:13:256:202", {}, 800);
+  f.roe("1K:13:256:202", {}, f.published().owedGates.at(0).exponent, 24.4);
+  // Held throughout by the cheaper long carry of 1K:13:256 (20447231-80768068).
+  f.call("3:1K:8:256:202", {}, 900, 2, 60'000'000);
+  // Above it: kept.
+  f.call("3:1K:8:256:202", {}, 950, 2, 90'000'000);
+
+  Publication const p = f.published();
+  const std::vector<Line>& written = p.of(TestKind::PRP)->written;
+  CHECK_EQ(written.size(), size_t{2});
+  if (written.size() != 2) { return; }
+  CHECK_EQ(written[0].subject.fft.spec(), std::string{"1K:13:256:202"});
+  CHECK_EQ(written[1].subject.regime.label(), std::string{"short64"});
+}
+
+TEST(a_kind_the_run_does_not_tune_keeps_its_lines) {
+  Fixture f;
+  f.call("3:1K:8:256:202", {}, 900, 2, 0, TestKind::LL);
+
+  Publication const p = f.published();
+  const KindPublication* const ll = p.of(TestKind::LL);
+  CHECK(ll != nullptr);
+  if (!ll) { return; }
+  CHECK(!ll->tuned);
+  CHECK_EQ(ll->written.size(), size_t{1});
+  CHECK(p.of(TestKind::PRP)->tuned);
+  CHECK(p.coverage() == p.of(TestKind::PRP)->covered);
+  CHECK(tuneFileText(p, "").find("3:1K:8:256:202 ll short32 ") != std::string::npos);
+}
+
+TEST(an_earlier_builds_line_is_written_until_this_build_has_read_it) {
   Fixture f;
   f.call("1K:13:256:202", {}, 800);
   f.roe("1K:13:256:202", {}, f.published().owedGates.at(0).exponent, 24.4);
@@ -218,7 +281,7 @@ TEST(an_earlier_builds_line_is_written_until_this_build_has_one) {
   f.env =
     f.db.internEnv(DbEnv{.gpu = "card", .isNvidia = true, .cudaBackend = true, .computeCapability = 860, .build = 7});
   f.sess = f.db.beginSession(f.env, "", 0, "");
-  Carried const carried = carriedLines(f.db, f.env, f.scope.grids);
+  Carried const carried = carriedLines(f.db, f.env);
   CHECK_EQ(carried.size(), size_t{1});
 
   Publication const before = f.published(&carried);
@@ -226,6 +289,22 @@ TEST(an_earlier_builds_line_is_written_until_this_build_has_one) {
   CHECK(old.lines.empty());
   CHECK(old.covered == 0);
   CHECK_EQ(old.written.size(), size_t{1});
+  if (old.written.empty()) { return; }
+  CHECK(old.written.front().carried);
+  // The run holds its FFT and regime, so it owes this build's own reading of it.
+  CHECK_EQ(before.owedCalls.size(), size_t{1});
+  if (before.owedCalls.empty()) { return; }
+  CHECK(before.owedCalls.front().carried);
+  CHECK(before.owedCalls.front().options.empty());
+
+  // Another set of the same FFT read by this build leaves the earlier build's line standing.
+  f.call("1K:13:256:202", {{"ZEROHACK_W", "0"}}, 1000);
+  f.roe("1K:13:256:202", {{"ZEROHACK_W", "0"}}, f.published(&carried).owedGates.at(0).exponent, 24.4);
+  Publication const middle = f.published(&carried);
+  const std::vector<Line>& both = middle.of(TestKind::PRP)->written;
+  CHECK_EQ(both.size(), size_t{1});
+  if (both.empty()) { return; }
+  CHECK(both.front().carried);
 
   f.call("1K:13:256:202", {}, 900);
   f.roe("1K:13:256:202", {}, f.published(&carried).owedGates.at(0).exponent, 24.4);
@@ -233,5 +312,18 @@ TEST(an_earlier_builds_line_is_written_until_this_build_has_one) {
   const std::vector<Line>& written = after.of(TestKind::PRP)->written;
   CHECK_EQ(written.size(), size_t{1});
   if (written.empty()) { return; }
+  CHECK(!written.front().carried);
   CHECK(written.front().cost() > 850);
+  CHECK(std::ranges::none_of(after.owedCalls, &ConcludeItem::carried));
+}
+
+TEST(lines_are_carried_only_under_the_same_tag) {
+  Fixture f;
+  f.call("1K:13:256:202", {}, 800);
+  f.roe("1K:13:256:202", {}, f.published().owedGates.at(0).exponent, 24.4);
+
+  u32 const other = f.db.internEnv(
+    DbEnv{.gpu = "card", .isNvidia = true, .cudaBackend = true, .computeCapability = 860, .build = 7, .tag = "875"});
+  CHECK(other != f.env);
+  CHECK_EQ(carriedLines(f.db, other).size(), size_t{0});
 }

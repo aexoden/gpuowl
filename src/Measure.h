@@ -120,8 +120,9 @@ public:
   Bench(GpuCommon shared, TuneDB& db, const Env& env);
 
   // Opens the session.  `probe` is the exponent the session measures around: where the env has no drift anchor pinned
-  // yet, the candidates are raced there when it is first due, and the winner is pinned for the env's life.
-  [[nodiscard]] bool begin(u64 probe, const std::string& settings, std::string machine = {});
+  // yet, the candidates are raced there when it is first due, and the winner is pinned for the env's life.  `tag` is
+  // part of the env (DbEnv::tag).
+  [[nodiscard]] bool begin(u64 probe, const std::string& settings, std::string machine = {}, std::string tag = {});
 
   // Closes an attempt left open, unless the device was lost: then it is what the next process must not build again.
   void end();

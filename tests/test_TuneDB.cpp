@@ -156,6 +156,17 @@ TEST(db_interns_equal_option_sets_and_envs_once) {
   rebuilt.build = 1;
   CHECK(f.db.internEnv(rebuilt) != f.env);
   CHECK(f.db.findEnv(f.env)->sameCard(rebuilt));
+
+  // A tag is the user's word for settings of the card the tuner cannot see: another env, and another card's.
+  DbEnv tagged = card();
+  tagged.tag = "875mhz";
+  u32 const id = f.db.internEnv(tagged);
+  CHECK(id != f.env);
+  CHECK(!f.db.findEnv(f.env)->sameCard(tagged));
+  TuneDB back;
+  CHECK(back.parse(f.db.text(), "tagged"));
+  CHECK(back.findEnv(id) && back.findEnv(id)->tag == "875mhz");
+  CHECK(back.findEnv(f.env) && back.findEnv(f.env)->tag.empty());
 }
 
 TEST(db_names_what_a_process_died_holding) {

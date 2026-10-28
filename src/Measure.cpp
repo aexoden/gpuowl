@@ -151,8 +151,8 @@ Bench::Bench(GpuCommon shared, TuneDB& db, const Env& env) :
   shared_.args = &args_;
 }
 
-bool Bench::begin(u64 probe, const std::string& settings, std::string machine) {
-  envId_ = db_.internEnv(dbEnvOf(env_, std::move(machine)));
+bool Bench::begin(u64 probe, const std::string& settings, std::string machine, std::string tag) {
+  envId_ = db_.internEnv(dbEnvOf(env_, std::move(machine), std::move(tag)));
   if (!envId_) { return false; }
 
   if (probe) {

@@ -99,7 +99,7 @@ enum CARRY_KIND {CARRY_32=0, CARRY_64=1, CARRY_AUTO=2};
 struct FFTConfig {
 public:
   // uses, if given, receives the -use settings from the chosen FFT's tune.txt line
-  // ll: for an LL test, which takes its FFTs from tune-ll.txt where there is one.
+  // ll: for an LL test, which takes its FFTs from the LL lines of the tune file (TuneEntry::tunedLines).
   static FFTConfig bestFit(const Args& args, u64 E, const std::string& spec, vector<KeyVal>* uses = nullptr, bool ll = false);
   // The same choice as a list:  one FFT for an -fft spec or a tune.txt line, else the untuned candidates in order of preference
   // (Task::execute tries the next when a GPU can't be built for one).  Throws "No FFT" if none can handle E.

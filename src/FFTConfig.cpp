@@ -377,7 +377,7 @@ vector<FFTConfig> FFTConfig::bestFits(const Args& args, u64 E, const string& spe
     if (fft.maxExp() * args.fftOverdrive < E) {
       log("Warning: %s (max %" PRIu64 ") may be too small for %" PRIu64 "\n", fft.spec().c_str(), fft.maxExp(), E);
     }
-    if (uses) { *uses = TuneEntry::usesFor(args, fft, ll); }
+    if (uses) { *uses = TuneEntry::usesFor(args, fft, E, ll); }
     return {fft};
   }
 
@@ -389,13 +389,10 @@ vector<FFTConfig> FFTConfig::bestFits(const Args& args, u64 E, const string& spe
   auto const fitsUpTo = [&](const FFTConfig& fft, u64 maxExp) { return E <= maxExp * args.fftOverdrive && !(E / float(fft.size()) < fft.minBpw()); };
   auto const fits = [&](const FFTConfig& fft) { return fitsUpTo(fft, fft.maxExp()); };
 
-  vector<TuneEntry> const tunes = TuneEntry::readTuneFile(args, ll);
-  for (const TuneEntry& e : tunes) {
-    // The first acceptable is the best as they're sorted by cost
-    if (fitsUpTo(e.fft, e.maxExp()) && (fp64 || !e.fft.FFT_FP64)) {
-      if (uses) { *uses = e.uses; }
-      return {e.fft};
-    }
+  vector<TuneEntry> const tunes = TuneEntry::tunedLines(args, ll);
+  if (const TuneEntry* e = TuneEntry::pick(tunes, E, args.fftOverdrive, fp64, uses != nullptr)) {
+    if (uses) { *uses = e->uses; }
+    return {e->fft};
   }
 
   log("No FFTs found in tune.txt that can handle %" PRIu64 ". Consider tuning with -tune\n", E);

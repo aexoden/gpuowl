@@ -1,13 +1,17 @@
 #include "TuneEntry.h"
 #include "Args.h"
+#include "BuildId.h"
 #include "CycleFile.h"
+#include "Eligibility.h"
 
 #include <cassert>
 #include <cmath>
 #include <cinttypes>
 #include <algorithm>
 #include <cctype>
+#include <iterator>
 #include <optional>
+#include <sstream>
 
 // Returns whether *results* was updated.
 bool TuneEntry::update(vector<TuneEntry>& results) const {
@@ -45,6 +49,12 @@ bool TuneEntry::willUpdate(const vector<TuneEntry>& results) const {
   return true;
 }
 
+// A file of this name in the run directory, else in the -pool directory; the run directory's where neither has one.
+static fs::path findFile(const Args& args, const char* name) {
+  if (!fs::exists(name) && fs::exists(args.masterDir / name)) { return args.masterDir / name; }
+  return name;
+}
+
 static fs::path tuneFilePath(const Args& args, bool ll = false) {
   if (ll) {
     for (const fs::path& path : {fs::path{"tune-ll.txt"}, args.masterDir / "tune-ll.txt"}) {
@@ -65,14 +75,38 @@ static bool isCommentLine(const string& line) {
 }
 
 // A tune.txt line is "<cost> <fft spec> # <maxExp>[, KEY=VAL]...".  The KEY=VALs are -use settings for that FFT alone,
-// taking priority over config.txt (but not over the command line).
-// Returns nothing for a line that is not an entry.  Throws (const char*) for an FFT spec this build can't parse.
+// taking priority over config.txt (but not over the command line).  A line of the tuner's own file names between the
+// spec and the '#' the test kind, the carry regime and the exponent range it holds instead of a maxExp:
+// "<cost> <fft spec> <kind> <regime> <lo>-<hi> [# KEY=VAL[, KEY=VAL]...]".
+// Returns nothing for a line that is not an entry.  Throws (const char*) for an FFT spec this build can't parse, or words
+// between the spec and the '#' it can't read.
 static optional<TuneEntry> parseTuneLine(const string& line) {
   char specBuf[32];
   double cost{};
-  if (sscanf(line.c_str(), "%lf %31s", &cost, specBuf) < 2) { return {}; }
+  int specEnd{};
+  if (sscanf(line.c_str(), "%lf %31s%n", &cost, specBuf, &specEnd) < 2) { return {}; }
+  string kind, regime;
+  u64 lo{}, hi{};
+  {
+    size_t const end = std::min(line.find('#'), line.size());
+    std::istringstream words{line.substr(size_t(specEnd), end - std::min(end, size_t(specEnd)))};
+    for (string word; words >> word;) {
+      unsigned long long a{}, b{};
+      int used{};
+      if (word == "prp" || word == "ll") {
+        kind = word;
+      } else if (tune::parseRegime(word)) {
+        regime = word;
+      } else if (sscanf(word.c_str(), "%llu-%llu%n", &a, &b, &used) == 2 && size_t(used) == word.size() && a <= b) {
+        lo = a;
+        hi = b;
+      } else {
+        throw "tune.txt line";
+      }
+    }
+  }
   vector<KeyVal> uses;
-  u64 maxExp{};
+  u64 maxExp{hi};
   if (auto pos = line.find('#'); pos != string::npos) {
     for (auto& kv : Args::splitUses(line.substr(pos + 1))) {
       // The first item is the maxExp comment, not a setting
@@ -86,7 +120,71 @@ static optional<TuneEntry> parseTuneLine(const string& line) {
   FFTConfig const fft{specBuf};
   // A maxExp below the FFT's own lowers it: the line's settings were found to hold only that far.  Written by a build with
   // a lower table, it is a little conservative until the line is written again.
-  return TuneEntry{cost, fft, std::move(uses), maxExp && maxExp < fft.maxExp() ? maxExp : 0};
+  return TuneEntry{cost, fft, std::move(uses), maxExp && maxExp < fft.maxExp() ? maxExp : 0, kind, regime, lo};
+}
+
+// Every line of a tune file as written, in the file's order; a line this build cannot read is logged and skipped.
+static vector<TuneEntry> readLines(const fs::path& path) {
+  vector<TuneEntry> out;
+  File fi = File::openRead(path);
+  if (!fi) { return out; }
+  fi.allowUnterminatedLastLine();
+  for (const string& line : fi) {
+    if (isCommentLine(line)) { continue; }
+    try {
+      if (optional<TuneEntry> e = parseTuneLine(line)) {
+        out.push_back(std::move(*e));
+      } else {
+        log("%s line '%s' ignored\n", path.filename().string().c_str(), rstripNewline(line).c_str());
+      }
+    } catch (const char*) {
+      log("%s line '%s' ignored\n", path.filename().string().c_str(), rstripNewline(line).c_str());
+    }
+  }
+  return out;
+}
+
+// The build named on the first line of a tune file the tuner wrote; nothing for any other file.
+static optional<u64> tunerBuild(const fs::path& path) {
+  File fi = File::openRead(path);
+  if (!fi) { return {}; }
+  fi.allowUnterminatedLastLine();
+  for (const string& line : fi) {
+    string const magic = string{"# "} + TUNE_FILE_MAGIC + ", build ";
+    if (!line.starts_with(magic)) { return {}; }
+    return strtoull(line.c_str() + magic.size(), nullptr, 16);
+  }
+  return {};
+}
+
+bool TuneEntry::tunerFile(const Args& args) { return tunerBuild(findFile(args, "tune.txt")).has_value(); }
+
+vector<TuneEntry> TuneEntry::tunedLines(const Args& args, bool ll) {
+  fs::path const path = findFile(args, "tune.txt");
+  vector<TuneEntry> own, fallback;
+  if (optional<u64> const build = tunerBuild(path)) {
+    static bool warned = false;
+    if (*build != tune::buildFingerprint() && !warned) {
+      warned = true;
+      log("Warning: tune.txt was measured with other kernels (build %016" PRIx64 ", this one is %016" PRIx64 "); its costs "
+          "and settings may not hold for this build.  Run the build that wrote it, or tune this one.\n",
+          *build, tune::buildFingerprint());
+    }
+    for (TuneEntry& e : readLines(path)) { (e.kind == (ll ? "ll" : "prp") ? own : fallback).push_back(std::move(e)); }
+    if (!ll) { fallback.clear(); }
+  } else if (fs::path const llPath = findFile(args, "tune-ll.txt"); ll && fs::exists(llPath)) {
+    own = readLines(llPath);
+    fallback = readLines(path);
+  } else if (ll) {
+    fallback = readLines(path);
+  } else {
+    own = readLines(path);
+  }
+  for (TuneEntry& e : fallback) { e.fallback = true; }
+  std::ranges::stable_sort(own, {}, &TuneEntry::cost);
+  std::ranges::stable_sort(fallback, {}, &TuneEntry::cost);
+  std::ranges::move(fallback, std::back_inserter(own));
+  return own;
 }
 
 vector<TuneEntry> TuneEntry::readTuneFile(const Args& args, bool ll) {
@@ -122,20 +220,43 @@ vector<TuneEntry> TuneEntry::readTuneFile(const Args& args, bool ll) {
   return results;
 }
 
-// The settings of the tune.txt line for exactly this FFT, for an FFT given with -fft.  Unlike readTuneFile() this also looks at
-// lines a cheaper FFT dominates, so that a user can try settings on any FFT by adding them to its tune.txt line.
-vector<KeyVal> TuneEntry::usesFor(const Args& args, const FFTConfig& fft, bool ll) {
-  File fi = File::openRead(tuneFilePath(args, ll));
-  if (!fi) { return {}; }
-  fi.allowUnterminatedLastLine();
-
-  string const spec = fft.spec();
-  for (const string& line : fi) {
-    try {
-      if (optional<TuneEntry> const e = parseTuneLine(line); e && e->fft.spec() == spec) { return e->uses; }
-    } catch (const char*) {}
+const TuneEntry* TuneEntry::pick(const vector<TuneEntry>& lines, u64 E, double overdrive, bool fp64, bool doLog) {
+  for (const TuneEntry& e : lines) {
+    // The first acceptable is the best as they're sorted by cost, a test's own kind first.  An FFT too large for E (below
+    // minBpw) would make the Gpu constructor throw "FFT size too large", so those are skipped too.
+    if (E < e.minExp || E > e.maxExp() * overdrive || E / float(e.fft.size()) < e.fft.minBpw()) { continue; }
+    if (!fp64 && e.fft.FFT_FP64) { continue; }
+    // A line names the carry regime it was measured in; where E would run in another (a build whose tables moved the
+    // boundary), its cost and settings are not of what would run.
+    if (!e.regime.empty()) {
+      if (string const would = tune::regimeOf(e.fft, E).label(); would != e.regime) {
+        if (doLog) {
+          log("tune.txt: %s holds %" PRIu64 " but would run it as %s, not as the %s it was measured in; passed over\n",
+              e.fft.spec().c_str(), E, would.c_str(), e.regime.c_str());
+        }
+        continue;
+      }
+    }
+    if (doLog && e.fallback) {
+      log("No LL line of the tune file holds %" PRIu64 "; running %s by its line for PRP\n", E, e.fft.spec().c_str());
+    }
+    return &e;
   }
-  return {};
+  return nullptr;
+}
+
+// Unlike readTuneFile() this also looks at lines a cheaper FFT dominates, so that a user can try settings on any FFT by adding
+// them to its tune.txt line.
+vector<KeyVal> TuneEntry::usesFor(const Args& args, const FFTConfig& fft, u64 E, bool ll) {
+  string const spec = fft.spec();
+  vector<TuneEntry> const lines = tunedLines(args, ll);
+  const TuneEntry* first = nullptr;
+  for (const TuneEntry& e : lines) {
+    if (e.fft.spec() != spec) { continue; }
+    if (E >= e.minExp && E <= e.maxExp()) { return e.uses; }
+    if (!first) { first = &e; }
+  }
+  return first ? first->uses : vector<KeyVal>{};
 }
 
 void TuneEntry::writeTuneFile(const vector<TuneEntry>& results) {

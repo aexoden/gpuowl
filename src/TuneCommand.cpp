@@ -4,6 +4,8 @@
 
 #include "TuneDB.h"
 
+#include <algorithm>
+#include <cctype>
 #include <cmath>
 #include <limits>
 #include <optional>
@@ -208,6 +210,11 @@ TuneCommand parseTuneCommand(std::string_view text) {
                           "randomReach=1.5x@30m, or all"};
       }
       out.explore.reach = *reach;
+    } else if (key == "tag") {
+      if (!std::ranges::all_of(value, [](char c) { return std::isalnum(u8(c)) || c == '.' || c == '_' || c == '-'; })) {
+        throw std::string{"-tune: tag= takes a word of letters, digits, '.', '_' and '-', such as tag=875mhz"};
+      }
+      out.tag = value;
     } else if (key == "dashboard" && out.verb == TuneVerb::Run) {
       if (value != "0" && value != "1") { throw std::string{"-tune: dashboard= takes 0 or 1"}; }
       out.dashboard = value == "1";
@@ -235,7 +242,7 @@ std::string settingsWord(const RunScope& scope, const TuneCommand& command) {
   return "workload=" + std::to_string(scope.lo) + '-' + std::to_string(scope.hi) +
     ",probe=" + std::to_string(scope.probe) + ",probeWeight=" + weight + ",kinds=" + kinds +
     ",pfaShapes=" + toString(scope.pfaShapes) + ",tailQueues=" + toString(command.tailQueues) +
-    ",stop=" + percentText(command.stop);
+    ",stop=" + percentText(command.stop) + (command.tag.empty() ? "" : ",tag=" + command.tag);
 }
 
 }  // namespace tune
