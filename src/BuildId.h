@@ -27,7 +27,8 @@ namespace tune {
 // the fingerprint takes in: rows timed the old way then sit in an env of their own rather than pooling with new ones.
 [[nodiscard]] u64 buildFingerprint();
 
-// 1 until calls heated the device first (CALL_HEAT_SEC).
-inline constexpr u32 MEASUREMENT_PROTOCOL = 2;
+// 1 until calls heated the device first (CALL_HEAT_SEC); 2 until the card was kept loaded between calls (Heater, compile
+// ahead), which left it idle 1-4% of a run rather than 40-50% and read a power-capped card about 2% slower.
+inline constexpr u32 MEASUREMENT_PROTOCOL = 3;
 
 }  // namespace tune
