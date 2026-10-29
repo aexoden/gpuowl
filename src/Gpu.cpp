@@ -16,6 +16,7 @@
 #include "TrigBufCache.h"
 #include "fs.h"
 #include "Sha3Hash.h"
+#include "Feedback.h"
 
 #include <algorithm>
 #include <limits>
@@ -3111,6 +3112,8 @@ PRPResult Gpu::isPrimePRP([[maybe_unused]] const Task& task) {
   int nSeqErrors = 0;
   u64 lastFailedRes64 = 0;
   u32 const logStep = args.logStep;
+  // What this test sustains, for the tuner to set against what it measured (Feedback.h).
+  tune::ProductionRate rate{E, fft, tune::TestKind::PRP, args.flags, logStep};
 
  reload:
   elapsedTimer.reset();
@@ -3175,6 +3178,7 @@ PRPResult Gpu::isPrimePRP([[maybe_unused]] const Task& task) {
 
   const u64 startK = k;
   IterationTimer iterationTimer{k};
+  rate.restart(k);
 
   wantROE = 0; // skip the initial iterations
 
@@ -3235,6 +3239,7 @@ PRPResult Gpu::isPrimePRP([[maybe_unused]] const Task& task) {
     u64 const res = dataResidue();
     float const secsPerIt = iterationTimer.reset(k);
     queue.setSquareTime((int) (secsPerIt * 1'000'000));
+    rate.step(k, secsPerIt);
 
     vector<Word> rawCheck = readChecked(bufCheck);
     if (rawCheck.empty()) {
@@ -3331,6 +3336,8 @@ LLResult Gpu::isPrimeLL([[maybe_unused]] const Task& task) {
   Timer elapsedTimer;
 
   Saver<LLState> saver{E, 1000, args.nSavefiles};
+  // What this test sustains, for the tuner to set against what it measured (Feedback.h).
+  tune::ProductionRate rate{E, fft, tune::TestKind::LL, args.flags, args.logStep};
 
   reload:
   elapsedTimer.reset();
@@ -3351,6 +3358,7 @@ LLResult Gpu::isPrimeLL([[maybe_unused]] const Task& task) {
   }
 
   IterationTimer iterationTimer{startK};
+  rate.restart(startK);
 
   u64 k = startK;
   u64 const kEnd = E - 2;
@@ -3395,6 +3403,7 @@ LLResult Gpu::isPrimeLL([[maybe_unused]] const Task& task) {
 
     float const secsPerIt = iterationTimer.reset(k);
     queue.setSquareTime((int) (secsPerIt * 1'000'000));
+    rate.step(k, secsPerIt);
     log("%9" PRIu64 " %016" PRIx64 " %s ETA %s\n", k, res64, formatSecsPerIter(secsPerIt).c_str(), getETA(k, kEnd, secsPerIt).c_str());
 
     if (k >= kEnd) { return {.isPrime=isAllZero, .res64=res64}; }

@@ -37,5 +37,6 @@
     <ClCompile Include=".\src\Telemetry.cpp" />
     <ClCompile Include=".\src\Qualify.cpp" />
     <ClCompile Include=".\src\Soak.cpp" />
+    <ClCompile Include=".\src\Feedback.cpp" />
   </ItemGroup>
 </Project>

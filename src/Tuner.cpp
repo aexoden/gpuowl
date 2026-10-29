@@ -247,6 +247,10 @@ LoopResult runLoop(Device& device, TuneDB& db, u32 env, const Env& card, const R
 
     Readings const readings{db, env, card, settings.powerHold};
     model.fit(readings.observations());
+    std::map<ConfigKey, Sustained> const production =
+      settings.publishTo.empty()
+        ? std::map<ConfigKey, Sustained>{}
+        : sustainedOf(readFeedback(settings.publishTo / FEEDBACK_FILE), db.findEnv(env)->build, card);
     Publication const publication = publish(scope, candidates, readings, &carried);
     out.T = publication.T();
     publisher.write(publication, out.regret);
@@ -305,7 +309,8 @@ LoopResult runLoop(Device& device, TuneDB& db, u32 env, const Env& card, const R
                                .coverage = covered,
                                .outstanding = left,
                                .publication = &publication,
-                               .audit = auditSummary(db, env, readings, publication, true)});
+                               .audit = auditSummary(db, env, readings, publication, true),
+                               .production = &production});
       writeReport(settings.publishTo, lastReport);
       for (const std::string& line : auditReport(auditSummary(db, env, readings, publication, true), true)) {
         log("tune: %s\n", line.c_str());
@@ -430,7 +435,8 @@ LoopResult runLoop(Device& device, TuneDB& db, u32 env, const Env& card, const R
                                .coverage = covered,
                                .outstanding = left,
                                .publication = &publication,
-                               .audit = auditSummary(db, env, readings, publication, budgetSpent)});
+                               .audit = auditSummary(db, env, readings, publication, budgetSpent),
+                               .production = &production});
       writeReport(settings.publishTo, lastReport);
     };
     report("running", false);
@@ -673,6 +679,8 @@ bool runOffline(const TuneCommand& command, const Args& args) {
   Readings const readings{db, env->id, card, command.powerHold};
   Carried const carried = carriedLines(db, env->id);
   Publication const publication = publish(*scope, candidates, readings, &carried);
+  std::map<ConfigKey, Sustained> const production =
+    sustainedOf(readFeedback(fs::current_path() / FEEDBACK_FILE), env->build, card);
 
   for (const KindPublication& kind : publication.kinds) {
     if (kind.tuned) {
@@ -682,10 +690,21 @@ bool runOffline(const TuneCommand& command, const Args& args) {
       log("tune: %s: %zu lines, a kind this workload does not tune\n", toString(kind.kind), kind.written.size());
     }
     for (const Line& line : kind.written) {
-      log("tune:   %8.1f %s %s %" PRIu64 "-%" PRIu64 " -use %s (%s%s)\n", line.cost(), line.subject.fft.spec().c_str(),
+      std::string ran;
+      if (const Sustained* const s = sustainedOn(line, production)) {
+        char buf[128];
+        snprintf(buf, sizeof(buf), "; production sustained %.1f, %+.1f%%, over %u stretch%s", s->usPerIt,
+                 (s->usPerIt / line.cost() - 1) * 100, s->stretches, s->stretches == 1 ? "" : "es");
+        ran = buf;
+      }
+      log("tune:   %8.1f %s %s %" PRIu64 "-%" PRIu64 " -use %s (%s%s%s)\n", line.cost(), line.subject.fft.spec().c_str(),
           line.subject.regime.label().c_str(), line.lo(), line.reach(), optionsText(line.reading->options).c_str(),
-          toString(line.accuracy.state), line.carried ? ", an earlier build's" : "");
+          toString(line.accuracy.state), line.carried ? ", an earlier build's" : "", ran.c_str());
     }
+  }
+  if (ProductionGap const gap = productionGap(publication, production); gap.lines) {
+    log("tune: production ran %u of these lines, at a median %+.1f%% against their published costs (%s)\n", gap.lines,
+        (gap.ratio - 1) * 100, FEEDBACK_FILE);
   }
   log("tune: %zu accuracy readings and %zu calls owed before more lines can be published\n",
       publication.owedGates.size(), publication.owedCalls.size());

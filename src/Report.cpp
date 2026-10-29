@@ -5,6 +5,7 @@
 #include "CycleFile.h"
 #include "TuneDB.h"
 
+#include <algorithm>
 #include <cinttypes>
 #include <cmath>
 #include <cstdio>
@@ -38,7 +39,32 @@ std::string number(double x) {
   return buf;
 }
 
+std::string productionJson(const Line& line, const std::map<ConfigKey, Sustained>* production) {
+  const Sustained* const s = production ? sustainedOn(line, *production) : nullptr;
+  if (!s) { return "null"; }
+  return "{\"usPerIt\": " + number(s->usPerIt) + ", \"ratio\": " + number(s->usPerIt / line.cost()) +
+    ", \"stretches\": " + std::to_string(s->stretches) + ", \"iterations\": " + std::to_string(s->iters) + "}";
+}
+
 }  // namespace
+
+const Sustained* sustainedOn(const Line& line, const std::map<ConfigKey, Sustained>& production) {
+  auto const it = production.find(Readings::keyOf(line.subject, line.reading->options));
+  return it == production.end() ? nullptr : &it->second;
+}
+
+ProductionGap productionGap(const Publication& publication, const std::map<ConfigKey, Sustained>& production) {
+  std::vector<double> ratios;
+  for (const KindPublication& kind : publication.kinds) {
+    for (const Line& line : kind.written) {
+      if (const Sustained* const s = sustainedOn(line, production)) { ratios.push_back(s->usPerIt / line.cost()); }
+    }
+  }
+  if (ratios.empty()) { return {}; }
+  std::ranges::sort(ratios);
+  size_t const n = ratios.size();
+  return {.lines = u32(n), .ratio = n % 2 ? ratios[n / 2] : (ratios[n / 2 - 1] + ratios[n / 2]) / 2};
+}
 
 std::string reportJson(const RunReport& r) {
   std::string out = "{\n";
@@ -50,6 +76,12 @@ std::string reportJson(const RunReport& r) {
   out += "  \"T\": " + number(r.T) + ",\n";
   out += "  \"calibration\": " + number(r.calibration) + ",\n";
   out += "  \"modelGapEstimate\": " + number(r.regret) + ",\n";
+  if (r.production && r.publication) {
+    ProductionGap const gap = productionGap(*r.publication, *r.production);
+    out += "  \"production\": {\"lines\": " + std::to_string(gap.lines) + ", \"ratio\": " + number(gap.ratio) + "},\n";
+  } else {
+    out += "  \"production\": null,\n";
+  }
 
   out += "  \"laneSeconds\": {";
   for (size_t i = 0; i < LANES; ++i) {
@@ -91,7 +123,7 @@ std::string reportJson(const RunReport& r) {
           ", \"options\": " + jsonString(configText(line.reading->options)) + ", \"usPerIt\": " + number(line.cost()) +
           ", " + range + ", \"earlierBuild\": " + (line.carried ? "true" : "false") +
           ", \"soaked\": " + (line.reading->isSoaked() ? "true" : "false") + ", \"timedUsPerIt\": " +
-          number(line.reading->timed) + "}";
+          number(line.reading->timed) + ", \"production\": " + productionJson(line, r.production) + "}";
         first = false;
       }
     }

@@ -8,6 +8,7 @@
 #include "Audit.h"
 #include "Coverage.h"
 #include "Explore.h"
+#include "Feedback.h"
 #include "Lanes.h"
 #include "Publish.h"
 
@@ -33,7 +34,21 @@ struct RunReport {
   std::optional<Outstanding> outstanding{};  // as of the last regret estimate
   const Publication* publication = nullptr;
   std::optional<AuditSummary> audit{};
+  const std::map<ConfigKey, Sustained>* production = nullptr;  // sustainedOf() the feedback beside the tune file
 };
+
+// What production sustained running a published line's configuration; nullptr where it has not run it.
+[[nodiscard]] const Sustained* sustainedOn(const Line& line, const std::map<ConfigKey, Sustained>& production);
+
+// Over the lines of `publication` production has run: how many, and the median of what it sustained on each over the
+// cost the line was published at.  NaN for none.
+struct ProductionGap {
+  u32 lines = 0;
+  double ratio = NAN;
+};
+
+[[nodiscard]] ProductionGap productionGap(const Publication& publication,
+                                          const std::map<ConfigKey, Sustained>& production);
 
 [[nodiscard]] std::string reportJson(const RunReport& report);
 
