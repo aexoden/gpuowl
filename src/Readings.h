@@ -12,6 +12,7 @@
 
 #include <map>
 #include <optional>
+#include <set>
 #include <string>
 #include <tuple>
 #include <vector>
@@ -54,9 +55,17 @@ struct Reading {
   double soaked = NAN;
   u32 soakSlices = 0;
 
+  // Where its first call stands among the env's call records: of two configurations, the one read first held a line
+  // before the other could take it (Duel.h).
+  size_t first = 0;
+  // Where a duel (Duel.h) went against it, a hair over what the winner costs, so that it is ranked behind the winner
+  // whatever its own readings say; 0 where none did.
+  double beaten = 0;
+
   [[nodiscard]] bool isSoaked() const { return soakSlices > 0; }
 
-  // What a published line costs: the mean, pessimistically by its error bar.
+  // What a published line costs: the mean, pessimistically by its error bar, and no less than a configuration that beat
+  // it in a duel.
   [[nodiscard]] double pessimistic() const;
 };
 
@@ -88,6 +97,9 @@ public:
 
   [[nodiscard]] static ConfigKey keyOf(const Subject& subject, const UseConfig& options);
 
+  // Whether a duel between the two configurations was recorded, whichever was the incumbent.
+  [[nodiscard]] bool dueled(const ConfigKey& a, const ConfigKey& b) const;
+
   // What a soak sustains against what calls read of the same configuration, the median over every soaked
   // configuration of the env; 1 where none has been soaked.  The cost of a configuration not soaked yet is its calls'
   // times this, so soaked and unsoaked compare on one footing: calls on a card at its power limit read 1-2% fast even
@@ -99,6 +111,7 @@ private:
   std::vector<Observation> observations_;
   double calibration_ = 1;
   std::map<std::pair<std::string, std::string>, std::vector<RoeReading>> roes_;
+  std::set<std::pair<ConfigKey, ConfigKey>> dueled_;  // the lesser key first
 };
 
 }  // namespace tune

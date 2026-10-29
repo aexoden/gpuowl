@@ -21,9 +21,13 @@ constexpr double SE_FLOOR = 0.001;
 // under 1%.
 constexpr double DISTURBED = 1.15;
 
+// How much dearer than its winner a duel's loser is set: nothing a cost can show, but enough that no sort puts the
+// loser first.
+constexpr double DUEL_HAIR = 1e-9;
+
 }  // namespace
 
-double Reading::pessimistic() const { return mean + PESSIMISM_SIGMA * se; }
+double Reading::pessimistic() const { return std::max(mean + PESSIMISM_SIGMA * se, beaten); }
 
 ConfigKey Readings::keyOf(const Subject& subject, const UseConfig& options) {
   return ConfigKey{
@@ -51,7 +55,8 @@ Readings::Readings(const TuneDB& db, u32 env, const Env& device, double powerHol
   };
   std::map<ConfigKey, Drawn> drawn;
 
-  for (const CallRow& row : db.calls()) {
+  for (size_t at = 0; at < db.calls().size(); ++at) {
+    const CallRow& row = db.calls()[at];
     if (db.envOf(row.sess) != env) { continue; }
     std::optional<FFTConfig> const fft = parseFft(row.fft);
     const UseConfig* const recorded = db.findCfg(row.cfg);
@@ -61,8 +66,8 @@ Readings::Readings(const TuneDB& db, u32 env, const Env& device, double powerHol
     UseConfig const options = canonicalConfig(device, *fft, *recorded);
     ConfigKey const key = keyOf(subject, options);
 
-    auto [it, fresh] =
-      readings_.try_emplace(key, Reading{.fft = *fft, .kind = row.kind, .regime = subject.regime, .options = options});
+    auto [it, fresh] = readings_.try_emplace(
+      key, Reading{.fft = *fft, .kind = row.kind, .regime = subject.regime, .options = options, .first = at});
     Reading& r = it->second;
     r.exponent = row.exponent;
 
@@ -188,6 +193,60 @@ Readings::Readings(const TuneDB& db, u32 env, const Env& device, double powerHol
   }
   for (Observation& o : observations_) { o.cost *= calibration_; }
 
+  // The duels: the latest between any two configurations stands.  Its loser -- the incumbent wherever the challenger
+  // did not win -- costs at least what its winner does, through any chain of duels, unless both have been soaked: what
+  // they sustained then settles it.
+  struct Standing {
+    ConfigKey incumbent;
+    ConfigKey challenger;
+    DuelOutcome outcome;
+  };
+  std::map<std::pair<ConfigKey, ConfigKey>, Standing> latest;
+  auto keyAt = [&](const std::string& spec, TestKind kind, u64 exponent, u32 cfg) -> std::optional<ConfigKey> {
+    std::optional<FFTConfig> const fft = parseFft(spec);
+    const UseConfig* const recorded = db.findCfg(cfg);
+    if (!fft || !recorded) { return {}; }
+    return keyOf({.fft = *fft, .kind = kind, .regime = regimeOf(*fft, exponent)},
+                 canonicalConfig(device, *fft, *recorded));
+  };
+  for (const DuelRow& row : db.duels()) {
+    if (db.envOf(row.sess) != env) { continue; }
+    std::optional<ConfigKey> const a = keyAt(row.fft, row.kind, row.exponent, row.cfg);
+    std::optional<ConfigKey> const b = keyAt(row.challengerFft, row.kind, row.challengerExponent, row.challengerCfg);
+    if (!a || !b || *a == *b) { continue; }
+    auto pair = *a < *b ? std::pair{*a, *b} : std::pair{*b, *a};
+    dueled_.insert(pair);
+    latest.insert_or_assign(std::move(pair), Standing{.incumbent = *a, .challenger = *b, .outcome = row.outcome});
+  }
+  std::vector<std::pair<const Reading*, Reading*>> wins;  // winner, loser
+  for (auto const& [pair, s] : latest) {
+    auto const i = readings_.find(s.incumbent);
+    auto const c = readings_.find(s.challenger);
+    if (i == readings_.end() || c == readings_.end()) { continue; }
+    Reading& incumbent = i->second;
+    Reading& challenger = c->second;
+    if (incumbent.calls == 0 || challenger.calls == 0 || incumbent.failed || challenger.failed) { continue; }
+    if (incumbent.isSoaked() && challenger.isSoaked()) { continue; }
+    if (s.outcome == DuelOutcome::Challenger) {
+      wins.emplace_back(&challenger, &incumbent);
+    } else {
+      wins.emplace_back(&incumbent, &challenger);
+    }
+  }
+  // A cycle of duels would raise its members a hair a round for ever; as many rounds as there are duels settle any
+  // chain.
+  for (size_t round = 0; round <= wins.size(); ++round) {
+    bool moved = false;
+    for (auto& [winner, loser] : wins) {
+      double const bar = winner->pessimistic() * (1 + DUEL_HAIR);
+      if (loser->pessimistic() < bar) {
+        loser->beaten = bar;
+        moved = true;
+      }
+    }
+    if (!moved) { break; }
+  }
+
   for (const RoeRow& row : db.roes()) {
     if (db.envOf(row.sess) != env) { continue; }
     std::optional<FFTConfig> const fft = parseFft(row.fft);
@@ -196,6 +255,10 @@ Readings::Readings(const TuneDB& db, u32 env, const Env& device, double powerHol
     roes_[{fft->spec(), configText(canonicalConfig(device, *fft, *recorded))}].push_back(
       {.exponent = row.exponent, .checkOk = row.checkOk, .z = row.z, .n = row.n});
   }
+}
+
+bool Readings::dueled(const ConfigKey& a, const ConfigKey& b) const {
+  return dueled_.contains(a < b ? std::pair{a, b} : std::pair{b, a});
 }
 
 std::vector<const Reading*> Readings::of(const Subject& subject) const {

@@ -64,6 +64,7 @@ TESTSRCS = \
   test_Publish.cpp \
   test_Qualify.cpp \
   test_Soak.cpp \
+  test_Duel.cpp \
   test_Feedback.cpp \
   test_Tuner.cpp \
   test_Dashboard.cpp

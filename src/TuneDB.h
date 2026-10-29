@@ -235,6 +235,34 @@ struct SoakRow {
   u64 ts = 0;
 };
 
+// How a duel (Duel.h) ended: the challenger cheaper, the incumbent cheaper, the two even within the duel's epsilon, or
+// neither shown within its pairs.  Only a challenger's win moves a line; the incumbent keeps it otherwise.
+enum class DuelOutcome : u8 { Challenger, Incumbent, Even, Undecided };
+
+[[nodiscard]] const char* toString(DuelOutcome outcome);
+[[nodiscard]] std::optional<DuelOutcome> parseDuelOutcome(std::string_view text);
+
+// A duel (Duel.h): a configuration that would take a line from the one holding it, and that one, timed in turns until
+// the ratio of their costs said which was cheaper.  Their calls are call records of their own; this says what they
+// came to.  The incumbent is `fft`, `exponent` and `cfg`, the challenger the second three.
+struct DuelRow {
+  u32 sess = 0;
+  TestKind kind = TestKind::PRP;
+  std::string fft{};
+  u64 exponent = 0;
+  u32 cfg = 0;
+  std::string challengerFft{};
+  u64 challengerExponent = 0;
+  u32 challengerCfg = 0;
+  u32 pairs = 0;     // of calls, one of each
+  double ratio = 0;  // the challenger's cost over the incumbent's, the geometric mean of the pairs
+  double lo = 0;     // the interval the ratio was known to
+  double hi = 0;
+  DuelOutcome outcome = DuelOutcome::Undecided;
+  double sec = 0;  // how long the duel ran
+  u64 ts = 0;
+};
+
 // A build of a configuration whose REG*-limited kernels spilled registers to local memory: which keys.  Such a call
 // costs two to four times what it would without the spill, which is the spill's, not its options'.
 struct SpillRow {
@@ -320,6 +348,7 @@ public:
   [[nodiscard]] const std::vector<SpillRow>& spills() const { return spills_; }
   [[nodiscard]] const std::vector<PowerRow>& powers() const { return powers_; }
   [[nodiscard]] const std::vector<SoakRow>& soaks() const { return soaks_; }
+  [[nodiscard]] const std::vector<DuelRow>& duels() const { return duels_; }
   // The group a new soak takes: one past every soak recorded.
   [[nodiscard]] u32 nextSoakGroup() const;
   [[nodiscard]] const std::vector<std::string>& unknownRows() const { return unknown_; }
@@ -357,6 +386,7 @@ public:
   [[nodiscard]] bool add(const SpillRow& row);
   [[nodiscard]] bool add(const PowerRow& row);
   [[nodiscard]] bool add(const SoakRow& row);
+  [[nodiscard]] bool add(const DuelRow& row);
 
   // The anchor an env is pinned to, as its earliest session that named one spells it, else as its earliest anchor
   // reading does; empty where it has none.
@@ -411,6 +441,7 @@ private:
   std::vector<SpillRow> spills_;
   std::vector<PowerRow> powers_;
   std::vector<SoakRow> soaks_;
+  std::vector<DuelRow> duels_;
   std::vector<std::string> unknown_;
 
   // Per session, the attempt it has open, if any.
@@ -434,6 +465,7 @@ private:
 [[nodiscard]] std::string formatRow(const SpillRow& row);
 [[nodiscard]] std::string formatRow(const PowerRow& row);
 [[nodiscard]] std::string formatRow(const SoakRow& row);
+[[nodiscard]] std::string formatRow(const DuelRow& row);
 
 // Whether `locks`, in the form of Linux's /proc/locks, lists a lock held on the file at (major, minor, inode).
 [[nodiscard]] bool lockListed(std::string_view locks, u32 major, u32 minor, u64 inode);

@@ -331,6 +331,32 @@ std::string formatRow(const SoakRow& row) {
     ' ' + fixed(row.watts, 1) + ' ' + fixed(row.sec, 1) + ' ' + std::to_string(row.ts);
 }
 
+std::string formatRow(const DuelRow& row) {
+  return "duel " + std::to_string(row.sess) + ' ' + toString(row.kind) + ' ' + row.fft + ' ' +
+    std::to_string(row.exponent) + ' ' + std::to_string(row.cfg) + ' ' + row.challengerFft + ' ' +
+    std::to_string(row.challengerExponent) + ' ' + std::to_string(row.challengerCfg) + ' ' + std::to_string(row.pairs) +
+    ' ' + fixed(row.ratio, 5) + ' ' + fixed(row.lo, 5) + ' ' + fixed(row.hi, 5) + ' ' + toString(row.outcome) + ' ' +
+    fixed(row.sec, 1) + ' ' + std::to_string(row.ts);
+}
+
+const char* toString(DuelOutcome outcome) {
+  switch (outcome) {
+  case DuelOutcome::Challenger: return "challenger";
+  case DuelOutcome::Incumbent: return "incumbent";
+  case DuelOutcome::Even: return "even";
+  case DuelOutcome::Undecided: return "undecided";
+  }
+  return "?";
+}
+
+std::optional<DuelOutcome> parseDuelOutcome(std::string_view text) {
+  for (DuelOutcome const o :
+       {DuelOutcome::Challenger, DuelOutcome::Incumbent, DuelOutcome::Even, DuelOutcome::Undecided}) {
+    if (text == toString(o)) { return o; }
+  }
+  return {};
+}
+
 const char* toString(PowerSource source) {
   switch (source) {
   case PowerSource::Counter: return "counter";
@@ -571,6 +597,18 @@ bool TuneDB::add(const SoakRow& row) {
   return record(soaks_, row);
 }
 
+bool TuneDB::add(const DuelRow& row) {
+  auto const challenger = parseFft(row.challengerFft);
+  if (!challenger || !findCfg(row.cfg) || !findCfg(row.challengerCfg) || row.exponent == 0 ||
+      row.challengerExponent == 0 || row.pairs == 0 || !(row.ratio > 0) || !(row.lo > 0) || !(row.hi >= row.lo) ||
+      !(row.sec > 0)) {
+    return false;
+  }
+  DuelRow canonical = row;
+  canonical.challengerFft = challenger->spec();
+  return record(duels_, std::move(canonical));
+}
+
 u32 TuneDB::nextSoakGroup() const {
   u32 top = 0;
   for (const SoakRow& r : soaks_) { top = std::max(top, r.group); }
@@ -754,6 +792,7 @@ void TuneDB::clear() {
   spills_.clear();
   powers_.clear();
   soaks_.clear();
+  duels_.clear();
   unknown_.clear();
   open_.clear();
 }
@@ -768,7 +807,8 @@ struct Shape {
 
 constexpr Shape SHAPES[] = {{"cfg", 3},    {"call", 15}, {"try", 7},   {"done", 3},  {"roe", 10},
                             {"anchor", 8}, {"regs", 12}, {"ref", 7},   {"item", 10}, {"kres", 11},
-                            {"kres", 13},  {"pred", 5},  {"audit", 6}, {"spill", 7}, {"power", 12}, {"soak", 14}};
+                            {"kres", 13},  {"pred", 5},  {"audit", 6}, {"spill", 7}, {"power", 12}, {"soak", 14},
+                            {"duel", 16}};
 
 }  // namespace
 
@@ -1096,6 +1136,39 @@ bool TuneDB::parse(std::string_view text, std::string_view name) {
                        .sec = *sec,
                        .ts = *ts})) {
         refuse("malformed soak record");
+      }
+    } else if (tag == "duel" && f.size() == 16) {
+      auto const sess = parseInt<u32>(f[1]);
+      auto const kind = parseTestKind(f[2]);
+      auto const exponent = parseInt<u64>(f[4]);
+      auto const cfg = parseInt<u32>(f[5]);
+      auto const challengerExponent = parseInt<u64>(f[7]);
+      auto const challengerCfg = parseInt<u32>(f[8]);
+      auto const pairs = parseInt<u32>(f[9]);
+      auto const ratio = parsePositive(f[10]);
+      auto const lo = parsePositive(f[11]);
+      auto const hi = parsePositive(f[12]);
+      auto const outcome = parseDuelOutcome(f[13]);
+      auto const sec = parsePositive(f[14]);
+      auto const ts = parseInt<u64>(f[15]);
+      if (!sess || !kind || !exponent || !cfg || !challengerExponent || !challengerCfg || !pairs || !ratio || !lo ||
+          !hi || !outcome || !sec || !ts ||
+          !add(DuelRow{.sess = *sess,
+                       .kind = *kind,
+                       .fft = std::string{f[3]},
+                       .exponent = *exponent,
+                       .cfg = *cfg,
+                       .challengerFft = std::string{f[6]},
+                       .challengerExponent = *challengerExponent,
+                       .challengerCfg = *challengerCfg,
+                       .pairs = *pairs,
+                       .ratio = *ratio,
+                       .lo = *lo,
+                       .hi = *hi,
+                       .outcome = *outcome,
+                       .sec = *sec,
+                       .ts = *ts})) {
+        refuse("malformed duel record");
       }
     } else if (tag == "spill" && f.size() == 7) {
       auto const sess = parseInt<u32>(f[1]);
