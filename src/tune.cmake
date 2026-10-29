@@ -34,4 +34,5 @@ target_sources(prpll PRIVATE
   Dashboard.cpp
   Telemetry.cpp
   Qualify.cpp
+  Soak.cpp
   )

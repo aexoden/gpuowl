@@ -77,6 +77,30 @@ inline constexpr double RESTART_CUT = 0.5;
 inline constexpr double SHORT_CALLS = 2;
 inline constexpr u32 SHORT_BLOCKS = 2;
 
+// The soaks of finalists (Soak.h): the share of the tuning time they may take, how many configurations a soak takes
+// and how close behind a line one must be, and how long a soak's warm-up and each turn of a configuration last.
+inline constexpr double SOAK_SHARE = 0.1;
+inline constexpr u32 SOAK_TOP = 3;
+inline constexpr double SOAK_MARGIN = 0.03;
+inline constexpr double SOAK_WARM = 120;
+inline constexpr double SOAK_SLICE = 60;
+inline constexpr u32 SOAK_ROUNDS = 3;
+
+// -tune soak=<share>%|0, soakTop=, soakMargin=, soakWarm=, soakSlice=, soakRounds=.
+struct SoakSettings {
+  double share = SOAK_SHARE;  // 0 for no soaks
+  u32 top = SOAK_TOP;
+  double margin = SOAK_MARGIN;
+  double warm = SOAK_WARM;
+  double slice = SOAK_SLICE;
+  u32 rounds = SOAK_ROUNDS;
+
+  // How long a soak of `n` configurations runs.
+  [[nodiscard]] double length(size_t n) const { return warm + slice * double(rounds) * double(n); }
+
+  [[nodiscard]] bool operator==(const SoakSettings&) const = default;
+};
+
 // What the lanes beyond the model's are allowed.
 
 struct ExploreSettings {

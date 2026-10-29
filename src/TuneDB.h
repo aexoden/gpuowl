@@ -212,6 +212,25 @@ struct PowerRow {
   u64 ts = 0;
 };
 
+// A slice of a soak (Soak.h): a configuration squaring without a break for some seconds, its turn among a few
+// configurations taken in rounds so that each reads the card in the state production keeps it in.  Round 0 is the
+// warm-up that brings the card there, which says nothing of the configuration.
+struct SoakRow {
+  u32 sess = 0;
+  std::string fft{};
+  TestKind kind = TestKind::PRP;
+  u64 exponent = 0;
+  u32 cfg = 0;
+  u32 group = 0;     // the soak it was part of
+  u32 round = 0;
+  double mean = 0;   // microseconds per iteration over the slice's blocks
+  double sd = 0;     // of its blocks
+  u32 blocks = 0;
+  double watts = 0;  // mean, by the card's readings; 0 where it does not say
+  double sec = 0;    // how long the slice ran
+  u64 ts = 0;
+};
+
 // A build of a configuration whose REG*-limited kernels spilled registers to local memory: which keys.  Such a call
 // costs two to four times what it would without the spill, which is the spill's, not its options'.
 struct SpillRow {
@@ -296,6 +315,9 @@ public:
   [[nodiscard]] const std::vector<AuditRow>& audits() const { return audits_; }
   [[nodiscard]] const std::vector<SpillRow>& spills() const { return spills_; }
   [[nodiscard]] const std::vector<PowerRow>& powers() const { return powers_; }
+  [[nodiscard]] const std::vector<SoakRow>& soaks() const { return soaks_; }
+  // The group a new soak takes: one past every soak recorded.
+  [[nodiscard]] u32 nextSoakGroup() const;
   [[nodiscard]] const std::vector<std::string>& unknownRows() const { return unknown_; }
 
   [[nodiscard]] const DbEnv* findEnv(u32 id) const;
@@ -330,6 +352,7 @@ public:
   [[nodiscard]] bool add(const AuditRow& row);
   [[nodiscard]] bool add(const SpillRow& row);
   [[nodiscard]] bool add(const PowerRow& row);
+  [[nodiscard]] bool add(const SoakRow& row);
 
   // The anchor an env is pinned to, as its earliest session that named one spells it, else as its earliest anchor
   // reading does; empty where it has none.
@@ -383,6 +406,7 @@ private:
   std::vector<AuditRow> audits_;
   std::vector<SpillRow> spills_;
   std::vector<PowerRow> powers_;
+  std::vector<SoakRow> soaks_;
   std::vector<std::string> unknown_;
 
   // Per session, the attempt it has open, if any.
@@ -405,6 +429,7 @@ private:
 [[nodiscard]] std::string formatRow(const AuditRow& row);
 [[nodiscard]] std::string formatRow(const SpillRow& row);
 [[nodiscard]] std::string formatRow(const PowerRow& row);
+[[nodiscard]] std::string formatRow(const SoakRow& row);
 
 // Whether `locks`, in the form of Linux's /proc/locks, lists a lock held on the file at (major, minor, inode).
 [[nodiscard]] bool lockListed(std::string_view locks, u32 major, u32 minor, u64 inode);

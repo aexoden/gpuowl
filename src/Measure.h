@@ -65,9 +65,17 @@ struct Call {
 // Untimed blocks a call runs before its timed ones.
 inline constexpr u32 CALL_WARMUP_BLOCKS = 1;
 
-// How often a session reads the card (Telemetry.h), and how many seconds of readings it keeps.
+// How often a session reads the card (Telemetry.h), and how many seconds of readings it keeps: more than a soak's
+// longest slice.
 inline constexpr double SAMPLE_PERIOD = 0.1;
-inline constexpr double SAMPLE_KEEP = 60;
+inline constexpr double SAMPLE_KEEP = 300;
+
+// One configuration of a soak (Soak.h).
+struct SoakEntry {
+  FFTConfig fft;
+  TestKind kind = TestKind::PRP;
+  UseConfig options{};
+};
 
 [[nodiscard]] constexpr u64 callIterations(u32 nBlocks, u32 blockSize) {
   return u64(CALL_WARMUP_BLOCKS + nBlocks) * blockSize;
@@ -155,6 +163,13 @@ public:
 
   // One recorded rounding-error reading.
   RoeCheck roe(const FFTConfig& fft, const UseConfig& options, u64 exponent);
+
+  // A soak of `entries` at `exponent`, every slice recorded (SoakRow): all of them built and held at once, `warm`
+  // seconds of the first that builds to bring the card to its sustained state, then `rounds` rounds of `slice` seconds
+  // of each in turn, so the card never idles between them.  What each sustained over its rounds; NaN where it could
+  // not be built or read.
+  std::vector<double> soak(const std::vector<SoakEntry>& entries, u64 exponent, double warm, double slice,
+                           u32 rounds);
 
   // Why the configuration is never built again here; empty where it may be.
   [[nodiscard]] std::string held(const FFTConfig& fft, TestKind kind, u64 exponent, const UseConfig& options) const;

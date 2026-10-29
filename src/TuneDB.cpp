@@ -324,6 +324,13 @@ std::string formatRow(const PowerRow& row) {
     toString(row.source) + ' ' + std::to_string(row.ts);
 }
 
+std::string formatRow(const SoakRow& row) {
+  return "soak " + std::to_string(row.sess) + ' ' + row.fft + ' ' + toString(row.kind) + ' ' +
+    std::to_string(row.exponent) + ' ' + std::to_string(row.cfg) + ' ' + std::to_string(row.group) + ' ' +
+    std::to_string(row.round) + ' ' + fixed(row.mean, 3) + ' ' + fixed(row.sd, 3) + ' ' + std::to_string(row.blocks) +
+    ' ' + fixed(row.watts, 1) + ' ' + fixed(row.sec, 1) + ' ' + std::to_string(row.ts);
+}
+
 const char* toString(PowerSource source) {
   switch (source) {
   case PowerSource::Counter: return "counter";
@@ -556,6 +563,20 @@ bool TuneDB::add(const PowerRow& row) {
   return record(powers_, row);
 }
 
+bool TuneDB::add(const SoakRow& row) {
+  if (!findCfg(row.cfg) || row.exponent == 0 || row.group == 0 || !(row.mean > 0) || !(row.sd >= 0) ||
+      row.blocks == 0 || !(row.watts >= 0) || !(row.sec > 0)) {
+    return false;
+  }
+  return record(soaks_, row);
+}
+
+u32 TuneDB::nextSoakGroup() const {
+  u32 top = 0;
+  for (const SoakRow& r : soaks_) { top = std::max(top, r.group); }
+  return top + 1;
+}
+
 bool TuneDB::add(const TryRow& row) {
   if (!findCfg(row.cfg) || row.exponent == 0) { return false; }
   if (!record(tries_, row)) { return false; }
@@ -732,6 +753,7 @@ void TuneDB::clear() {
   audits_.clear();
   spills_.clear();
   powers_.clear();
+  soaks_.clear();
   unknown_.clear();
   open_.clear();
 }
@@ -746,7 +768,7 @@ struct Shape {
 
 constexpr Shape SHAPES[] = {{"cfg", 3},    {"call", 15}, {"try", 7},   {"done", 3},  {"roe", 10},
                             {"anchor", 8}, {"regs", 12}, {"ref", 7},   {"item", 10}, {"kres", 11},
-                            {"kres", 13},  {"pred", 5},  {"audit", 6}, {"spill", 7}, {"power", 12}};
+                            {"kres", 13},  {"pred", 5},  {"audit", 6}, {"spill", 7}, {"power", 12}, {"soak", 14}};
 
 }  // namespace
 
@@ -1044,6 +1066,36 @@ bool TuneDB::parse(std::string_view text, std::string_view name) {
                         .source = *source,
                         .ts = *ts})) {
         refuse("malformed power record");
+      }
+    } else if (tag == "soak" && f.size() == 14) {
+      auto const sess = parseInt<u32>(f[1]);
+      auto const kind = parseTestKind(f[3]);
+      auto const exponent = parseInt<u64>(f[4]);
+      auto const cfg = parseInt<u32>(f[5]);
+      auto const group = parseInt<u32>(f[6]);
+      auto const round = parseInt<u32>(f[7]);
+      auto const mean = parsePositive(f[8]);
+      auto const sd = parseNonNegative(f[9]);
+      auto const blocks = parseInt<u32>(f[10]);
+      auto const watts = parseNonNegative(f[11]);
+      auto const sec = parsePositive(f[12]);
+      auto const ts = parseInt<u64>(f[13]);
+      if (!sess || !kind || !exponent || !cfg || !group || !round || !mean || !sd || !blocks || !watts || !sec ||
+          !ts ||
+          !add(SoakRow{.sess = *sess,
+                       .fft = std::string{f[2]},
+                       .kind = *kind,
+                       .exponent = *exponent,
+                       .cfg = *cfg,
+                       .group = *group,
+                       .round = *round,
+                       .mean = *mean,
+                       .sd = *sd,
+                       .blocks = *blocks,
+                       .watts = *watts,
+                       .sec = *sec,
+                       .ts = *ts})) {
+        refuse("malformed soak record");
       }
     } else if (tag == "spill" && f.size() == 7) {
       auto const sess = parseInt<u32>(f[1]);

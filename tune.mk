@@ -34,7 +34,8 @@ TUNE_SRCS = \
   Tuner.cpp \
   Dashboard.cpp \
   Telemetry.cpp \
-  Qualify.cpp
+  Qualify.cpp \
+  Soak.cpp
 
 TESTSRCS = \
   test_main.cpp \
@@ -61,6 +62,7 @@ TESTSRCS = \
   test_Gate.cpp \
   test_Publish.cpp \
   test_Qualify.cpp \
+  test_Soak.cpp \
   test_Tuner.cpp \
   test_Dashboard.cpp
 

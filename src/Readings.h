@@ -47,6 +47,15 @@ struct Reading {
   double watts = NAN;
   u32 powerBound = 0;
 
+  // What the calls alone say it costs, as above: before the soaks set `mean`, or the calibration scaled it.
+  double timed = 0;
+  // Its soaks (Soak.h), where it has had them: the mean of its slices after their warm-ups, and how many there were.
+  // A soaked configuration costs what it sustained.
+  double soaked = NAN;
+  u32 soakSlices = 0;
+
+  [[nodiscard]] bool isSoaked() const { return soakSlices > 0; }
+
   // What a published line costs: the mean, pessimistically by its error bar.
   [[nodiscard]] double pessimistic() const;
 };
@@ -79,9 +88,16 @@ public:
 
   [[nodiscard]] static ConfigKey keyOf(const Subject& subject, const UseConfig& options);
 
+  // What a soak sustains against what calls read of the same configuration, the median over every soaked
+  // configuration of the env; 1 where none has been soaked.  The cost of a configuration not soaked yet is its calls'
+  // times this, so soaked and unsoaked compare on one footing: calls on a card at its power limit read 1-2% fast even
+  // with the power floor, as the chip warms over minutes no call lasts.
+  [[nodiscard]] double calibration() const { return calibration_; }
+
 private:
   std::map<ConfigKey, Reading> readings_;
   std::vector<Observation> observations_;
+  double calibration_ = 1;
   std::map<std::pair<std::string, std::string>, std::vector<RoeReading>> roes_;
 };
 

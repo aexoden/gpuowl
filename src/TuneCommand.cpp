@@ -231,6 +231,26 @@ TuneCommand parseTuneCommand(std::string_view text) {
                           "randomReach=1.5x@30m, or all"};
       }
       out.explore.reach = *reach;
+    } else if ((key == "soak" || key == "soakMargin") && out.verb == TuneVerb::Run) {
+      std::optional<double> const share = value == "0" ? std::optional<double>{0}
+        : value.ends_with('%')                         ? parseDouble(value.substr(0, value.size() - 1))
+                                                       : std::optional<double>{};
+      if (!share || *share < 0 || *share >= 100) {
+        throw "-tune: " + std::string{key} + "= takes a percentage below 100%, such as " + std::string{key} +
+          "=10%, or 0";
+      }
+      (key == "soak" ? out.soak.share : out.soak.margin) = *share / 100;
+    } else if ((key == "soakTop" || key == "soakRounds") && out.verb == TuneVerb::Run) {
+      std::optional<u32> const n = parseInt<u32>(value);
+      if (!n || *n < 1 || *n > 16) { throw "-tune: " + std::string{key} + "= takes a count from 1 to 16"; }
+      (key == "soakTop" ? out.soak.top : out.soak.rounds) = *n;
+    } else if ((key == "soakWarm" || key == "soakSlice") && out.verb == TuneVerb::Run) {
+      std::optional<double> const t = value == "0" ? std::optional<double>{0} : parseDuration(value);
+      if (!t || (key == "soakSlice" && *t < 1)) {
+        throw "-tune: " + std::string{key} + "= takes a span of time, such as 2m or 90s" +
+          (key == "soakWarm" ? ", or 0" : "");
+      }
+      (key == "soakWarm" ? out.soak.warm : out.soak.slice) = *t;
     } else if (key == "heat" && out.verb == TuneVerb::Run) {
       std::optional<double> const heat = value == "0" ? std::optional<double>{0} : parseDuration(value);
       if (!heat || *heat > 600) { throw std::string{"-tune: heat= takes a span of time up to 10m, such as 3s, or 0"}; }

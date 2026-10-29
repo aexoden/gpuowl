@@ -190,6 +190,7 @@ LaneTime laneTime(const TuneDB& db, u32 env) {
   for (const RoeRow& r : db.roes()) { seen(r.sess, r.ts); }
   for (const AnchorRow& r : db.anchors()) { seen(r.sess, r.ts); }
   for (const ItemRow& r : db.items()) { seen(r.sess, r.ts); }
+  for (const SoakRow& r : db.soaks()) { seen(r.sess, r.ts); }
 
   LaneTime out;
   std::map<u32, std::vector<const ItemRow*>> bySession;

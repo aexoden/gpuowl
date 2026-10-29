@@ -617,6 +617,110 @@ std::optional<u64> Bench::llReference(const FFTConfig& fft, u64 exponent, u32 nB
   return {};
 }
 
+std::vector<double> Bench::soak(const std::vector<SoakEntry>& entries, u64 exponent, double warm, double slice,
+                                u32 rounds) {
+  std::vector<double> out(entries.size(), NAN);
+  if (entries.empty() || stopped_) { return out; }
+  keepAnchor();
+  if (stopped_) { return out; }
+  u32 const group = db_.nextSoakGroup();
+
+  // Every one built first, each under an attempt of its own, so that a build that takes the device down is its own.
+  std::vector<std::unique_ptr<Gpu>> gpus(entries.size());
+  std::vector<u32> cfgs(entries.size());
+  auto tryOf = [&](size_t i) {
+    return TryRow{.sess = session_,
+                  .fft = entries[i].fft.spec(),
+                  .kind = entries[i].kind,
+                  .exponent = exponent,
+                  .cfg = cfgs[i],
+                  .ts = now()};
+  };
+  for (size_t i = 0; i < entries.size(); ++i) {
+    const SoakEntry& e = entries[i];
+    cfgs[i] = db_.internCfg(builtAs(env_, e.fft, e.options));
+    if (std::string const why = held(e.fft, e.kind, exponent, e.options); !why.empty()) { continue; }
+    Attempt const attempt{db_, tryOf(i), attemptText(e.fft, e.kind, exponent, e.options)};
+    if (!cfgs[i] || !attempt.declared()) {
+      cannotDeclare(e.fft, e.options);
+      return out;
+    }
+    (void)caught([&] { gpus[i] = Gpu::make(exponent, shared_, e.fft, asExtraConf(env_, e.fft, e.options), false); },
+                 e.fft, e.kind, exponent, e.options, "build for a soak");
+    if (stopped_) { return out; }
+  }
+
+  // One slice: squaring in chunks of a few seconds until `seconds` have passed, recorded under an attempt of its own,
+  // which the slice's record answers.
+  constexpr double CHUNK_SEC = 5;
+  auto runSlice = [&](size_t i, u32 round, double seconds) -> std::optional<double> {
+    const SoakEntry& e = entries[i];
+    Attempt const attempt{db_, tryOf(i), attemptText(e.fft, e.kind, exponent, e.options)};
+    if (!attempt.declared()) {
+      cannotDeclare(e.fft, e.options);
+      return {};
+    }
+    std::vector<double> blocks;
+    auto const from = std::chrono::steady_clock::now();
+    Timer t;
+    Status const status = caught(
+      [&] {
+        u32 n = 2;
+        while (t.at() < seconds) {
+          IterSamples const s = e.kind == TestKind::LL ? gpus[i]->timeItersLL(n, blockSize_, CALL_WARMUP_BLOCKS, 0)
+                                                       : gpus[i]->timeIters(n, blockSize_, CALL_WARMUP_BLOCKS, 0);
+          if (!s.checkOk) { throw std::string{"its Gerbicz check failed"}; }
+          blocks.insert(blocks.end(), s.usPerIt.begin(), s.usPerIt.end());
+          double const blockSec = statsOf(s.usPerIt).mean * blockSize_ * 1e-6;
+          n = std::max(1u, u32(std::lround(CHUNK_SEC / blockSec)));
+        }
+      },
+      e.fft, e.kind, exponent, e.options, "soak");
+    if (status != Status::Ok || blocks.empty()) {
+      gpus[i].reset();
+      return {};
+    }
+    auto const to = std::chrono::steady_clock::now();
+    double watts = 0;
+    if (sampler_ && sampler_->waitPast(sampler_->at(to), 5 * SAMPLE_PERIOD)) {
+      if (std::optional<WindowPower> const p = powerOver(*sampler_, from, to)) { watts = p->watts; }
+    }
+    Stats const s = statsOf(blocks);
+    (void)db_.add(SoakRow{.sess = session_,
+                          .fft = e.fft.spec(),
+                          .kind = e.kind,
+                          .exponent = exponent,
+                          .cfg = cfgs[i],
+                          .group = group,
+                          .round = round,
+                          .mean = s.mean,
+                          .sd = s.sd,
+                          .blocks = s.n,
+                          .watts = std::isnan(watts) ? 0 : watts,
+                          .sec = std::max(t.at(), 0.1),
+                          .ts = now()});
+    log("measure: soak %u round %u: %s -use %s at %" PRIu64 ": %.2f us/it over %.0f s%s\n", group, round,
+        e.fft.spec().c_str(), configText(e.options).c_str(), exponent, s.mean, t.at(),
+        watts > 0 ? (", " + std::to_string(int(std::lround(watts))) + " W").c_str() : "");
+    return s.mean;
+  };
+
+  auto const first = std::ranges::find_if(gpus, [](const auto& g) { return g != nullptr; });
+  if (first == gpus.end()) { return out; }
+  (void)runSlice(size_t(first - gpus.begin()), 0, warm);
+  std::vector<std::vector<double>> sustained(entries.size());
+  for (u32 round = 1; round <= rounds && !stopped_; ++round) {
+    for (size_t i = 0; i < entries.size() && !stopped_; ++i) {
+      if (!gpus[i]) { continue; }
+      if (std::optional<double> const us = runSlice(i, round, slice)) { sustained[i].push_back(*us); }
+    }
+  }
+  for (size_t i = 0; i < entries.size(); ++i) {
+    if (!sustained[i].empty()) { out[i] = statsOf(sustained[i]).mean; }
+  }
+  return out;
+}
+
 RoeCheck Bench::roe(const FFTConfig& fft, const UseConfig& options, u64 exponent) {
   RoeCheck out{.exponent = exponent};
   if (stopped_) { return out; }

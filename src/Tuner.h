@@ -8,12 +8,14 @@
 #include "Acquire.h"
 #include "Lanes.h"
 #include "Measure.h"
+#include "Soak.h"
 #include "TuneCommand.h"
 #include "Watch.h"
 
 #include <ctime>
 #include <filesystem>
 #include <functional>
+#include <limits>
 #include <map>
 #include <optional>
 #include <string>
@@ -33,6 +35,13 @@ public:
 
   // One recorded rounding-error reading.
   virtual RoeCheck roe(const FFTConfig& fft, const UseConfig& options, u64 exponent) = 0;
+
+  // A recorded soak of the plan's configurations (Soak.h): what each sustained, NaN where it could not be read.  A
+  // device that cannot soak reads nothing.
+  virtual std::vector<double> soak(const SoakPlan& plan, const SoakSettings& settings) {
+    (void)settings;
+    return std::vector<double>(plan.targets.size(), std::numeric_limits<double>::quiet_NaN());
+  }
 
   // Why the configuration is never built here; empty where it may be.
   [[nodiscard]] virtual std::string held(const Candidate& candidate, const UseConfig& options) const = 0;
@@ -62,6 +71,7 @@ struct LoopSettings {
   double shortCalls = SHORT_CALLS;  // 0 for none
   double powerHold = POWER_HOLD;    // Readings; 0 leaves every cost as timed
   u32 callBlocks = BLOCKS_PER_CALL;  // timed blocks in a call (the device's calls are shaped to match)
+  SoakSettings soak{};               // soaks of the finalists (Soak.h)
   u64 seed = 1;
   TailQueues tailQueues = TailQueues::Ntt;
   u32 regretEvery = 32;  // calls between estimates of the regret

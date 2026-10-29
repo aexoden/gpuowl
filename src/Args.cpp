@@ -384,6 +384,13 @@ named "config.txt" in the prpll run directory.
                                              power (NVML on recent drivers) [0.95]
                          heat=<t>            a call's own load before it is timed [1s]
                          blocks=<n>          timed blocks in a call [4]
+                         soak=<p>%%|0        the share of the tuning time spent soaking finalists: a line's
+                                             configuration and its closest rivals run in turns for minutes, so each
+                                             reads what the card sustains; none begins before the share pays for it
+                                             [10%%]
+                         soakTop=<n> [3]     configurations soaked together
+                         soakMargin=<p>%% [3%%] how far behind the line a rival may be and be soaked with it
+                         soakWarm=<t> [2m]   soakSlice=<t> [1m]   soakRounds=<n> [3]   warm-up, each turn, rounds
                          dashboard=1         a full-screen view of the run
                      Verbs, which open no device: status (where tunedb.txt stands), emit (write the tune files it
                      supports), scope (the exponents a run would tune for).

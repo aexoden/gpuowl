@@ -2,6 +2,7 @@
 
 #include "Readings.h"
 
+#include <algorithm>
 #include <cmath>
 
 namespace tune {
@@ -143,6 +144,49 @@ Readings::Readings(const TuneDB& db, u32 env, const Env& device, double powerHol
     r.watts = d.watts / d.n;
     r.powerBound = d.bound;
   }
+
+  // The soaks: each configuration's slices after the warm-ups, in the regime of the exponent it was soaked at.
+  std::map<ConfigKey, std::vector<double>> slices;
+  for (const SoakRow& row : db.soaks()) {
+    if (db.envOf(row.sess) != env || row.round == 0) { continue; }
+    std::optional<FFTConfig> const fft = parseFft(row.fft);
+    const UseConfig* const recorded = db.findCfg(row.cfg);
+    if (!fft || !recorded) { continue; }
+    Subject const subject{.fft = *fft, .kind = row.kind, .regime = regimeOf(*fft, row.exponent)};
+    slices[keyOf(subject, canonicalConfig(device, *fft, *recorded))].push_back(row.mean);
+  }
+  std::vector<double> ratios;
+  for (auto const& [key, s] : slices) {
+    auto const it = readings_.find(key);
+    if (it == readings_.end() || it->second.calls == 0 || it->second.failed) { continue; }
+    Reading& r = it->second;
+    double sum = 0;
+    for (double const x : s) { sum += x; }
+    r.soaked = sum / double(s.size());
+    r.soakSlices = u32(s.size());
+    ratios.push_back(r.soaked / r.mean);
+  }
+  if (!ratios.empty()) {
+    std::ranges::sort(ratios);
+    size_t const n = ratios.size();
+    calibration_ = n % 2 ? ratios[n / 2] : (ratios[n / 2 - 1] + ratios[n / 2]) / 2;
+  }
+  for (auto& [key, r] : readings_) {
+    r.timed = r.mean;
+    if (r.calls == 0) { continue; }
+    if (!r.isSoaked()) {
+      r.mean *= calibration_;
+      r.se *= calibration_;
+      continue;
+    }
+    const std::vector<double>& s = slices.at(key);
+    double ss = 0;
+    for (double const x : s) { ss += (x - r.soaked) * (x - r.soaked); }
+    double const se = s.size() >= 2 ? std::sqrt(ss / double(s.size() - 1) / double(s.size())) : 0;
+    r.mean = r.soaked;
+    r.se = std::max(se, r.mean * SE_FLOOR);
+  }
+  for (Observation& o : observations_) { o.cost *= calibration_; }
 
   for (const RoeRow& row : db.roes()) {
     if (db.envOf(row.sess) != env) { continue; }

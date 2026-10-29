@@ -27,6 +27,7 @@ struct RunReport {
   double budget = 0;    // 0 for none
   double T = 0;
   double regret = 0;  // the model's search-gap estimate: no evidence of coverage
+  double calibration = 1;  // Readings::calibration()
   LaneTime lanes{};
   std::optional<CoverageSummary> coverage{};
   std::optional<Outstanding> outstanding{};  // as of the last regret estimate

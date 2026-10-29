@@ -48,6 +48,7 @@ std::string reportJson(const RunReport& r) {
   out += "  \"elapsedSeconds\": " + number(r.elapsed) + ",\n";
   out += "  \"budgetSeconds\": " + (r.budget > 0 ? number(r.budget) : std::string{"null"}) + ",\n";
   out += "  \"T\": " + number(r.T) + ",\n";
+  out += "  \"calibration\": " + number(r.calibration) + ",\n";
   out += "  \"modelGapEstimate\": " + number(r.regret) + ",\n";
 
   out += "  \"laneSeconds\": {";
@@ -88,7 +89,9 @@ std::string reportJson(const RunReport& r) {
           ", \"fft\": " + jsonString(line.subject.fft.spec()) +
           ", \"regime\": " + jsonString(line.subject.regime.label()) +
           ", \"options\": " + jsonString(configText(line.reading->options)) + ", \"usPerIt\": " + number(line.cost()) +
-          ", " + range + ", \"earlierBuild\": " + (line.carried ? "true" : "false") + "}";
+          ", " + range + ", \"earlierBuild\": " + (line.carried ? "true" : "false") +
+          ", \"soaked\": " + (line.reading->isSoaked() ? "true" : "false") + ", \"timedUsPerIt\": " +
+          number(line.reading->timed) + "}";
         first = false;
       }
     }

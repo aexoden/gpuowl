@@ -129,7 +129,7 @@ StateReport stateOf(const Publication& publication, const Readings& readings, co
       char buf[128];
       snprintf(buf, sizeof(buf), "%s %7.1f %-16s %s %" PRIu64 "-%" PRIu64 "%s ", toString(kind.kind), line.cost(),
                line.subject.fft.spec().c_str(), line.subject.regime.label().c_str(), line.lo(), line.reach(),
-               line.carried ? " (earlier build)" : "");
+               line.carried ? " (earlier build)" : line.reading->isSoaked() ? " (soaked)" : "");
       out.lines.push_back(buf + optionsText(line.reading->options));
     }
   }
@@ -225,6 +225,8 @@ LoopResult runLoop(Device& device, TuneDB& db, u32 env, const Env& card, const R
   // Owed calls the device refused without recording a reading (one an earlier process died holding, say), which this
   // run would otherwise be owed again at every item.
   std::set<std::pair<const Candidate*, std::string>> refused;
+  // Soaks begun this run, which are not begun again whatever they read.
+  std::set<std::string> soaksTried;
 
   Model model{card};
   std::mt19937_64 rng{settings.seed};
@@ -298,6 +300,7 @@ LoopResult runLoop(Device& device, TuneDB& db, u32 env, const Env& card, const R
                                .budget = settings.budget,
                                .T = publication.T(),
                                .regret = out.regret,
+                               .calibration = readings.calibration(),
                                .lanes = laneTime(db, env),
                                .coverage = covered,
                                .outstanding = left,
@@ -365,6 +368,32 @@ LoopResult runLoop(Device& device, TuneDB& db, u32 env, const Env& card, const R
       continue;
     }
 
+    // A soak of a line's finalists, once the share of the tuning time kept for soaks has paid for it.
+    if (std::optional<SoakPlan> const plan = planSoak(publication, candidates, readings, settings.soak, soaksTried);
+        plan && soakDue(soakTime(db, env), laneTime(db, env).total(), *plan, settings.soak)) {
+      soaksTried.insert(plan->key());
+      const SoakTarget& lead = plan->targets.front();
+      recordItem(DUTY, "soak", 0, 0, lead.candidate->subject.fft, plan->kind, lead.options, began);
+      log("tune: %u. soak at %" PRIu64 " of %zu configurations, %s\n", items, plan->exponent, plan->targets.size(),
+          durationText(settings.soak.length(plan->targets.size())).c_str());
+      if (settings.watch) { settings.watch->measuring("soak at " + std::to_string(plan->exponent)); }
+      std::vector<double> const sustained = device.soak(*plan, settings.soak);
+      for (size_t i = 0; i < plan->targets.size() && i < sustained.size(); ++i) {
+        const SoakTarget& t = plan->targets[i];
+        const Reading* const r = readings.find(t.candidate->subject, t.options);
+        double const timed = r ? r->timed : 0;
+        log("tune:   %s %s -use %s: %s\n", toString(plan->kind), t.candidate->subject.fft.spec().c_str(),
+            optionsText(t.options).c_str(),
+            std::isnan(sustained[i]) ? "not read"
+                                     : (usText(sustained[i]) + " us/it sustained" +
+                                        (timed > 0 ? ", calls read " + usText(timed) + " (" +
+                                                       percent(sustained[i] / timed - 1) + ")"
+                                                   : std::string{}))
+                                         .c_str());
+      }
+      continue;
+    }
+
     if (sinceRegret >= settings.regretEvery) {
       sinceRegret = 0;
       out.regret = expectedRegret(context, publication, rng, settings.regretDraws);
@@ -396,6 +425,7 @@ LoopResult runLoop(Device& device, TuneDB& db, u32 env, const Env& card, const R
                                .budget = settings.budget,
                                .T = publication.T(),
                                .regret = out.regret,
+                               .calibration = readings.calibration(),
                                .lanes = laneTime(db, env),
                                .coverage = covered,
                                .outstanding = left,
@@ -492,6 +522,14 @@ public:
     return bench_.roe(fft, options, exponent);
   }
 
+  std::vector<double> soak(const SoakPlan& plan, const SoakSettings& settings) override {
+    std::vector<SoakEntry> entries;
+    for (const SoakTarget& t : plan.targets) {
+      entries.push_back({.fft = t.candidate->subject.fft, .kind = t.candidate->subject.kind, .options = t.options});
+    }
+    return bench_.soak(entries, plan.exponent, settings.warm, settings.slice, settings.rounds);
+  }
+
   [[nodiscard]] std::string held(const Candidate& candidate, const UseConfig& options) const override {
     return bench_.held(candidate.subject.fft, candidate.subject.kind, candidate.timing, options);
   }
@@ -586,6 +624,7 @@ RunOutcome runTune(GpuCommon shared, const TuneCommand& command) {
                                      .shortCalls = command.shortCalls,
                                      .powerHold = command.powerHold,
                                      .callBlocks = command.callBlocks,
+                                     .soak = command.soak,
                                      .seed = seed,
                                      .tailQueues = command.tailQueues,
                                      .publishTo = fs::current_path(),
