@@ -103,6 +103,22 @@ const char* toString(TuneVerb verb) {
   return "?";
 }
 
+namespace {
+
+// ",search=staged,margin=<p>%,restarts=<p>%" for a staged run, each setting only where it is not the default: how the
+// run chose what to measure, which a session's readings do not depend on, but its record should say.
+std::string searchText(const TuneCommand& command) {
+  if (command.search != Search::Staged) { return {}; }
+  std::string out = ",search=staged";
+  if (command.staged.margin != MARGIN) {
+    out += ",margin=" + (std::isinf(command.staged.margin) ? std::string{"all"} : percentText(command.staged.margin));
+  }
+  if (command.staged.restarts != RESTARTS) { out += ",restarts=" + percentText(command.staged.restarts); }
+  return out;
+}
+
+}  // namespace
+
 TuneCommand parseTuneCommand(std::string_view text) {
   TuneCommand out;
   std::vector<std::string_view> tokens = text.empty() ? std::vector<std::string_view>{} : splitOn(text, ',');
@@ -176,6 +192,23 @@ TuneCommand parseTuneCommand(std::string_view text) {
         }
         out.explore.contenders = *margin / 100;
       }
+    } else if (key == "search" && out.verb == TuneVerb::Run) {
+      if (value != "model" && value != "staged") { throw std::string{"-tune: search= takes model or staged"}; }
+      out.search = value == "staged" ? Search::Staged : Search::Model;
+    } else if (key == "margin" && out.verb == TuneVerb::Run) {
+      std::optional<double> const margin = value == "all" ? std::optional<double>{INFINITY}
+        : value.ends_with('%')                            ? parseDouble(value.substr(0, value.size() - 1))
+                                                          : std::optional<double>{};
+      if (!margin || *margin < 0) { throw std::string{"-tune: margin= takes a percentage, such as margin=25%, or all"}; }
+      out.staged.margin = *margin / 100;
+    } else if (key == "restarts" && out.verb == TuneVerb::Run) {
+      std::optional<double> const share = value == "0" ? std::optional<double>{0}
+        : value.ends_with('%')                         ? parseDouble(value.substr(0, value.size() - 1))
+                                                       : std::optional<double>{};
+      if (!share || *share < 0 || *share > 100) {
+        throw std::string{"-tune: restarts= takes a percentage, such as restarts=10%, or 0"};
+      }
+      out.staged.restarts = *share / 100;
     } else if (key == "budget" && out.verb == TuneVerb::Run) {
       std::optional<double> const budget = value == "0" ? std::optional<double>{0} : parseDuration(value);
       if (!budget) {
@@ -330,7 +363,7 @@ std::string settingsWord(const RunScope& scope, const TuneCommand& command) {
     ",probe=" + std::to_string(scope.probe) + ",probeWeight=" + weight + ",kinds=" + kinds +
     ",pfaShapes=" + toString(scope.pfaShapes) + ",tailQueues=" + toString(command.tailQueues) +
     ",stop=" + percentText(command.stop) + (command.tag.empty() ? "" : ",tag=" + command.tag) +
-    powerHoldText(command) + callShapeText(command);
+    powerHoldText(command) + callShapeText(command) + searchText(command);
 }
 
 }  // namespace tune

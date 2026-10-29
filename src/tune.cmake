@@ -36,5 +36,6 @@ target_sources(prpll PRIVATE
   Qualify.cpp
   Soak.cpp
   Duel.cpp
+  Staged.cpp
   Feedback.cpp
   )

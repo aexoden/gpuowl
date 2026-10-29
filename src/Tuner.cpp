@@ -16,6 +16,7 @@
 #include "Report.h"
 #include "Restart.h"
 #include "Signal.h"
+#include "Staged.h"
 #include "version.h"
 
 #include <chrono>
@@ -249,7 +250,8 @@ LoopResult runLoop(Device& device, TuneDB& db, u32 env, const Env& card, const R
     if (device.stopped()) { break; }
 
     Readings const readings{db, env, card, settings.powerHold};
-    model.fit(readings.observations());
+    bool const staged = settings.search == Search::Staged;
+    if (!staged) { model.fit(readings.observations()); }
     std::map<ConfigKey, Sustained> const production =
       settings.publishTo.empty()
         ? std::map<ConfigKey, Sustained>{}
@@ -469,7 +471,20 @@ LoopResult runLoop(Device& device, TuneDB& db, u32 env, const Env& card, const R
       continue;
     }
 
-    if (sinceRegret >= settings.regretEvery) {
+    if (sinceRegret >= settings.regretEvery && staged) {
+      // The staged search estimates no regret: it says what each stage has left instead.
+      sinceRegret = 0;
+      log("tune: T %.2f us/it over %s of the workload; left: %s\n", out.T, percent(publication.coverage()).c_str(),
+          toString(stagesLeft(context, settings.staged)).c_str());
+      covered = summarize(card, candidates, readings, filter);
+      coverage = toString(*covered);
+      log("tune: coverage: %s\n", coverage.c_str());
+      log("tune: lanes: %s\n", toString(laneTime(db, env)).c_str());
+      if (DuelTally const duels = duelTally(db, env); duels.total() > 0) {
+        log("tune: duels: %s\n", toString(duels).c_str());
+      }
+      if (settings.watch) { settings.watch->state(stateOf(publication, readings, model, db, env, coverage, out)); }
+    } else if (sinceRegret >= settings.regretEvery) {
       sinceRegret = 0;
       out.regret = expectedRegret(context, publication, rng, settings.regretDraws);
       OptimizerCounts const counts = optimizerCounts();
@@ -544,8 +559,22 @@ LoopResult runLoop(Device& device, TuneDB& db, u32 env, const Env& card, const R
     LaneTime const time = laneTime(db, env);
     double elapsed = 0;
     for (double const s : time.seconds) { elapsed += s; }
+    if (staged && !proposal) {
+      // Restarts take their share; either lends its turn to the other where it has nothing.
+      bool const restart =
+        settings.staged.restarts > 0 && std::uniform_real_distribution<double>{0, 1}(rng) < settings.staged.restarts;
+      if (restart) { proposal = restartStep(context, settings.explore, out.elapsed, db, env, rng); }
+      if (!proposal) { proposal = stagedStep(context, settings.staged, rng); }
+      if (!proposal && !restart && settings.staged.restarts > 0) {
+        proposal = restartStep(context, settings.explore, out.elapsed, db, env, rng);
+      }
+      if (!proposal) {
+        log("tune: the stages have nothing left to measure\n");
+        break;
+      }
+    }
     for (Lane const lane : laneOrder(settings.lanes, time)) {
-      if (proposal) { break; }
+      if (proposal || staged) { break; }
       if (!settings.lanes.serves(lane)) { continue; }
       switch (lane) {
       case Lane::Model: proposal = modelStep(); break;
@@ -566,8 +595,13 @@ LoopResult runLoop(Device& device, TuneDB& db, u32 env, const Env& card, const R
     recordItem(proposal->record.empty() ? std::string{toString(proposal->lane)} : proposal->record, proposal->what,
                proposal->packet, proposal->ordinal, proposal->candidate->subject.fft, proposal->candidate->subject.kind,
                proposal->options, began);
-    double const meanUs = std::exp(model.predict(model.mean(), proposal->candidate->subject, proposal->options));
-    (void)db.add(PredRow{.sess = device.session(), .mean = meanUs, .draw = proposal->predictedUs, .ts = began});
+    // What the call is expected to cost: under the posterior mean, or where no model is fitted, what the staged search
+    // expects of it.
+    double const meanUs = staged ? proposal->predictedUs
+                                 : std::exp(model.predict(model.mean(), proposal->candidate->subject, proposal->options));
+    if (!staged) {
+      (void)db.add(PredRow{.sess = device.session(), .mean = meanUs, .draw = proposal->predictedUs, .ts = began});
+    }
     const KindPublication* const kind = publication.of(proposal->candidate->subject.kind);
     const Line* const there = kind ? kind->at(proposal->candidate->timing) : nullptr;
     bool const far = settings.shortCalls > 0 && there && meanUs > settings.shortCalls * there->cost();
@@ -706,6 +740,8 @@ RunOutcome runTune(GpuCommon shared, const TuneCommand& command) {
                                      .callBlocks = command.callBlocks,
                                      .soak = command.soak,
                                      .duel = command.duel,
+                                     .search = command.search,
+                                     .staged = command.staged,
                                      .seed = seed,
                                      .tailQueues = command.tailQueues,
                                      .publishTo = fs::current_path(),
@@ -714,8 +750,8 @@ RunOutcome runTune(GpuCommon shared, const TuneCommand& command) {
                                      .watch = dashboard ? &*dashboard : nullptr});
   dashboard.reset();
 
-  log("tune: %u calls and %u accuracy readings; T %.2f us/it; expected regret %s%s\n", result.calls,
-      result.gateReadings, result.T, percent(result.regret).c_str(),
+  log("tune: %u calls and %u accuracy readings; T %.2f us/it%s%s\n", result.calls, result.gateReadings, result.T,
+      command.search == Search::Staged ? "" : ("; expected regret " + percent(result.regret)).c_str(),
       result.converged       ? ", below the stop"
         : result.budgetSpent ? ", the budget spent"
         : bench.deviceLost() ? ", stopped by a lost device"

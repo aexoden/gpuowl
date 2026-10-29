@@ -11,6 +11,7 @@
 #include "File.h"
 #include "Prior.h"
 #include "Report.h"
+#include "Staged.h"
 #include "timeutil.h"
 #include "Tuner.h"
 
@@ -19,6 +20,7 @@
 #include <cstdlib>
 #include <map>
 #include <random>
+#include <set>
 
 #include <unistd.h>
 
@@ -190,6 +192,64 @@ TEST(the_lanes_measure_legal_sets_in_packets_of_their_own) {
       CHECK(steps[i]->fft == steps.front()->fft);
     }
   }
+}
+
+TEST(the_staged_search_goes_stage_by_stage_without_a_model) {
+  TuneDB db;
+  CHECK(db.parse(std::string{TuneDB::HEADER} + '\n', "sim"));
+  u32 const env = db.internEnv(DbEnv{.gpu = "sim", .isNvidia = true, .cudaBackend = true, .computeCapability = 860});
+  u32 const sess = db.beginSession(env, "", 0, "");
+  RunScope const scope =
+    makeScope({.lo = 67'400'000, .hi = 67'600'000, .probe = 67'500'000, .kinds = {TestKind::PRP}}, {});
+  SimDevice device{db, sess};
+  LoopResult const r = runLoop(device, db, env, nvidia(), scope,
+                               {.stop = 0,
+                                .search = Search::Staged,
+                                .staged = {.margin = 0.1, .restarts = 0},
+                                .seed = 5,
+                                .regretEvery = 1000,
+                                .maxItems = u32(getenv("ITEMS") ? atoi(getenv("ITEMS")) : 160)});
+  // No model, so no prediction of it, and no regret.
+  CHECK(db.preds().empty());
+  CHECK(std::isinf(r.regret));
+
+  // Every item is a duty's or a stage's, each set one the host would build; a stage never comes back to the types
+  // or the coverage once the sweep has begun, and every FFT type read was read first by the types stage.
+  std::set<std::string> typesRead;
+  std::map<std::string, u32> stages;
+  bool swept = false;
+  for (const ItemRow& item : db.items()) {
+    CHECK(item.lane == DUTY || item.lane == STAGED);
+    const UseConfig* const options = db.findCfg(item.cfg);
+    CHECK(options != nullptr);
+    if (!options || item.lane != STAGED) { continue; }
+    FFTConfig const fft{item.fft};
+    CHECK(fitted(nvidia(), fft, *options) == *options);
+    CHECK(parseStage(item.what).has_value());
+    ++stages[item.what];
+    if (item.what == "types") {
+      CHECK(options->empty());
+      CHECK(typesRead.insert(std::to_string(int(fft.shape.fft_type))).second);
+    } else {
+      CHECK(typesRead.contains(std::to_string(int(fft.shape.fft_type))));
+    }
+    if (item.what == "coverage") { CHECK(options->empty()); }
+    if (swept) { CHECK(item.what != "types" && item.what != "coverage"); }
+    swept = swept || item.what == "sweep";
+  }
+  CHECK(stages["types"] > 0);
+  CHECK(stages["coverage"] > 0);
+  CHECK(stages["sweep"] > 0);
+  for (const auto& [stage, n] : stages) { printf("staged: %s %u\n", stage.c_str(), n); }
+
+  // The sweep finds the saving, and what is published at the probe has it.
+  Readings const readings{db, env, nvidia()};
+  std::vector<std::vector<Candidate>> const candidates{candidatesOf(nvidia(), scope, TestKind::PRP)};
+  Publication const pub = publish(scope, candidates, readings);
+  const Line* const line = pub.of(TestKind::PRP)->at(scope.probe);
+  CHECK(line != nullptr);
+  if (!line) { return; }
+  CHECK_EQ(useValue(line->reading->options, "ZEROHACK_W", 1), 0);
 }
 
 TEST(a_line_taken_by_a_hair_is_duelled_for) {

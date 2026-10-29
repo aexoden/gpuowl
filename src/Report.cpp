@@ -93,7 +93,15 @@ std::string reportJson(const RunReport& r) {
   for (size_t i = 0; i < LANES; ++i) {
     out += std::string{i ? ", " : ""} + jsonString(toString(Lane(i))) + ": " + number(r.lanes.seconds[i]);
   }
-  out += ", \"duty\": " + number(r.lanes.duty) + "},\n";
+  out += ", \"duty\": " + number(r.lanes.duty);
+  if (!r.lanes.staged.empty()) {
+    out += ", \"staged\": {";
+    for (auto it = r.lanes.staged.begin(); it != r.lanes.staged.end(); ++it) {
+      out += std::string{it == r.lanes.staged.begin() ? "" : ", "} + jsonString(it->first) + ": " + number(it->second);
+    }
+    out += "}";
+  }
+  out += "},\n";
 
   if (r.coverage) {
     const CoverageSummary& c = *r.coverage;

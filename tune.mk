@@ -37,6 +37,7 @@ TUNE_SRCS = \
   Qualify.cpp \
   Soak.cpp \
   Duel.cpp \
+  Staged.cpp \
   Feedback.cpp
 
 TESTSRCS = \

@@ -97,6 +97,7 @@ TEST(lane_time_runs_from_each_item_to_the_next) {
   CHECK(near(t.seconds[1], 2));
   CHECK(near(t.seconds[2], 18));
   CHECK(near(t.duty, 1));  // at least a second
+  CHECK(t.staged.empty());
 
   // Read back from the file's text, the same.
   TuneDB again;
@@ -109,6 +110,38 @@ TEST(lane_time_runs_from_each_item_to_the_next) {
     TryRow{.sess = sess, .fft = "1K:13:256:202", .kind = TestKind::LL, .exponent = 67'000'000, .cfg = cfg, .ts = 131}));
   item("model", 132);
   CHECK(db.attemptOpen(sess));
+}
+
+TEST(lane_time_counts_the_staged_search_by_stage) {
+  TuneDB db;
+  CHECK(db.parse(std::string{TuneDB::HEADER} + '\n', "staged"));
+  u32 const env = db.internEnv(DbEnv{.gpu = "sim", .isNvidia = true, .cudaBackend = true, .computeCapability = 860});
+  u32 const sess = db.beginSession(env, "", 0, "", 90);
+  u32 const cfg = db.internCfg({});
+  auto item = [&](const char* lane, const char* what, u64 ts) {
+    CHECK(db.add(ItemRow{.sess = sess,
+                         .lane = lane,
+                         .what = what,
+                         .packet = 0,
+                         .ordinal = 1,
+                         .fft = "1K:13:256:202",
+                         .kind = TestKind::LL,
+                         .cfg = cfg,
+                         .ts = ts}));
+  };
+  item(STAGED, "coverage", 100);
+  item(STAGED, "sweep", 110);
+  item(STAGED, "sweep", 115);
+  item("restarts", "local", 124);
+  item(STAGED, "coverage", 130);
+  item(DUTY, "gate", 140);
+
+  LaneTime const t = laneTime(db, env);
+  CHECK(near(t.staged.at("coverage"), 20));
+  CHECK(near(t.staged.at("sweep"), 14));
+  CHECK(near(t.seconds[size_t(Lane::Restarts)], 6));
+  CHECK(near(t.total(), 41));
+  CHECK(toString(t).ends_with("; staged: coverage 0.3 min, sweep 0.2 min"));
 }
 
 TEST(a_random_pick_reaches_further_as_the_run_goes_on) {

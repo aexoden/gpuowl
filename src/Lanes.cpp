@@ -28,6 +28,8 @@ std::optional<Lane> parseLane(std::string_view text) {
   return {};
 }
 
+const char* toString(Search search) { return search == Search::Staged ? "staged" : "model"; }
+
 LaneShares Timetable::at(double elapsed) const {
   double const f = rampSeconds > 0 ? std::clamp(elapsed / rampSeconds, 0.0, 1.0) : 1.0;
   LaneShares out{};
@@ -177,6 +179,7 @@ std::string toString(const Reach& reach) {
 double LaneTime::total() const {
   double out = duty;
   for (double const s : seconds) { out += s; }
+  for (const auto& [stage, s] : staged) { out += s; }
   return out;
 }
 
@@ -204,6 +207,8 @@ LaneTime laneTime(const TuneDB& db, u32 env) {
       double const seconds = std::max(1.0, double(until) - double(items[i]->ts));
       if (std::optional<Lane> const lane = parseLane(items[i]->lane)) {
         out.seconds[size_t(*lane)] += seconds;
+      } else if (items[i]->lane == STAGED) {
+        out.staged[items[i]->what] += seconds;
       } else {
         out.duty += seconds;
       }
@@ -229,7 +234,13 @@ std::string toString(const LaneTime& time) {
   }
   char buf[48];
   std::snprintf(buf, sizeof(buf), "; duty %.1f min", time.duty / 60);
-  return out + buf;
+  out += buf;
+  for (auto it = time.staged.begin(); it != time.staged.end(); ++it) {
+    std::snprintf(buf, sizeof(buf), "%s %s %.1f min", it == time.staged.begin() ? "; staged:" : ",", it->first.c_str(),
+                  it->second / 60);
+    out += buf;
+  }
+  return out;
 }
 
 std::array<Lane, LANES> laneOrder(const Timetable& timetable, const LaneTime& time) {

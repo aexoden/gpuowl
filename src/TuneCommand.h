@@ -52,6 +52,8 @@ struct TuneCommand {
   bool compileAhead = true;          // Bench::shapeCalls: a call's kernels compile before the last call's Gpu stops
   SoakSettings soak{};               // Soak.h
   DuelSettings duel{};               // Duel.h
+  Search search = Search::Model;
+  StagedSettings staged{};           // Staged.h
   std::string tag{};       // part of the env: readings under another tag are another env's (DbEnv::tag)
   bool dashboard = false;  // display only: not part of the settings a run records
   u64 seed = 0;            // the draws' seed; 0 for one from the clock

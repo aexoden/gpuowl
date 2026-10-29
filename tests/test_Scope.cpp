@@ -177,6 +177,27 @@ TEST(every_setting_is_accepted_where_it_belongs) {
   TuneCommand const tagged = parsed("workload=60M-80M,tag=875mhz");
   CHECK_EQ(parsed(settingsWord(makeScope(tagged.scope, {}), tagged).c_str()).tag, std::string{"875mhz"});
   CHECK(settingsWord(makeScope(parsed("").scope, {}), parsed("")).find("tag=") == std::string::npos);
+
+  // The search, and the staged search's settings, recorded only where the run was staged.
+  CHECK(parsed("").search == Search::Model && parsed("search=staged").search == Search::Staged);
+  CHECK(parsed("search=model").search == Search::Model);
+  CHECK(parsed("").staged == StagedSettings{});
+  CHECK(near(parsed("margin=10%").staged.margin, 0.1) && std::isinf(parsed("margin=all").staged.margin));
+  CHECK(near(parsed("restarts=0").staged.restarts, 0) && near(parsed("restarts=25%").staged.restarts, 0.25));
+  for (const char* bad : {"search=bayes", "margin=0.25", "margin=-1%", "restarts=0.1", "restarts=101%",
+                          "status,search=staged", "emit,margin=10%"}) {
+    CHECK(!refusal(bad).empty());
+  }
+  CHECK(settingsWord(makeScope(parsed("margin=10%").scope, {}), parsed("margin=10%")).find("search") ==
+        std::string::npos);
+  for (const char* word : {"search=staged", "search=staged,margin=10%,restarts=0", "search=staged,margin=all"}) {
+    TuneCommand const staged = parsed(word);
+    TuneCommand const again = parsed(settingsWord(makeScope(staged.scope, {}), staged).c_str());
+    CHECK(again.search == Search::Staged);
+    CHECK(again.staged == staged.staged);
+  }
+  CHECK(settingsWord(makeScope(parsed("search=staged").scope, {}), parsed("search=staged")).find("margin") ==
+        std::string::npos);
 }
 
 TEST(scope_settings_are_read_off_the_subcommand) {

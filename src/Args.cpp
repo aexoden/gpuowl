@@ -360,6 +360,12 @@ named "config.txt" in the prpll run directory.
                                              alone [70/20/10/0~30/30/20/20@4h]
                          contenders=<P>%%|all  how far behind the best an FFT may be and still have its structural
                                              variants explored [15%%]
+                         search=model|staged how to choose what to measure: the model and its lanes, or plain
+                                             stages -- first looks, a sweep of each option per FFT type, structural
+                                             moves and single moves from each contender's best, with no model [model]
+                         margin=<P>%%|all     search=staged: how far behind the best an FFT may be and still have its
+                                             options searched [25%%]
+                         restarts=<P>%%|0     search=staged: the share of items given to random restarts [10%%]
                          budget=<t>|0        tuning time for the campaign, every run of it counted, e.g. 2h or
                                              90m; stop= is not used under a budget [0: none]
                          reserve=<P>%%        the share of the budget kept for confirming what is published [25%%]

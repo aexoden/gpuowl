@@ -1,7 +1,8 @@
 // Copyright (C) Jason Lynch
 
 // The tuning run: measure what the model says is worth measuring until the published choice is expected to be within
-// `stop` of the best the card can do over the workload, publishing the tune files as they improve.
+// `stop` of the best the card can do over the workload, publishing the tune files as they improve.  Under search=staged
+// the staged search (Staged.h) chooses instead, with no model, until a budget or a stop ends the run.
 
 #pragma once
 
@@ -73,6 +74,8 @@ struct LoopSettings {
   u32 callBlocks = BLOCKS_PER_CALL;  // timed blocks in a call (the device's calls are shaped to match)
   SoakSettings soak{};               // soaks of the finalists (Soak.h)
   DuelSettings duel{};               // duels of a line's taker and its holder (Duel.h)
+  Search search = Search::Model;     // what chooses the items no duty claims
+  StagedSettings staged{};           // the staged search's (Staged.h)
   u64 seed = 1;
   TailQueues tailQueues = TailQueues::Ntt;
   u32 regretEvery = 32;  // calls between estimates of the regret

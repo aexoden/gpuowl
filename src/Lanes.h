@@ -8,6 +8,7 @@
 #include "TuneDB.h"
 
 #include <array>
+#include <map>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -22,6 +23,9 @@ inline constexpr size_t LANES = 4;
 
 // The lane an item record names for work no lane chose: a gate reading, a configuration's second call.
 inline constexpr const char* DUTY = "duty";
+
+// The lane an item record names for the staged search's items (Staged.h), its `what` the stage.
+inline constexpr const char* STAGED = "staged";
 
 // How far behind what else serves its timing exponent an entry may be and still be a contender, whose structural
 // branches the coverage lane develops: half its items go to them, the other half to first looks and rounds over every
@@ -119,6 +123,24 @@ struct DuelSettings {
   [[nodiscard]] bool operator==(const DuelSettings&) const = default;
 };
 
+// Which search picks what to measure: the model and the lanes beside it, or the staged search (Staged.h).
+enum class Search : u8 { Model, Staged };
+
+[[nodiscard]] const char* toString(Search search);
+
+// The staged search: how far behind what else serves its exponent an entry's best may be for it to be a contender, and
+// the share of its items given to restarts.
+inline constexpr double MARGIN = 0.25;
+inline constexpr double RESTARTS = 0.1;
+
+// -tune search=model|staged, margin=<p>%|all, restarts=<p>%|0.
+struct StagedSettings {
+  double margin = MARGIN;  // infinite for every entry read
+  double restarts = RESTARTS;
+
+  [[nodiscard]] bool operator==(const StagedSettings&) const = default;
+};
+
 // What the lanes beyond the model's are allowed.
 
 struct ExploreSettings {
@@ -154,15 +176,18 @@ struct Timetable {
 
 // The time the env's items took, per lane: from each item record to the next of its session, or to the session's last
 // record, and at least a second.  A session with no item records, from before lanes, counts its calls to the model.
+// The staged search's items are counted per stage.
 struct LaneTime {
   LaneShares seconds{};
   double duty = 0;
+  std::map<std::string, double> staged{};
 
   [[nodiscard]] double total() const;
 };
 [[nodiscard]] LaneTime laneTime(const TuneDB& db, u32 env);
 
-// "model 21.0 min (70%), coverage 6.2 min (21%), restarts 2.8 min (9%), interactions 0.0 min (0%); duty 1.5 min"
+// "model 21.0 min (70%), coverage 6.2 min (21%), restarts 2.8 min (9%), interactions 0.0 min (0%); duty 1.5 min", and
+// where the staged search ran, "; staged: coverage 4.0 min, sweep 11.5 min"
 [[nodiscard]] std::string toString(const LaneTime& time);
 
 // The lanes the furthest behind what they are owed first, the model breaking ties.
