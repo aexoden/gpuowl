@@ -88,20 +88,6 @@ std::pair<size_t, bool> pick(const std::vector<size_t>& indices, const std::vect
   return {*std::ranges::min_element(indices, {}, [&](size_t i) { return behindBy[i]; }), false};
 }
 
-// Every variable after `from` made legal again where its ancestors moved: kept where it still is, else at its
-// reference, or inactive.
-void settle(const ConditionalSpace& space, std::vector<size_t>& states, size_t from) {
-  const std::vector<BranchVariable>& vars = space.variables();
-  for (size_t u = from + 1; u < vars.size(); ++u) {
-    const BranchVariable::Context& c = vars[u].context(space.contextOf(u, states));
-    if (!c.reference) {
-      states[u] = vars[u].inactive();
-    } else if (states[u] == vars[u].inactive() || !c.offered[states[u]]) {
-      states[u] = *c.reference;
-    }
-  }
-}
-
 // Moves within an entry's space that keep every variable legal.
 class Mutator {
 public:

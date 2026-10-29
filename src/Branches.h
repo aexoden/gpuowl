@@ -123,4 +123,8 @@ private:
 [[nodiscard]] std::shared_ptr<const ConditionalSpace> spaceOf(const Env& env, const FFTConfig& fft,
                                                               const AxisFilter& filter);
 
+// Every variable after `from` made legal again where its ancestors moved: kept where it still is, else at its
+// reference, or inactive.
+void settle(const ConditionalSpace& space, std::vector<size_t>& states, size_t from);
+
 }  // namespace tune

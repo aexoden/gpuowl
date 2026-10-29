@@ -303,4 +303,16 @@ BranchCount ConditionalSpace::legalBranches() const {
   return branches_;
 }
 
+void settle(const ConditionalSpace& space, std::vector<size_t>& states, size_t from) {
+  const std::vector<BranchVariable>& vars = space.variables();
+  for (size_t u = from + 1; u < vars.size(); ++u) {
+    const BranchVariable::Context& c = vars[u].context(space.contextOf(u, states));
+    if (!c.reference) {
+      states[u] = vars[u].inactive();
+    } else if (states[u] == vars[u].inactive() || !c.offered[states[u]]) {
+      states[u] = *c.reference;
+    }
+  }
+}
+
 }  // namespace tune
