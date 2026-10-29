@@ -18,6 +18,7 @@
 #include <filesystem>
 #include <fstream>
 #include <sstream>
+#include <deque>
 #include <map>
 #include <mutex>
 #include <regex>
@@ -171,7 +172,7 @@ KernelCompiler::KernelCompiler(const Args& args, const Context* context, const s
   linkArgs{},   // no compile-only options here: clLinkProgram accepts only linker options (POCL enforces it)
   baseArgs{},
   useCache{args.useCache},
-  useMemCache{args.doTune || args.doZtune || args.doCtune || args.carryTune},
+  useMemCache{args.doTune || args.doZtune || args.doCtune || args.carryTune || args.doTuneCommand || args.doMeasure},
   verbose{args.verbose},
   saveTemps{runtimeSavesTemps()},
   // main() re-execs with the compiler options set (Linux, AMD); otherwise the user may have set them (e.g. on Windows)
@@ -500,10 +501,36 @@ static string takeRegLimit(const string& args, int& maxRegs, int& minBlocks, boo
 // defines as an earlier one (in a -tune config phase about 30% of the compiles).  So while tuning, the binaries of this process's
 // compiles are kept in memory, under the same key as the -cache files, and loaded from there.  Bounded: past the limit new binaries
 // are simply not kept.
+//
+// The model tuner (-tune run) times a call every 10 s or so for up to two days, and fills the limit within the first hour or
+// two; it also compiles each call's kernels ahead of the call (see compileAhead), and what is compiled ahead must be kept.
+// So past the limit the oldest binaries go, rather than the new ones.
 static std::mutex memCacheMutex;
 static std::map<u64, string> memCache;
+static std::deque<u64> memCacheOrder;   // memCache's keys, oldest first
 static size_t memCacheBytes = 0;
 static constexpr size_t MEM_CACHE_LIMIT = size_t(1) << 30;
+
+static string memCacheFind(u64 key) {
+  std::lock_guard lock{memCacheMutex};
+  auto it = memCache.find(key);
+  return it == memCache.end() ? string{} : it->second;
+}
+
+static void memCacheKeep(u64 key, string bytes) {
+  if (bytes.empty() || bytes.size() > MEM_CACHE_LIMIT) { return; }
+  std::lock_guard lock{memCacheMutex};
+  if (memCache.contains(key)) { return; }
+  while (memCacheBytes + bytes.size() > MEM_CACHE_LIMIT) {
+    auto it = memCache.find(memCacheOrder.front());
+    memCacheBytes -= it->second.size();
+    memCache.erase(it);
+    memCacheOrder.pop_front();
+  }
+  memCacheBytes += bytes.size();
+  memCacheOrder.push_back(key);
+  memCache.emplace(key, std::move(bytes));
+}
 
 KernelHolder KernelCompiler::loadAux(const string& fileName, const string& kernelName, const string& args) const {
   Timer const timer;
@@ -528,12 +555,7 @@ KernelHolder KernelCompiler::loadAux(const string& fileName, const string& kerne
   }
 
   if (!program && useMemCache) {
-    string bytes;
-    {
-      std::lock_guard lock{memCacheMutex};
-      if (auto it = memCache.find(key); it != memCache.end()) { bytes = it->second; }
-    }
-    if (!bytes.empty()) {
+    if (string const bytes = memCacheFind(key); !bytes.empty()) {
       program = loadBinaryBytes(context, deviceId, bytes, kernelName);
     }
   }
@@ -566,14 +588,7 @@ KernelHolder KernelCompiler::loadAux(const string& fileName, const string& kerne
     saveBinary(program.get(), cacheFile);
   }
 
-  if (!fromCache && useMemCache) {
-    string bytes = getBinary(program.get());
-    std::lock_guard lock{memCacheMutex};
-    if (memCacheBytes + bytes.size() <= MEM_CACHE_LIMIT) {
-      memCacheBytes += bytes.size();
-      memCache.emplace(key, std::move(bytes));
-    }
-  }
+  if (!fromCache && useMemCache) { memCacheKeep(key, getBinary(program.get())); }
 
 #ifdef CUDA_BACKEND
   if ((maxRegs > 0 || minBlocks > 0) && !cudaSetKernelRegLimit(program.get(), kernelName.c_str(), maxRegs, minBlocks, smemSpill)) {
