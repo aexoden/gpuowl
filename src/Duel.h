@@ -32,8 +32,8 @@ struct DuelSide {
   double cost = 0;  // as the readings have it now
 };
 
-// A duel to run: a line's configuration, which took it, and the cheapest that would serve the line's heaviest exponent
-// in its place, which was read first.
+// A duel to run: a line's configuration, which took it, and the cheapest read before it that would serve the line's
+// heaviest exponent in its place.
 struct DuelPlan {
   TestKind kind = TestKind::PRP;
   u64 exponent = 0;  // the line's heaviest
@@ -46,8 +46,9 @@ struct DuelPlan {
 };
 
 // The next duel owed: for the line of this build's frontier serving the most weight that owes one, its configuration
-// against the cheapest other that holds its heaviest exponent -- with its accuracy settled that far -- where that one
-// was read first, is no more than `margin` dearer, and the two have never duelled or both been soaked.  Plans whose
+// against the cheapest read before it that holds its heaviest exponent -- with its accuracy settled that far -- where
+// that one is no more than `margin` dearer, and the two have never duelled or both been soaked.  A configuration read
+// after the line's took nothing from it, however close behind it reads.  Plans whose
 // key is in `tried` are passed over.
 [[nodiscard]] std::optional<DuelPlan> planDuel(const Publication& publication,
                                                const std::vector<std::vector<Candidate>>& candidates,

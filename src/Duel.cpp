@@ -59,20 +59,21 @@ std::optional<DuelPlan> planDuel(const Publication& publication, const std::vect
       }
       if (!heaviest || (out && weight <= out->weight)) { continue; }
 
-      // The cheapest other configuration that would serve that exponent.
+      // The cheapest configuration read before the line's that would serve that exponent: the one it took the line
+      // from.  One read after it, however cheap, took nothing from it.
       const Candidate* rivalCandidate = nullptr;
       const Reading* rival = nullptr;
       for (const Candidate& c : candidates[ki]) {
         if (!c.interval.contains(heaviest->exponent)) { continue; }
         for (const Reading* r : readings.of(c.subject)) {
-          if (r == line.reading || r->failed || r->calls < MIN_CALLS) { continue; }
+          if (r == line.reading || r->failed || r->calls < MIN_CALLS || r->first > line.reading->first) { continue; }
           if (rival && r->pessimistic() >= rival->pessimistic()) { continue; }
           if (!reaches(c, readings, r->options, heaviest->exponent)) { continue; }
           rivalCandidate = &c;
           rival = r;
         }
       }
-      if (!rival || rival->first > line.reading->first) { continue; }
+      if (!rival) { continue; }
       if (rival->pessimistic() > line.cost() * (1 + settings.margin)) { continue; }
       if (rival->isSoaked() && line.reading->isSoaked()) { continue; }
       if (readings.dueled(Readings::keyOf(line.subject, line.reading->options),

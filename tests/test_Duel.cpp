@@ -269,6 +269,20 @@ TEST(no_duel_is_owed_where_the_line_holder_was_read_first) {
   CHECK(!planDuel(f.published(), f.candidates, *f.readings, DuelSettings{}));
 }
 
+TEST(a_duel_is_owed_against_what_the_line_was_taken_from_not_a_newer_rival) {
+  // The line's configuration took it from one read before it; one read after it reads closer behind, but took nothing.
+  Fixture f;
+  std::vector<const Candidate*> const cs = f.exact(3);
+  f.call(*cs[0], 910);
+  f.call(*cs[1], 900);
+  f.call(*cs[2], 902);
+  std::optional<DuelPlan> const plan = planDuel(f.published(), f.candidates, *f.readings, DuelSettings{});
+  CHECK(plan.has_value());
+  if (!plan) { return; }
+  CHECK(plan->incumbent.candidate == cs[0]);
+  CHECK(plan->challenger.candidate == cs[1]);
+}
+
 TEST(no_duel_is_owed_between_two_soaked_configurations) {
   Fixture f;
   std::vector<const Candidate*> const cs = f.exact(2);
