@@ -19,8 +19,8 @@ namespace tune {
 
 namespace {
 
-constexpr std::array<const char*, STAGES> STAGE_NAMES{"types",    "coverage",  "sweep", "transfer",
-                                                      "variants", "structure", "local"};
+constexpr std::array<const char*, STAGES> STAGE_NAMES{"types",     "coverage", "sweep",     "transfer",
+                                                      "structure", "variants", "positions", "local"};
 
 // What the stages know of every entry: one per subject, the first of its candidates.
 struct Entry {
@@ -219,40 +219,34 @@ bool coverageStage(const Field& f, double margin, const Emit& emit) {
   return false;
 }
 
-bool variantsStage(const Field& f, double margin, const Emit& emit) {
-  for (const std::vector<size_t>& g : groups(f, shapeKey, &Entry::measuredBehind)) {
-    if (!(f.entries()[g.front()].measuredBehind <= std::log1p(margin))) { continue; }
-    for (size_t const i : g) {
-      const Entry& e = f.entries()[i];
-      if (e.tried) { continue; }
-      std::string const why =
-        "the first look at another entry of a shape " + percentBehind(f.entries()[g.front()].measuredBehind) + " behind";
-      // At its type leader's best set, so that it is compared tuned with what it would replace; else at its defaults.
-      if (const Entry* const leader = f.leaderOf(*e.c, margin)) {
-        UseConfig const options = fitted(f.env(), e.c->subject.fft, leader->best->options);
-        if (f.fresh(*e.c, options)) {
-          if (emit(item(Stage::Variants, e, options, why + ", with the best set of its type's leader"))) { return true; }
-          continue;
-        }
-      }
-      if (f.fresh(*e.c, {}) && emit(item(Stage::Variants, e, {}, why))) { return true; }
+// The positions `space`'s entry has read, in their contexts: as every entry `alike` takes has read them, each reading's
+// set fitted to the entry.
+std::set<std::tuple<size_t, size_t, size_t>> positionsRead(const Field& f, const Entry& e, const ConditionalSpace& space,
+                                                           const std::function<bool(const Candidate&)>& alike) {
+  const std::vector<BranchVariable>& vars = space.variables();
+  std::set<std::tuple<size_t, size_t, size_t>> out;
+  for (const Entry& o : f.entries()) {
+    if (!o.tried || !alike(*o.c)) { continue; }
+    for (const Reading* r : f.context().readings.of(o.c->subject)) {
+      std::vector<size_t> const states =
+        space.statesOf(o.c == e.c ? r->options : fitted(f.env(), e.c->subject.fft, r->options));
+      for (size_t v = 0; v < vars.size(); ++v) { out.emplace(v, space.contextOf(v, states), states[v]); }
     }
   }
-  return false;
+  return out;
 }
 
 bool sweepStage(const Field& f, double margin, const Emit& emit) {
+  // Each kind's leader of the type that leads it.
+  std::set<TestKind> kinds;
   for (size_t const i : f.leaders(margin)) {
     const Entry& e = f.entries()[i];
+    if (!kinds.insert(e.c->subject.kind).second) { continue; }
     std::shared_ptr<const ConditionalSpace> const space = f.space(*e.c);
     const std::vector<BranchVariable>& vars = space->variables();
-
-    // Each option's position in its context, as anything read of the leader has had it.
-    std::set<std::tuple<size_t, size_t, size_t>> read;
-    for (const Reading* r : f.context().readings.of(e.c->subject)) {
-      std::vector<size_t> const states = space->statesOf(r->options);
-      for (size_t v = 0; v < vars.size(); ++v) { read.emplace(v, space->contextOf(v, states), states[v]); }
-    }
+    // A position any entry of the type has read is swept, so a new leader of the type does not start over.
+    std::set<std::tuple<size_t, size_t, size_t>> const read =
+      positionsRead(f, e, *space, [&](const Candidate& c) { return typeKey(c) == typeKey(*e.c); });
     std::vector<size_t> const seed = space->statesOf(e.best->options);
     for (size_t v = 0; v < vars.size(); ++v) {
       if (vars[v].axis.option->structural || seed[v] == vars[v].inactive()) { continue; }
@@ -265,7 +259,7 @@ bool sweepStage(const Field& f, double margin, const Emit& emit) {
         settle(*space, states, v);
         UseConfig const options = space->configOf(states);
         if (!f.fresh(*e.c, options)) { continue; }
-        if (emit(item(Stage::Sweep, e, options, vars[v].axis.label(p) + " from the best set of its type's leader"))) {
+        if (emit(item(Stage::Sweep, e, options, vars[v].axis.label(p) + " from the best set of the leading type's leader"))) {
           return true;
         }
       }
@@ -274,97 +268,177 @@ bool sweepStage(const Field& f, double margin, const Emit& emit) {
   return false;
 }
 
-bool transferStage(const Field& f, double margin, const Emit& emit) {
-  for (size_t const i : f.contenders(margin)) {
+// A contender: an entry read within the margin, or one nothing has read of a shape read within it, which stands where
+// the shape's best does.  The least behind first.
+struct Contender {
+  size_t entry = 0;
+  double behind = 0;
+};
+
+std::vector<Contender> contenders(const Field& f, double margin) {
+  std::map<std::string, double> shapes;
+  for (const Entry& e : f.entries()) {
+    if (!e.best) { continue; }
+    auto const [it, added] = shapes.emplace(shapeKey(*e.c), e.measuredBehind);
+    if (!added) { it->second = std::min(it->second, e.measuredBehind); }
+  }
+  std::vector<Contender> out;
+  for (size_t i = 0; i < f.entries().size(); ++i) {
     const Entry& e = f.entries()[i];
-    const Entry* const leader = f.leaderOf(*e.c, margin);
-    if (!leader || leader == &e) { continue; }
-    UseConfig const options = fitted(f.env(), e.c->subject.fft, leader->best->options);
-    if (!f.fresh(*e.c, options)) { continue; }
-    if (emit(item(Stage::Transfer, e, options, "the best set of its type's leader, " + leader->c->subject.fft.spec()))) {
-      return true;
+    if (e.best) {
+      if (e.measuredBehind <= std::log1p(margin)) { out.push_back({.entry = i, .behind = e.measuredBehind}); }
+    } else if (auto const it = shapes.find(shapeKey(*e.c)); !e.tried && it != shapes.end()) {
+      if (it->second <= std::log1p(margin)) { out.push_back({.entry = i, .behind = it->second}); }
     }
   }
-  return false;
+  std::ranges::stable_sort(out, {}, &Contender::behind);
+  return out;
 }
 
-bool structureStage(const Field& f, double margin, const Emit& emit) {
-  for (size_t const i : f.contenders(margin)) {
-    const Entry& e = f.entries()[i];
-    std::shared_ptr<const ConditionalSpace> const space = f.space(*e.c);
-    const std::vector<BranchVariable>& vars = space->variables();
-    std::vector<size_t> const seed = space->statesOf(e.best->options);
+// A contender's first look: at its type leader's best set, so that it is compared tuned with what it would replace;
+// else at its defaults.
+std::optional<Proposal> variantOf(const Field& f, const Contender& k, double margin) {
+  const Entry& e = f.entries()[k.entry];
+  if (e.tried) { return {}; }
+  std::string const why = "the first look at another entry of a shape " + percentBehind(k.behind) + " behind";
+  if (const Entry* const leader = f.leaderOf(*e.c, margin)) {
+    UseConfig options = fitted(f.env(), e.c->subject.fft, leader->best->options);
+    if (f.fresh(*e.c, options)) {
+      return item(Stage::Variants, e, std::move(options), why + ", at the best set of its type's leader");
+    }
+  }
+  if (f.fresh(*e.c, {})) { return item(Stage::Variants, e, {}, why); }
+  return {};
+}
+
+std::optional<Proposal> transferOf(const Field& f, const Contender& k, double margin) {
+  const Entry& e = f.entries()[k.entry];
+  const Entry* const leader = f.leaderOf(*e.c, margin);
+  if (!e.best || !leader || leader == &e) { return {}; }
+  UseConfig options = fitted(f.env(), e.c->subject.fft, leader->best->options);
+  if (!f.fresh(*e.c, options)) { return {}; }
+  return item(Stage::Transfer, e, std::move(options), "the best set of its type's leader, " + leader->c->subject.fft.spec());
+}
+
+// The single moves from `seed` of the variables `structural` says, in order, each set as fitted: those `wanted` takes.
+std::optional<Proposal> firstMove(const Field& f, const Entry& e, const UseConfig& seedSet, bool structural,
+                                  const std::function<bool(size_t v, size_t context, size_t p)>& wanted, Stage stage,
+                                  const std::string& from) {
+  std::shared_ptr<const ConditionalSpace> const space = f.space(*e.c);
+  const std::vector<BranchVariable>& vars = space->variables();
+  std::vector<size_t> const seed = space->statesOf(seedSet);
+  for (size_t v = 0; v < vars.size(); ++v) {
+    if (vars[v].axis.option->structural != structural || seed[v] == vars[v].inactive()) { continue; }
+    size_t const at = space->contextOf(v, seed);
+    const BranchVariable::Context& ctx = vars[v].context(at);
+    if (!ctx.reference) { continue; }
+    for (size_t p = 0; p < ctx.offered.size(); ++p) {
+      if (!ctx.offered[p] || p == seed[v] || !wanted(v, at, p)) { continue; }
+      std::vector<size_t> states = seed;
+      states[v] = p;
+      settle(*space, states, v);
+      UseConfig options = space->configOf(states);
+      if (f.fresh(*e.c, options)) { return item(stage, e, std::move(options), vars[v].axis.label(p) + from); }
+    }
+  }
+  return {};
+}
+
+// A position of an option, structural or not as asked, that no entry of the contender's shape -- every variant and regime
+// of it -- has read in its context, from the contender's best set: the sweep, on every shape near the front.
+std::optional<Proposal> positionsOf(const Field& f, const Contender& k, bool structural) {
+  const Entry& e = f.entries()[k.entry];
+  if (!e.best) { return {}; }
+  std::shared_ptr<const ConditionalSpace> const space = f.space(*e.c);
+  std::set<std::tuple<size_t, size_t, size_t>> const read =
+    positionsRead(f, e, *space, [&](const Candidate& c) { return shapeKey(c) == shapeKey(*e.c); });
+  auto unread = [&](size_t v, size_t at, size_t p) { return !read.contains({v, at, p}); };
+  std::string const from = " from the entry's best set, a position its shape has not read, " + percentBehind(k.behind) +
+    " behind";
+  return firstMove(f, e, e.best->options, structural, unread, structural ? Stage::Structure : Stage::Positions, from);
+}
+
+// A single move from the best set of one of the contender's structural branches within the margin, the branch drawn by
+// 1/rank of how far behind it is; nothing where every branch's moves have been read.  Without `rng`, any.
+std::optional<Proposal> localOf(const Field& f, const Contender& k, double margin, std::mt19937_64* rng) {
+  const Entry& e = f.entries()[k.entry];
+  if (!e.best) { return {}; }
+  double const frontier = std::log(e.best->mean) - e.measuredBehind;
+  std::vector<const Reading*> seeds;
+  for (const BranchArchive& a : archiveOf(f.env(), f.context().readings.of(e.c->subject))) {
+    if (std::log(a.seeds.front()->mean) - frontier <= std::log1p(margin)) { seeds.push_back(a.seeds.front()); }
+  }
+  std::shared_ptr<const ConditionalSpace> const space = f.space(*e.c);
+  const std::vector<BranchVariable>& vars = space->variables();
+  std::vector<double> weights(seeds.size());
+  for (size_t b = 0; b < seeds.size(); ++b) { weights[b] = 1.0 / double(b + 1); }
+  while (std::ranges::any_of(weights, [](double w) { return w > 0; })) {
+    size_t const b = rng ? std::discrete_distribution<size_t>{weights.begin(), weights.end()}(*rng)
+                         : size_t(std::ranges::find_if(weights, [](double w) { return w > 0; }) - weights.begin());
+    weights[b] = 0;
+    std::vector<size_t> const seed = space->statesOf(seeds[b]->options);
+    std::vector<std::pair<UseConfig, std::string>> moves;
     for (size_t v = 0; v < vars.size(); ++v) {
-      if (!vars[v].axis.option->structural) { continue; }
+      if (vars[v].axis.option->structural || seed[v] == vars[v].inactive()) { continue; }
       const BranchVariable::Context& ctx = vars[v].context(space->contextOf(v, seed));
-      if (!ctx.reference) { continue; }
       for (size_t p = 0; p < ctx.offered.size(); ++p) {
         if (!ctx.offered[p] || p == seed[v]) { continue; }
         std::vector<size_t> states = seed;
         states[v] = p;
         settle(*space, states, v);
-        UseConfig const options = space->configOf(states);
-        if (!f.fresh(*e.c, options)) { continue; }
-        if (emit(item(Stage::Structure, e, options,
-                      vars[v].axis.label(p) + " from the entry's best set, " + percentBehind(e.measuredBehind) +
-                        " behind"))) {
-          return true;
-        }
+        UseConfig options = space->configOf(states);
+        if (f.fresh(*e.c, options)) { moves.emplace_back(std::move(options), vars[v].axis.label(p)); }
       }
     }
+    if (moves.empty()) { continue; }
+    auto& [options, label] = moves[rng ? std::uniform_int_distribution<size_t>{0, moves.size() - 1}(*rng) : 0];
+    Proposal p = item(Stage::Local, e, std::move(options),
+                      label + " from the best set of branch " + std::to_string(b + 1) + " of the entry, " +
+                        percentBehind(std::log(seeds[b]->mean) - frontier) + " behind");
+    p.predictedUs = seeds[b]->mean;
+    return p;
   }
-  return false;
+  return {};
 }
 
-// One contender's structural branch, from its fastest set.
-struct Unit {
-  size_t entry = 0;
-  const Reading* seed = nullptr;
+// The contenders of one shape, the least behind first, where the shape's best stands.
+struct Shape {
+  std::vector<Contender> members;
   double behind = 0;
 };
 
-std::vector<Unit> units(const Field& f, double margin) {
-  std::vector<Unit> out;
-  for (size_t const i : f.contenders(margin)) {
-    const Entry& e = f.entries()[i];
-    double const frontier = std::log(e.best->mean) - e.measuredBehind;
-    for (const BranchArchive& a : archiveOf(f.env(), f.context().readings.of(e.c->subject))) {
-      double const behind = std::log(a.seeds.front()->mean) - frontier;
-      if (behind <= std::log1p(margin)) { out.push_back({.entry = i, .seed = a.seeds.front(), .behind = behind}); }
-    }
-  }
-  std::ranges::stable_sort(out, {}, &Unit::behind);
-  return out;
-}
-
-// Every single move of an option within the unit's branch, from its fastest set, that nothing has read.
-std::vector<std::pair<UseConfig, std::string>> movesOf(const Field& f, const Unit& u) {
-  const Entry& e = f.entries()[u.entry];
-  std::shared_ptr<const ConditionalSpace> const space = f.space(*e.c);
-  const std::vector<BranchVariable>& vars = space->variables();
-  std::vector<size_t> const seed = space->statesOf(u.seed->options);
-  std::vector<std::pair<UseConfig, std::string>> out;
-  for (size_t v = 0; v < vars.size(); ++v) {
-    if (vars[v].axis.option->structural || seed[v] == vars[v].inactive()) { continue; }
-    const BranchVariable::Context& ctx = vars[v].context(space->contextOf(v, seed));
-    for (size_t p = 0; p < ctx.offered.size(); ++p) {
-      if (!ctx.offered[p] || p == seed[v]) { continue; }
-      std::vector<size_t> states = seed;
-      states[v] = p;
-      settle(*space, states, v);
-      UseConfig options = space->configOf(states);
-      if (f.fresh(*e.c, options)) { out.emplace_back(std::move(options), vars[v].axis.label(p)); }
-    }
+std::vector<Shape> shapesOf(const Field& f, const std::vector<Contender>& all) {
+  std::map<std::string, size_t> index;
+  std::vector<Shape> out;
+  for (const Contender& k : all) {
+    auto const [it, added] = index.emplace(shapeKey(*f.entries()[k.entry].c), out.size());
+    if (added) { out.push_back({.members = {}, .behind = k.behind}); }
+    out[it->second].members.push_back(k);
   }
   return out;
 }
 
-Proposal localItem(const Field& f, const Unit& u, UseConfig options, const std::string& move, size_t rank) {
-  Proposal p = item(Stage::Local, f.entries()[u.entry], std::move(options),
-                    move + " from the best set of a branch " + percentBehind(u.behind) + " behind, ranked " +
-                      std::to_string(rank + 1));
-  p.predictedUs = u.seed->mean;
-  return p;
+// The shape's next item.  Its lead, the entry read least behind, takes its type leader's set, then each structural
+// position the shape has not read: a branch is tried on every shape near the front before anything finer.  Then the
+// first looks at its other entries, their type leader's set on each, every other position the shape has not read from
+// the lead, and last single moves from the best of each entry's branches, the lead's first.
+std::optional<Proposal> workOf(const Field& f, const Shape& s, double margin, std::mt19937_64* rng) {
+  auto const lead = std::ranges::find_if(s.members, [&](const Contender& k) { return f.entries()[k.entry].best; });
+  if (lead == s.members.end()) { return {}; }
+  if (std::optional<Proposal> p = transferOf(f, *lead, margin)) { return p; }
+  if (std::optional<Proposal> p = positionsOf(f, *lead, true)) { return p; }
+  for (const Contender& k : s.members) {
+    if (std::optional<Proposal> p = variantOf(f, k, margin)) { return p; }
+  }
+  for (const Contender& k : s.members) {
+    if (std::optional<Proposal> p = transferOf(f, k, margin)) { return p; }
+  }
+  if (std::optional<Proposal> p = positionsOf(f, *lead, false)) { return p; }
+  if (std::optional<Proposal> p = localOf(f, *lead, margin, rng)) { return p; }
+  for (const Contender& k : s.members) {
+    if (std::optional<Proposal> p = localOf(f, k, margin, rng)) { return p; }
+  }
+  return {};
 }
 
 }  // namespace
@@ -386,25 +460,22 @@ std::optional<Proposal> stagedStep(const AcquireContext& context, const StagedSe
     out = std::move(p);
     return true;
   };
-  if (typesStage(f, first) || coverageStage(f, settings.margin, first) || sweepStage(f, settings.margin, first) ||
-      transferStage(f, settings.margin, first) || variantsStage(f, settings.margin, first) ||
-      structureStage(f, settings.margin, first)) {
+  if (typesStage(f, first) || coverageStage(f, settings.margin, first) || sweepStage(f, settings.margin, first)) {
     return out;
   }
 
-  // A branch drawn by 1/rank, the least behind first; one with nothing left unread is passed over.
-  std::vector<Unit> const all = units(f, settings.margin);
-  std::vector<double> weights(all.size());
-  for (size_t k = 0; k < all.size(); ++k) { weights[k] = 1.0 / double(k + 1); }
+  // A shape drawn by 1/rank of how far behind it is, the least behind first, and an equal floor for each, so that a
+  // shape far down the order is still reached; one with nothing left to read is passed over.
+  std::vector<Shape> const shapes = shapesOf(f, contenders(f, settings.margin));
+  std::vector<double> weights(shapes.size());
+  for (size_t k = 0; k < shapes.size(); ++k) { weights[k] = 1.0 / double(k + 1) + 1.0 / double(shapes.size()); }
   while (std::ranges::any_of(weights, [](double w) { return w > 0; })) {
     size_t const k = std::discrete_distribution<size_t>{weights.begin(), weights.end()}(rng);
-    std::vector<std::pair<UseConfig, std::string>> moves = movesOf(f, all[k]);
-    if (moves.empty()) {
-      weights[k] = 0;
-      continue;
+    if (std::optional<Proposal> p = workOf(f, shapes[k], settings.margin, &rng)) {
+      p->why += ", shape " + std::to_string(k + 1) + " of " + std::to_string(shapes.size());
+      return p;
     }
-    auto& [options, label] = moves[std::uniform_int_distribution<size_t>{0, moves.size() - 1}(rng)];
-    return localItem(f, all[k], std::move(options), label, k);
+    weights[k] = 0;
   }
   return {};
 }
@@ -421,11 +492,10 @@ StagesLeft stagesLeft(const AcquireContext& context, const StagedSettings& setti
   (void)typesStage(f, counter(Stage::Types));
   (void)coverageStage(f, settings.margin, counter(Stage::Coverage));
   (void)sweepStage(f, settings.margin, counter(Stage::Sweep));
-  (void)transferStage(f, settings.margin, counter(Stage::Transfer));
-  (void)variantsStage(f, settings.margin, counter(Stage::Variants));
-  (void)structureStage(f, settings.margin, counter(Stage::Structure));
-  for (const Unit& u : units(f, settings.margin)) {
-    if (!movesOf(f, u).empty()) { ++out[size_t(Stage::Local)]; }
+  for (const Shape& shape : shapesOf(f, contenders(f, settings.margin))) {
+    if (std::optional<Proposal> const p = workOf(f, shape, settings.margin, nullptr)) {
+      ++out[size_t(*parseStage(p->what))];
+    }
   }
   return out;
 }
