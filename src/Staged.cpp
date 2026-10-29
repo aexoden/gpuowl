@@ -142,6 +142,28 @@ public:
     return out;
   }
 
+  // The entries the front runs: at each grid point the one whose best is cheapest there, the heaviest first by the
+  // weight of the points each holds.
+  [[nodiscard]] std::vector<size_t> holders() const {
+    std::map<size_t, double> weight;
+    for (const Grid& g : context_.scope.grids) {
+      for (const GridPoint& p : g.points) {
+        const Entry* best = nullptr;
+        for (const Entry& e : entries_) {
+          if (e.best && e.c->subject.kind == g.kind && e.c->interval.contains(p.exponent) &&
+              (!best || e.best->mean < best->best->mean)) {
+            best = &e;
+          }
+        }
+        if (best) { weight[size_t(best - entries_.data())] += p.weight; }
+      }
+    }
+    std::vector<size_t> out;
+    for (const auto& [i, w] : weight) { out.push_back(i); }
+    std::ranges::stable_sort(out, std::greater<>{}, [&](size_t i) { return weight[i]; });
+    return out;
+  }
+
   [[nodiscard]] const Entry* leaderOf(const Candidate& c, double margin) const {
     for (size_t const i : leaders(margin)) {
       if (typeKey(*entries_[i].c) == typeKey(c)) { return &entries_[i]; }
@@ -236,17 +258,14 @@ std::set<std::tuple<size_t, size_t, size_t>> positionsRead(const Field& f, const
   return out;
 }
 
-bool sweepStage(const Field& f, double margin, const Emit& emit) {
-  // Each kind's leader of the type that leads it.
-  std::set<TestKind> kinds;
-  for (size_t const i : f.leaders(margin)) {
+bool sweepStage(const Field& f, const Emit& emit) {
+  for (size_t const i : f.holders()) {
     const Entry& e = f.entries()[i];
-    if (!kinds.insert(e.c->subject.kind).second) { continue; }
     std::shared_ptr<const ConditionalSpace> const space = f.space(*e.c);
     const std::vector<BranchVariable>& vars = space->variables();
-    // A position any entry of the type has read is swept, so a new leader of the type does not start over.
+    // A position any entry of the shape has read is swept, so a sibling taking the points over does not start over.
     std::set<std::tuple<size_t, size_t, size_t>> const read =
-      positionsRead(f, e, *space, [&](const Candidate& c) { return typeKey(c) == typeKey(*e.c); });
+      positionsRead(f, e, *space, [&](const Candidate& c) { return shapeKey(c) == shapeKey(*e.c); });
     std::vector<size_t> const seed = space->statesOf(e.best->options);
     for (size_t v = 0; v < vars.size(); ++v) {
       if (vars[v].axis.option->structural || seed[v] == vars[v].inactive()) { continue; }
@@ -259,7 +278,7 @@ bool sweepStage(const Field& f, double margin, const Emit& emit) {
         settle(*space, states, v);
         UseConfig const options = space->configOf(states);
         if (!f.fresh(*e.c, options)) { continue; }
-        if (emit(item(Stage::Sweep, e, options, vars[v].axis.label(p) + " from the best set of the leading type's leader"))) {
+        if (emit(item(Stage::Sweep, e, options, vars[v].axis.label(p) + " from the best set of an entry the front runs"))) {
           return true;
         }
       }
@@ -460,7 +479,7 @@ std::optional<Proposal> stagedStep(const AcquireContext& context, const StagedSe
     out = std::move(p);
     return true;
   };
-  if (typesStage(f, first) || coverageStage(f, settings.margin, first) || sweepStage(f, settings.margin, first)) {
+  if (typesStage(f, first) || coverageStage(f, settings.margin, first) || sweepStage(f, first)) {
     return out;
   }
 
@@ -491,7 +510,7 @@ StagesLeft stagesLeft(const AcquireContext& context, const StagedSettings& setti
   };
   (void)typesStage(f, counter(Stage::Types));
   (void)coverageStage(f, settings.margin, counter(Stage::Coverage));
-  (void)sweepStage(f, settings.margin, counter(Stage::Sweep));
+  (void)sweepStage(f, counter(Stage::Sweep));
   for (const Shape& shape : shapesOf(f, contenders(f, settings.margin))) {
     if (std::optional<Proposal> const p = workOf(f, shape, settings.margin, nullptr)) {
       ++out[size_t(*parseStage(p->what))];

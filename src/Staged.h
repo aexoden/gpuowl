@@ -7,8 +7,10 @@
 //   types      a first look at each FFT type of each kind nothing has read: its entry expected least behind
 //   coverage   a first look at each shape expected within `margin` of what else serves its exponent: one entry of
 //              the shape, the one serving the most weight
-//   sweep      upstream's coordinate descent, per kind on the leading type's leading entry: each position of each
-//              option from the leader's best set that no entry of its type has read, until none is left
+//   sweep      upstream's coordinate descent on each entry the front runs -- the cheapest read at some grid point --
+//              the heaviest first: each position of each option from its best set that no entry of its shape has read,
+//              until none is left.  Upstream sweeps one FFT; a workload's top and bottom are often run by different
+//              ones, whose options differ
 //
 // Then the contenders share the items: an entry whose best reading is within `margin` of what else serves its
 // exponent, or one nothing has read of a shape that is.  Each item goes to a shape drawn with weight 1/rank of how far
