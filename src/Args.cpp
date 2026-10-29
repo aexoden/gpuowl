@@ -386,6 +386,8 @@ named "config.txt" in the prpll run directory.
                          blocks=<n>          timed blocks in a call [4]
                          heater=on|off       the last call's configuration goes on squaring while the tuner
                                              decides what to call next, so the card does not cool between calls [on]
+                         compileAhead=on|off a call's kernels compile before its build, several at once and with
+                                             the heater still squaring, rather than one by one on its first run [on]
                          soak=<p>%%|0        the share of the tuning time spent soaking finalists: a line's
                                              configuration and its closest rivals run in turns for minutes, so each
                                              reads what the card sustains; none begins before the share pays for it

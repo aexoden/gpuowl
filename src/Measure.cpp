@@ -101,6 +101,7 @@ Call timeCall(GpuCommon shared, const Env& env, const FFTConfig& fft, TestKind k
   out.timedSec = t.at();
   out.buildSec = buildSec;
   out.ran = gpu->args.flags;
+  out.loaded = gpu->loadedKernels();
   if (std::optional<OccupancyLimits> const limits = deviceLimits(shared.context->deviceId())) {
     for (const Gpu::RegTunable& k : gpu->regTunables(false)) {
       out.kernels.push_back({.key = k.key, .resources = k.res, .plan = registerPlan(k.res, *limits, k.defaultCap)});
@@ -117,9 +118,10 @@ Call timeCall(GpuCommon shared, const Env& env, const FFTConfig& fft, TestKind k
 // The squaring stops before anything else is built, so two Gpus are never held at once and a build or a fault is the
 // next configuration's alone.
 //
-// What it leaves idle is the next configuration's first run, where its kernels compile: 2-3 s for one not read before.
+// What it left idle was the next configuration's first run, where its kernels compiled: 2-3 s for one not read before.
 // Kept squaring through that too, the card idled in 1.5-5% of a run rather than 34-40%, but a call's build took 9-16 s
-// rather than 3, the other Gpu holding up every step of it, and a run made half the calls.
+// rather than 3, the other Gpu holding up every step of it, and a run made half the calls.  So the kernels compile before
+// it stops instead, with no Gpu and nothing on the device (Bench::compileAhead), and the first run only loads them.
 class Heater {
 public:
   Heater(std::unique_ptr<Gpu> gpu, TestKind kind, u32 blocks, u32 blockSize, const std::string& what)
@@ -169,6 +171,21 @@ namespace {
 
 // The squaring a heater does between looks at whether to stop, which is how long it can hold up the next build.
 constexpr double HEATER_CHUNK_SEC = 0.25;
+
+// Calls that run the same kernels, near enough (Bench::compileAhead): of one kind, on FFTs of one type.  Options choose among
+// variants of a few (the tail's, the carry's), and every variant a call of the two has run is compiled ahead.
+std::string kernelsRunBy(const FFTConfig& fft, TestKind kind) {
+  return std::string{toString(kind)} + ' ' + std::to_string(int(fft.shape.fft_type));
+}
+
+std::string tallyText(const KernelCompiler::Tally& t) {
+  char buf[256];
+  snprintf(buf, sizeof(buf),
+           "%u compiled ahead in %.1f s; at the loads %u compiled in %.1f s, %u loaded from memory in %.2f s, %u register "
+           "limits applied in %.1f s",
+           t.ahead, t.aheadSec, t.compiled, t.compiledSec, t.fromCache, t.fromCacheSec, t.limited, t.limitedSec);
+  return buf;
+}
 
 }  // namespace
 
@@ -249,12 +266,19 @@ bool Bench::begin(u64 probe, const std::string& settings, std::string machine, s
     }
   }
 
+  tallyAtBegin_ = KernelCompiler::tally();
   session_ = db_.beginSession(envId_, anchor_.valid() ? anchor_.text() : "", restart::generation(), settings);
   return session_ != 0;
 }
 
 void Bench::end() {
   coolDown();
+  if (session_ && (aheadCalls_ || !kernelsRun_.empty())) {
+    log("measure: kernels this session: %s; %u calls had theirs compiled ahead, %u kernels\n",
+        tallyText(KernelCompiler::tally() - tallyAtBegin_).c_str(), aheadCalls_, aheadKernels_);
+    aheadCalls_ = 0;
+    kernelsRun_.clear();
+  }
   if (session_ && !deviceLost_ && db_.attemptOpen(session_)) { (void)db_.add(DoneRow{.sess = session_, .ts = now()}); }
 }
 
@@ -655,6 +679,8 @@ void Bench::recordRegisters(const FFTConfig& fft, TestKind kind, const Call& cal
 Call Bench::attempt(GpuCommon shared, const FFTConfig& fft, TestKind kind, u64 exponent, const UseConfig& options,
                     u32 nBlocks, u32 blockSize, double heatSec) {
   Call out;
+  KernelCompiler::Tally const tallyBefore = KernelCompiler::tally();
+  if (aheadOn_ && !stopped_) { compileAhead(fft, kind, exponent, options); }
   coolDown();
   if (stopped_) {
     out.status = Status::Lost;
@@ -682,6 +708,11 @@ Call Bench::attempt(GpuCommon shared, const FFTConfig& fft, TestKind kind, u64 e
       out.status = status;
     }
   }
+  if (!out.loaded.empty()) { kernelsRun_[kernelsRunBy(fft, kind)].insert(out.loaded.begin(), out.loaded.end()); }
+  if (args_.verbose) {
+    log("measure: kernels of %s -use %s: %s\n", fft.spec().c_str(), configText(options).c_str(),
+        tallyText(KernelCompiler::tally() - tallyBefore).c_str());
+  }
   // Once the attempt has put back what it found, so the heater's name for what runs is the one left standing.
   if (gpu && out.ok() && !stopped_) {
     double const chunkIters = HEATER_CHUNK_SEC / (out.mean() * 1e-6);
@@ -690,6 +721,13 @@ Call Bench::attempt(GpuCommon shared, const FFTConfig& fft, TestKind kind, u64 e
       std::make_unique<Heater>(std::move(gpu), kind, blocks, blockSize, attemptText(fft, kind, exponent, options));
   }
   return out;
+}
+
+void Bench::compileAhead(const FFTConfig& fft, TestKind kind, u64 exponent, const UseConfig& options) {
+  auto const it = kernelsRun_.find(kernelsRunBy(fft, kind));
+  if (it == kernelsRun_.end()) { return; }
+  aheadKernels_ += Gpu::compileAhead(exponent, shared_, fft, asExtraConf(env_, fft, options), it->second);
+  ++aheadCalls_;
 }
 
 std::optional<u64> Bench::llReference(const FFTConfig& fft, u64 exponent, u32 nBlocks, u32 blockSize) {

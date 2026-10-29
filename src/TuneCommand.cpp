@@ -76,7 +76,7 @@ std::string powerHoldText(const TuneCommand& command) {
   return buf;
 }
 
-// ",heat=<t>s,blocks=<n>,heater=off" for whichever is not the default: how a call was timed, which its readings depend
+// ",heat=<t>s,blocks=<n>,heater=off,compileAhead=off" for whichever is not the default: how a call was timed, which its readings depend
 // on.
 std::string callShapeText(const TuneCommand& command) {
   std::string out;
@@ -87,6 +87,7 @@ std::string callShapeText(const TuneCommand& command) {
   }
   if (command.callBlocks != BLOCKS_PER_CALL) { out += ",blocks=" + std::to_string(command.callBlocks); }
   if (!command.heater) { out += ",heater=off"; }
+  if (!command.compileAhead) { out += ",compileAhead=off"; }
   return out;
 }
 
@@ -264,6 +265,9 @@ TuneCommand parseTuneCommand(std::string_view text) {
     } else if (key == "heater" && out.verb == TuneVerb::Run) {
       if (value != "on" && value != "off") { throw std::string{"-tune: heater= takes on or off"}; }
       out.heater = value == "on";
+    } else if (key == "compileAhead" && out.verb == TuneVerb::Run) {
+      if (value != "on" && value != "off") { throw std::string{"-tune: compileAhead= takes on or off"}; }
+      out.compileAhead = value == "on";
     } else if (key == "powerHold" && out.verb != TuneVerb::Scope) {
       std::optional<double> const hold = value == "off" ? std::optional<double>{0} : parseDouble(value);
       if (!hold || *hold < 0 || *hold > 1) {

@@ -10,6 +10,7 @@
 #include "Eligibility.h"
 #include "FFTConfig.h"
 #include "GpuCommon.h"
+#include "KernelCompiler.h"
 #include "Occupancy.h"
 #include "OptionSpace.h"
 #include "Stats.h"
@@ -20,6 +21,7 @@
 
 #include <chrono>
 #include <functional>
+#include <map>
 #include <memory>
 #include <optional>
 #include <set>
@@ -53,6 +55,7 @@ struct Call {
   UseConfig ran{};                   // the options the kernels were built with
   std::vector<KernelUse> kernels{};  // REG-limited kernels; empty where the device's limits are not modelled
   double buildSec = 0;               // building the Gpu, a compile included on a cold kernel cache
+  std::vector<std::string> loaded{};  // the Gpu's kernels the call ran, by name (Gpu::loadedKernels)
   double timedSec = 0;
   std::chrono::steady_clock::time_point timedFrom{};  // the timed blocks (IterSamples)
   std::chrono::steady_clock::time_point timedTo{};
@@ -162,10 +165,12 @@ public:
   // The seconds of heat before a call's timed blocks and how many there are, for every call() after; a run's heat= and
   // blocks= settings.  The anchor's calls keep CALL_HEAT_SEC and BLOCKS_PER_CALL, so they compare across sessions.
   // `heater`: whether the last call's Gpu goes on squaring while the session is idle (heater=; see Heater).
-  void shapeCalls(double heatSec, u32 blocks, bool heater = true) {
+  // `ahead`: whether a call's kernels compile before its Gpu is built (compileAhead=; see compileAhead).
+  void shapeCalls(double heatSec, u32 blocks, bool heater = true, bool ahead = true) {
     heatSec_ = heatSec;
     blocks_ = blocks;
     heaterOn_ = heater;
+    aheadOn_ = ahead;
   }
 
   // One recorded rounding-error reading.
@@ -213,6 +218,10 @@ private:
   // next.
   void coolDown();
 
+  // Compiles the call's kernels ahead (Gpu::compileAhead) before the heater stops, so the card goes on squaring through the
+  // compile: those that calls of its kind and FFT type have run so far this session.  A kind's first call compiles on its run.
+  void compileAhead(const FFTConfig& fft, TestKind kind, u64 exponent, const UseConfig& options);
+
   [[nodiscard]] bool deviceUsable();
   void lost(const FFTConfig& fft, TestKind kind, u64 exponent, const UseConfig& options, const std::string& what,
             const char* during);
@@ -231,6 +240,12 @@ private:
   u32 blocks_ = BLOCKS_PER_CALL;
   bool heaterOn_ = true;
   std::unique_ptr<Heater> heater_;
+  bool aheadOn_ = true;
+  // The kernels calls have run, by kind and FFT type (kernelsRunBy), for compileAhead
+  std::map<std::string, std::set<std::string>> kernelsRun_;
+  u32 aheadCalls_ = 0;   // calls compileAhead compiled for, and the kernels it compiled for them
+  u32 aheadKernels_ = 0;
+  KernelCompiler::Tally tallyAtBegin_{};
 
   // The card's own readings, for what each call drew; none where the card cannot be read.
   std::unique_ptr<Telemetry> telemetry_;
