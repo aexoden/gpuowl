@@ -292,6 +292,9 @@ cl_program clCreateProgramWithSource(cl_context ctx, unsigned count, const char*
 static const char CUBIN_MARKER[] = "\n// PRPLL-CUBIN\n";
 static const size_t CUBIN_MARKER_LEN = sizeof(CUBIN_MARKER) - 1;
 
+// The pragma that lets ptxas spill a register-limited kernel's registers to shared memory (SMEM_SPILL, cudaSetKernelRegLimit)
+static const char SMEM_SPILL_PRAGMA[] = "\n.pragma \"enable_smem_spilling\";";
+
 // -use PTX_VERSION=x.y (undocumented, use at your own risk): relabel the PTX as PTX ISA version x.y, so that a driver older than
 // this NVRTC will JIT-compile it -- e.g. a statically linked CUDA 13 NVRTC on a CUDA 12.8 driver, whose PTX ISA is 8.7.  This is only
 // safe if the PTX uses nothing newer than x.y; the driver's JIT rejects code that does.  Returns the requested version, or "".
@@ -1471,10 +1474,10 @@ CudaSmLimits cudaSmLimits() {
 // Done after compiling and after the kernel cache, so that a kernel compiles (and is cached) once whatever its register limit.
 // smemSpill adds .pragma "enable_smem_spilling" (ptxas from CUDA 13.0, sm_75 and up): the registers the limit makes ptxas spill go
 // to the block's shared memory, as far as there is room, instead of local memory.  If the JIT rejects it, the kernel is loaded without.
-bool cudaSetKernelRegLimit(cl_program prog, const char* kernelName, int maxRegs, int minBlocks, bool smemSpill) {
-  if (!prog || !prog->moduleLoaded || (maxRegs <= 0 && minBlocks <= 0)) { return false; }
-  ensureContextCurrent();
-  string& ptx = prog->ptx;
+//
+// Here: the register limit's directive, and with smemSpill the spilling pragma, put into the PTX of the kernel's entry.  False where
+// the entry is not found there.
+static bool limitPtx(string& ptx, const char* kernelName, int maxRegs, int minBlocks, bool smemSpill) {
   size_t const entry = ptx.find(".entry "s + kernelName + "(");
   if (entry == string::npos) { return false; }
   // The performance directives sit between the entry's parameter list and its body.
@@ -1482,9 +1485,17 @@ bool cudaSetKernelRegLimit(cl_program prog, const char* kernelName, int maxRegs,
   size_t const maxntid = ptx.find(".maxntid ", entry);
   if (body == string::npos || maxntid == string::npos || maxntid > body) { return false; }
   string const directive = maxRegs > 0 ? ".maxnreg " + to_string(maxRegs) + "\n" : ".minnctapersm " + to_string(minBlocks) + "\n";
-  string const pragma = "\n.pragma \"enable_smem_spilling\";";
-  if (smemSpill) { ptx.insert(body + 1, pragma); }     // the pragma goes first in the entry's body
+  if (smemSpill) { ptx.insert(body + 1, SMEM_SPILL_PRAGMA); }     // the pragma goes first in the entry's body
   ptx.insert(maxntid, directive);
+  return true;
+}
+
+bool cudaSetKernelRegLimit(cl_program prog, const char* kernelName, int maxRegs, int minBlocks, bool smemSpill) {
+  if (!prog || !prog->moduleLoaded || (maxRegs <= 0 && minBlocks <= 0)) { return false; }
+  ensureContextCurrent();
+  string& ptx = prog->ptx;
+  if (!limitPtx(ptx, kernelName, maxRegs, minBlocks, smemSpill)) { return false; }
+  size_t const entry = ptx.find(".entry "s + kernelName + "(");
 
   prog->cubin.clear();
   moduleRelease(prog->module);   // the program's reference; kernels already created from it keep theirs
@@ -1501,7 +1512,7 @@ bool cudaSetKernelRegLimit(cl_program prog, const char* kernelName, int maxRegs,
   }
   if (r != CUDA_SUCCESS && smemSpill) {
     log("%s: the JIT rejected enable_smem_spilling, loading it without (%s)\n", kernelName, jitErrorLog);
-    ptx.erase(ptx.find(pragma, entry + directive.size()), pragma.size());
+    ptx.erase(ptx.find(SMEM_SPILL_PRAGMA, entry), strlen(SMEM_SPILL_PRAGMA));
     jitErrorLog[0] = 0;
     r = loadModule(prog, 2, jitOpts, jitOptVals);
   }
@@ -1513,6 +1524,45 @@ bool cudaSetKernelRegLimit(cl_program prog, const char* kernelName, int maxRegs,
   prog->moduleLoaded = true;
   moduleRetain(prog->module);    // program owns one reference
   return true;
+}
+
+// PTX to CUBIN through the driver's linker: the same JIT a module load of the PTX runs, but only on the host, with nothing
+// loaded into the context.  False on failure, with the linker's error log in errorLog.
+static bool linkPtx(const string& ptx, string& cubin, string& errorLog) {
+  ensureContextCurrent();
+  char jitErrorLog[8192] = {};
+  CUjit_option opts[] = { CU_JIT_ERROR_LOG_BUFFER_SIZE_BYTES, CU_JIT_ERROR_LOG_BUFFER };
+  void* optVals[] = { (void*)(size_t)sizeof(jitErrorLog), (void*)jitErrorLog };
+  CUlinkState state{};
+  if (cuLinkCreate(2, opts, optVals, &state) != CUDA_SUCCESS) { return false; }
+  void* image = nullptr;
+  size_t size = 0;
+  bool const ok = cuLinkAddData(state, CU_JIT_INPUT_PTX, (void*)ptx.c_str(), ptx.size() + 1, "prpll", 0, nullptr, nullptr) == CUDA_SUCCESS
+               && cuLinkComplete(state, &image, &size) == CUDA_SUCCESS;
+  if (ok) { cubin.assign((const char*)image, size); }   // the image belongs to the link state
+  errorLog = jitErrorLog;
+  cuLinkDestroy(state);
+  return ok;
+}
+
+string cudaRegLimitedBinary(const string& blob, const char* kernelName, int maxRegs, int minBlocks, bool smemSpill) {
+  if (maxRegs <= 0 && minBlocks <= 0) { return {}; }
+  size_t const mark = blob.find(CUBIN_MARKER);
+  string ptx = mark == string::npos ? blob : blob.substr(0, mark);
+  if (!limitPtx(ptx, kernelName, maxRegs, minBlocks, smemSpill)) { return {}; }
+  string cubin;
+  string errorLog;
+  bool linked = linkPtx(ptx, cubin, errorLog);
+  if (!linked && smemSpill) {
+    log("%s: the JIT rejected enable_smem_spilling, linking it without (%s)\n", kernelName, errorLog.c_str());
+    ptx.erase(ptx.find(SMEM_SPILL_PRAGMA), strlen(SMEM_SPILL_PRAGMA));
+    linked = linkPtx(ptx, cubin, errorLog);
+  }
+  if (!linked) {
+    log("Linking %s with maxnreg %d minnctapersm %d failed: %s\n", kernelName, maxRegs, minBlocks, errorLog.c_str());
+    return {};
+  }
+  return ptx + CUBIN_MARKER + cubin;
 }
 
 // C++ linkage — must be outside the extern "C" block above.

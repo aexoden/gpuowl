@@ -4,6 +4,7 @@
 #include "log.h"
 #include "timeutil.h"
 #include "Args.h"
+#include "File.h"
 
 #include <cassert>
 #include <cctype>
@@ -16,6 +17,7 @@
 #include <algorithm>
 #include <utility>
 #include <filesystem>
+#include <functional>
 #include <fstream>
 #include <sstream>
 #include <deque>
@@ -340,7 +342,7 @@ static bool isImportantKernel(const string& kernelName, const string& args) {
       && args.find("-DMUL3=1") == string::npos && args.find("-DLL=1") == string::npos;
 }
 
-Program KernelCompiler::build(const string& fileName, const string& extraArgs) const {
+Program KernelCompiler::build(const string& fileName, const string& extraArgs, [[maybe_unused]] bool load) const {
   Program p1 = loadSource(context, "#include \""s + fileName + "\"\n");
   assert(p1);
 
@@ -361,6 +363,9 @@ Program KernelCompiler::build(const string& fileName, const string& extraArgs) c
     log("Compiling '%s' error %s (args %s)\n", fileName.c_str(), errMes(err).c_str(), args.c_str());
     return {};
   }
+#ifdef CUDA_BACKEND
+  if (!load) { return p1; }   // NVRTC's PTX and CUBIN: the link below loads them as a module
+#endif
 
   Program p2{clLinkProgram(context, 1, &deviceId, linkArgs.c_str(),
                            1, (cl_program *) &p1, nullptr, nullptr, &err)};
@@ -389,13 +394,14 @@ Program KernelCompiler::build(const string& fileName, const string& extraArgs) c
   return p2;
 }
 
-Program KernelCompiler::compile(const string& fileName, [[maybe_unused]] const string& kernelName, const string& extraArgs) const {
+Program KernelCompiler::compile(const string& fileName, [[maybe_unused]] const string& kernelName, const string& extraArgs,
+                                bool load) const {
 #ifndef CUDA_BACKEND
   if (saveTemps) {
     // Compiles are serial on this backend (see load() below), so what the compiler leaves in the directory
     // during this call belongs to this kernel.
     DirSnapshot const before = snapshotDir();
-    Program program = build(fileName, extraArgs);
+    Program program = build(fileName, extraArgs, load);
     vector<fs::path> const temps = newCompilerTemps(before);
     if (asmDump) {
       bool saved = false;
@@ -470,7 +476,7 @@ Program KernelCompiler::compile(const string& fileName, [[maybe_unused]] const s
     return program;
   }
 #endif
-  return build(fileName, extraArgs);
+  return build(fileName, extraArgs, load);
 }
 
 static string to_hex(u64 d) {
@@ -532,9 +538,23 @@ static void memCacheKeep(u64 key, string bytes) {
   memCache.emplace(key, std::move(bytes));
 }
 
+static std::mutex tallyMutex;
+static KernelCompiler::Tally tallied;
+
+static void addTally(const std::function<void(KernelCompiler::Tally&)>& add) {
+  std::lock_guard lock{tallyMutex};
+  add(tallied);
+}
+
+KernelCompiler::Tally KernelCompiler::tally() {
+  std::lock_guard lock{tallyMutex};
+  return tallied;
+}
+
 KernelHolder KernelCompiler::loadAux(const string& fileName, const string& kernelName, const string& args) const {
   Timer const timer;
   bool fromCache = true;
+  double limitSec = 0;
 
   // The arguments the kernel is compiled (and cached) with
   string compileArgs = args;
@@ -542,13 +562,27 @@ KernelHolder KernelCompiler::loadAux(const string& fileName, const string& kerne
   int maxRegs = 0, minBlocks = 0;
   bool smemSpill = false;
   compileArgs = takeRegLimit(args, maxRegs, minBlocks, smemSpill);
+  bool const limited = maxRegs > 0 || minBlocks > 0;
+  bool limitApplied = false;
 #endif
 
   Program program;
   string cacheFile;
   u64 const key = SHA3::hash(contextHash, fileName, kernelName, compileArgs)[0];
 
-  if (useCache) {
+#ifdef CUDA_BACKEND
+  // The kernel compiled ahead with its register limit already applied (see compileAhead)
+  if (limited && useMemCache) {
+    if (string const bytes = memCacheFind(SHA3::hash(contextHash, fileName, kernelName, args)[0]); !bytes.empty()) {
+      program = loadBinaryBytes(context, deviceId, bytes, kernelName);
+      limitApplied = bool(program);
+    }
+  }
+#endif
+
+  if (program) {
+    // the limited image, above
+  } else if (useCache) {
     string const f = kernelName + '-' + to_hex(key);
     cacheFile = cacheDir + '/' + f;
     program = loadBinary(context, deviceId, cacheFile);
@@ -591,10 +625,14 @@ KernelHolder KernelCompiler::loadAux(const string& fileName, const string& kerne
   if (!fromCache && useMemCache) { memCacheKeep(key, getBinary(program.get())); }
 
 #ifdef CUDA_BACKEND
-  if ((maxRegs > 0 || minBlocks > 0) && !cudaSetKernelRegLimit(program.get(), kernelName.c_str(), maxRegs, minBlocks, smemSpill)) {
-    throwIfLost();
-    log("Can't apply the register limit (maxrregcount %d, minblocks %d) to %s\n", maxRegs, minBlocks, kernelName.c_str());
-    throw "Can't apply register limit to " + kernelName;
+  if (limited && !limitApplied) {
+    Timer const limitTimer;
+    if (!cudaSetKernelRegLimit(program.get(), kernelName.c_str(), maxRegs, minBlocks, smemSpill)) {
+      throwIfLost();
+      log("Can't apply the register limit (maxrregcount %d, minblocks %d) to %s\n", maxRegs, minBlocks, kernelName.c_str());
+      throw "Can't apply register limit to " + kernelName;
+    }
+    limitSec = limitTimer.at();
   }
 #endif
 
@@ -604,18 +642,80 @@ KernelHolder KernelCompiler::loadAux(const string& fileName, const string& kerne
     throw "Can't find "s + kernelName + " in " + fileName;
   }
 
+  double const sec = timer.at();
+  addTally([&](Tally& t) {
+    (fromCache ? t.fromCache : t.compiled) += 1;
+    (fromCache ? t.fromCacheSec : t.compiledSec) += sec - limitSec;
+    if (limitSec > 0) {
+      t.limited += 1;
+      t.limitedSec += limitSec;
+    }
+  });
+
   if (!fromCache) {
     // At -v 10, keep this line as filtered as the assembly/PTX dump itself -- otherwise every
     // uninteresting kernel still gets logged even though it never gets a dump (see isImportantKernel).
     if (verbose && (verbose != 10 || isImportantKernel(kernelName, args))) {
-      log("Loaded %s %s: %.0fms\n", kernelName.c_str(), args.c_str(), timer.at() * 1000);
+      log("Loaded %s %s: %.0fms\n", kernelName.c_str(), args.c_str(), sec * 1000);
     }
   }
 
   return ret;
 }
 
+bool KernelCompiler::compileAheadAux(const string& fileName, const string& kernelName, const string& args) const {
+  if (!useMemCache) { return false; }
+  Timer const timer;
+
+  string compileArgs = args;
+#ifdef CUDA_BACKEND
+  int maxRegs = 0, minBlocks = 0;
+  bool smemSpill = false;
+  compileArgs = takeRegLimit(args, maxRegs, minBlocks, smemSpill);
+  bool const limited = maxRegs > 0 || minBlocks > 0;
+  u64 const limitedKey = SHA3::hash(contextHash, fileName, kernelName, args)[0];
+  if (limited && !memCacheFind(limitedKey).empty()) { return true; }
+#endif
+
+  u64 const key = SHA3::hash(contextHash, fileName, kernelName, compileArgs)[0];
+  string const cacheFile = cacheDir + '/' + kernelName + '-' + to_hex(key);
+  string bytes = memCacheFind(key);
+  if (bytes.empty() && useCache) {
+    if (File f = File::openRead(cacheFile)) { bytes = f.readAll(); }
+  }
+  if (bytes.empty()) {
+    Program const program = compile(fileName, kernelName, compileArgs, false);
+    if (!program) { return false; }
+    bytes = getBinary(program.get());
+    if (useCache) { saveBinary(program.get(), cacheFile); }
+    memCacheKeep(key, bytes);
+  }
+
+#ifdef CUDA_BACKEND
+  if (limited) {
+    string limitedBytes = cudaRegLimitedBinary(bytes, kernelName.c_str(), maxRegs, minBlocks, smemSpill);
+    if (limitedBytes.empty()) { return false; }
+    memCacheKeep(limitedKey, std::move(limitedBytes));
+  }
+#endif
+
+  double const sec = timer.at();
+  addTally([&](Tally& t) {
+    t.ahead += 1;
+    t.aheadSec += sec;
+  });
+  if (verbose && (verbose != 10 || isImportantKernel(kernelName, args))) {
+    log("Compiled %s %s ahead: %.0fms\n", kernelName.c_str(), args.c_str(), sec * 1000);
+  }
+  return true;
+}
+
 void KernelCompiler::declare(const string& kernelName, const string& args) { declaredArgs[kernelName].push_back(args); }
+
+#ifdef CUDA_BACKEND
+// NVRTC's concurrent compiles, for load() and compileAhead(): see load()
+static std::counting_semaphore<8> compileSlots{std::max(1u, std::min(8u, std::thread::hardware_concurrency()))};
+#endif
 
 std::future<KernelHolder> KernelCompiler::load(const string& fileName, const string& kernelName, const string& args) const {
 #ifdef CUDA_BACKEND
@@ -628,11 +728,10 @@ std::future<KernelHolder> KernelCompiler::load(const string& fileName, const str
   // its shared module counts. The thread logs through this worker's log
   // file and context (LogLink): the log is thread-local, and a fresh thread
   // would otherwise print its "Loaded" lines to stdout alone, unprefixed.
-  static std::counting_semaphore<8> slots{std::max(1u, std::min(8u, std::thread::hardware_concurrency()))};
   LogLink const link = logLink();
   return async(std::launch::async, [this, fileName, kernelName, args, link] {
-    slots.acquire();
-    struct Release { std::counting_semaphore<8>& s; ~Release() { s.release(); } } release{slots};
+    compileSlots.acquire();
+    struct Release { std::counting_semaphore<8>& s; ~Release() { s.release(); } } release{compileSlots};
     LogLinkScope const logScope{link};
     return loadAux(fileName, kernelName, args);
   });
@@ -642,6 +741,31 @@ std::future<KernelHolder> KernelCompiler::load(const string& fileName, const str
   // clCompileProgram varies by vendor.
   std::promise<KernelHolder> promise;
   promise.set_value(loadAux(fileName, kernelName, args));
+  return promise.get_future();
+#endif
+}
+
+std::future<bool> KernelCompiler::compileAhead(const string& fileName, const string& kernelName, const string& args) const {
+#ifdef CUDA_BACKEND
+  // As load() does, and in the same slots
+  LogLink const link = logLink();
+  return async(std::launch::async, [this, fileName, kernelName, args, link] {
+    compileSlots.acquire();
+    struct Release { std::counting_semaphore<8>& s; ~Release() { s.release(); } } release{compileSlots};
+    LogLinkScope const logScope{link};
+    try {
+      return compileAheadAux(fileName, kernelName, args);
+    } catch (...) {
+      return false;   // load() meets it again, and says so
+    }
+  });
+#else
+  std::promise<bool> promise;
+  try {
+    promise.set_value(compileAheadAux(fileName, kernelName, args));
+  } catch (...) {
+    promise.set_value(false);
+  }
   return promise.get_future();
 #endif
 }

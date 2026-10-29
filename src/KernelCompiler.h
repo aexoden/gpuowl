@@ -45,9 +45,11 @@ class KernelCompiler {
   int wavefrontWidth = 0;   // threads per wavefront
   u64 ldsPerCU = 0;         // LDS bytes per compute unit (a workgroup's LDS is shared by the whole CU)
 
-  [[nodiscard]] Program build(const string& fileName, const string& args) const;
-  [[nodiscard]] Program compile(const string& fileName, const string& kernelName, const string& args) const;
+  // load=false: on CUDA only the compile, NVRTC's PTX and CUBIN with no module loaded (OpenCL builds and links either way)
+  [[nodiscard]] Program build(const string& fileName, const string& args, bool load = true) const;
+  [[nodiscard]] Program compile(const string& fileName, const string& kernelName, const string& args, bool load = true) const;
   [[nodiscard]] KernelHolder loadAux(const string& fileName, const string& kernelName, const string& args) const;
+  [[nodiscard]] bool compileAheadAux(const string& fileName, const string& kernelName, const string& args) const;
 
 public:
   const cl_device_id deviceId;
@@ -60,4 +62,26 @@ public:
   void declare(const string& kernelName, const string& args);
 
   [[nodiscard]] std::future<KernelHolder> load(const string& fileName, const string& kernelName, const string& args) const;
+
+  // Compiles the kernel into this process's in-memory cache, unless it is there already, so that load() later finds it there:
+  // without loading anything into the context or running anything on the device.  On CUDA that is NVRTC alone, and a register
+  // limit is applied by the driver's linker rather than at the load.  A tuner compiles a Gpu's kernels so while the card still
+  // squares another (Bench::compileAhead).  Concurrent on CUDA, as load() is; done before returning on OpenCL.  True where the
+  // kernel is ready; false where it could not be compiled, or where no in-memory cache is kept (only while tuning).
+  [[nodiscard]] std::future<bool> compileAhead(const string& fileName, const string& kernelName, const string& args) const;
+
+  // What this process's kernel loads and compiles ahead have taken, for a tuner to say where a call's build went.
+  struct Tally {
+    u32 compiled = 0;     // loads that compiled (NVRTC, and on CUDA the module load)
+    u32 fromCache = 0;    // loads of a binary from memory or from -cache
+    u32 limited = 0;      // CUDA: register limits applied at the load (a JIT of the PTX)
+    u32 ahead = 0;        // kernels compiled ahead (compileAhead), register limits included
+    double compiledSec = 0, fromCacheSec = 0, limitedSec = 0, aheadSec = 0;
+
+    [[nodiscard]] Tally operator-(const Tally& o) const {
+      return {compiled - o.compiled, fromCache - o.fromCache, limited - o.limited, ahead - o.ahead,
+              compiledSec - o.compiledSec, fromCacheSec - o.fromCacheSec, limitedSec - o.limitedSec, aheadSec - o.aheadSec};
+    }
+  };
+  [[nodiscard]] static Tally tally();
 };

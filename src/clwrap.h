@@ -204,6 +204,12 @@ void cudaSetL2PersistLimit(int pct);
 // its PTX.  Returns false on failure.
 bool cudaSetKernelRegLimit(cl_program prog, const char* kernelName, int maxRegs, int minBlocks, bool smemSpill);
 
+// The cache blob (CL_PROGRAM_BINARIES) of a compiled program's kernel with that same limit applied, made from the program's own
+// blob without loading anything or running anything on the device: the PTX with the limit's directives, and the CUBIN the
+// driver's linker -- the JIT a module load runs -- makes of it.  A program created from it loads limited, with no JIT.  Empty
+// on failure.
+string cudaRegLimitedBinary(const string& blob, const char* kernelName, int maxRegs, int minBlocks, bool smemSpill);
+
 KernelResources cudaKernelResources(cl_kernel k);
 
 // The current device's per-SM limits
