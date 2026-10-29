@@ -114,10 +114,14 @@ public:
   // with the power floor, as the chip warms over minutes no call lasts.
   [[nodiscard]] double calibration() const { return calibration_; }
 
+  // The run's powerHold= setting the readings were costed under.
+  [[nodiscard]] double powerHold() const { return powerHold_; }
+
 private:
   std::map<ConfigKey, Reading> readings_;
   std::vector<Observation> observations_;
   double calibration_ = 1;
+  double powerHold_ = POWER_HOLD;
   std::map<std::pair<std::string, std::string>, std::vector<RoeReading>> roes_;
   std::set<std::pair<ConfigKey, ConfigKey>> dueled_;  // the lesser key first
 };

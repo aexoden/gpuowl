@@ -114,7 +114,7 @@ std::vector<Finalist> finalists(const AcquireContext& context, const Publication
   return out;
 }
 
-FreshCalls freshCalls(const TuneDB& db, u32 env) {
+FreshCalls freshCalls(const TuneDB& db, u32 env, const Readings* readings) {
   // A confirmation item's call is the next call of its session of the same set.
   std::map<u32, std::vector<const CallRow*>> bySession;
   for (const CallRow& call : db.calls()) {
@@ -132,7 +132,10 @@ FreshCalls freshCalls(const TuneDB& db, u32 env) {
     if (it == calls.end()) { continue; }
     auto const key = std::tuple{item.fft, item.kind, item.cfg};
     ++out[key].calls;
-    if ((*it)->ok()) { sums[key] += (*it)->cost(); }
+    if ((*it)->ok()) {
+      sums[key] += readings ? callCost(**it, powerOf(db, **it), readings->powerHold()) * readings->calibration()
+                            : (*it)->cost();
+    }
   }
   for (auto& [key, fresh] : out) { fresh.mean = sums[key] / fresh.calls; }
   return out;
@@ -252,7 +255,7 @@ AuditSummary auditSummary(const TuneDB& db, u32 env, const Readings& readings, c
     }
   }
 
-  FreshCalls const fresh = freshCalls(db, env);
+  FreshCalls const fresh = freshCalls(db, env, &readings);
   for (const KindPublication& kind : publication.kinds) {
     for (const Line& line : kind.lines) {
       out.confirmed.push_back(

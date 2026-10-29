@@ -4,6 +4,7 @@
 
 #include "test.h"
 
+#include "Audit.h"
 #include "Soak.h"
 #include "TuneCommand.h"
 
@@ -130,6 +131,33 @@ TEST(a_soaked_configuration_costs_what_it_sustained_and_calibrates_the_rest) {
   Fixture none;
   none.call(*none.exact(1).front(), 900);
   CHECK(Readings(none.db, none.env, nvidia()).calibration() == 1);
+}
+
+TEST(a_fresh_call_is_costed_as_the_readings_cost_calls) {
+  // The end phase's fresh calls are set beside what the readings pool, so they take the power floor and the soaks'
+  // calibration too.
+  Fixture f;
+  std::vector<const Candidate*> const cs = f.exact(2);
+  const Candidate& c = *cs[0];
+  f.call(c, 900);
+  f.call(*cs[1], 950);
+  f.soak(*cs[1], {950, 969});  // calibration 969 / 950.05
+  u32 const cfg = f.db.internCfg({});
+  CHECK(f.db.add(ItemRow{.sess = f.sess, .lane = "confirm", .what = "confirm", .fft = c.subject.fft.spec(),
+                         .kind = TestKind::PRP, .cfg = cfg, .ts = 5}));
+  CHECK(f.db.add(CallRow{.sess = f.sess, .fft = c.subject.fft.spec(), .kind = TestKind::PRP, .exponent = c.timing,
+                         .cfg = cfg, .mean = 900, .sd = 0.2, .blocks = 4, .ts = 5}));
+  // Held at its limit: 0.2 J an iteration at 210 W, over 0.95 of it, is 1002.5 us.
+  CHECK(f.db.add(PowerRow{.sess = f.sess, .fft = c.subject.fft.spec(), .kind = TestKind::PRP, .exponent = c.timing,
+                          .cfg = cfg, .mjPerIt = 200, .watts = 210, .capW = 210, .smMHz = 1500,
+                          .source = PowerSource::Instant, .ts = 5}));
+  Readings const readings{f.db, f.env, nvidia()};
+  double const k = 969 / 950.05;
+  CHECK(near(readings.calibration(), k));
+  auto fresh = [&](const Readings* r) { return freshOf(freshCalls(f.db, f.env, r), f.db, c.subject.fft.spec(),
+                                                       TestKind::PRP, {}); };
+  CHECK(fresh(nullptr).calls == 1 && near(fresh(nullptr).mean, 900));
+  CHECK(near(fresh(&readings).mean, 200.0 * 1000 / (0.95 * 210) * k, 1e-6));
 }
 
 TEST(a_soak_takes_a_line_and_its_closest_rivals_until_they_are_soaked) {

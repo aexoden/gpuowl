@@ -53,7 +53,7 @@ ConfigKey Readings::keyOf(const Subject& subject, const UseConfig& options) {
     .fft = subject.fft.spec(), .kind = subject.kind, .regime = subject.regime.label(), .options = configText(options)};
 }
 
-Readings::Readings(const TuneDB& db, u32 env, const Env& device, double powerHold) {
+Readings::Readings(const TuneDB& db, u32 env, const Env& device, double powerHold) : powerHold_{powerHold} {
   struct Taken {
     double cost;
     double relSem;

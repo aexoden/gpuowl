@@ -39,10 +39,12 @@ struct Finalist {
 // A finalist's fresh calls: what the end phase measured of it, apart from the exploration's own calls.
 struct Fresh {
   u32 calls = 0;
-  double mean = 0;
+  double mean = 0;  // each call costed as `readings` cost calls; as timed where no readings were given
 };
 using FreshCalls = std::map<std::tuple<std::string, TestKind, u32>, Fresh>;  // by FFT, kind and cfg
-[[nodiscard]] FreshCalls freshCalls(const TuneDB& db, u32 env);
+// With `readings`, a fresh call costs what they would make of it -- the power floor, the soaks' calibration -- so it
+// compares with what they pool; without, only the counts are meant.
+[[nodiscard]] FreshCalls freshCalls(const TuneDB& db, u32 env, const Readings* readings = nullptr);
 [[nodiscard]] Fresh freshOf(const FreshCalls& fresh, const TuneDB& db, const std::string& fft, TestKind kind,
                             const UseConfig& options);
 
