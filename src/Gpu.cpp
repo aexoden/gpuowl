@@ -835,8 +835,8 @@ static Args gpuArgs(const Args& shared, FFTConfig fft, const vector<KeyVal>& fft
   return ret;
 }
 
-unique_ptr<Gpu> Gpu::make(u64 E, GpuCommon shared, FFTConfig fftConfig, const vector<KeyVal>& extraConf, bool logFftSize,
-                          const vector<KeyVal>& fftUses) {
+FFTConfig Gpu::buildable(GpuCommon shared, FFTConfig fftConfig, const vector<KeyVal>& extraConf, const vector<KeyVal>& fftUses,
+                         bool doLog) {
   if (fftConfig.FFT_FP64 && !hasFP64(shared.context->deviceId())) {
     log("FFT %s needs FP64, which this device does not support.  Use an FFT type without FP64 (e.g. 1 = M31+M61).\n", fftConfig.spec().c_str());
     throw "FP64 not supported";
@@ -850,7 +850,7 @@ unique_ptr<Gpu> Gpu::make(u64 E, GpuCommon shared, FFTConfig fftConfig, const ve
                                     || (isNvidiaGpu(id) && getNvidiaComputeCapability(id) < 300);
   if (fftConfig.FFT_FP64 && (variant_W(v) == 0 || variant_H(v) == 0) && missingVariant0Support) {
     FFTConfig const fallback{fftConfig.shape, variant_WMH(max(variant_W(v), 1u), variant_M(v), max(variant_H(v), 1u)), fftConfig.carry};
-    log("%s: this OpenCL compiler lacks what FFT variant 0 needs, using %s\n", fftConfig.spec().c_str(), fallback.spec().c_str());
+    if (doLog) { log("%s: this OpenCL compiler lacks what FFT variant 0 needs, using %s\n", fftConfig.spec().c_str(), fallback.spec().c_str()); }
     fftConfig = fallback;
   }
   // No variant 0 for radix 8 at 256: an explicit one (with -use 256RADIX8_W on the command line, say) becomes variant 1
@@ -862,11 +862,47 @@ unique_ptr<Gpu> Gpu::make(u64 E, GpuCommon shared, FFTConfig fftConfig, const ve
     bool const noH0 = vh == 0 && !fftConfig.shape.hasVariant0H(args.radix8At256(shapeSpec, true));
     if (noW0 || noH0) {
       FFTConfig const fallback{fftConfig.shape, variant_WMH(noW0 ? 1 : vw, variant_M(fftConfig.variant), noH0 ? 1 : vh), fftConfig.carry};
-      log("%s: there is no variant 0 for radix 8 at 256, using %s\n", fftConfig.spec().c_str(), fallback.spec().c_str());
+      if (doLog) { log("%s: there is no variant 0 for radix 8 at 256, using %s\n", fftConfig.spec().c_str(), fallback.spec().c_str()); }
       fftConfig = fallback;
     }
   }
-  return make_unique<Gpu>(shared, fftConfig, E, extraConf, logFftSize, fftUses);
+  return fftConfig;
+}
+
+unique_ptr<Gpu> Gpu::make(u64 E, GpuCommon shared, FFTConfig fftConfig, const vector<KeyVal>& extraConf, bool logFftSize,
+                          const vector<KeyVal>& fftUses) {
+  return make_unique<Gpu>(shared, buildable(shared, fftConfig, extraConf, fftUses, true), E, extraConf, logFftSize, fftUses);
+}
+
+u32 Gpu::compileAhead(u64 E, GpuCommon shared, FFTConfig fft, const vector<KeyVal>& extraConf, const std::set<string>& names) {
+  if (names.empty()) { return 0; }
+  Ahead ahead{.names = &names};
+  try {
+    (void) make_unique<Gpu>(shared, buildable(shared, fft, extraConf, {}, false), E, extraConf, false, vector<KeyVal>{}, &ahead);
+  } catch (const AheadDone&) {
+    return ahead.compiled;
+  } catch (...) {
+    // make() meets it again, and says what it is
+  }
+  return 0;
+}
+
+Gpu::Declared Gpu::takeAhead(Ahead* ahead) {
+  if (!ahead) { return {}; }
+  vector<std::future<bool>> pending;
+  for (const Kernel* k : compiler.kernels()) {
+    if (ahead->names->contains(k->getName())) { pending.push_back(k->compileAhead()); }
+  }
+  for (std::future<bool>& f : pending) { ahead->compiled += f.get(); }
+  throw AheadDone{};
+}
+
+vector<string> Gpu::loadedKernels() const {
+  vector<string> names;
+  for (const Kernel* k : compiler.kernels()) {
+    if (k->isLoaded()) { names.push_back(k->getName()); }
+  }
+  return names;
 }
 
 Gpu::~Gpu() {
@@ -1028,7 +1064,8 @@ string Gpu::kernelDefines(enum WHICH_KERNEL_TYPE which_kernel) {
 }
 
 
-Gpu::Gpu(GpuCommon s, FFTConfig fft, u64 E, const vector<KeyVal>& extraConf, bool logFftSize, const vector<KeyVal>& fftUses) :
+Gpu::Gpu(GpuCommon s, FFTConfig fft, u64 E, const vector<KeyVal>& extraConf, bool logFftSize, const vector<KeyVal>& fftUses,
+         Ahead* ahead) :
   shared(s),
   background{shared.background},
   args{gpuArgs(*shared.args, fft, fftUses, extraConf)},
@@ -1162,6 +1199,8 @@ Gpu::Gpu(GpuCommon s, FFTConfig fft, u64 E, const vector<KeyVal>& extraConf, boo
   K(testTime, "selftest.cl", "testTime", 4096 * 64),
 
 #undef K
+
+  declared{takeAhead(ahead)},
 
   bufTrigH{shared.bufCache->smallTrigCombo(&args, fft, WIDTH, fft.shape.middle, SMALL_H, nH, tail_single_wide)},
   bufTrigM{shared.bufCache->middleTrig(&args, fft, SMALL_H, BIG_H / SMALL_H, WIDTH)},

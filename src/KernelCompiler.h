@@ -12,6 +12,7 @@
 
 class Args;
 class Context;
+class Kernel;
 
 class KernelCompiler {
   std::string cacheDir;
@@ -36,6 +37,7 @@ class KernelCompiler {
   // kernel declared under each kernelName, to tell those apart by the defines that differ; and the
   // .s names used so far.
   std::map<std::string, std::vector<std::string>> declaredArgs;
+  std::vector<Kernel*> kernels_;   // every Kernel built with this compiler, in declaration order (see enrol)
   mutable std::set<std::string> asmDumpNames;
   mutable bool asmMissingNoted = false;
   mutable bool asmCacheNoted = false;
@@ -60,6 +62,10 @@ public:
   
   // Called by each Kernel on construction, before any is loaded (see declaredArgs).
   void declare(const string& kernelName, const string& args);
+
+  // Called by each Kernel on construction too: the Kernels that use this compiler, for their Gpu to go over.
+  void enrol(Kernel* kernel) { kernels_.push_back(kernel); }
+  [[nodiscard]] const std::vector<Kernel*>& kernels() const { return kernels_; }
 
   [[nodiscard]] std::future<KernelHolder> load(const string& fileName, const string& kernelName, const string& args) const;
 

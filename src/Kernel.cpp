@@ -18,7 +18,10 @@ Kernel::Kernel(string_view name, KernelCompiler* compiler, TimeInfo* timeInfo, Q
   workSizeY{1}
 {
   compiler->declare(this->nameInFile, this->defines);
+  compiler->enrol(this);
 }
+
+std::future<bool> Kernel::compileAhead() const { return compiler->compileAhead(fileName, nameInFile, defines); }
 
 Kernel::~Kernel() = default;
 

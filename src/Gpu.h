@@ -16,6 +16,7 @@
 #include "FFTConfig.h"
 
 #include <numbers>
+#include <set>
 #include <vector>
 #include <memory>
 #include <filesystem>
@@ -200,6 +201,10 @@ private:
   Kernel testFFT;
   Kernel testTime;
 
+  // Where Gpu::compileAhead constructs it, the construction ends here, once the kernels above are declared (see takeAhead).
+  struct Declared {};
+  [[no_unique_address]] Declared declared;
+
   // Kernel testKernel;
 
   // Copy of some -use options needed for Kernel, Trig, and Weights initialization
@@ -337,12 +342,41 @@ private:
   static bool equals9(const Words& words);
   void selftestTrig();
 
+  // The FFT a Gpu of fftConfig is built with (see make), where this device or a radix lacks what it asks for
+  static FFTConfig buildable(GpuCommon shared, FFTConfig fftConfig, const vector<KeyVal>& extraConf, const vector<KeyVal>& fftUses,
+                             bool doLog);
+
 public:
+  // What Gpu::compileAhead asks of the construction: the kernels to compile ahead, by name, and how many were.
+  struct Ahead {
+    const std::set<string>* names;
+    u32 compiled = 0;
+  };
+
   // fftUses are the -use settings from the FFT's tune.txt line: they apply to this Gpu only, over config.txt but not over the command line.
-  // extraConf (used by -tune for the settings it is timing) takes priority over everything.
-  Gpu(GpuCommon shared, FFTConfig fft, u64 E, const vector<KeyVal>& extraConf, bool logFftSize, const vector<KeyVal>& fftUses);
+  // extraConf (used by -tune for the settings it is timing) takes priority over everything.  With ahead, only the kernels are
+  // declared, and those it names compiled ahead, before the construction is given up (see compileAhead).
+  Gpu(GpuCommon shared, FFTConfig fft, u64 E, const vector<KeyVal>& extraConf, bool logFftSize, const vector<KeyVal>& fftUses,
+      Ahead* ahead = nullptr);
   static unique_ptr<Gpu> make(u64 E, GpuCommon shared, FFTConfig fft, const vector<KeyVal>& extraConf = {}, bool logFftSize = true,
                               const vector<KeyVal>& fftUses = {});
+
+  // Compiles ahead (KernelCompiler::compileAhead) the kernels named in `names` of the Gpu make() would build with the same
+  // arguments, without building it: only as much of it is constructed as declares its kernels, its compiler's options with
+  // them -- no buffer, no trig table, nothing run on the device.  So a tuner compiles a call's kernels while the card is still
+  // busy with another Gpu.  How many it compiled; 0 where the Gpu cannot be built, which make() will then say.
+  static u32 compileAhead(u64 E, GpuCommon shared, FFTConfig fft, const vector<KeyVal>& extraConf, const std::set<string>& names);
+
+  // The names of the kernels this Gpu has loaded (kfftMidIn, kCarryFusedLL, ...): the ones its runs so far have used.
+  [[nodiscard]] vector<string> loadedKernels() const;
+
+private:
+  // Gpu::compileAhead's part of the construction, once the kernels are declared: with ahead, compiles those it names and ends
+  // the construction (throws AheadDone).
+  struct AheadDone {};
+  Declared takeAhead(Ahead* ahead);
+
+public:
 
   ~Gpu();
 

@@ -45,6 +45,10 @@ public:
   void finishLoad();
 
   [[nodiscard]] bool isLoaded() const { return bool(kernel); }
+  [[nodiscard]] const string& getName() const { return name; }
+
+  // This kernel's binary, compiled before its first run without loading it (KernelCompiler::compileAhead)
+  [[nodiscard]] std::future<bool> compileAhead() const;
   [[nodiscard]] cl_kernel handle() const { return kernel.get(); }
   [[nodiscard]] const TimeInfo* getTimeInfo() const { return timeInfo; }
 
