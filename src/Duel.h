@@ -69,6 +69,21 @@ struct DuelVerdict {
 // are `settings.pairs` pairs with none of those.
 [[nodiscard]] DuelVerdict judge(std::span<const double> logRatios, const DuelSettings& settings);
 
+// The env's duels so far: how many ended each way, and how long they ran.
+struct DuelTally {
+  u32 challenger = 0;
+  u32 incumbent = 0;
+  u32 even = 0;
+  u32 undecided = 0;
+  double seconds = 0;
+
+  [[nodiscard]] u32 total() const { return challenger + incumbent + even + undecided; }
+};
+[[nodiscard]] DuelTally duelTally(const TuneDB& db, u32 env);
+
+// "7 in 12.5 min: 2 won by the challenger, 1 by the incumbent, 1 even, 3 undecided"
+[[nodiscard]] std::string toString(const DuelTally& tally);
+
 // The seconds the env's duels have run.
 [[nodiscard]] double duelTime(const TuneDB& db, u32 env);
 

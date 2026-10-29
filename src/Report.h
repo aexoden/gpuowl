@@ -7,6 +7,7 @@
 
 #include "Audit.h"
 #include "Coverage.h"
+#include "Duel.h"
 #include "Explore.h"
 #include "Feedback.h"
 #include "Lanes.h"
@@ -34,6 +35,7 @@ struct RunReport {
   std::optional<Outstanding> outstanding{};  // as of the last regret estimate
   const Publication* publication = nullptr;
   std::optional<AuditSummary> audit{};
+  std::optional<DuelTally> duels{};
   const std::map<ConfigKey, Sustained>* production = nullptr;  // sustainedOf() the feedback beside the tune file
 };
 

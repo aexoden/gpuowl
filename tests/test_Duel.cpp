@@ -6,6 +6,7 @@
 #include "test.h"
 
 #include "Duel.h"
+#include "Report.h"
 #include "TuneCommand.h"
 
 #include <cmath>
@@ -340,4 +341,26 @@ TEST(duel_settings_are_read) {
                           "duelPairs=1", "duelPairs=65", "status,duel=5%"}) {
     CHECK(refused(bad));
   }
+}
+
+TEST(the_report_says_what_duels_decided) {
+  Fixture f;
+  std::vector<const Candidate*> const cs = f.exact(3);
+  f.call(*cs[0], 910);
+  f.call(*cs[1], 900);
+  f.duel(*cs[0], *cs[1], DuelOutcome::Undecided);
+  f.duel(*cs[0], *cs[2], DuelOutcome::Incumbent);
+  DuelTally const tally = duelTally(f.db, f.env);
+  CHECK(tally.total() == 2 && tally.undecided == 1 && tally.incumbent == 1 && near(tally.seconds, 100));
+  CHECK_EQ(toString(tally), std::string{"2 in 1.7 min: 0 won by the challenger, 1 by the incumbent, 0 even, "
+                                        "1 undecided"});
+
+  Publication const p = f.published();
+  std::string const json = reportJson({.state = "running", .publication = &p, .duels = tally});
+  CHECK(json.find("\"duels\": {\"challenger\": 0, \"incumbent\": 1, \"even\": 0, \"undecided\": 1") !=
+        std::string::npos);
+  // The loser reaches as far as the winner, so it is no line, and every line published won or never duelled.
+  CHECK(json.find("\"lostDuel\": false") != std::string::npos);
+  CHECK(json.find("\"lostDuel\": true") == std::string::npos);
+  CHECK(reportJson({.state = "running"}).find("\"duels\"") == std::string::npos);
 }

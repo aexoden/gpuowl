@@ -76,6 +76,12 @@ std::string reportJson(const RunReport& r) {
   out += "  \"T\": " + number(r.T) + ",\n";
   out += "  \"calibration\": " + number(r.calibration) + ",\n";
   out += "  \"modelGapEstimate\": " + number(r.regret) + ",\n";
+  if (r.duels) {
+    const DuelTally& d = *r.duels;
+    out += "  \"duels\": {\"challenger\": " + std::to_string(d.challenger) +
+      ", \"incumbent\": " + std::to_string(d.incumbent) + ", \"even\": " + std::to_string(d.even) +
+      ", \"undecided\": " + std::to_string(d.undecided) + ", \"seconds\": " + number(d.seconds) + "},\n";
+  }
   if (r.production && r.publication) {
     ProductionGap const gap = productionGap(*r.publication, *r.production);
     out += "  \"production\": {\"lines\": " + std::to_string(gap.lines) + ", \"ratio\": " + number(gap.ratio) + "},\n";
@@ -122,7 +128,8 @@ std::string reportJson(const RunReport& r) {
           ", \"regime\": " + jsonString(line.subject.regime.label()) +
           ", \"options\": " + jsonString(configText(line.reading->options)) + ", \"usPerIt\": " + number(line.cost()) +
           ", " + range + ", \"earlierBuild\": " + (line.carried ? "true" : "false") +
-          ", \"soaked\": " + (line.reading->isSoaked() ? "true" : "false") + ", \"timedUsPerIt\": " +
+          ", \"soaked\": " + (line.reading->isSoaked() ? "true" : "false") +
+          ", \"lostDuel\": " + (line.reading->beaten > 0 ? "true" : "false") + ", \"timedUsPerIt\": " +
           number(line.reading->timed) + ", \"production\": " + productionJson(line, r.production) + "}";
         first = false;
       }

@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
 
 namespace tune {
 
@@ -123,6 +124,28 @@ DuelVerdict judge(std::span<const double> logRatios, const DuelSettings& setting
     out.open = n < settings.pairs;
   }
   return out;
+}
+
+DuelTally duelTally(const TuneDB& db, u32 env) {
+  DuelTally out;
+  for (const DuelRow& r : db.duels()) {
+    if (db.envOf(r.sess) != env) { continue; }
+    out.seconds += r.sec;
+    switch (r.outcome) {
+    case DuelOutcome::Challenger: ++out.challenger; break;
+    case DuelOutcome::Incumbent: ++out.incumbent; break;
+    case DuelOutcome::Even: ++out.even; break;
+    case DuelOutcome::Undecided: ++out.undecided; break;
+    }
+  }
+  return out;
+}
+
+std::string toString(const DuelTally& tally) {
+  char buf[160];
+  snprintf(buf, sizeof(buf), "%u in %.1f min: %u won by the challenger, %u by the incumbent, %u even, %u undecided",
+           tally.total(), tally.seconds / 60, tally.challenger, tally.incumbent, tally.even, tally.undecided);
+  return buf;
 }
 
 double duelTime(const TuneDB& db, u32 env) {

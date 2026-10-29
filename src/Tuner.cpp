@@ -313,6 +313,7 @@ LoopResult runLoop(Device& device, TuneDB& db, u32 env, const Env& card, const R
                                .outstanding = left,
                                .publication = &publication,
                                .audit = auditSummary(db, env, readings, publication, true),
+                               .duels = duelTally(db, env),
                                .production = &production});
       writeReport(settings.publishTo, lastReport);
       for (const std::string& line : auditReport(auditSummary(db, env, readings, publication, true), true)) {
@@ -483,6 +484,9 @@ LoopResult runLoop(Device& device, TuneDB& db, u32 env, const Env& card, const R
       left = outstanding(context, settings.explore, out.elapsed);
       log("tune: outstanding: %s\n", toString(*left).c_str());
       log("tune: lanes: %s\n", toString(laneTime(db, env)).c_str());
+      if (DuelTally const duels = duelTally(db, env); duels.total() > 0) {
+        log("tune: duels: %s\n", toString(duels).c_str());
+      }
       if (settings.watch) { settings.watch->state(stateOf(publication, readings, model, db, env, coverage, out)); }
       if (settings.stop > 0 && out.regret <= settings.stop) {
         out.converged = true;
@@ -505,6 +509,7 @@ LoopResult runLoop(Device& device, TuneDB& db, u32 env, const Env& card, const R
                                .outstanding = left,
                                .publication = &publication,
                                .audit = auditSummary(db, env, readings, publication, budgetSpent),
+                               .duels = duelTally(db, env),
                                .production = &production});
       writeReport(settings.publishTo, lastReport);
     };
