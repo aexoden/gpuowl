@@ -1,10 +1,12 @@
 // Copyright (C) Jason Lynch
 
-// Duels: the records, and how a duel's outcome ranks the two configurations it compared.
+// Duels: the records, how a duel's outcome ranks the two configurations it compared, which duel is owed, and when one
+// is decided.
 
 #include "test.h"
 
-#include "Publish.h"
+#include "Duel.h"
+#include "TuneCommand.h"
 
 #include <cmath>
 #include <optional>
@@ -230,4 +232,112 @@ TEST(what_two_soaked_configurations_sustained_settles_their_duel) {
   f.duel(*cs[0], *cs[1], DuelOutcome::Incumbent);
   CHECK(f.atProbe() == cs[1]);
   CHECK(f.reading(*cs[1]).beaten == 0);
+}
+
+TEST(a_duel_is_owed_where_a_configuration_takes_a_line_from_one_read_before_it) {
+  Fixture f;
+  std::vector<const Candidate*> const cs = f.exact(3);
+  f.call(*cs[0], 910);
+  f.call(*cs[1], 900);
+  f.call(*cs[2], 990);  // not a rival: far behind
+  DuelSettings const settings{};
+  std::optional<DuelPlan> const plan = planDuel(f.published(), f.candidates, *f.readings, settings);
+  CHECK(plan.has_value());
+  if (!plan) { return; }
+  CHECK(plan->incumbent.candidate == cs[0]);
+  CHECK(plan->challenger.candidate == cs[1]);
+  CHECK_EQ(plan->exponent, f.scope.probe);
+  CHECK(plan->weight > 0);
+  CHECK(plan->challenger.cost < plan->incumbent.cost);
+
+  CHECK(!planDuel(f.published(), f.candidates, *f.readings, settings, {plan->key()}));
+  CHECK(!planDuel(f.published(), f.candidates, *f.readings, DuelSettings{.share = 0}));
+  // Taken by more than the margin, the line changes hands on calls alone.
+  CHECK(!planDuel(f.published(), f.candidates, *f.readings, DuelSettings{.margin = 0.005}));
+
+  // Once duelled, it is owed no more, whatever the outcome.
+  f.duel(*cs[0], *cs[1], DuelOutcome::Challenger);
+  CHECK(!planDuel(f.published(), f.candidates, *f.readings, settings));
+}
+
+TEST(no_duel_is_owed_where_the_line_holder_was_read_first) {
+  Fixture f;
+  std::vector<const Candidate*> const cs = f.exact(2);
+  f.call(*cs[1], 900);
+  f.call(*cs[0], 910);
+  CHECK(!planDuel(f.published(), f.candidates, *f.readings, DuelSettings{}));
+}
+
+TEST(no_duel_is_owed_between_two_soaked_configurations) {
+  Fixture f;
+  std::vector<const Candidate*> const cs = f.exact(2);
+  f.call(*cs[0], 910);
+  f.call(*cs[1], 900);
+  f.soak(*cs[0], 910);
+  f.soak(*cs[1], 900);
+  CHECK(!planDuel(f.published(), f.candidates, *f.readings, DuelSettings{}));
+}
+
+TEST(a_duel_is_decided_by_the_interval_of_its_ratios) {
+  DuelSettings const settings{};
+  auto logs = [](std::vector<double> ratios) {
+    for (double& r : ratios) { r = std::log(r); }
+    return ratios;
+  };
+
+  DuelVerdict v = judge({}, settings);
+  CHECK(v.open && v.pairs == 0);
+  v = judge(logs({0.99}), settings);
+  CHECK(v.open && v.pairs == 1);
+
+  v = judge(logs({0.990, 0.991, 0.989, 0.990}), settings);
+  CHECK(!v.open && v.outcome == DuelOutcome::Challenger && v.hi < 1 && near(v.ratio, 0.99, 1e-3));
+  v = judge(logs({1.010, 1.011, 1.009, 1.010}), settings);
+  CHECK(!v.open && v.outcome == DuelOutcome::Incumbent && v.lo > 1);
+  v = judge(logs({1.0005, 0.9995, 1.0004, 0.9996}), settings);
+  CHECK(!v.open && v.outcome == DuelOutcome::Even && v.lo >= 1 - settings.epsilon && v.hi <= 1 + settings.epsilon);
+
+  // Pairs that scatter around 1 by more than the epsilon want more pairs, then give up.
+  std::vector<double> const wide = logs({1.006, 0.995, 1.004, 0.997});
+  v = judge(wide, settings);
+  CHECK(v.open && v.lo < 1 && v.hi > 1);
+  v = judge(wide, DuelSettings{.pairs = 4});
+  CHECK(!v.open && v.outcome == DuelOutcome::Undecided);
+
+  // Two pairs that agree exactly still have the floor's width.
+  v = judge(logs({0.999, 0.999}), settings);
+  CHECK(v.open);
+}
+
+TEST(duels_take_their_share_of_the_tuning_time) {
+  Fixture f;
+  std::vector<const Candidate*> const cs = f.exact(2);
+  f.duel(*cs[0], *cs[1], DuelOutcome::Even);
+  CHECK(near(duelTime(f.db, f.env), 50));
+  DuelSettings const settings{};
+  CHECK(duelDue(0, 0, settings));
+  CHECK(duelDue(15, 100, settings));
+  CHECK(!duelDue(16, 100, settings));
+  CHECK(!duelDue(0, 1e9, DuelSettings{.share = 0}));
+  CHECK(duelDue(1e9, 1, DuelSettings{.share = 1}));
+}
+
+TEST(duel_settings_are_read) {
+  auto parsed = [](const char* text) { return parseTuneCommand(text); };
+  auto refused = [](const char* text) {
+    try {
+      (void)parseTuneCommand(text);
+    } catch (const std::string&) { return true; }
+    return false;
+  };
+  CHECK(parsed("").duel == DuelSettings{});
+  DuelSettings const s = parsed("duel=20%,duelMargin=2%,duelEpsilon=0.5%,duelPairs=8").duel;
+  CHECK(near(s.share, 0.2) && near(s.margin, 0.02) && near(s.epsilon, 0.005) && s.pairs == 8);
+  CHECK(near(parsed("duel=0").duel.share, 0) && near(parsed("duel=all").duel.share, 1));
+  CHECK(std::isinf(parsed("duelMargin=all").duel.margin));
+  CHECK(near(parsed("duelEpsilon=0").duel.epsilon, 0));
+  for (const char* bad : {"duel=5", "duel=101%", "duelMargin=0.03", "duelMargin=-1%", "duelEpsilon=0.3",
+                          "duelPairs=1", "duelPairs=65", "status,duel=5%"}) {
+    CHECK(refused(bad));
+  }
 }

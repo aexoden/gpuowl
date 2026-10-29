@@ -101,6 +101,24 @@ struct SoakSettings {
   [[nodiscard]] bool operator==(const SoakSettings&) const = default;
 };
 
+// The duels of a configuration taking a line and the one holding it (Duel.h): the share of the tuning time they may
+// take, how close behind the new line the one it took over must be for a duel to be owed, the ratio within which the
+// two count as even, and the most pairs of calls a duel takes before it gives up undecided.
+inline constexpr double DUEL_SHARE = 0.15;
+inline constexpr double DUEL_MARGIN = 0.03;
+inline constexpr double DUEL_EPSILON = 0.003;
+inline constexpr u32 DUEL_PAIRS = 6;
+
+// -tune duel=<share>%|all|0, duelMargin=<p>%|all, duelEpsilon=<p>%, duelPairs=<n>.
+struct DuelSettings {
+  double share = DUEL_SHARE;  // 0 for no duels, 1 for no limit
+  double margin = DUEL_MARGIN;
+  double epsilon = DUEL_EPSILON;
+  u32 pairs = DUEL_PAIRS;
+
+  [[nodiscard]] bool operator==(const DuelSettings&) const = default;
+};
+
 // What the lanes beyond the model's are allowed.
 
 struct ExploreSettings {

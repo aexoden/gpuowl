@@ -72,6 +72,7 @@ struct LoopSettings {
   double powerHold = POWER_HOLD;    // Readings; 0 leaves every cost as timed
   u32 callBlocks = BLOCKS_PER_CALL;  // timed blocks in a call (the device's calls are shaped to match)
   SoakSettings soak{};               // soaks of the finalists (Soak.h)
+  DuelSettings duel{};               // duels of a line's taker and its holder (Duel.h)
   u64 seed = 1;
   TailQueues tailQueues = TailQueues::Ntt;
   u32 regretEvery = 32;  // calls between estimates of the regret

@@ -254,6 +254,29 @@ TuneCommand parseTuneCommand(std::string_view text) {
           (key == "soakWarm" ? ", or 0" : "");
       }
       (key == "soakWarm" ? out.soak.warm : out.soak.slice) = *t;
+    } else if ((key == "duel" || key == "duelMargin") && out.verb == TuneVerb::Run) {
+      std::optional<double> const share = value == "0" ? std::optional<double>{0}
+        : value == "all"                               ? std::optional<double>{key == "duel" ? 100 : INFINITY}
+        : value.ends_with('%')                         ? parseDouble(value.substr(0, value.size() - 1))
+                                                       : std::optional<double>{};
+      if (!share || *share < 0 || (key == "duel" && *share > 100)) {
+        throw "-tune: " + std::string{key} + "= takes a percentage, such as " + std::string{key} + "=" +
+          (key == "duel" ? "15%, all or 0" : "3%, or all");
+      }
+      (key == "duel" ? out.duel.share : out.duel.margin) = *share / 100;
+    } else if (key == "duelEpsilon" && out.verb == TuneVerb::Run) {
+      std::optional<double> const epsilon =
+        value == "0" ? std::optional<double>{0}
+        : value.ends_with('%') ? parseDouble(value.substr(0, value.size() - 1))
+                               : std::optional<double>{};
+      if (!epsilon || *epsilon < 0 || *epsilon >= 100) {
+        throw std::string{"-tune: duelEpsilon= takes a percentage, such as duelEpsilon=0.3%, or 0"};
+      }
+      out.duel.epsilon = *epsilon / 100;
+    } else if (key == "duelPairs" && out.verb == TuneVerb::Run) {
+      std::optional<u32> const n = parseInt<u32>(value);
+      if (!n || *n < 2 || *n > 64) { throw std::string{"-tune: duelPairs= takes a count from 2 to 64"}; }
+      out.duel.pairs = *n;
     } else if (key == "heat" && out.verb == TuneVerb::Run) {
       std::optional<double> const heat = value == "0" ? std::optional<double>{0} : parseDuration(value);
       if (!heat || *heat > 600) { throw std::string{"-tune: heat= takes a span of time up to 10m, such as 3s, or 0"}; }

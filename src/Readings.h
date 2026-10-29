@@ -77,6 +77,14 @@ struct RoeReading {
   u32 n = 0;
 };
 
+// What a call costs as the readings take it: as timed, or where its power row is of instantaneous readings and its
+// energy over `powerHold` of the limit is more, that (a card held at its limit sustains no more).  `power` may be
+// nullptr.
+[[nodiscard]] double callCost(const CallRow& call, const PowerRow* power, double powerHold);
+
+// The power row written beside a call, searching back from the newest; nullptr where there is none.
+[[nodiscard]] const PowerRow* powerOf(const TuneDB& db, const CallRow& call);
+
 class Readings {
 public:
   // `powerHold`: POWER_HOLD, as a run's powerHold= setting has it.

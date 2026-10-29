@@ -51,6 +51,7 @@ struct TuneCommand {
   bool heater = true;                // Bench::shapeCalls: the last call's Gpu squares while the session is idle
   bool compileAhead = true;          // Bench::shapeCalls: a call's kernels compile before the last call's Gpu stops
   SoakSettings soak{};               // Soak.h
+  DuelSettings duel{};               // Duel.h
   std::string tag{};       // part of the env: readings under another tag are another env's (DbEnv::tag)
   bool dashboard = false;  // display only: not part of the settings a run records
   u64 seed = 0;            // the draws' seed; 0 for one from the clock

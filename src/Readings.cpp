@@ -27,6 +27,25 @@ constexpr double DUEL_HAIR = 1e-9;
 
 }  // namespace
 
+double callCost(const CallRow& call, const PowerRow* power, double powerHold) {
+  double const timed = call.cost();
+  // Only instantaneous readings set a cost: the counter and averaged readings lag behind a call (PowerSource).
+  if (!power || powerHold <= 0 || power->capW <= 0 || power->source != PowerSource::Instant) { return timed; }
+  // Millijoules per iteration over watts is milliseconds per iteration.
+  return std::max(timed, power->mjPerIt * 1000 / (powerHold * power->capW));
+}
+
+const PowerRow* powerOf(const TuneDB& db, const CallRow& call) {
+  for (auto it = db.powers().rbegin(); it != db.powers().rend(); ++it) {
+    if (it->ts < call.ts) { break; }
+    if (it->sess == call.sess && it->ts == call.ts && it->cfg == call.cfg && it->fft == call.fft &&
+        it->kind == call.kind && it->exponent == call.exponent) {
+      return &*it;
+    }
+  }
+  return nullptr;
+}
+
 double Reading::pessimistic() const { return std::max(mean + PESSIMISM_SIGMA * se, beaten); }
 
 ConfigKey Readings::keyOf(const Subject& subject, const UseConfig& options) {
@@ -74,22 +93,15 @@ Readings::Readings(const TuneDB& db, u32 env, const Env& device, double powerHol
     switch (row.status) {
     case Status::Ok:
       if (row.ok()) {
-        double cost = row.cost();
         auto const p = powers.find({row.sess, row.fft, row.kind, row.exponent, row.cfg, row.ts});
-        if (p != powers.end()) {
+        const PowerRow* const power = p == powers.end() ? nullptr : p->second;
+        double const cost = callCost(row, power, powerHold);
+        if (power) {
           Drawn& d = drawn[key];
-          d.mj += p->second->mjPerIt;
-          d.watts += p->second->watts;
+          d.mj += power->mjPerIt;
+          d.watts += power->watts;
           ++d.n;
-          // Millijoules per iteration over watts is milliseconds per iteration.
-          // Only instantaneous readings set a cost: the counter and averaged readings lag behind a call (PowerSource).
-          if (powerHold > 0 && p->second->capW > 0 && p->second->source == PowerSource::Instant) {
-            double const bound = p->second->mjPerIt * 1000 / (powerHold * p->second->capW);
-            if (bound > cost) {
-              cost = bound;
-              ++d.bound;
-            }
-          }
+          if (cost > row.cost()) { ++d.bound; }
         }
         costs[key].push_back(
           {.cost = cost, .relSem = row.mean > 0 ? row.sd / row.mean / std::sqrt(double(row.blocks)) : 0});

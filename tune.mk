@@ -36,6 +36,7 @@ TUNE_SRCS = \
   Telemetry.cpp \
   Qualify.cpp \
   Soak.cpp \
+  Duel.cpp \
   Feedback.cpp
 
 TESTSRCS = \

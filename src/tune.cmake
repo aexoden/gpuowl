@@ -35,5 +35,6 @@ target_sources(prpll PRIVATE
   Telemetry.cpp
   Qualify.cpp
   Soak.cpp
+  Duel.cpp
   Feedback.cpp
   )

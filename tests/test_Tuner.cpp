@@ -192,6 +192,36 @@ TEST(the_lanes_measure_legal_sets_in_packets_of_their_own) {
   }
 }
 
+TEST(a_line_taken_by_a_hair_is_duelled_for) {
+  auto run = [](DuelSettings duel) {
+    TuneDB db;
+    CHECK(db.parse(std::string{TuneDB::HEADER} + '\n', "sim"));
+    u32 const env =
+      db.internEnv(DbEnv{.gpu = "sim", .isNvidia = true, .cudaBackend = true, .computeCapability = 860});
+    RunScope const scope =
+      makeScope({.lo = 67'400'000, .hi = 67'600'000, .probe = 67'500'000, .kinds = {TestKind::PRP}}, {});
+    SimDevice device{db, db.beginSession(env, "", 0, "")};
+    (void)runLoop(device, db, env, nvidia(), scope,
+                  {.stop = 0, .lanes = *parseTimetable("model"), .duel = duel, .seed = 5, .maxItems = 60});
+    return db;
+  };
+
+  TuneDB const db = run(DuelSettings{.share = 1});
+  CHECK(!db.duels().empty());
+  for (const DuelRow& d : db.duels()) {
+    CHECK(d.pairs >= 2 && d.pairs % 2 == 0);
+    CHECK(d.lo <= d.ratio && d.ratio <= d.hi);
+    // On the simulated card a configuration's variants cost the same, and calls scatter 0.3%.
+    CHECK(d.ratio > 0.98 && d.ratio < 1.02);
+  }
+  // Each duel's item is followed by its calls, in turns: incumbent, challenger, challenger, incumbent.
+  size_t const duelItems = std::ranges::count_if(db.items(), [](const ItemRow& r) { return r.what == "duel"; });
+  CHECK(duelItems >= db.duels().size());
+  printf("duels: %zu items, %zu recorded\n", duelItems, db.duels().size());
+
+  CHECK(run(DuelSettings{.share = 0}).duels().empty());
+}
+
 TEST(a_restart_far_behind_stops_at_its_start_and_a_call_far_behind_is_short) {
   struct Run {
     u32 cut = 0;  // restarts that stopped at their start, the last one aside

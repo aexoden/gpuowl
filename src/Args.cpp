@@ -395,6 +395,14 @@ named "config.txt" in the prpll run directory.
                          soakTop=<n> [3]     configurations soaked together
                          soakMargin=<p>%% [3%%] how far behind the line a rival may be and be soaked with it
                          soakWarm=<t> [2m]   soakSlice=<t> [1m]   soakRounds=<n> [3]   warm-up, each turn, rounds
+                         duel=<p>%%|all|0    the share of the tuning time spent on duels: a configuration that would
+                                             take a line from the one that held it is timed in turns with it until
+                                             the ratio of their costs shows which is cheaper; only a win moves the
+                                             line [15%%]
+                         duelMargin=<p>%%|all how much cheaper than the line's holder a taker may read and still owe
+                                             a duel [3%%]
+                         duelEpsilon=<p>%% [0.3%%] a ratio known to be this close to 1 is even: the holder keeps it
+                         duelPairs=<n> [6]   the most pairs of calls a duel takes before it is left undecided
                          dashboard=1         a full-screen view of the run
                      Verbs, which open no device: status (where tunedb.txt stands), emit (write the tune files it
                      supports), scope (the exponents a run would tune for).

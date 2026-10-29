@@ -7,6 +7,7 @@
 #include "BuildId.h"
 #include "Coverage.h"
 #include "Dashboard.h"
+#include "Duel.h"
 #include "Explore.h"
 #include "File.h"
 #include "fs.h"
@@ -227,6 +228,8 @@ LoopResult runLoop(Device& device, TuneDB& db, u32 env, const Env& card, const R
   std::set<std::pair<const Candidate*, std::string>> refused;
   // Soaks begun this run, which are not begun again whatever they read.
   std::set<std::string> soaksTried;
+  // Duels begun this run, which are not begun again however they ended.
+  std::set<std::string> duelsTried;
 
   Model model{card};
   std::mt19937_64 rng{settings.seed};
@@ -370,6 +373,72 @@ LoopResult runLoop(Device& device, TuneDB& db, u32 env, const Env& card, const R
       if (call.status == Status::Unsupported || call.status == Status::Lost) {
         refused.emplace(c.candidate, configText(c.options));
       }
+      continue;
+    }
+
+    // A duel of a line's configuration and the one it took the line from, while the share of the tuning time kept for
+    // duels has room.
+    if (std::optional<DuelPlan> const plan = planDuel(publication, candidates, readings, settings.duel, duelsTried);
+        plan && duelDue(duelTime(db, env), laneTime(db, env).total(), settings.duel) &&
+        !blocked(*plan->incumbent.candidate, plan->incumbent.options) &&
+        !blocked(*plan->challenger.candidate, plan->challenger.options)) {
+      duelsTried.insert(plan->key());
+      recordItem(DUTY, "duel", 0, 0, plan->challenger.candidate->subject.fft, plan->kind, plan->challenger.options,
+                 began);
+      log("tune: %u. duel at %" PRIu64 ": %s %s -use %s (%s) against %s -use %s (%s), which it would take the line "
+          "from\n",
+          items, plan->exponent, toString(plan->kind), plan->challenger.candidate->subject.fft.spec().c_str(),
+          optionsText(plan->challenger.options).c_str(), usText(plan->challenger.cost).c_str(),
+          plan->incumbent.candidate->subject.fft.spec().c_str(), optionsText(plan->incumbent.options).c_str(),
+          usText(plan->incumbent.cost).c_str());
+      if (settings.watch) { settings.watch->measuring("duel at " + std::to_string(plan->exponent)); }
+      // Each call's cost as the readings will take it, from the records the call left.
+      auto cost = [&](const DuelSide& side, const char* role) -> std::optional<double> {
+        Call const call = callOf(*side.candidate, side.options, {.n = items, .kind = "duel", .why = role});
+        if (!call.ok() || db.calls().empty()) { return {}; }
+        const CallRow& row = db.calls().back();
+        if (row.sess != device.session() || !row.ok()) { return {}; }
+        return callCost(row, powerOf(db, row), settings.powerHold);
+      };
+      std::vector<double> logRatios;
+      DuelVerdict verdict;
+      bool broken = false;
+      u64 const from = device.now();
+      while (verdict.open && !broken && !device.stopped() && !Signal::stopRequested()) {
+        std::optional<double> const a1 = cost(plan->incumbent, "the incumbent");
+        std::optional<double> const b1 = a1 ? cost(plan->challenger, "the challenger") : std::nullopt;
+        std::optional<double> const b2 = b1 ? cost(plan->challenger, "the challenger") : std::nullopt;
+        std::optional<double> const a2 = b2 ? cost(plan->incumbent, "the incumbent") : std::nullopt;
+        if (!a2) {
+          broken = true;
+          break;
+        }
+        logRatios.push_back(std::log(*b1 / *a1));
+        logRatios.push_back(std::log(*b2 / *a2));
+        verdict = judge(logRatios, settings.duel);
+      }
+      if (broken || verdict.open) {
+        log("tune:   the duel was left unfinished after %zu pairs\n", logRatios.size());
+        continue;
+      }
+      (void)db.add(DuelRow{.sess = device.session(),
+                           .kind = plan->kind,
+                           .fft = plan->incumbent.candidate->subject.fft.spec(),
+                           .exponent = plan->incumbent.candidate->timing,
+                           .cfg = db.internCfg(plan->incumbent.options),
+                           .challengerFft = plan->challenger.candidate->subject.fft.spec(),
+                           .challengerExponent = plan->challenger.candidate->timing,
+                           .challengerCfg = db.internCfg(plan->challenger.options),
+                           .pairs = verdict.pairs,
+                           .ratio = verdict.ratio,
+                           .lo = verdict.lo,
+                           .hi = verdict.hi,
+                           .outcome = verdict.outcome,
+                           .sec = std::max<double>(1, double(device.now() - from)),
+                           .ts = device.now()});
+      log("tune:   %s after %u pairs: the challenger costs %s of the incumbent (%s to %s)\n",
+          toString(verdict.outcome), verdict.pairs, percent(verdict.ratio).c_str(), percent(verdict.lo).c_str(),
+          percent(verdict.hi).c_str());
       continue;
     }
 
@@ -631,6 +700,7 @@ RunOutcome runTune(GpuCommon shared, const TuneCommand& command) {
                                      .powerHold = command.powerHold,
                                      .callBlocks = command.callBlocks,
                                      .soak = command.soak,
+                                     .duel = command.duel,
                                      .seed = seed,
                                      .tailQueues = command.tailQueues,
                                      .publishTo = fs::current_path(),
