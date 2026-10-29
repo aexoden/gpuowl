@@ -43,13 +43,14 @@ TEST(measure_reads_an_fft_and_its_settings) {
   CHECK(near(plain.idle, 5) && near(plain.soak, 900) && near(plain.settle, 0.001));
 
   MeasureArgs const set = parseMeasureArgs(
-    "2:512:4:512:202,kind=ll,exp=67513549,bursts=3,idle=10s,soak=20m,settle=0.2%,minutes=8,gap=2%,spread=1%");
+    "2:512:4:512:202,kind=ll,exp=67513549,bursts=3,idle=10s,soak=20m,settle=0.2%,minutes=8,heat=5s,gap=2%,spread=1%");
   CHECK(set.kind == TestKind::LL);
   CHECK_EQ(set.exponent, u64{67'513'549});
   CHECK_EQ(set.bursts, 3u);
   CHECK_EQ(set.minutes, 8u);
   CHECK(near(set.idle, 10) && near(set.soak, 1200));
   CHECK(near(set.settle, 0.002) && near(set.gap, 0.02) && near(set.spread, 0.01));
+  CHECK(near(set.heat, 5) && near(plain.heat, 3));
   CHECK(near(parseMeasureArgs("512:7:512:000,idle=0").idle, 0));
 
   for (const char* bad : {"", "nonsense", "512:7:512:000,kind=cert", "512:7:512:000,bursts=0", "512:7:512:000,gap=1",
@@ -80,15 +81,16 @@ TEST(minutes_are_whole_and_weighted_by_their_blocks) {
   CHECK(minuteMeans({}, 0).empty());
 }
 
-TEST(a_soak_settles_at_the_first_minute_like_the_one_before) {
-  std::vector<double> const warming{100, 101, 101.5, 101.55, 101.56};
-  // Two pairs in a row must agree.
-  CHECK(!settledAt(warming, 0.0001).has_value());
-  CHECK(settledAt(warming, 0.001) == std::optional<size_t>{4});
-  CHECK(settledAt(warming, 0.02) == std::optional<size_t>{2});
-  CHECK(!settledAt(std::vector<double>{100, 100}, 0.01).has_value());
-  // The 4070 SUPER's soak: minutes 3 and 4 agreed, and the card then read 206.4 for good.
+TEST(a_soak_settles_once_three_minutes_read_like_the_three_before) {
+  CHECK(settledAt(std::vector<double>(6, 100), 0.001) == std::optional<size_t>{5});
+  CHECK(!settledAt(std::vector<double>(5, 100), 0.001).has_value());
+  CHECK(!settledAt(std::vector<double>{100, 101, 102, 103, 104, 105, 106, 107}, 0.001).has_value());
+  // The 4070 SUPER's first soak: minutes 3 and 4 agreed, and the card then read 206.4 for good.
   CHECK(!settledAt(std::vector<double>{200.182, 203.35, 205.335, 205.538, 206.4}, 0.001).has_value());
+  // Its second, swinging 204.6-206.5 at its power limit: no pair of minutes settles it, three-minute means do.
+  std::vector<double> const capped{198.934, 203.144, 206.269, 204.624, 205.6,   206.457, 204.652, 206.123,
+                                   205.624, 204.574, 205.019, 205.844, 205.142, 205.499, 206.337};
+  CHECK(settledAt(capped, 0.001) == std::optional<size_t>{8});
 }
 
 TEST(the_verdict_names_optimistic_and_wandering_cards) {
@@ -179,11 +181,12 @@ TEST(a_window_draws_by_the_energy_counter_where_there_is_one) {
   CHECK(std::abs(p->watts - 200) < 1e-9);  // the counter, not the 150 W the readings say
   CHECK(near(p->capW, 220) && near(p->smMHz, 2000));
 
-  // Without the counter the readings inside are averaged.
+  // Without the counter the readings inside give their median, which the card's last readings before the window
+  // do not drag down.
   std::vector<CardSample> read;
   for (int i = 0; i <= 20; ++i) { read.push_back({.t = i * 0.1, .powerW = i < 10 ? 100.0 : 300.0}); }
   std::optional<WindowPower> const q = powerOver(read, 0.75, 1.25);
-  CHECK(q && !q->counted && std::abs(q->watts - (100 + 100 + 300 + 300 + 300) / 5.0) < 1e-9);
+  CHECK(q && !q->counted && near(q->watts, 300) && q->readings == 5);
 
   // A window between two readings takes the nearer one; no readings, no answer.
   std::optional<WindowPower> const r = powerOver(read, 1.52, 1.56);
@@ -207,6 +210,7 @@ TEST(the_verdict_checks_the_tuners_power_aware_cost) {
   r.burstWatts.taken = {219, 220, 221};
   r.sustained = {206.4, 206.5, 206.5};
   r.hot = {199};
+  r.heated = {206.0, 206.2};
   r.settled = 3;
   r.sustainedWatts = 208;
   r.sustainedCard.capW = 220;
@@ -221,6 +225,9 @@ TEST(the_verdict_checks_the_tuners_power_aware_cost) {
   CHECK(has(v.lines, "power-aware cost comes within the gap"));
   CHECK(has(v.lines, "held 208 W of its 220 W limit: 0.945"));
   CHECK(!has(v.lines, "which it cannot be"));
+  CHECK(v.heatedHolds && std::abs(v.heatedGap) < 0.01);
+  CHECK(has(v.lines, "keeping the card loaded between calls is enough here"));
+  CHECK(has(v.lines, "kept loaded between them and 3 s of their own load first, calls read 206.10"));
   CHECK(measureJson(args, "", 72'729'143, "NVML", r, v).find("\"burstWatts\": [219, 220, 221]") != std::string::npos);
 }
 
@@ -233,6 +240,7 @@ TEST(a_calls_energy_below_a_sustained_iterations_is_named_a_lagging_sensor) {
   r.burstWatts.readings = {70, 78, 90};
   r.sustained = {206.4, 206.4, 206.4};
   r.hot = {198.4};
+  r.heated = {199.5, 200.1};
   r.settled = 4;
   r.sustainedWatts = 207.7;
   r.sustainedCard.capW = 220;
@@ -241,4 +249,5 @@ TEST(a_calls_energy_below_a_sustained_iterations_is_named_a_lagging_sensor) {
   CHECK(near(v.estimate, v.burst));  // its energy would not set the cost
   CHECK(has(v.lines, "which it cannot be"));
   CHECK(has(v.lines, "by the energy counter: 186 W, by the power readings: 78 W"));
+  CHECK(!v.heatedHolds && !has(v.lines, "keeping the card loaded"));
 }

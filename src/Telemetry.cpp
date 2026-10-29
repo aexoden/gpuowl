@@ -380,16 +380,14 @@ std::optional<WindowPower> powerOver(std::span<const CardSample> samples, double
   }
 
   if (e0 && e1 && *e1 >= *e0) { out.counterWatts = (*e1 - *e0) / (to - from); }
-  double sum = 0;
-  u32 n = 0;
+  // The median, not the mean: the first readings of a window can still be the card's before it, as a 4070 SUPER's
+  // instantaneous power read 136-219 W over calls whose readings sat at 216 W but for one or two.
+  std::vector<double> watts;
   for (const CardSample* s : inside) {
-    if (!std::isnan(s->powerW)) {
-      sum += s->powerW;
-      ++n;
-    }
+    if (!std::isnan(s->powerW)) { watts.push_back(s->powerW); }
   }
-  if (n) { out.readingWatts = sum / n; }
-  out.readings = between ? 0 : n;
+  out.readingWatts = median(watts);
+  out.readings = between ? 0 : u32(watts.size());
 
   bool const byReadings = std::isnan(out.counterWatts) || (instant && out.readings >= INSTANT_READINGS);
   if (byReadings && std::isnan(out.readingWatts)) { return {}; }

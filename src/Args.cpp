@@ -388,14 +388,16 @@ named "config.txt" in the prpll run directory.
 -measure <fft>[,<setting>=<value>...] : whether this card runs as fast under sustained load as the tuner's short
                      calls read.  Times <fft> (with the -use settings production would give it) in calls as the tuner
                      makes them, then squares without a break until it settles, then for some minutes more, then in
-                     calls again; reads the card's clocks, temperature, power and throttling (NVML, amdgpu sysfs)
-                     throughout, says whether the card needs its clocks locked, and writes measure-report.json.
-                     Takes about 20 minutes.  Settings:
+                     calls with the card kept loaded between them, then in calls again; reads the card's clocks,
+                     temperature, power and throttling (NVML, amdgpu sysfs) throughout, says whether the card needs
+                     its clocks locked, and writes measure-report.json.  Takes about 20 minutes.  Settings:
                          kind=prp|ll [prp]   exp=<E> [the largest prime the FFT holds]
                          bursts=<n> [6]      calls in each round of calls
                          idle=<t> [5s]       idle before each of the first calls, as between the tuner's calls
-                         soak=<t> [15m]      the most the soak runs     settle=<p>%% [0.1%%] when a minute settles it
+                         soak=<t> [15m]      the most the soak runs
+                         settle=<p>%% [0.1%%] three minutes this close to the three before settle it
                          minutes=<n> [5]     sustained minutes
+                         heat=<t> [3s]       a kept-loaded call's own load before it is timed
                          gap=<p>%% [1%%]       calls this much faster than sustained read optimistically
                          spread=<p>%% [0.5%%]  sustained minutes this far apart wander
 -oldtune <options> : The previous tuner.  Looks for best settings to include in config.txt.  Times many FFTs to find fastest one to test exponents -- written to tune.txt.

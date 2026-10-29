@@ -128,8 +128,9 @@ inline constexpr u32 INSTANT_READINGS = 3;
 
 // Over [from, to], from `samples` ordered by time and reaching a little past either end; nothing where they say
 // nothing of it.  The energy counter is interpolated at either end between the samples around it; power readings
-// are averaged over those inside the window, or the nearest one where the window falls between two.  The counter is
-// taken where it brackets the window, unless the readings are `instant` and INSTANT_READINGS of them fall inside it.
+// give their median over those inside the window, or the nearest one where the window falls between two.  The
+// counter is taken where it brackets the window, unless the readings are `instant` and INSTANT_READINGS of them fall
+// inside it.
 [[nodiscard]] std::optional<WindowPower> powerOver(std::span<const CardSample> samples, double from, double to,
                                                    bool instant = false);
 

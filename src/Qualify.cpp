@@ -16,10 +16,12 @@
 #include "version.h"
 
 #include <algorithm>
+#include <atomic>
 #include <charconv>
 #include <cinttypes>
 #include <cmath>
 #include <cstdio>
+#include <exception>
 #include <fstream>
 #include <thread>
 
@@ -30,6 +32,9 @@ namespace {
 // The length of one chunk of the soak: long enough that the warm-up block each starts with costs little, short enough
 // that a minute holds several.
 constexpr double CHUNK_SEC = 10;
+
+// The length of one chunk of a heater's squaring, which is how long a heater takes to stop once asked.
+constexpr double HEATER_SEC = 0.5;
 
 std::vector<std::string_view> splitComma(std::string_view text) {
   std::vector<std::string_view> out;
@@ -134,10 +139,10 @@ MeasureArgs parseMeasureArgs(std::string_view text) {
       std::optional<double> const n = parseNumber(value);
       if (!n || *n < 1 || *n > 1000 || *n != std::floor(*n)) { throw fail("a count from 1 to 1000"); }
       (key == "bursts" ? out.bursts : out.minutes) = u32(*n);
-    } else if (key == "idle" || key == "soak") {
+    } else if (key == "idle" || key == "soak" || key == "heat") {
       std::optional<double> const t = value == "0" ? std::optional<double>{0} : parseDuration(value);
       if (!t) { throw fail("a span of time, such as 5s, 15m or 1h"); }
-      (key == "idle" ? out.idle : out.soak) = *t;
+      (key == "idle" ? out.idle : key == "soak" ? out.soak : out.heat) = *t;
     } else if (key == "settle" || key == "gap" || key == "spread") {
       std::optional<double> const p = parsePercent(value);
       if (!p) { throw fail("a percentage, such as 0.5%"); }
@@ -170,9 +175,14 @@ std::vector<double> minuteMeans(std::span<const Chunk> chunks, double from) {
 }
 
 std::optional<size_t> settledAt(std::span<const double> minutes, double settle) {
-  auto agrees = [&](size_t m) { return std::abs(minutes[m] / minutes[m - 1] - 1) <= settle; };
-  for (size_t m = 2; m < minutes.size(); ++m) {
-    if (agrees(m) && agrees(m - 1)) { return m; }
+  size_t const w = SETTLE_MINUTES;
+  auto mean = [&](size_t from) {
+    double sum = 0;
+    for (size_t i = from; i < from + w; ++i) { sum += minutes[i]; }
+    return sum / double(w);
+  };
+  for (size_t m = 2 * w - 1; m < minutes.size(); ++m) {
+    if (std::abs(mean(m + 1 - w) / mean(m + 1 - 2 * w) - 1) <= settle) { return m; }
   }
   return {};
 }
@@ -187,6 +197,9 @@ MeasureVerdict judge(const MeasureResult& r, const MeasureArgs& args, std::strin
   }
   v.burstGap = v.sustained / v.burst - 1;
   v.hotGap = v.sustained / v.hot - 1;
+  v.heated = median(r.heated);
+  v.heatedGap = v.sustained / v.heated - 1;
+  v.heatedHolds = !r.heated.empty() && std::abs(v.heatedGap) <= args.gap;
   v.optimistic = v.burstGap > args.gap;
   v.wandering = v.spread > args.spread;
 
@@ -197,6 +210,13 @@ MeasureVerdict judge(const MeasureResult& r, const MeasureArgs& args, std::strin
   snprintf(buf, sizeof(buf), "with no idle before them, calls read %.2f us/it, %s from sustained", v.hot,
            pct(v.hotGap).c_str());
   v.lines.push_back(buf);
+  if (!r.heated.empty()) {
+    snprintf(buf, sizeof(buf),
+             "with the card kept loaded between them and %.0f s of their own load first, calls read %.2f us/it, %s "
+             "from sustained",
+             args.heat, v.heated, pct(v.heatedGap).c_str());
+    v.lines.push_back(buf);
+  }
   snprintf(buf, sizeof(buf), "the sustained minutes lie within %s of each other", pct(v.spread).c_str());
   v.lines.push_back(buf);
 
@@ -262,6 +282,10 @@ MeasureVerdict judge(const MeasureResult& r, const MeasureArgs& args, std::strin
                       "it is");
     return v;
   }
+  if (v.optimistic && v.heatedHolds) {
+    v.lines.push_back("keeping the card loaded between calls is enough here: calls timed that way read what it "
+                      "sustains, with no clock locked");
+  }
   v.lines.push_back(std::string{"verdict: "} + (v.optimistic ? "optimistic" : "") +
                     (v.optimistic && v.wandering ? " and " : "") + (v.wandering ? "wandering" : "") +
                     (v.optimistic ? " -- the tuner's short calls run faster than this card sustains, and can rank "
@@ -307,14 +331,19 @@ std::string measureJson(const MeasureArgs& args, const std::string& options, u64
     (r.settled ? std::to_string(*r.settled) : std::string{"null"}) + ",\n";
   out += "  \"sustainedMinutesUsPerIt\": " + numbers(r.sustained) + ",\n";
   out += "  \"hotBurstsUsPerIt\": " + numbers(r.hot) + ",\n";
+  out += "  \"heatedUsPerIt\": " + numbers(r.heated) + ", \"heatSec\": " + number(args.heat) + ",\n";
   out += "  \"burstWatts\": " + numbers(r.burstWatts.taken) + ", \"burstCounterWatts\": " +
     numbers(r.burstWatts.counter) + ", \"burstReadingWatts\": " + numbers(r.burstWatts.readings) + ",\n";
   out += "  \"hotWatts\": " + numbers(r.hotWatts.taken) + ", \"hotCounterWatts\": " + numbers(r.hotWatts.counter) +
     ", \"hotReadingWatts\": " + numbers(r.hotWatts.readings) + ",\n";
+  out += "  \"heatedWatts\": " + numbers(r.heatedWatts.taken) + ", \"heatedCounterWatts\": " +
+    numbers(r.heatedWatts.counter) + ", \"heatedReadingWatts\": " + numbers(r.heatedWatts.readings) + ",\n";
   out += "  \"burstCard\": " + cardJson(r.burstCard) + ",\n";
   out += "  \"sustainedCard\": " + cardJson(r.sustainedCard) + ",\n";
-  out += "  \"verdict\": {\"burst\": " + number(v.burst) + ", \"hot\": " + number(v.hot) + ", \"sustained\": " +
-    number(v.sustained) + ", \"burstGap\": " + number(v.burstGap) + ", \"hotGap\": " + number(v.hotGap) +
+  out += "  \"heatedCard\": " + cardJson(r.heatedCard) + ",\n";
+  out += "  \"verdict\": {\"burst\": " + number(v.burst) + ", \"hot\": " + number(v.hot) + ", \"heated\": " +
+    number(v.heated) + ", \"sustained\": " + number(v.sustained) + ", \"burstGap\": " + number(v.burstGap) +
+    ", \"hotGap\": " + number(v.hotGap) + ", \"heatedGap\": " + number(v.heatedGap) +
     ", \"spread\": " + number(v.spread) + ", \"burstWatts\": " + number(v.burstWatts) + ", \"burstMJPerIt\": " +
     number(v.burstMJ) + ", \"sustainedWatts\": " + number(v.sustainedWatts) + ", \"sustainedMJPerIt\": " +
     number(v.sustainedMJ) + ", \"capW\": " + number(v.capW) + ", \"heldShare\": " + number(v.held) +
@@ -365,6 +394,31 @@ bool runMeasure(GpuCommon shared, const MeasureArgs& args) {
   try {
     // As the tuner calls: a Gpu built afresh, a second of heat, a warm-up block and four timed ones.  What the card
     // read is taken over the timed blocks alone, as the tuner takes it, not over the idle and the build around them.
+    // A call's reading, what the card drew over its timed blocks and what it read there, logged; the card's readings
+    // over those blocks are added to `seen`.
+    auto record = [&](const Call& call, std::vector<double>& into, CallWatts& watts, std::vector<CardSample>& seen,
+                      const char* what, u32 i) {
+      into.push_back(checked(call));
+      double const from = sampler.at(call.timedFrom);
+      double const to = sampler.at(call.timedTo);
+      (void)sampler.waitPast(to, 5 * SAMPLE_PERIOD);
+      std::vector<CardSample> const window = sampler.between(from, to);
+      seen.insert(seen.end(), window.begin(), window.end());
+      std::optional<WindowPower> const power = powerOver(sampler, call.timedFrom, call.timedTo);
+      watts.taken.push_back(power ? power->watts : NAN);
+      watts.counter.push_back(power ? power->counterWatts : NAN);
+      watts.readings.push_back(power ? power->readingWatts : NAN);
+      char drew[128] = "";
+      if (power) {
+        snprintf(drew, sizeof(drew), ", %.0f W by the %s (counter %.0f, %u readings %.0f), %.2f mJ/it", power->watts,
+                 power->counted ? "counter" : "readings", power->counterWatts, power->readings, power->readingWatts,
+                 power->watts * into.back() / 1000);
+      }
+      std::string const card = toString(summarizeCard(window), saysWhy);
+      log("measure: %s %u: %.2f us/it%s%s\n", what, i + 1, into.back(), drew,
+          card.empty() ? "" : ("; " + card).c_str());
+    };
+
     auto bursts = [&](double idle, std::vector<double>& into, CallWatts& watts, const char* what) {
       std::vector<CardSample> seen;
       for (u32 i = 0; i < args.bursts; ++i) {
@@ -373,26 +427,7 @@ bool runMeasure(GpuCommon shared, const MeasureArgs& args) {
           std::this_thread::sleep_for(std::chrono::milliseconds(50));
         }
         auto gpu = Gpu::make(E, shared, fft, {}, false, uses);
-        Call const call = timed(*gpu, BLOCKS_PER_CALL, CALL_HEAT_SEC);
-        into.push_back(checked(call));
-        double const from = sampler.at(call.timedFrom);
-        double const to = sampler.at(call.timedTo);
-        (void)sampler.waitPast(to, 5 * SAMPLE_PERIOD);
-        std::vector<CardSample> const window = sampler.between(from, to);
-        seen.insert(seen.end(), window.begin(), window.end());
-        std::optional<WindowPower> const power = powerOver(sampler, call.timedFrom, call.timedTo);
-        watts.taken.push_back(power ? power->watts : NAN);
-        watts.counter.push_back(power ? power->counterWatts : NAN);
-        watts.readings.push_back(power ? power->readingWatts : NAN);
-        char drew[128] = "";
-        if (power) {
-          snprintf(drew, sizeof(drew), ", %.0f W by the %s (counter %.0f, %u readings %.0f), %.2f mJ/it", power->watts,
-                   power->counted ? "counter" : "readings", power->counterWatts, power->readings, power->readingWatts,
-                   power->watts * into.back() / 1000);
-        }
-        std::string const card = toString(summarizeCard(window), saysWhy);
-        log("measure: %s %u: %.2f us/it%s%s\n", what, i + 1, into.back(), drew,
-            card.empty() ? "" : ("; " + card).c_str());
+        record(timed(*gpu, BLOCKS_PER_CALL, CALL_HEAT_SEC), into, watts, seen, what, i);
       }
       return seen;
     };
@@ -439,6 +474,37 @@ bool runMeasure(GpuCommon shared, const MeasureArgs& args) {
     bool const instant = sampler.instantPower();
     if (std::optional<WindowPower> const power = powerOver(around, sustainedFrom, sustainedTo, instant)) {
       r.sustainedWatts = power->watts;
+    }
+
+    // Heated: while the next call's Gpu is built, the last one goes on squaring on a thread of its own, so the card
+    // never cools between calls, as a tuner holding its last configuration could keep it; then `heat` seconds of the
+    // call's own load before its timed blocks.
+    {
+      u32 const heaterBlocks = std::max(1u, u32(std::lround(HEATER_SEC / (median(r.bursts) * blockSize * 1e-6))));
+      std::vector<CardSample> seen;
+      for (u32 i = 0; i < args.bursts; ++i) {
+        std::atomic<bool> stop{false};
+        std::exception_ptr failed;
+        std::thread warm{[&] {
+          try {
+            while (!stop) { (void)timed(*gpu, heaterBlocks, 0); }
+          } catch (...) { failed = std::current_exception(); }
+        }};
+        std::unique_ptr<Gpu> next;
+        try {
+          next = Gpu::make(E, shared, fft, {}, false, uses);
+        } catch (...) {
+          stop = true;
+          warm.join();
+          throw;
+        }
+        stop = true;
+        warm.join();
+        if (failed) { std::rethrow_exception(failed); }
+        record(timed(*next, BLOCKS_PER_CALL, args.heat), r.heated, r.heatedWatts, seen, "heated call", i);
+        gpu = std::move(next);
+      }
+      r.heatedCard = summarizeCard(seen);
     }
     gpu.reset();
 
