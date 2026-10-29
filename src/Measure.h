@@ -65,11 +65,6 @@ struct Call {
 // Untimed blocks a call runs before its timed ones.
 inline constexpr u32 CALL_WARMUP_BLOCKS = 1;
 
-// Seconds a call keeps the device squaring before it starts over and runs those blocks.  Some cards run fast for a
-// moment after the idle that building a Gpu leaves (an RTX 5070 Ti read its first block 1.2-2% low, settling from about
-// 0.8 s); production runs at the clock it settles to.
-inline constexpr double CALL_HEAT_SEC = 1.0;
-
 // How often a session reads the card (Telemetry.h), and how many seconds of readings it keeps.
 inline constexpr double SAMPLE_PERIOD = 0.1;
 inline constexpr double SAMPLE_KEEP = 60;
@@ -90,7 +85,7 @@ struct Takeover {
 
 // Builds a Gpu for the configuration and times it.  Exceptions from the build or the run propagate.
 [[nodiscard]] Call timeCall(GpuCommon shared, const Env& env, const FFTConfig& fft, TestKind kind, u64 exponent,
-                            const UseConfig& options, u32 nBlocks, u32 blockSize);
+                            const UseConfig& options, u32 nBlocks, u32 blockSize, double heatSec = CALL_HEAT_SEC);
 
 // The call to record for an LL reading checked against `reference`.  A fault can flip a bit of any one reading, so one
 // that disagrees is read again: the second is recorded, and as an error only where it disagrees too.
@@ -147,8 +142,16 @@ public:
   // Times the anchor where it is due.  A recorded call does this itself; calling it chooses when.
   void keepAnchor();
 
-  // One recorded call of the configuration, at the production block size.
-  Call call(const FFTConfig& fft, TestKind kind, u64 exponent, const UseConfig& options, u32 nBlocks = BLOCKS_PER_CALL);
+  // One recorded call of the configuration, at the production block size: `nBlocks` timed blocks, or for 0 the
+  // session's (shapeCalls()).
+  Call call(const FFTConfig& fft, TestKind kind, u64 exponent, const UseConfig& options, u32 nBlocks = 0);
+
+  // The seconds of heat before a call's timed blocks and how many there are, for every call() after; a run's heat= and
+  // blocks= settings.  The anchor's calls keep CALL_HEAT_SEC and BLOCKS_PER_CALL, so they compare across sessions.
+  void shapeCalls(double heatSec, u32 blocks) {
+    heatSec_ = heatSec;
+    blocks_ = blocks;
+  }
 
   // One recorded rounding-error reading.
   RoeCheck roe(const FFTConfig& fft, const UseConfig& options, u64 exponent);
@@ -167,11 +170,11 @@ public:
 
 private:
   [[nodiscard]] Call runCall(const FFTConfig& fft, TestKind kind, u64 exponent, const UseConfig& options, u32 nBlocks,
-                             u32 blockSize, bool record);
+                             u32 blockSize, bool record, double heatSec = CALL_HEAT_SEC);
 
   // One call under a declared attempt, recording nothing else.
   [[nodiscard]] Call attempt(GpuCommon shared, const FFTConfig& fft, TestKind kind, u64 exponent,
-                             const UseConfig& options, u32 nBlocks, u32 blockSize);
+                             const UseConfig& options, u32 nBlocks, u32 blockSize, double heatSec = CALL_HEAT_SEC);
 
   void raceAnchor();
   [[nodiscard]] bool anchorDue() const;
@@ -197,6 +200,8 @@ private:
   TuneDB& db_;
   Env env_;
   u32 blockSize_ = 1000;
+  double heatSec_ = CALL_HEAT_SEC;
+  u32 blocks_ = BLOCKS_PER_CALL;
 
   // The card's own readings, for what each call drew; none where the card cannot be read.
   std::unique_ptr<Telemetry> telemetry_;

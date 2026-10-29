@@ -88,13 +88,13 @@ Takeover takeOver(const Args& shared) {
 }
 
 Call timeCall(GpuCommon shared, const Env& env, const FFTConfig& fft, TestKind kind, u64 exponent,
-              const UseConfig& options, u32 nBlocks, u32 blockSize) {
+              const UseConfig& options, u32 nBlocks, u32 blockSize, double heatSec) {
   Timer t;
   auto gpu = Gpu::make(exponent, shared, fft, asExtraConf(env, fft, options), false);
   double const buildSec = t.reset();
 
-  Call out = summarize(kind == TestKind::LL ? gpu->timeItersLL(nBlocks, blockSize, CALL_WARMUP_BLOCKS, CALL_HEAT_SEC)
-                                            : gpu->timeIters(nBlocks, blockSize, CALL_WARMUP_BLOCKS, CALL_HEAT_SEC));
+  Call out = summarize(kind == TestKind::LL ? gpu->timeItersLL(nBlocks, blockSize, CALL_WARMUP_BLOCKS, heatSec)
+                                            : gpu->timeIters(nBlocks, blockSize, CALL_WARMUP_BLOCKS, heatSec));
   out.timedSec = t.at();
   out.buildSec = buildSec;
   out.ran = gpu->args.flags;
@@ -412,11 +412,11 @@ void Bench::keepAnchor() {
 }
 
 Call Bench::call(const FFTConfig& fft, TestKind kind, u64 exponent, const UseConfig& options, u32 nBlocks) {
-  return runCall(fft, kind, exponent, options, nBlocks, blockSize_, true);
+  return runCall(fft, kind, exponent, options, nBlocks ? nBlocks : blocks_, blockSize_, true, heatSec_);
 }
 
 Call Bench::runCall(const FFTConfig& fft, TestKind kind, u64 exponent, const UseConfig& options, u32 nBlocks,
-                    u32 blockSize, bool record) {
+                    u32 blockSize, bool record, double heatSec) {
   Call out;
   if (record) { keepAnchor(); }
   if (stopped_) {
@@ -446,7 +446,7 @@ Call Bench::runCall(const FFTConfig& fft, TestKind kind, u64 exponent, const Use
   if (!warmed_) {
     warmed_ = true;
     for (u32 w = 0; w < SESSION_WARM_CALLS && !stopped_; ++w) {
-      (void)runCall(fft, kind, exponent, options, nBlocks, blockSize, false);
+      (void)runCall(fft, kind, exponent, options, nBlocks, blockSize, false, heatSec);
     }
     if (stopped_) {
       out.status = Status::Lost;
@@ -454,10 +454,10 @@ Call Bench::runCall(const FFTConfig& fft, TestKind kind, u64 exponent, const Use
     }
   }
 
-  out = attempt(shared_, fft, kind, exponent, options, nBlocks, blockSize);
+  out = attempt(shared_, fft, kind, exponent, options, nBlocks, blockSize, heatSec);
   if (stopped_ || !record) { return out; }
 
-  auto again = [&] { return attempt(shared_, fft, kind, exponent, options, nBlocks, blockSize); };
+  auto again = [&] { return attempt(shared_, fft, kind, exponent, options, nBlocks, blockSize, heatSec); };
   if (out.status == Status::Err) {
     log("measure: %s -use %s failed its check at %" PRIu64 "; reading it again, since one failure decides nothing\n",
         fft.spec().c_str(), configText(options).c_str(), exponent);
@@ -512,7 +512,9 @@ Call Bench::runCall(const FFTConfig& fft, TestKind kind, u64 exponent, const Use
                            .watts = out.power->watts,
                            .capW = std::isnan(out.power->capW) ? 0 : out.power->capW,
                            .smMHz = std::isnan(out.power->smMHz) ? 0 : out.power->smMHz,
-                           .counted = out.power->counted,
+                           .source = out.power->counted ? PowerSource::Counter
+                                     : out.power->instant ? PowerSource::Instant
+                                                          : PowerSource::Readings,
                            .ts = ts});
   }
   recordRegisters(fft, kind, out, cfg);
@@ -562,7 +564,7 @@ void Bench::recordRegisters(const FFTConfig& fft, TestKind kind, const Call& cal
 }
 
 Call Bench::attempt(GpuCommon shared, const FFTConfig& fft, TestKind kind, u64 exponent, const UseConfig& options,
-                    u32 nBlocks, u32 blockSize) {
+                    u32 nBlocks, u32 blockSize, double heatSec) {
   Call out;
   u32 const cfg = db_.internCfg(builtAs(env_, fft, options));
   Attempt const attempt{
@@ -575,8 +577,8 @@ Call Bench::attempt(GpuCommon shared, const FFTConfig& fft, TestKind kind, u64 e
   }
 
   if (Status const status =
-        caught([&] { out = timeCall(shared, env_, fft, kind, exponent, options, nBlocks, blockSize); }, fft, kind,
-               exponent, options, "timing");
+        caught([&] { out = timeCall(shared, env_, fft, kind, exponent, options, nBlocks, blockSize, heatSec); }, fft,
+               kind, exponent, options, "timing");
       status != Status::Ok) {
     out.status = status;
   }

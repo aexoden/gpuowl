@@ -331,7 +331,8 @@ LoopResult runLoop(Device& device, TuneDB& db, u32 env, const Env& card, const R
       continue;
     }
 
-    auto callOf = [&](const Candidate& c, const UseConfig& options, ItemReport item, u32 blocks = BLOCKS_PER_CALL) {
+    auto callOf = [&](const Candidate& c, const UseConfig& options, ItemReport item, u32 blocks = 0) {
+      if (!blocks) { blocks = settings.callBlocks; }
       item.what = std::string{toString(c.subject.kind)} + ' ' + c.subject.fft.spec();
       item.options = optionsText(options);
       item.exponent = c.timing;
@@ -462,7 +463,7 @@ LoopResult runLoop(Device& device, TuneDB& db, u32 env, const Env& card, const R
     bool const far = settings.shortCalls > 0 && there && meanUs > settings.shortCalls * there->cost();
     callOf(*proposal->candidate, proposal->options,
            {.n = items, .kind = "call", .predicted = proposal->predictedUs, .mean = meanUs, .why = proposal->why},
-           far ? SHORT_BLOCKS : BLOCKS_PER_CALL);
+           far ? std::min(SHORT_BLOCKS, settings.callBlocks) : settings.callBlocks);
   }
   // A run stopped otherwise says so: the report written last, its state replaced.
   if (!out.budgetSpent && !lastReport.empty() && !settings.publishTo.empty()) {
@@ -553,6 +554,7 @@ RunOutcome runTune(GpuCommon shared, const TuneCommand& command) {
 
   Env const card = detectEnv(*shared.context, args);
   Bench bench{shared, db, card};
+  bench.shapeCalls(command.callHeat, command.callBlocks);
   if (!bench.begin(scope->probe, settingsWord(*scope, command), {}, command.tag)) {
     log("tune: could not open a session in %s\n", path.string().c_str());
     return RunOutcome::Failed;
@@ -583,6 +585,7 @@ RunOutcome runTune(GpuCommon shared, const TuneCommand& command) {
                                      .newFloor = command.newFloor,
                                      .shortCalls = command.shortCalls,
                                      .powerHold = command.powerHold,
+                                     .callBlocks = command.callBlocks,
                                      .seed = seed,
                                      .tailQueues = command.tailQueues,
                                      .publishTo = fs::current_path(),

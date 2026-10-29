@@ -321,7 +321,23 @@ std::string formatRow(const PowerRow& row) {
   return "power " + std::to_string(row.sess) + ' ' + row.fft + ' ' + toString(row.kind) + ' ' +
     std::to_string(row.exponent) + ' ' + std::to_string(row.cfg) + ' ' + fixed(row.mjPerIt, 4) + ' ' +
     fixed(row.watts, 1) + ' ' + fixed(row.capW, 1) + ' ' + fixed(row.smMHz, 0) + ' ' +
-    (row.counted ? "counter" : "readings") + ' ' + std::to_string(row.ts);
+    toString(row.source) + ' ' + std::to_string(row.ts);
+}
+
+const char* toString(PowerSource source) {
+  switch (source) {
+  case PowerSource::Counter: return "counter";
+  case PowerSource::Readings: return "readings";
+  case PowerSource::Instant: return "instant";
+  }
+  return "?";
+}
+
+std::optional<PowerSource> parsePowerSource(std::string_view text) {
+  for (PowerSource const s : {PowerSource::Counter, PowerSource::Readings, PowerSource::Instant}) {
+    if (text == toString(s)) { return s; }
+  }
+  return {};
 }
 
 std::string formatRow(const TryRow& row) {
@@ -1013,7 +1029,7 @@ bool TuneDB::parse(std::string_view text, std::string_view name) {
       auto const watts = parsePositive(f[7]);
       auto const cap = parseNonNegative(f[8]);
       auto const sm = parseNonNegative(f[9]);
-      bool const source = f[10] == "counter" || f[10] == "readings";
+      auto const source = parsePowerSource(f[10]);
       auto const ts = parseInt<u64>(f[11]);
       if (!sess || !kind || !exponent || !cfg || !mj || !watts || !cap || !sm || !source || !ts ||
           !add(PowerRow{.sess = *sess,
@@ -1025,7 +1041,7 @@ bool TuneDB::parse(std::string_view text, std::string_view name) {
                         .watts = *watts,
                         .capW = *cap,
                         .smMHz = *sm,
-                        .counted = f[10] == "counter",
+                        .source = *source,
                         .ts = *ts})) {
         refuse("malformed power record");
       }

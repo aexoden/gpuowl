@@ -76,6 +76,18 @@ std::string powerHoldText(const TuneCommand& command) {
   return buf;
 }
 
+// ",heat=<t>s,blocks=<n>" for whichever is not the default: how a call was timed, which its readings depend on.
+std::string callShapeText(const TuneCommand& command) {
+  std::string out;
+  char buf[32];
+  if (command.callHeat != CALL_HEAT_SEC) {
+    snprintf(buf, sizeof(buf), ",heat=%gs", command.callHeat);
+    out += buf;
+  }
+  if (command.callBlocks != BLOCKS_PER_CALL) { out += ",blocks=" + std::to_string(command.callBlocks); }
+  return out;
+}
+
 }  // namespace
 
 const char* toString(TuneVerb verb) {
@@ -219,6 +231,14 @@ TuneCommand parseTuneCommand(std::string_view text) {
                           "randomReach=1.5x@30m, or all"};
       }
       out.explore.reach = *reach;
+    } else if (key == "heat" && out.verb == TuneVerb::Run) {
+      std::optional<double> const heat = value == "0" ? std::optional<double>{0} : parseDuration(value);
+      if (!heat || *heat > 600) { throw std::string{"-tune: heat= takes a span of time up to 10m, such as 3s, or 0"}; }
+      out.callHeat = *heat;
+    } else if (key == "blocks" && out.verb == TuneVerb::Run) {
+      std::optional<u32> const blocks = parseInt<u32>(value);
+      if (!blocks || *blocks < 1 || *blocks > 64) { throw std::string{"-tune: blocks= takes a count from 1 to 64"}; }
+      out.callBlocks = *blocks;
     } else if (key == "powerHold" && out.verb != TuneVerb::Scope) {
       std::optional<double> const hold = value == "off" ? std::optional<double>{0} : parseDouble(value);
       if (!hold || *hold < 0 || *hold > 1) {
@@ -257,7 +277,8 @@ std::string settingsWord(const RunScope& scope, const TuneCommand& command) {
   return "workload=" + std::to_string(scope.lo) + '-' + std::to_string(scope.hi) +
     ",probe=" + std::to_string(scope.probe) + ",probeWeight=" + weight + ",kinds=" + kinds +
     ",pfaShapes=" + toString(scope.pfaShapes) + ",tailQueues=" + toString(command.tailQueues) +
-    ",stop=" + percentText(command.stop) + (command.tag.empty() ? "" : ",tag=" + command.tag) + powerHoldText(command);
+    ",stop=" + percentText(command.stop) + (command.tag.empty() ? "" : ",tag=" + command.tag) +
+    powerHoldText(command) + callShapeText(command);
 }
 
 }  // namespace tune

@@ -192,9 +192,18 @@ MeasureVerdict judge(const MeasureResult& r, const MeasureArgs& args, std::strin
   v.burst = median(r.bursts);
   v.hot = median(r.hot);
   v.sustained = median(r.sustained);
-  if (!r.sustained.empty()) {
-    v.spread = (std::ranges::max(r.sustained) - std::ranges::min(r.sustained)) / v.sustained;
+  // Over the means of SETTLE_MINUTES running minutes where there are three of them: a card at its power limit swings
+  // 0.5-1% from one minute to the next as the limit moves its clocks, which is not wandering.
+  std::vector<double> spans = r.sustained;
+  if (r.sustained.size() >= SETTLE_MINUTES + 2) {
+    spans.clear();
+    for (size_t m = 0; m + SETTLE_MINUTES <= r.sustained.size(); ++m) {
+      double sum = 0;
+      for (size_t i = m; i < m + SETTLE_MINUTES; ++i) { sum += r.sustained[i]; }
+      spans.push_back(sum / double(SETTLE_MINUTES));
+    }
   }
+  if (!spans.empty()) { v.spread = (std::ranges::max(spans) - std::ranges::min(spans)) / v.sustained; }
   v.burstGap = v.sustained / v.burst - 1;
   v.hotGap = v.sustained / v.hot - 1;
   v.heated = median(r.heated);
@@ -217,7 +226,8 @@ MeasureVerdict judge(const MeasureResult& r, const MeasureArgs& args, std::strin
              args.heat, v.heated, pct(v.heatedGap).c_str());
     v.lines.push_back(buf);
   }
-  snprintf(buf, sizeof(buf), "the sustained minutes lie within %s of each other", pct(v.spread).c_str());
+  snprintf(buf, sizeof(buf), "the sustained %s lie within %s of each other",
+           r.sustained.size() >= SETTLE_MINUTES + 2 ? "3-minute means" : "minutes", pct(v.spread).c_str());
   v.lines.push_back(buf);
 
   // Watts times microseconds per iteration is microjoules per iteration.

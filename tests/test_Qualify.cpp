@@ -251,3 +251,20 @@ TEST(a_calls_energy_below_a_sustained_iterations_is_named_a_lagging_sensor) {
   CHECK(has(v.lines, "by the energy counter: 186 W, by the power readings: 78 W"));
   CHECK(!v.heatedHolds && !has(v.lines, "keeping the card loaded"));
 }
+
+TEST(a_card_swinging_at_its_power_limit_does_not_wander) {
+  // The 4070 SUPER's sustained minutes, 0.69% apart; their 3-minute means are 0.08% apart.
+  MeasureResult r;
+  r.bursts = {195.1};
+  r.sustained = {204.474, 205.89, 205.142, 204.702, 205.402};
+  r.hot = {198.2};
+  r.settled = 13;
+  MeasureVerdict const v = judge(r, parseMeasureArgs("2:512:4:512:202"), "nvidia", "04:00.0");
+  CHECK(!v.wandering);
+  CHECK(v.spread < 0.001);
+  CHECK(has(v.lines, "the sustained 3-minute means lie within 0.08%"));
+
+  // The same swing over fewer minutes than the means need is judged minute by minute.
+  r.sustained = {204.474, 205.89, 205.142};
+  CHECK(judge(r, parseMeasureArgs("2:512:4:512:202"), "nvidia", "04:00.0").wandering);
+}

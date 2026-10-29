@@ -76,7 +76,8 @@ Readings::Readings(const TuneDB& db, u32 env, const Env& device, double powerHol
           d.watts += p->second->watts;
           ++d.n;
           // Millijoules per iteration over watts is milliseconds per iteration.
-          if (powerHold > 0 && p->second->capW > 0) {
+          // Only instantaneous readings set a cost: the counter and averaged readings lag behind a call (PowerSource).
+          if (powerHold > 0 && p->second->capW > 0 && p->second->source == PowerSource::Instant) {
             double const bound = p->second->mjPerIt * 1000 / (powerHold * p->second->capW);
             if (bound > cost) {
               cost = bound;

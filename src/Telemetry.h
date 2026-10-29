@@ -104,11 +104,12 @@ private:
 // sustains.
 inline constexpr double HOLD_SHARE = 0.95;
 
-// The tuner's powerHold= unless set: off.  On the 4070 SUPER the energy NVML gives for a call's second of timing read
-// 15% below an iteration's sustained energy, at higher clocks, and swung 16% between identical calls: a slow sensor
-// still carrying the idle before the call.  A cost built on it would charge one call for the call before.  The power
-// is recorded with every call regardless, so the floor can be tried on the readings later.
-inline constexpr double POWER_HOLD = 0;
+// The tuner's powerHold= unless set.  It applies to calls whose power came from instantaneous readings alone
+// (PowerSource::Instant): NVML's energy counter and averaged power lagged behind a call's second of timing, reading a
+// 4070 SUPER's energy 15% low and swinging 16% between identical calls, which would charge one call for the call
+// before.  Taken as their median, instantaneous readings put a call's energy over this share of the limit within 1.1%
+// of what a 4070 SUPER sustained and 1.8% of an A4000's, where the calls' timings read 5.1% and 7.8% fast.
+inline constexpr double POWER_HOLD = HOLD_SHARE;
 
 // What a card drew over a window: from its energy counter where it has one, else from its power readings.
 struct WindowPower {
@@ -117,6 +118,7 @@ struct WindowPower {
   double capW = NAN;   // the power limit in force
   double smMHz = NAN;  // median
   bool counted = false;  // taken from the energy counter
+  bool instant = false;  // taken from instantaneous power readings
 
   double counterWatts = NAN;  // by the energy counter, where it brackets the window
   double readingWatts = NAN;  // by the power readings

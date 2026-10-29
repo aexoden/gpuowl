@@ -380,8 +380,10 @@ named "config.txt" in the prpll run directory.
                                              readings under another tag are kept apart, and so are their lines
                          powerHold=<f>|off   the share of its power limit a card holds under sustained load: a call
                                              costs at least the energy of an iteration over it, which a short call
-                                             at the limit does not show; trust it only where -measure says it
-                                             holds, as power readings can lag behind a call (0.95 is typical) [off]
+                                             at the limit does not show; only where the card gives instantaneous
+                                             power (NVML on recent drivers) [0.95]
+                         heat=<t>            a call's own load before it is timed [1s]
+                         blocks=<n>          timed blocks in a call [4]
                          dashboard=1         a full-screen view of the run
                      Verbs, which open no device: status (where tunedb.txt stands), emit (write the tune files it
                      supports), scope (the exponents a run would tune for).

@@ -108,7 +108,7 @@ struct MeasureVerdict {
   double hotGap = 0;     // the same for the hot bursts
   double heatedGap = 0;  // and for the heated calls
   bool heatedHolds = false;  // the heated calls read within `gap` of sustained
-  double spread = 0;     // (max - min) / median of the sustained minutes
+  double spread = 0;     // (max - min) / median of the sustained minutes, or of their 3-minute means where 5 or more
 
   // What the card drew, where it says: watts and millijoules per iteration in the bursts and sustained, its power
   // limit, and the share of that limit it held for long.

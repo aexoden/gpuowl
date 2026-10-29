@@ -13,8 +13,14 @@
 
 namespace tune {
 
-// Blocks timed per call, after one warm-up block.
+// Blocks timed per call, after one warm-up block; a run's blocks= setting.
 inline constexpr u32 BLOCKS_PER_CALL = 4;
+
+// Seconds a call keeps the device squaring before it starts over and runs those blocks; a run's heat= setting.  Some
+// cards run fast for a moment after the idle that building a Gpu leaves (an RTX 5070 Ti read its first block 1.2-2%
+// low, settling from about 0.8 s); production runs at the clock it settles to.  A card's temperature settles over
+// minutes rather than seconds (3 on a 4070 SUPER, 6-9 on an A4000), which no call is long enough to reach.
+inline constexpr double CALL_HEAT_SEC = 1.0;
 
 // No row is concluded from fewer calls than this.
 inline constexpr u32 MIN_CALLS = 2;

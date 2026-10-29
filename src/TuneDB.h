@@ -187,6 +187,14 @@ struct KresRow {
   u64 ts = 0;
 };
 
+// Where a power row's figures came from: the card's energy counter, its power readings averaged over a second or more,
+// or its instantaneous power readings.  Only the last are trusted to set a cost (Readings): the counter and the
+// averaged readings both lagged behind a call of a second on the cards measured, reading 14% low on an A4000.
+enum class PowerSource : u8 { Counter, Readings, Instant };
+
+[[nodiscard]] const char* toString(PowerSource source);
+[[nodiscard]] std::optional<PowerSource> parsePowerSource(std::string_view text);
+
 // What the card drew over a call's timed blocks, written beside its call record (the same session, configuration and
 // time): the energy an iteration took, the mean power, the limit in force and the clock it ran at.  Where a card holds
 // to its power limit, an iteration costs at least its energy over the power it can hold (Readings).
@@ -200,7 +208,7 @@ struct PowerRow {
   double watts = 0;       // mean over the timed blocks
   double capW = 0;        // the power limit in force; 0 where the card does not say
   double smMHz = 0;       // 0 where the card does not say
-  bool counted = false;   // from the card's energy counter, rather than its power readings
+  PowerSource source = PowerSource::Readings;
   u64 ts = 0;
 };
 

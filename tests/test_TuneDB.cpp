@@ -181,7 +181,7 @@ TEST(db_keeps_what_a_call_drew) {
                       .watts = 210.3,
                       .capW = 250,
                       .smMHz = 1328,
-                      .counted = true,
+                      .source = PowerSource::Counter,
                       .ts = 1001};
   CHECK(f.db.add(drew));
   CHECK(f.db.text().find("power 1 512:15:512:202 ll 67513549 1 168.2500 210.3 250.0 1328 counter 1001\n") !=
@@ -191,7 +191,7 @@ TEST(db_keeps_what_a_call_drew) {
   CHECK(back.parse(f.db.text(), "power"));
   CHECK_EQ(back.powers().size(), size_t{1});
   if (back.powers().empty()) { return; }
-  CHECK(back.powers().front().counted);
+  CHECK(back.powers().front().source == PowerSource::Counter);
   CHECK(std::abs(back.powers().front().mjPerIt - 168.25) < 1e-9);
   CHECK_EQ(back.text(), f.db.text());
 
@@ -199,6 +199,15 @@ TEST(db_keeps_what_a_call_drew) {
   none.watts = 0;
   CHECK(!f.db.add(none));
   CHECK(!back.parse(f.db.text() + "power 1 512:15:512:202 ll 67513549 1 168.25 210.3 250 1328 guessed 1002\n", "bad"));
+
+  PowerRow instant = drew;
+  instant.source = PowerSource::Instant;
+  instant.ts = 1002;
+  CHECK(f.db.add(instant));
+  CHECK(f.db.text().find(" 1328 instant 1002\n") != std::string::npos);
+  TuneDB again;
+  CHECK(again.parse(f.db.text(), "instant"));
+  CHECK(again.powers().size() == 2 && again.powers().back().source == PowerSource::Instant);
 }
 
 TEST(db_names_what_a_process_died_holding) {

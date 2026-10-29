@@ -61,6 +61,7 @@ struct LoopSettings {
   double newFloor = NEW_FLOOR;
   double shortCalls = SHORT_CALLS;  // 0 for none
   double powerHold = POWER_HOLD;    // Readings; 0 leaves every cost as timed
+  u32 callBlocks = BLOCKS_PER_CALL;  // timed blocks in a call (the device's calls are shaped to match)
   u64 seed = 1;
   TailQueues tailQueues = TailQueues::Ntt;
   u32 regretEvery = 32;  // calls between estimates of the regret

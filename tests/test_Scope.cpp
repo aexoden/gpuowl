@@ -153,6 +153,17 @@ TEST(every_setting_is_accepted_where_it_belongs) {
     CHECK(near(parsed(settingsWord(makeScope(held.scope, {}), held).c_str()).powerHold, held.powerHold));
   }
   CHECK(settingsWord(makeScope(parsed("").scope, {}), parsed("")).find("powerHold") == std::string::npos);
+
+  CHECK(near(parsed("").callHeat, CALL_HEAT_SEC) && parsed("").callBlocks == BLOCKS_PER_CALL);
+  CHECK(near(parsed("heat=5s").callHeat, 5) && near(parsed("heat=0").callHeat, 0));
+  CHECK(parsed("blocks=8").callBlocks == 8u);
+  for (const char* bad : {"heat=5", "heat=1h", "blocks=0", "blocks=65", "status,heat=5s", "emit,blocks=8"}) {
+    CHECK(!refusal(bad).empty());
+  }
+  TuneCommand const shaped = parsed("heat=2.5s,blocks=8");
+  TuneCommand const back = parsed(settingsWord(makeScope(shaped.scope, {}), shaped).c_str());
+  CHECK(near(back.callHeat, 2.5) && back.callBlocks == 8u);
+  CHECK(settingsWord(makeScope(parsed("").scope, {}), parsed("")).find("blocks") == std::string::npos);
   // A run records its tag with its settings, which a later status reads back.
   TuneCommand const tagged = parsed("workload=60M-80M,tag=875mhz");
   CHECK_EQ(parsed(settingsWord(makeScope(tagged.scope, {}), tagged).c_str()).tag, std::string{"875mhz"});

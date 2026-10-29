@@ -392,6 +392,7 @@ std::optional<WindowPower> powerOver(std::span<const CardSample> samples, double
   bool const byReadings = std::isnan(out.counterWatts) || (instant && out.readings >= INSTANT_READINGS);
   if (byReadings && std::isnan(out.readingWatts)) { return {}; }
   out.counted = !byReadings;
+  out.instant = byReadings && instant;
   out.watts = byReadings ? out.readingWatts : out.counterWatts;
   out.joules = out.watts * (to - from);
   std::vector<double> caps, clocks;
