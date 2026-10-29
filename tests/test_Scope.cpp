@@ -164,6 +164,10 @@ TEST(every_setting_is_accepted_where_it_belongs) {
   TuneCommand const back = parsed(settingsWord(makeScope(shaped.scope, {}), shaped).c_str());
   CHECK(near(back.callHeat, 2.5) && back.callBlocks == 8u);
   CHECK(settingsWord(makeScope(parsed("").scope, {}), parsed("")).find("blocks") == std::string::npos);
+  CHECK(parsed("").heater && !parsed("heater=off").heater && parsed("heater=on").heater);
+  for (const char* bad : {"heater=0", "heater=yes", "status,heater=off"}) { CHECK(!refusal(bad).empty()); }
+  CHECK(!parsed(settingsWord(makeScope(parsed("heater=off").scope, {}), parsed("heater=off")).c_str()).heater);
+  CHECK(settingsWord(makeScope(parsed("").scope, {}), parsed("")).find("heater") == std::string::npos);
   // A run records its tag with its settings, which a later status reads back.
   TuneCommand const tagged = parsed("workload=60M-80M,tag=875mhz");
   CHECK_EQ(parsed(settingsWord(makeScope(tagged.scope, {}), tagged).c_str()).tag, std::string{"875mhz"});

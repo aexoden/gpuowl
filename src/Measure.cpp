@@ -11,8 +11,11 @@
 #include "Restart.h"
 
 #include <algorithm>
+#include <atomic>
 #include <cinttypes>
+#include <cmath>
 #include <ctime>
+#include <thread>
 #include <utility>
 
 namespace tune {
@@ -88,7 +91,7 @@ Takeover takeOver(const Args& shared) {
 }
 
 Call timeCall(GpuCommon shared, const Env& env, const FFTConfig& fft, TestKind kind, u64 exponent,
-              const UseConfig& options, u32 nBlocks, u32 blockSize, double heatSec) {
+              const UseConfig& options, u32 nBlocks, u32 blockSize, double heatSec, std::unique_ptr<Gpu>* keep) {
   Timer t;
   auto gpu = Gpu::make(exponent, shared, fft, asExtraConf(env, fft, options), false);
   double const buildSec = t.reset();
@@ -103,8 +106,62 @@ Call timeCall(GpuCommon shared, const Env& env, const FFTConfig& fft, TestKind k
       out.kernels.push_back({.key = k.key, .resources = k.res, .plan = registerPlan(k.res, *limits, k.defaultCap)});
     }
   }
+  if (keep) { *keep = std::move(gpu); }
   return out;
 }
+
+// The last call's Gpu, squaring on a thread of its own while the session is idle -- choosing what to measure next,
+// recording what it read -- so the card does not cool between calls.  Idle stood at a quarter to a half of a tuning run's
+// wall time, 5-25 s between calls, and a card that cools between calls reads them faster than production, which never
+// lets it: on a 4070 SUPER, calls with the card kept loaded read 2.5% closer to what it sustained, on an A4000 2.6%.
+// The squaring stops before anything else is built, so two Gpus are never held at once and a build or a fault is the
+// next configuration's alone.
+class Heater {
+public:
+  Heater(std::unique_ptr<Gpu> gpu, TestKind kind, u32 blocks, u32 blockSize) : gpu_{std::move(gpu)} {
+    thread_ = std::thread{[this, kind, blocks, blockSize] {
+      try {
+        while (!stop_) {
+          (void)(kind == TestKind::LL ? gpu_->timeItersLL(blocks, blockSize, CALL_WARMUP_BLOCKS)
+                                      : gpu_->timeIters(blocks, blockSize, CALL_WARMUP_BLOCKS));
+        }
+      } catch (const char* mes) {
+        failed_ = mes;
+      } catch (const std::string& mes) {
+        failed_ = mes;
+      } catch (const std::exception& e) {
+        failed_ = e.what();
+      } catch (...) { failed_ = "an unknown error"; }
+    }};
+  }
+
+  ~Heater() { (void)stop(); }
+
+  Heater(const Heater&) = delete;
+  Heater& operator=(const Heater&) = delete;
+
+  // Stops the squaring, waiting for the chunk under way, and lets the Gpu go.  Why it had stopped already, if it had.
+  std::optional<std::string> stop() {
+    if (!thread_.joinable()) { return {}; }
+    stop_ = true;
+    thread_.join();
+    gpu_.reset();
+    return failed_;
+  }
+
+private:
+  std::unique_ptr<Gpu> gpu_;
+  std::atomic<bool> stop_{false};
+  std::optional<std::string> failed_;  // written by the thread, read once it is joined
+  std::thread thread_;
+};
+
+namespace {
+
+// The squaring a heater does between looks at whether to stop, which is how long it can hold up the next build.
+constexpr double HEATER_CHUNK_SEC = 0.25;
+
+}  // namespace
 
 Call checkedAgainst(u64 reference, Call first, const std::function<Call()>& again) {
   if (!first.ok() || first.res64 == reference) { return first; }
@@ -188,7 +245,30 @@ bool Bench::begin(u64 probe, const std::string& settings, std::string machine, s
 }
 
 void Bench::end() {
+  coolDown();
   if (session_ && !deviceLost_ && db_.attemptOpen(session_)) { (void)db_.add(DoneRow{.sess = session_, .ts = now()}); }
+}
+
+Bench::~Bench() { end(); }
+
+void Bench::coolDown() {
+  if (!heater_) { return; }
+  std::optional<std::string> const failed = heater_->stop();
+  heater_.reset();
+  if (!failed) { return; }
+  Failure const f = classify(*failed);
+  if (f.stop && !f.fatal) {
+    stopped_ = true;  // a stop asked for while it squared
+    return;
+  }
+  log("measure: the card's load between calls stopped: %s\n", failed->c_str());
+  if (f.fatal || !deviceUsable()) {
+    stopped_ = true;
+    deviceLost_ = true;
+    markContextLost("it did not survive the load between calls");
+    log("measure: the device is no longer usable after the load between calls -- stopping.  Nothing is recorded "
+        "against what would have been built next.\n");
+  }
 }
 
 std::string Bench::held(const FFTConfig& fft, TestKind kind, u64 exponent, const UseConfig& options) const {
@@ -566,6 +646,11 @@ void Bench::recordRegisters(const FFTConfig& fft, TestKind kind, const Call& cal
 Call Bench::attempt(GpuCommon shared, const FFTConfig& fft, TestKind kind, u64 exponent, const UseConfig& options,
                     u32 nBlocks, u32 blockSize, double heatSec) {
   Call out;
+  coolDown();
+  if (stopped_) {
+    out.status = Status::Lost;
+    return out;
+  }
   u32 const cfg = db_.internCfg(builtAs(env_, fft, options));
   Attempt const attempt{
     db_, TryRow{.sess = session_, .fft = fft.spec(), .kind = kind, .exponent = exponent, .cfg = cfg, .ts = now()},
@@ -576,11 +661,20 @@ Call Bench::attempt(GpuCommon shared, const FFTConfig& fft, TestKind kind, u64 e
     return out;
   }
 
-  if (Status const status =
-        caught([&] { out = timeCall(shared, env_, fft, kind, exponent, options, nBlocks, blockSize, heatSec); }, fft,
-               kind, exponent, options, "timing");
+  std::unique_ptr<Gpu> gpu;
+  if (Status const status = caught(
+        [&] {
+          out = timeCall(shared, env_, fft, kind, exponent, options, nBlocks, blockSize, heatSec,
+                         heaterOn_ ? &gpu : nullptr);
+        },
+        fft, kind, exponent, options, "timing");
       status != Status::Ok) {
     out.status = status;
+  }
+  if (gpu && out.ok() && !stopped_) {
+    double const chunkIters = HEATER_CHUNK_SEC / (out.mean() * 1e-6);
+    u32 const blocks = u32(std::clamp(std::lround(chunkIters / blockSize), 1L, 1000L));
+    heater_ = std::make_unique<Heater>(std::move(gpu), kind, blocks, blockSize);
   }
   return out;
 }
@@ -622,6 +716,7 @@ std::vector<double> Bench::soak(const std::vector<SoakEntry>& entries, u64 expon
   std::vector<double> out(entries.size(), NAN);
   if (entries.empty() || stopped_) { return out; }
   keepAnchor();
+  coolDown();
   if (stopped_) { return out; }
   u32 const group = db_.nextSoakGroup();
 
@@ -723,6 +818,7 @@ std::vector<double> Bench::soak(const std::vector<SoakEntry>& entries, u64 expon
 
 RoeCheck Bench::roe(const FFTConfig& fft, const UseConfig& options, u64 exponent) {
   RoeCheck out{.exponent = exponent};
+  coolDown();
   if (stopped_) { return out; }
 
   if (std::string const why = held(fft, TestKind::PRP, exponent, options); !why.empty()) {

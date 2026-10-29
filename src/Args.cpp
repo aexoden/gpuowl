@@ -384,6 +384,8 @@ named "config.txt" in the prpll run directory.
                                              power (NVML on recent drivers) [0.95]
                          heat=<t>            a call's own load before it is timed [1s]
                          blocks=<n>          timed blocks in a call [4]
+                         heater=on|off       the last call's configuration goes on squaring while the tuner
+                                             decides what to call next, so the card does not cool between calls [on]
                          soak=<p>%%|0        the share of the tuning time spent soaking finalists: a line's
                                              configuration and its closest rivals run in turns for minutes, so each
                                              reads what the card sustains; none begins before the share pays for it

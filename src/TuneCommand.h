@@ -48,6 +48,7 @@ struct TuneCommand {
   double powerHold = POWER_HOLD;  // Readings; 0 leaves every cost as timed
   double callHeat = CALL_HEAT_SEC;   // Bench::shapeCalls
   u32 callBlocks = BLOCKS_PER_CALL;
+  bool heater = true;                // Bench::shapeCalls: the last call's Gpu squares while the session is idle
   SoakSettings soak{};               // Soak.h
   std::string tag{};       // part of the env: readings under another tag are another env's (DbEnv::tag)
   bool dashboard = false;  // display only: not part of the settings a run records

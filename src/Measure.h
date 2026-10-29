@@ -29,8 +29,11 @@
 #include <vector>
 
 struct IterSamples;  // Gpu.h
+class Gpu;           // Gpu.h
 
 namespace tune {
+
+class Heater;  // Measure.cpp
 
 // A kernel a REG* key limits, as one call built it, with what the occupancy model offers its key on this device.
 struct KernelUse {
@@ -91,9 +94,11 @@ struct Takeover {
 };
 [[nodiscard]] Takeover takeOver(const Args& shared);
 
-// Builds a Gpu for the configuration and times it.  Exceptions from the build or the run propagate.
+// Builds a Gpu for the configuration and times it.  Exceptions from the build or the run propagate.  `keep`: where the
+// Gpu goes once timed, rather than being let go.
 [[nodiscard]] Call timeCall(GpuCommon shared, const Env& env, const FFTConfig& fft, TestKind kind, u64 exponent,
-                            const UseConfig& options, u32 nBlocks, u32 blockSize, double heatSec = CALL_HEAT_SEC);
+                            const UseConfig& options, u32 nBlocks, u32 blockSize, double heatSec = CALL_HEAT_SEC,
+                            std::unique_ptr<Gpu>* keep = nullptr);
 
 // The call to record for an LL reading checked against `reference`.  A fault can flip a bit of any one reading, so one
 // that disagrees is read again: the second is recorded, and as an error only where it disagrees too.
@@ -139,7 +144,7 @@ public:
 
   // Closes an attempt left open, unless the device was lost: then it is what the next process must not build again.
   void end();
-  ~Bench() { end(); }
+  ~Bench();
 
   Bench(const Bench&) = delete;
   Bench& operator=(const Bench&) = delete;
@@ -156,9 +161,11 @@ public:
 
   // The seconds of heat before a call's timed blocks and how many there are, for every call() after; a run's heat= and
   // blocks= settings.  The anchor's calls keep CALL_HEAT_SEC and BLOCKS_PER_CALL, so they compare across sessions.
-  void shapeCalls(double heatSec, u32 blocks) {
+  // `heater`: whether the last call's Gpu goes on squaring while the session is idle (heater=; see Heater).
+  void shapeCalls(double heatSec, u32 blocks, bool heater = true) {
     heatSec_ = heatSec;
     blocks_ = blocks;
+    heaterOn_ = heater;
   }
 
   // One recorded rounding-error reading.
@@ -201,6 +208,11 @@ private:
 
   void recordRegisters(const FFTConfig& fft, TestKind kind, const Call& call, u32 cfg);
 
+  // Lets the card cool: stops the heater and lets its Gpu go, before anything else is built.  A heater that failed for
+  // any reason but a stop leaves the device asked whether it is still usable, so a loss is not pinned on what is built
+  // next.
+  void coolDown();
+
   [[nodiscard]] bool deviceUsable();
   void lost(const FFTConfig& fft, TestKind kind, u64 exponent, const UseConfig& options, const std::string& what,
             const char* during);
@@ -217,6 +229,8 @@ private:
   u32 blockSize_ = 1000;
   double heatSec_ = CALL_HEAT_SEC;
   u32 blocks_ = BLOCKS_PER_CALL;
+  bool heaterOn_ = true;
+  std::unique_ptr<Heater> heater_;
 
   // The card's own readings, for what each call drew; none where the card cannot be read.
   std::unique_ptr<Telemetry> telemetry_;

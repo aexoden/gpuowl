@@ -598,7 +598,7 @@ RunOutcome runTune(GpuCommon shared, const TuneCommand& command) {
 
   Env const card = detectEnv(*shared.context, args);
   Bench bench{shared, db, card};
-  bench.shapeCalls(command.callHeat, command.callBlocks);
+  bench.shapeCalls(command.callHeat, command.callBlocks, command.heater);
   if (!bench.begin(scope->probe, settingsWord(*scope, command), {}, command.tag)) {
     log("tune: could not open a session in %s\n", path.string().c_str());
     return RunOutcome::Failed;
