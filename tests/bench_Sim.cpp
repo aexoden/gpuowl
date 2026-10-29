@@ -4,7 +4,8 @@
 // For each scenario and seed it runs the loop for a span of simulated tuning time, in chunks, and prints how far what
 // it publishes is from the optimum after each chunk.  No GPU; hours of CPU for a full run, so not part of `make check`.
 //
-//   prpll-sim [scenario|all] [seeds=N] [first=S] [minutes=M] [lanes=...] [db=<prefix>: keep each run's database]
+//   prpll-sim [scenario|all] [seeds=N] [first=S] [minutes=M] [lanes=...] [search=staged] [margin=P%] [restarts=P%]
+//             [db=<prefix>: keep each run's database]
 //
 // Output lines, one per chunk: "<scenario> <seed> <minutes> <gap>", the gap being T over the optimum's T, less one;
 // then a summary per scenario.
@@ -108,7 +109,14 @@ struct Point {
   double gap;
 };
 
-std::vector<Point> run(const Landscape& l, u64 seed, double minutes, const Timetable& lanes, const std::string& keep) {
+// How a run chooses what to measure.
+struct Policy {
+  Timetable lanes{};
+  Search search = Search::Model;
+  StagedSettings staged{};
+};
+
+std::vector<Point> run(const Landscape& l, u64 seed, double minutes, const Policy& policy, const std::string& keep) {
   RunScope const scope =
     makeScope({.lo = 67'400'000, .hi = 67'600'000, .probe = 67'500'000, .kinds = {TestKind::PRP}}, {});
   std::vector<std::vector<Candidate>> const candidates{candidatesOf(card(), scope, TestKind::PRP)};
@@ -122,7 +130,13 @@ std::vector<Point> run(const Landscape& l, u64 seed, double minutes, const Timet
   std::vector<Point> out;
   for (u32 chunk = 0; laneTime(db, env).total() < minutes * 60; ++chunk) {
     (void)runLoop(device, db, env, card(), scope,
-                  {.stop = 0, .lanes = lanes, .seed = seed * 1000 + chunk, .regretEvery = 1000, .maxItems = 20});
+                  {.stop = 0,
+                   .lanes = policy.lanes,
+                   .search = policy.search,
+                   .staged = policy.staged,
+                   .seed = seed * 1000 + chunk,
+                   .regretEvery = 1000,
+                   .maxItems = 20});
     Readings const readings{db, env, card()};
     Publication const pub = publish(scope, candidates, readings);
     out.push_back({.minutes = laneTime(db, env).total() / 60, .gap = trueT(l, card(), scope, pub) / optimum - 1});
@@ -147,7 +161,7 @@ int main(int argc, char** argv) {
   u64 seeds = 5;
   u64 first = 1;
   double minutes = 60;
-  Timetable lanes{};
+  Policy policy;
   std::string keep;
   for (int i = 1; i < argc; ++i) {
     std::string_view const a = argv[i];
@@ -165,7 +179,13 @@ int main(int argc, char** argv) {
         std::fprintf(stderr, "bad lanes=\n");
         return 2;
       }
-      lanes = *t;
+      policy.lanes = *t;
+    } else if (a == "search=staged") {
+      policy.search = Search::Staged;
+    } else if (a.starts_with("margin=") && a.ends_with('%')) {
+      policy.staged.margin = std::stod(std::string{a.substr(7, a.size() - 8)}) / 100;
+    } else if (a.starts_with("restarts=") && a.ends_with('%')) {
+      policy.staged.restarts = std::stod(std::string{a.substr(9, a.size() - 10)}) / 100;
     } else {
       which = a;
     }
@@ -192,7 +212,7 @@ int main(int argc, char** argv) {
     std::vector<double> atEnd;
     std::vector<double> toTarget;
     for (u64 seed = first; seed < first + seeds; ++seed) {
-      std::vector<Point> const points = run(l, seed, minutes, lanes, keep);
+      std::vector<Point> const points = run(l, seed, minutes, policy, keep);
       double g30 = points.front().gap;
       double reached = -1;
       for (const Point& p : points) {
