@@ -100,13 +100,17 @@ struct CallRow {
   double sd = 0;     // the kept blocks' standard deviation
   u32 blocks = 0;    // kept
   u32 dropped = 0;   // spikes left out
-  double drift = 1;  // the anchor's ratio when the call was taken: mean / drift is comparable across sessions
+  double drift = 1;  // the anchor's ratio when the call was taken, kept as a record of the card's state
   double buildSec = 0;
   double timedSec = 0;
   u64 ts = 0;
 
   [[nodiscard]] bool ok() const { return status == Status::Ok && blocks > 0; }
-  [[nodiscard]] double cost() const { return mean / drift; }
+  // What the call read, as measured.  Not divided by `drift`: one anchor reading carries a scatter of its own as large as
+  // the drift it would correct, and over the calls of one configuration the division doubled how far two halves of
+  // them disagreed, on every card (4070 SUPER 0.21% -> 0.44%, 5060 0.08% -> 0.17%, A4000 0.14% -> 0.24%, P100 0.12% ->
+  // 0.20%, at the median).  A card's moves differ between configurations besides, so no one ratio corrects them.
+  [[nodiscard]] double cost() const { return mean; }
 };
 
 // A configuration about to be built and run, closed by the next record of its session; one left open names what a

@@ -37,7 +37,7 @@ struct Reading {
   u64 exponent = 0;     // where it was last called
 
   u32 calls = 0;        // that read a cost
-  double mean = 0;      // of the calls' costs (drift-corrected, and as the power limit holds them), us/it
+  double mean = 0;      // of the calls' costs (as the power limit holds them), us/it
   double se = 0;        // standard error of that mean, between calls; a floor where there is one call
   bool failed = false;  // a call computed wrongly, failed to build, or the device refused it
 

@@ -1,7 +1,8 @@
 // Copyright (C) Jason Lynch
 
 // The drift anchor: one designated configuration, re-timed through a session, whose readings say how much the device
-// itself has moved since the row a database is about to be compared with was taken.
+// itself has moved since the env's first reading of it.  A monitor, not a correction: a session pauses while it reads
+// past the alarm, and each call records the ratio in force, but no cost is divided by it (CallRow::cost).
 
 #pragma once
 
@@ -25,8 +26,7 @@ inline constexpr double ANCHOR_EVERY_SEC = 300;
 // the way any host-side change to how a call is timed does.
 inline constexpr u32 ANCHOR_BLOCK_SIZE = 1000;
 
-// Movement of the anchor, as a fraction of its first reading, that is reported and that is treated as more than the
-// correction can be trusted to absorb.
+// Movement of the anchor, as a fraction of its first reading, that is reported and that pauses a session.
 inline constexpr double DRIFT_WARN = 0.02;
 inline constexpr double DRIFT_ALARM = 0.10;
 

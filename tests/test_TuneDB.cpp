@@ -110,7 +110,7 @@ TEST(db_round_trips_every_record_in_order) {
   CHECK_EQ(back.calls().size(), size_t{1});
   CHECK(back.calls()[0].kind == TestKind::LL);
   CHECK(back.calls()[0].mean == 812.5);
-  CHECK(back.calls()[0].cost() == 812.5 / 1.0125);
+  CHECK(back.calls()[0].cost() == 812.5);  // as measured: the drift is a record, not a divisor
   CHECK_EQ(back.roes().size(), size_t{1});
   CHECK(back.regs()[0].plan == (RegisterPlan{.k0 = 2, .occupancies = {{2, 128}, {3, 80}}, .lift = true}));
   CHECK_EQ(back.refs()[0].res64, 0x4eeadb0011223344ull);
