@@ -116,9 +116,16 @@ Call timeCall(GpuCommon shared, const Env& env, const FFTConfig& fft, TestKind k
 // lets it: on a 4070 SUPER, calls with the card kept loaded read 2.5% closer to what it sustained, on an A4000 2.6%.
 // The squaring stops before anything else is built, so two Gpus are never held at once and a build or a fault is the
 // next configuration's alone.
+//
+// What it leaves idle is the next configuration's first run, where its kernels compile: 2-3 s for one not read before.
+// Kept squaring through that too, the card idled in 1.5-5% of a run rather than 34-40%, but a call's build took 9-16 s
+// rather than 3, the other Gpu holding up every step of it, and a run made half the calls.
 class Heater {
 public:
-  Heater(std::unique_ptr<Gpu> gpu, TestKind kind, u32 blocks, u32 blockSize) : gpu_{std::move(gpu)} {
+  Heater(std::unique_ptr<Gpu> gpu, TestKind kind, u32 blocks, u32 blockSize, const std::string& what)
+    : gpu_{std::move(gpu)}, what_{"the load between calls, on " + what} {
+    // Named as an attempt is, so a fault while it alone runs restarts the process rather than ending it (GpuFault).
+    (void)gpufault::attempting(what_);
     thread_ = std::thread{[this, kind, blocks, blockSize] {
       try {
         while (!stop_) {
@@ -146,11 +153,13 @@ public:
     stop_ = true;
     thread_.join();
     gpu_.reset();
+    (void)gpufault::attempting({});
     return failed_;
   }
 
 private:
   std::unique_ptr<Gpu> gpu_;
+  std::string what_;
   std::atomic<bool> stop_{false};
   std::optional<std::string> failed_;  // written by the thread, read once it is joined
   std::thread thread_;
@@ -651,30 +660,34 @@ Call Bench::attempt(GpuCommon shared, const FFTConfig& fft, TestKind kind, u64 e
     out.status = Status::Lost;
     return out;
   }
-  u32 const cfg = db_.internCfg(builtAs(env_, fft, options));
-  Attempt const attempt{
-    db_, TryRow{.sess = session_, .fft = fft.spec(), .kind = kind, .exponent = exponent, .cfg = cfg, .ts = now()},
-    attemptText(fft, kind, exponent, options)};
-  if (!cfg || !attempt.declared()) {
-    cannotDeclare(fft, options);
-    out.status = Status::Lost;
-    return out;
-  }
-
   std::unique_ptr<Gpu> gpu;
-  if (Status const status = caught(
-        [&] {
-          out = timeCall(shared, env_, fft, kind, exponent, options, nBlocks, blockSize, heatSec,
-                         heaterOn_ ? &gpu : nullptr);
-        },
-        fft, kind, exponent, options, "timing");
-      status != Status::Ok) {
-    out.status = status;
+  {
+    u32 const cfg = db_.internCfg(builtAs(env_, fft, options));
+    Attempt const attempt{
+      db_, TryRow{.sess = session_, .fft = fft.spec(), .kind = kind, .exponent = exponent, .cfg = cfg, .ts = now()},
+      attemptText(fft, kind, exponent, options)};
+    if (!cfg || !attempt.declared()) {
+      cannotDeclare(fft, options);
+      out.status = Status::Lost;
+      return out;
+    }
+
+    if (Status const status = caught(
+          [&] {
+            out = timeCall(shared, env_, fft, kind, exponent, options, nBlocks, blockSize, heatSec,
+                           heaterOn_ ? &gpu : nullptr);
+          },
+          fft, kind, exponent, options, "timing");
+        status != Status::Ok) {
+      out.status = status;
+    }
   }
+  // Once the attempt has put back what it found, so the heater's name for what runs is the one left standing.
   if (gpu && out.ok() && !stopped_) {
     double const chunkIters = HEATER_CHUNK_SEC / (out.mean() * 1e-6);
     u32 const blocks = u32(std::clamp(std::lround(chunkIters / blockSize), 1L, 1000L));
-    heater_ = std::make_unique<Heater>(std::move(gpu), kind, blocks, blockSize);
+    heater_ =
+      std::make_unique<Heater>(std::move(gpu), kind, blocks, blockSize, attemptText(fft, kind, exponent, options));
   }
   return out;
 }
