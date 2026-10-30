@@ -229,7 +229,7 @@ int main(int argc, char **argv) {
     // -tune's verbs that read the files alone are answered before a device is opened, so they work without one.
     std::optional<tune::TuneCommand> const tuneCommand =
       args.doTuneCommand ? tune::parseTuneCommand(args.tuneCommand) : std::optional<tune::TuneCommand>{};
-    if (tuneCommand && tuneCommand->verb != tune::TuneVerb::Run) {
+    if (tuneCommand && tuneCommand->verb != tune::TuneVerb::Run && tuneCommand->verb != tune::TuneVerb::Accuracy) {
       exitCode = tune::runOffline(*tuneCommand, args) ? EXIT_OK : EXIT_FAILED;
       log("Bye\n");
       return exitCode;

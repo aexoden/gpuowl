@@ -30,6 +30,7 @@ enum class TuneVerb : u8 {
   Emit,    // publish the tune files the database supports, with no device
   Scope,   // the range, the probe and the grid a run would work within, with no device
   Explain,  // why an FFT, or one option set on it, is or is not published, with no device
+  Accuracy,  // on the device: which -use values change the rounding (Accuracy.h)
 };
 
 [[nodiscard]] const char* toString(TuneVerb verb);
@@ -58,6 +59,8 @@ struct TuneCommand {
   StagedSettings staged{};           // Staged.h
   ContestSettings contest{};         // Contenders.h: the contender table a status and the report show
   ExplainQuery explain{};            // -tune explain: its fft= and KEY=VALUE options
+  std::string accuracyFft{};         // -tune accuracy: the FFT to sweep, where fft= names one
+  std::vector<Group> accuracyGroups{};  // -tune accuracy: the option groups to sweep, where groups= names them
   std::string tag{};       // part of the env: readings under another tag are another env's (DbEnv::tag)
   bool dashboard = false;  // display only: not part of the settings a run records
   u64 seed = 0;            // the draws' seed; 0 for one from the clock

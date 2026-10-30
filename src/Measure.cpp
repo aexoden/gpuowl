@@ -214,6 +214,7 @@ RoeCheck roeCheck(GpuCommon shared, const Env& env, const FFTConfig& fft, const 
   out.z = roeSq.z();
   out.n = roeSq.N;
   out.maxRoe = roeSq.max;
+  out.fingerprint = roeSq.fingerprint;
   out.ran = gpu->args.flags;
   return out;
 }
@@ -995,7 +996,8 @@ RoeCheck Bench::roe(const FFTConfig& fft, const UseConfig& options, u64 exponent
                          .z = out.z,
                          .n = out.n,
                          .maxRoe = out.maxRoe,
-                         .ts = now()});
+                         .ts = now(),
+                         .fp = out.fingerprint});
   }
   return out;
 }

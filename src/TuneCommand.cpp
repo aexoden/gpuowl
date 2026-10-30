@@ -112,6 +112,7 @@ const char* toString(TuneVerb verb) {
   case TuneVerb::Emit: return "emit";
   case TuneVerb::Scope: return "scope";
   case TuneVerb::Explain: return "explain";
+  case TuneVerb::Accuracy: return "accuracy";
   }
   return "?";
 }
@@ -136,7 +137,8 @@ TuneCommand parseTuneCommand(std::string_view text) {
   TuneCommand out;
   std::vector<std::string_view> tokens = text.empty() ? std::vector<std::string_view>{} : splitOn(text, ',');
   if (!tokens.empty()) {
-    for (TuneVerb const verb : {TuneVerb::Status, TuneVerb::Emit, TuneVerb::Scope, TuneVerb::Explain}) {
+    for (TuneVerb const verb :
+         {TuneVerb::Status, TuneVerb::Emit, TuneVerb::Scope, TuneVerb::Explain, TuneVerb::Accuracy}) {
       if (tokens.front() == toString(verb)) {
         out.verb = verb;
         tokens.erase(tokens.begin());
@@ -162,6 +164,22 @@ TuneCommand parseTuneCommand(std::string_view text) {
         throw std::string{"-tune explain: fft= takes an FFT spec, such as fft=512:15:256:001, or its shape alone"};
       }
       out.explain.fft = value;
+    } else if (out.verb == TuneVerb::Accuracy && key == "fft") {
+      if (!std::ranges::all_of(value, [](char c) { return std::isalnum(u8(c)) || c == ':'; }) ||
+          !parseFft(std::string{value})) {
+        throw std::string{"-tune accuracy: fft= takes an FFT spec, such as fft=1K:13:256:202"};
+      }
+      out.accuracyFft = value;
+    } else if (out.verb == TuneVerb::Accuracy && key == "groups") {
+      for (std::string_view const name : splitOn(value, '+')) {
+        auto const g = std::ranges::find_if(allGroups(), [&](Group group) { return name == toString(group); });
+        if (g == allGroups().end()) {
+          std::string names;
+          for (Group group : allGroups()) { names += (names.empty() ? "" : ", ") + std::string{toString(group)}; }
+          throw "-tune accuracy: groups= takes option groups joined by +, of " + names;
+        }
+        out.accuracyGroups.push_back(*g);
+      }
     } else if (out.verb == TuneVerb::Explain && std::isupper(u8(key.front()))) {
       // A -use option: tune settings are lowercase, option keys upper.
       if (!out.explain.options) { out.explain.options.emplace(); }

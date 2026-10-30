@@ -3,6 +3,7 @@
 #include "Tuner.h"
 
 #include "Args.h"
+#include "Accuracy.h"
 #include "Audit.h"
 #include "BuildId.h"
 #include "Coverage.h"
@@ -674,6 +675,8 @@ std::string headerFor(const RunScope& scope, const TuneCommand& command) {
     "settings were found to be accurate";
 }
 
+}  // namespace
+
 void reportScope(const RunScope& scope) {
   log("tune: workload %" PRIu64 "-%" PRIu64 " (%s)\n", scope.lo, scope.hi, scope.rangeSource.c_str());
   log("tune: probe %" PRIu64 " (%s), carrying %.0f%% of the weight\n", scope.probe, scope.probeSource.c_str(),
@@ -691,9 +694,8 @@ std::optional<RunScope> scopeFor(const TuneCommand& command, const Args& args) {
   return {};
 }
 
-}  // namespace
-
 RunOutcome runTune(GpuCommon shared, const TuneCommand& command) {
+  if (command.verb == TuneVerb::Accuracy) { return runAccuracy(shared, command); }
   const Args& args = *shared.args;
   Takeover const takeover = takeOver(args);
   if (!takeover.setAside.empty()) {

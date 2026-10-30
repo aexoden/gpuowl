@@ -117,6 +117,7 @@ struct RoeCheck {
   double z = 0;  // the Gumbel z of the largest rounding error against 0.5
   u32 n = 0;     // rounding errors behind z
   double maxRoe = 0;
+  u64 fingerprint = 0;  // of the rounding errors themselves (RoeInfo): equal only where the arithmetic is
   u64 exponent = 0;
   UseConfig ran{};
   Status status = Status::Ok;  // why there is no reading, where there is none

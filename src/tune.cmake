@@ -40,4 +40,5 @@ target_sources(prpll PRIVATE
   Contenders.cpp
   Feedback.cpp
   Failures.cpp
+  Accuracy.cpp
   )

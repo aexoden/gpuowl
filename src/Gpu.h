@@ -95,6 +95,8 @@ public:
   u32 N{};
   double max{}, mean{}, sd{};
   double gumbelMiu{}, gumbelBeta{};
+  // A hash of the samples themselves, so that two readings can be told apart exactly rather than by their statistics.
+  u64 fingerprint{};
 };
 
 struct Weights {

@@ -40,7 +40,8 @@ TUNE_SRCS = \
   Staged.cpp \
   Contenders.cpp \
   Feedback.cpp \
-  Failures.cpp
+  Failures.cpp \
+  Accuracy.cpp
 
 TESTSRCS = \
   test_main.cpp \
@@ -72,6 +73,7 @@ TESTSRCS = \
   test_Duel.cpp \
   test_Feedback.cpp \
   test_Failures.cpp \
+  test_Accuracy.cpp \
   test_Tuner.cpp \
   test_Dashboard.cpp
 

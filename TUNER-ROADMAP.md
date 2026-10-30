@@ -77,11 +77,16 @@ At each sync, drop model2's copy of any fix upstream has merged and take upstrea
       set at default rounding, read at the same exponent, or the gate's bisection cuts its reach. It is never trusted
       where its reference is unsafe or hardly rounds while it rounds visibly. One verdict (`Gate.h` `verdictFor`)
       serves publishing, the duels and the contender table.
-- [ ] Port `-tune accuracy` and the `roeStat` sample fingerprint; re-measure the option table's accuracy flags on
-      current kernels (upstream `62117cea` changed FP32 rounding).
+- [x] Port `-tune accuracy` and the `roeStat` sample fingerprint: `roe` rows carry the samples' fingerprint (an
+      eleventh field; older rows still read), and `-tune accuracy[,fft=<spec>][,groups=<Group>+...]` reads every
+      value of every key against the set it moved from, bit for bit, and says where the option table has a key
+      otherwise. Register limits are not swept. Resumes from what `tunedb.txt` holds.
+- [ ] Run `-tune accuracy` on a card of each kind available (it reads one FFT of each type in scope, or the one
+      `fft=` names), and correct the option table's `accuracyImpact`, `defaultRounding` and `roundsAs` from what it
+      reports; upstream `62117cea` changed FP32 rounding since the flags were measured.
 - [ ] Share rounding readings between sets that round alike (tune `roundingOf`). Decided: only after the rounding
-      flags are re-measured on current kernels with `-tune accuracy` (next item); until then every set is read on
-      its own.
+      flags are re-measured on current kernels with `-tune accuracy` (below); until then every set is read on its
+      own.
 - [ ] Publish an exclusion list of configurations that computed wrong answers, and have production honour it.
 - [ ] Re-gate lines carried from an earlier build when the build changed rounding.
 - [x] Hold a configuration that took the card down at every exponent and test kind, and withdraw it from publication

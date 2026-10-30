@@ -42,5 +42,6 @@
     <ClCompile Include=".\src\Contenders.cpp" />
     <ClCompile Include=".\src\Feedback.cpp" />
     <ClCompile Include=".\src\Failures.cpp" />
+    <ClCompile Include=".\src\Accuracy.cpp" />
   </ItemGroup>
 </Project>

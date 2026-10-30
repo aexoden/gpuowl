@@ -141,6 +141,7 @@ struct RoeRow {
   u32 n = 0;
   double maxRoe = 0;
   u64 ts = 0;
+  u64 fp = 0;  // the samples' fingerprint (RoeInfo), so that two readings compare exactly; 0 where not recorded
 };
 
 // One timing of the env's drift anchor.

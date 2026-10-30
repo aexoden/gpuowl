@@ -111,7 +111,14 @@ LoopResult runLoop(Device& device, TuneDB& db, u32 env, const Env& card, const R
 
 enum class RunOutcome : u8 { Ok, Failed, DeviceLost };
 
-// -tune: the run on the open device, in the current directory.
+// The scope a command works within, from its settings and the worktodo files of the current directory; nothing, having
+// said why, where its settings cannot make one.
+[[nodiscard]] std::optional<RunScope> scopeFor(const TuneCommand& command, const Args& args);
+
+// The log's account of a scope: the workload, the probe and the grids.
+void reportScope(const RunScope& scope);
+
+// -tune: the run on the open device, in the current directory; -tune accuracy too (Accuracy.h).
 [[nodiscard]] RunOutcome runTune(GpuCommon shared, const TuneCommand& command);
 
 // -tune status / emit / scope: no device.

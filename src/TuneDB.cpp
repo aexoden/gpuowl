@@ -381,9 +381,15 @@ std::string formatRow(const TryRow& row) {
 std::string formatRow(const DoneRow& row) { return "done " + std::to_string(row.sess) + ' ' + std::to_string(row.ts); }
 
 std::string formatRow(const RoeRow& row) {
-  return "roe " + std::to_string(row.sess) + ' ' + row.fft + ' ' + std::to_string(row.exponent) + ' ' +
+  std::string out = "roe " + std::to_string(row.sess) + ' ' + row.fft + ' ' + std::to_string(row.exponent) + ' ' +
     std::to_string(row.cfg) + ' ' + (row.checkOk ? "ok" : "fail") + ' ' + fixed(row.z, 2) + ' ' +
     std::to_string(row.n) + ' ' + fixed(row.maxRoe, 6) + ' ' + std::to_string(row.ts);
+  if (row.fp) {
+    char fp[24];
+    snprintf(fp, sizeof(fp), " %016" PRIx64, row.fp);
+    out += fp;
+  }
+  return out;
 }
 
 std::string formatRow(const AnchorRow& row) {
@@ -816,7 +822,7 @@ struct Shape {
   size_t fields;
 };
 
-constexpr Shape SHAPES[] = {{"cfg", 3},    {"call", 15}, {"try", 7},   {"done", 3},  {"roe", 10},
+constexpr Shape SHAPES[] = {{"cfg", 3},    {"call", 15}, {"try", 7},   {"done", 3},  {"roe", 10},  {"roe", 11},
                             {"anchor", 8}, {"regs", 12}, {"ref", 7},   {"item", 10}, {"kres", 11},
                             {"kres", 13},  {"pred", 5},  {"audit", 6}, {"spill", 7}, {"power", 12}, {"soak", 14},
                             {"duel", 16}};
@@ -1025,7 +1031,7 @@ bool TuneDB::parse(std::string_view text, std::string_view name) {
       auto const sess = parseInt<u32>(f[1]);
       auto const ts = parseInt<u64>(f[2]);
       if (!sess || !ts || !add(DoneRow{.sess = *sess, .ts = *ts})) { refuse("malformed done record"); }
-    } else if (tag == "roe" && f.size() == 10) {
+    } else if (tag == "roe" && (f.size() == 10 || f.size() == 11)) {
       auto const sess = parseInt<u32>(f[1]);
       auto const exponent = parseInt<u64>(f[3]);
       auto const cfg = parseInt<u32>(f[4]);
@@ -1034,7 +1040,9 @@ bool TuneDB::parse(std::string_view text, std::string_view name) {
       auto const n = parseInt<u32>(f[7]);
       auto const maxRoe = parseNonNegative(f[8]);
       auto const ts = parseInt<u64>(f[9]);
-      if (!sess || !exponent || !cfg || !checkKnown || !z || !n || !maxRoe || !ts ||
+      // The samples' fingerprint, which builds before this one did not write.
+      std::optional<u64> const fp = f.size() == 11 ? parseInt<u64>(f[10], 16) : std::optional<u64>{0};
+      if (!sess || !exponent || !cfg || !checkKnown || !z || !n || !maxRoe || !ts || !fp ||
           !add(RoeRow{.sess = *sess,
                       .fft = f[2],
                       .exponent = *exponent,
@@ -1043,7 +1051,8 @@ bool TuneDB::parse(std::string_view text, std::string_view name) {
                       .z = *z,
                       .n = *n,
                       .maxRoe = *maxRoe,
-                      .ts = *ts})) {
+                      .ts = *ts,
+                      .fp = *fp})) {
         refuse("malformed roe record");
       }
     } else if (tag == "anchor" && f.size() == 8) {
