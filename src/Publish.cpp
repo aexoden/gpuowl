@@ -60,19 +60,35 @@ struct FftFront {
 
 // One FFT's frontier in one regime: each set, cheapest first, that reaches further than every cheaper one.  Where the
 // run holds the subject (`c`), a set whose gate the run owes waits for it; elsewhere nothing will settle that gate, so
-// the set reaches as far as its highest safe reading.
-FftFront frontOf(const Subject& subject, const Candidate* c, const Readings& readings) {
+// the set reaches as far as its highest safe reading.  Where `why` is given, it is told what became of every reading,
+// the lines' as Published.
+FftFront frontOf(const Subject& subject, const Candidate* c, const Readings& readings,
+                 std::vector<StandingOf>* why = nullptr) {
   FftFront out;
-  std::optional<Interval> const span = spanOf(subject);
-  if (!span) { return out; }
-
   std::vector<const Reading*> rs = readings.of(subject);
-  std::erase_if(rs, [](const Reading* r) { return r->failed || r->calls < MIN_CALLS; });
   std::ranges::sort(rs, {}, &Reading::pessimistic);
+  std::optional<Interval> const span = spanOf(subject);
+  if (why) {
+    for (const Reading* r : rs) {
+      if (!span) {
+        why->push_back({.reading = r, .standing = Standing::NoRegime});
+      } else if (r->failed) {
+        why->push_back({.reading = r, .standing = Standing::Failed});
+      } else if (r->calls < MIN_CALLS) {
+        why->push_back({.reading = r, .standing = Standing::ShortOfCalls});
+      }
+    }
+  }
+  if (!span) { return out; }
+  std::erase_if(rs, [](const Reading* r) { return r->failed || r->calls < MIN_CALLS; });
 
   u64 reached = 0;
   for (const Reading* r : rs) {
-    if (reached >= span->hi) { break; }
+    if (reached >= span->hi) {
+      if (!why) { break; }
+      why->push_back({.reading = r, .standing = Standing::Outreached, .by = out.lines.back().reading});
+      continue;
+    }
     std::vector<RoeReading> const roes = readings.roes(subject.fft, r->options);
     if (c) {
       Verdict const v = verdictOf(subject.fft, roes, c->points.front().exponent);
@@ -80,17 +96,31 @@ FftFront frontOf(const Subject& subject, const Candidate* c, const Readings& rea
         if (!out.owed) {
           out.owed = Line{.subject = subject, .candidate = c, .reading = r, .accuracy = v, .interval = *span};
         }
+        if (why) { why->push_back({.reading = r, .standing = Standing::GateOwed, .at = v.next}); }
         continue;
       }
     }
     Verdict const v = verdictOf(subject.fft, roes, span->lo);
     u64 const hi = std::min(v.reach, span->hi);
-    if (v.state == Accuracy::Rejected || hi < span->lo || hi <= reached) { continue; }
+    if (v.state == Accuracy::Rejected || hi < span->lo || hi <= reached) {
+      if (why) {
+        Standing const s = v.state == Accuracy::Rejected ? Standing::Rejected
+          : hi < span->lo                                ? Standing::ShortReach
+                                                         : Standing::Outreached;
+        why->push_back({.reading = r,
+                        .standing = s,
+                        .at = s == Standing::ShortReach ? v.reach : 0,
+                        .reach = hi,
+                        .by = s == Standing::Outreached ? out.lines.back().reading : nullptr});
+      }
+      continue;
+    }
     out.lines.push_back({.subject = subject,
                          .candidate = c,
                          .reading = r,
                          .accuracy = v,
                          .interval = {.lo = span->lo, .hi = hi, .regime = subject.regime}});
+    if (why) { why->push_back({.reading = r, .standing = Standing::Published, .reach = hi}); }
     reached = hi;
   }
   return out;
@@ -154,6 +184,63 @@ bool settled(const Readings& readings, const Line& line) {
 }
 
 }  // namespace
+
+const char* toString(Standing standing) {
+  switch (standing) {
+  case Standing::Published: return "published";
+  case Standing::Failed: return "failed";
+  case Standing::ShortOfCalls: return "short of calls";
+  case Standing::GateOwed: return "accuracy owed";
+  case Standing::Rejected: return "rejected";
+  case Standing::ShortReach: return "short reach";
+  case Standing::Outreached: return "outreached";
+  case Standing::Undercut: return "undercut";
+  case Standing::NoRegime: return "no such regime";
+  }
+  return "?";
+}
+
+const Candidate* heldCandidate(const std::vector<Candidate>& candidates, const Subject& subject) {
+  const Candidate* out = nullptr;
+  for (const Candidate& c : candidates) {
+    if (placeOf(c.subject) == placeOf(subject) && c.subject.kind == subject.kind &&
+        (!out || c.weight() > out->weight())) {
+      out = &c;
+    }
+  }
+  return out;
+}
+
+std::vector<StandingOf> standingsOf(const KindPublication& pub, const Subject& subject, const Candidate* held,
+                                    const Readings& readings) {
+  std::vector<StandingOf> out;
+  (void)frontOf(subject, held, readings, &out);
+  for (StandingOf& s : out) {
+    if (s.standing != Standing::Published) { continue; }
+    auto const own = std::ranges::find(pub.written, s.reading, &Line::reading);
+    if (own != pub.written.end()) {
+      s.line = &*own;
+      continue;
+    }
+    // Cheaper lines hold every exponent it reaches: say which one runs where the run would weigh it most, or at its
+    // reach where the run holds none of it.
+    s.standing = Standing::Undercut;
+    s.at = s.reach;
+    if (held) {
+      double heaviest = -1;
+      for (const GridPoint& p : held->points) {
+        if (p.exponent <= s.reach && p.weight > heaviest) {
+          heaviest = p.weight;
+          s.at = p.exponent;
+        }
+      }
+    }
+    auto const runs = std::ranges::find_if(pub.written, [&](const Line& line) { return line.holds(s.at); });
+    s.line = runs == pub.written.end() ? nullptr : &*runs;
+  }
+  std::ranges::stable_sort(out, {}, [](const StandingOf& s) { return s.reading->pessimistic(); });
+  return out;
+}
 
 const Line* KindPublication::at(u64 E) const {
   for (const Line& line : lines) {

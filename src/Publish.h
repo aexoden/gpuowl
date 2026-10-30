@@ -79,6 +79,39 @@ struct Publication {
   [[nodiscard]] double coverage() const;
 };
 
+// Why a configuration holds a line, or does not, as the publisher sees it.
+enum class Standing : u8 {
+  Published,     // it holds a line of the tune file
+  Failed,        // a call computed wrongly, failed to build, or the device refused it
+  ShortOfCalls,  // read fewer than MIN_CALLS times
+  GateOwed,      // its accuracy reading is owed, at `at`
+  Rejected,      // unsafe throughout the regime
+  ShortReach,    // its reach, `at`, falls short of the regime's lowest exponent
+  Outreached,    // `by`, a cheaper set of the same FFT, reaches as far
+  Undercut,      // cheaper lines hold every exponent it reaches: at `at`, production runs `line`
+  NoRegime,      // the FFT never runs in the regime it was read in
+};
+
+[[nodiscard]] const char* toString(Standing standing);
+
+struct StandingOf {
+  const Reading* reading = nullptr;
+  Standing standing = Standing::Published;
+  u64 at = 0;
+  u64 reach = 0;                 // how far it would be published, where the gate has settled that; else 0
+  const Reading* by = nullptr;   // Outreached
+  const Line* line = nullptr;    // Published: its own line; Undercut: the line production runs at `at`
+};
+
+// Why each reading of `subject` holds a line of `pub`, or does not, the cheapest first.  `held`: the run's candidate
+// of the subject, nullptr where the run does not hold it; `readings`: those `pub` was published from.
+[[nodiscard]] std::vector<StandingOf> standingsOf(const KindPublication& pub, const Subject& subject,
+                                                  const Candidate* held, const Readings& readings);
+
+// The run's candidate of the subject's FFT and regime in `candidates`, the heaviest should there be two; nullptr where
+// there is none.
+[[nodiscard]] const Candidate* heldCandidate(const std::vector<Candidate>& candidates, const Subject& subject);
+
 // The lines of earlier builds of the same card, under the same tag: each configuration's from the newest build that
 // published it, as long as this build's option table still names its options as they were.  They are written until
 // this build has read the configuration itself, but kept out of T, so an old build's costs never stand in the way of
