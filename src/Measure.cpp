@@ -766,6 +766,15 @@ std::vector<double> Bench::soak(const std::vector<SoakEntry>& entries, u64 expon
                                 u32 rounds) {
   std::vector<double> out(entries.size(), NAN);
   if (entries.empty() || stopped_) { return out; }
+
+  // An LL slice has no check of its own, so its chunks are as long as a call and end where the LL reference does.  Settled
+  // before any soak Gpu is built: its witnesses build Gpus of their own.
+  std::vector<std::optional<u64>> references(entries.size());
+  for (size_t i = 0; i < entries.size() && !stopped_; ++i) {
+    if (entries[i].kind == TestKind::LL) { references[i] = llReference(entries[i].fft, exponent, blocks_, blockSize_); }
+  }
+  if (stopped_) { return out; }
+
   keepAnchor();
   coolDown();
   if (stopped_) { return out; }
@@ -786,6 +795,11 @@ std::vector<double> Bench::soak(const std::vector<SoakEntry>& entries, u64 expon
     const SoakEntry& e = entries[i];
     cfgs[i] = db_.internCfg(builtAs(env_, e.fft, e.options));
     if (std::string const why = held(e.fft, e.kind, exponent, e.options); !why.empty()) { continue; }
+    if (e.kind == TestKind::LL && !references[i]) {
+      log("measure: %s -use %s is not soaked: no LL reference at %" PRIu64 " to check it against\n", e.fft.spec().c_str(),
+          configText(e.options).c_str(), exponent);
+      continue;
+    }
     Attempt const attempt{db_, tryOf(i), attemptText(e.fft, e.kind, exponent, e.options)};
     if (!cfgs[i] || !attempt.declared()) {
       cannotDeclare(e.fft, e.options);
@@ -797,31 +811,58 @@ std::vector<double> Bench::soak(const std::vector<SoakEntry>& entries, u64 expon
   }
 
   // One slice: squaring in chunks of a few seconds until `seconds` have passed, recorded under an attempt of its own,
-  // which the slice's record answers.
+  // which the slice's record answers.  A chunk is judged as a call is: one that fails its Gerbicz check, or for LL reads
+  // other than the reference, is read again at once, and only a second failure is believed -- which is recorded as the
+  // call that failed would be, so the configuration is never published, and the slice is not.
   constexpr double CHUNK_SEC = 5;
   auto runSlice = [&](size_t i, u32 round, double seconds) -> std::optional<double> {
     const SoakEntry& e = entries[i];
+    bool const ll = e.kind == TestKind::LL;
     Attempt const attempt{db_, tryOf(i), attemptText(e.fft, e.kind, exponent, e.options)};
     if (!attempt.declared()) {
       cannotDeclare(e.fft, e.options);
       return {};
     }
     std::vector<double> blocks;
+    bool wrong = false;
     auto const from = std::chrono::steady_clock::now();
     Timer t;
     Status const status = caught(
       [&] {
-        u32 n = 2;
+        u32 n = ll ? blocks_ : 2;
+        auto chunk = [&] {
+          return summarize(ll ? gpus[i]->timeItersLL(n, blockSize_, CALL_WARMUP_BLOCKS, 0)
+                              : gpus[i]->timeIters(n, blockSize_, CALL_WARMUP_BLOCKS, 0));
+        };
         while (t.at() < seconds) {
-          IterSamples const s = e.kind == TestKind::LL ? gpus[i]->timeItersLL(n, blockSize_, CALL_WARMUP_BLOCKS, 0)
-                                                       : gpus[i]->timeIters(n, blockSize_, CALL_WARMUP_BLOCKS, 0);
-          if (!s.checkOk) { throw std::string{"its Gerbicz check failed"}; }
-          blocks.insert(blocks.end(), s.usPerIt.begin(), s.usPerIt.end());
-          double const blockSec = statsOf(s.usPerIt).mean * blockSize_ * 1e-6;
-          n = std::max(1u, u32(std::lround(CHUNK_SEC / blockSec)));
+          Call c = chunk();
+          if (c.status == Status::Err || (ll && c.ok() && c.res64 != *references[i])) {
+            log("measure: %s -use %s failed its check during soak %u; reading it again, since one failure decides "
+                "nothing\n", e.fft.spec().c_str(), configText(e.options).c_str(), group);
+            c = ll ? checkedAgainst(*references[i], std::move(c), chunk) : checkedTwice(std::move(c), chunk);
+          }
+          if (c.status == Status::Err) {
+            wrong = true;
+            return;
+          }
+          blocks.insert(blocks.end(), c.usPerIt.begin(), c.usPerIt.end());
+          if (!ll) { n = std::max(1u, u32(std::lround(CHUNK_SEC / (statsOf(c.usPerIt).mean * blockSize_ * 1e-6)))); }
         }
       },
       e.fft, e.kind, exponent, e.options, "soak");
+    if (wrong) {
+      log("measure: it failed again: it computes wrongly, and is recorded as an error\n");
+      (void)db_.add(CallRow{.sess = session_,
+                            .fft = e.fft.spec(),
+                            .kind = e.kind,
+                            .exponent = exponent,
+                            .cfg = cfgs[i],
+                            .status = Status::Err,
+                            .drift = anchorState_.ratio,
+                            .ts = now()});
+      gpus[i].reset();
+      return {};
+    }
     if (status != Status::Ok || blocks.empty()) {
       gpus[i].reset();
       return {};

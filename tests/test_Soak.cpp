@@ -133,6 +133,33 @@ TEST(a_soaked_configuration_costs_what_it_sustained_and_calibrates_the_rest) {
   CHECK(Readings(none.db, none.env, nvidia()).calibration() == 1);
 }
 
+// What Bench::soak records when a configuration fails its check twice in a slice: an error call at the soak's exponent.
+TEST(a_configuration_wrong_in_its_soak_is_failed_and_calibrates_nothing) {
+  Fixture f;
+  std::vector<const Candidate*> const cs = f.exact(2);
+  f.call(*cs[0], 900);
+  f.call(*cs[1], 950);
+  f.soak(*cs[0], {880, 944, 946});
+  CHECK(f.db.add(CallRow{.sess = f.sess,
+                         .fft = cs[0]->subject.fft.spec(),
+                         .kind = TestKind::PRP,
+                         .exponent = f.scope.probe,
+                         .cfg = f.db.internCfg({}),
+                         .status = Status::Err,
+                         .ts = 3}));
+
+  Publication const pub = f.published();
+  const Reading* const wrong = f.readings->find(cs[0]->subject, {});
+  const Reading* const other = f.readings->find(cs[1]->subject, {});
+  CHECK(wrong && other);
+  if (!wrong || !other) { return; }
+  CHECK(wrong->failed);
+  CHECK(f.readings->calibration() == 1);
+  CHECK(near(other->mean, 950.05));
+  const Line* const line = pub.of(TestKind::PRP)->at(f.scope.probe);
+  CHECK(line && line->candidate == cs[1]);
+}
+
 TEST(a_fresh_call_is_costed_as_the_readings_cost_calls) {
   // The end phase's fresh calls are set beside what the readings pool, so they take the power floor and the soaks'
   // calibration too.
