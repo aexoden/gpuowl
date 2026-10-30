@@ -301,6 +301,8 @@ LoopResult runLoop(Device& device, TuneDB& db, u32 env, const Env& card, const R
     out.elapsed = laneTime(db, env).total();
     if (settings.budget > 0 && out.elapsed >= settings.budget) {
       out.budgetSpent = true;
+      std::vector<KindContest> const contest =
+        contendersOf(card, scope, candidates, readings, publication, filter, settings.contest);
       // Its last word, from where it stands now: the report is otherwise written after the checks below.
       lastReport = reportJson({.version = VERSION,
                                .settings = settings.settings,
@@ -316,7 +318,8 @@ LoopResult runLoop(Device& device, TuneDB& db, u32 env, const Env& card, const R
                                .publication = &publication,
                                .audit = auditSummary(db, env, readings, publication, true),
                                .duels = duelTally(db, env),
-                               .production = &production});
+                               .production = &production,
+                               .contenders = &contest});
       writeReport(settings.publishTo, lastReport);
       for (const std::string& line : auditReport(auditSummary(db, env, readings, publication, true), true)) {
         log("tune: %s\n", line.c_str());
@@ -511,6 +514,9 @@ LoopResult runLoop(Device& device, TuneDB& db, u32 env, const Env& card, const R
 
     // Where the run stands, rewritten each item; the coverage as of the last regret estimate.
     auto report = [&](const char* state, bool budgetSpent) {
+      if (settings.publishTo.empty()) { return; }
+      std::vector<KindContest> const contest =
+        contendersOf(card, scope, candidates, readings, publication, filter, settings.contest);
       lastReport = reportJson({.version = VERSION,
                                .settings = settings.settings,
                                .state = state,
@@ -525,7 +531,8 @@ LoopResult runLoop(Device& device, TuneDB& db, u32 env, const Env& card, const R
                                .publication = &publication,
                                .audit = auditSummary(db, env, readings, publication, budgetSpent),
                                .duels = duelTally(db, env),
-                               .production = &production});
+                               .production = &production,
+                               .contenders = &contest});
       writeReport(settings.publishTo, lastReport);
     };
     report("running", false);
@@ -742,6 +749,7 @@ RunOutcome runTune(GpuCommon shared, const TuneCommand& command) {
                                      .duel = command.duel,
                                      .search = command.search,
                                      .staged = command.staged,
+                                     .contest = command.contest,
                                      .seed = seed,
                                      .tailQueues = command.tailQueues,
                                      .publishTo = fs::current_path(),
@@ -792,6 +800,19 @@ bool runOffline(const TuneCommand& command, const Args& args) {
   Publication const publication = publish(*scope, candidates, readings, &carried);
   std::map<ConfigKey, Sustained> const production =
     sustainedOf(readFeedback(fs::current_path() / FEEDBACK_FILE), env->build, card);
+  std::map<const Candidate*, RegisterOffer> const offers = registerOffers(db, env->id, card, candidates, readings);
+  RegisterOffer const none{};
+  auto filter = [&](const Candidate& c) {
+    auto const it = offers.find(&c);
+    return AxisFilter{.tailQueues = command.tailQueues, .registers = it == offers.end() ? &none : &it->second};
+  };
+
+  if (command.verb == TuneVerb::Explain) {
+    for (const std::string& line : explainLines(card, command.explain, *scope, candidates, readings, publication)) {
+      log("tune: %s\n", line.c_str());
+    }
+    return true;
+  }
 
   for (const KindPublication& kind : publication.kinds) {
     if (kind.tuned) {
@@ -819,6 +840,13 @@ bool runOffline(const TuneCommand& command, const Args& args) {
   }
   log("tune: %zu accuracy readings and %zu calls owed before more lines can be published\n",
       publication.owedGates.size(), publication.owedCalls.size());
+
+  std::vector<KindContest> const contest =
+    contendersOf(card, *scope, candidates, readings, publication, filter, command.contest);
+  log("tune: contenders, within %s of each line, the nearest %s:\n",
+      std::isinf(command.contest.within) ? "any distance" : percent(command.contest.within).c_str(),
+      command.contest.top == SIZE_MAX ? "all" : std::to_string(command.contest.top).c_str());
+  for (const std::string& line : contestLines(contest)) { log("tune:   %s\n", line.c_str()); }
 
   if (command.verb == TuneVerb::Emit) {
     Publisher publisher{fs::current_path(), headerFor(*scope, command)};

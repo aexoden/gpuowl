@@ -91,6 +91,18 @@ std::string callShapeText(const TuneCommand& command) {
   return out;
 }
 
+// ",within=<p>%|all,top=<n>|all" for whichever is not the default: what the contender table shows.
+std::string contestText(const TuneCommand& command) {
+  std::string out;
+  if (command.contest.within != WITHIN) {
+    out += ",within=" + (std::isinf(command.contest.within) ? std::string{"all"} : percentText(command.contest.within));
+  }
+  if (command.contest.top != TOP) {
+    out += ",top=" + (command.contest.top == SIZE_MAX ? std::string{"all"} : std::to_string(command.contest.top));
+  }
+  return out;
+}
+
 }  // namespace
 
 const char* toString(TuneVerb verb) {
@@ -99,6 +111,7 @@ const char* toString(TuneVerb verb) {
   case TuneVerb::Status: return "status";
   case TuneVerb::Emit: return "emit";
   case TuneVerb::Scope: return "scope";
+  case TuneVerb::Explain: return "explain";
   }
   return "?";
 }
@@ -123,7 +136,7 @@ TuneCommand parseTuneCommand(std::string_view text) {
   TuneCommand out;
   std::vector<std::string_view> tokens = text.empty() ? std::vector<std::string_view>{} : splitOn(text, ',');
   if (!tokens.empty()) {
-    for (TuneVerb const verb : {TuneVerb::Status, TuneVerb::Emit, TuneVerb::Scope}) {
+    for (TuneVerb const verb : {TuneVerb::Status, TuneVerb::Emit, TuneVerb::Scope, TuneVerb::Explain}) {
       if (tokens.front() == toString(verb)) {
         out.verb = verb;
         tokens.erase(tokens.begin());
@@ -144,7 +157,16 @@ TuneCommand parseTuneCommand(std::string_view text) {
       throw who + ": '" + std::string{token} + "' is not a setting";
     }
 
-    if (key == "workload") {
+    if (out.verb == TuneVerb::Explain && key == "fft") {
+      if (!std::ranges::all_of(value, [](char c) { return std::isalnum(u8(c)) || c == ':'; })) {
+        throw std::string{"-tune explain: fft= takes an FFT spec, such as fft=512:15:256:001, or its shape alone"};
+      }
+      out.explain.fft = value;
+    } else if (out.verb == TuneVerb::Explain && std::isupper(u8(key.front()))) {
+      // A -use option: tune settings are lowercase, option keys upper.
+      if (!out.explain.options) { out.explain.options.emplace(); }
+      (*out.explain.options)[std::string{key}] = value;
+    } else if (key == "workload") {
       parseWorkload(value, out.scope);
     } else if (key == "probe") {
       out.scope.probe = parseExponent(value, "probe=");
@@ -191,6 +213,25 @@ TuneCommand parseTuneCommand(std::string_view text) {
           throw std::string{"-tune: contenders= takes a percentage, such as contenders=15%, or all"};
         }
         out.explore.contenders = *margin / 100;
+      }
+    } else if (key == "within" && (out.verb == TuneVerb::Run || out.verb == TuneVerb::Status)) {
+      std::optional<double> const p =
+        value.ends_with('%') ? parseDouble(value.substr(0, value.size() - 1)) : std::optional<double>{};
+      if (value == "all") {
+        out.contest.within = std::numeric_limits<double>::infinity();
+      } else if (!p || *p < 0) {
+        throw who + ": within= takes a percentage, such as within=5%, or all";
+      } else {
+        out.contest.within = *p / 100;
+      }
+    } else if (key == "top" && (out.verb == TuneVerb::Run || out.verb == TuneVerb::Status)) {
+      std::optional<u32> const n = value == "all" ? std::optional<u32>{} : parseInt<u32>(value);
+      if (value == "all") {
+        out.contest.top = SIZE_MAX;
+      } else if (!n) {
+        throw who + ": top= takes a count of rivals per line, or all";
+      } else {
+        out.contest.top = *n;
       }
     } else if (key == "search" && out.verb == TuneVerb::Run) {
       if (value != "model" && value != "staged") { throw std::string{"-tune: search= takes model or staged"}; }
@@ -347,6 +388,9 @@ TuneCommand parseTuneCommand(std::string_view text) {
     }
   }
 
+  if (out.verb == TuneVerb::Explain && out.explain.fft.empty()) {
+    throw std::string{"-tune explain: fft= names the FFT to explain, such as -tune explain,fft=512:15:256:001"};
+  }
   if (out.scope.lo && out.scope.probe && (out.scope.probe < out.scope.lo || out.scope.probe > out.scope.hi)) {
     throw "-tune: probe=" + std::to_string(out.scope.probe) + " is outside workload=" + std::to_string(out.scope.lo) +
       '-' + std::to_string(out.scope.hi);
@@ -363,7 +407,7 @@ std::string settingsWord(const RunScope& scope, const TuneCommand& command) {
     ",probe=" + std::to_string(scope.probe) + ",probeWeight=" + weight + ",kinds=" + kinds +
     ",pfaShapes=" + toString(scope.pfaShapes) + ",tailQueues=" + toString(command.tailQueues) +
     ",stop=" + percentText(command.stop) + (command.tag.empty() ? "" : ",tag=" + command.tag) +
-    powerHoldText(command) + callShapeText(command) + searchText(command);
+    powerHoldText(command) + callShapeText(command) + searchText(command) + contestText(command);
 }
 
 }  // namespace tune

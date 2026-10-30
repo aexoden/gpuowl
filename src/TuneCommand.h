@@ -6,6 +6,7 @@
 #pragma once
 
 #include "Axes.h"
+#include "Contenders.h"
 #include "Lanes.h"
 #include "Scope.h"
 #include "Stats.h"
@@ -28,6 +29,7 @@ enum class TuneVerb : u8 {
   Status,  // where the database stands, with no device
   Emit,    // publish the tune files the database supports, with no device
   Scope,   // the range, the probe and the grid a run would work within, with no device
+  Explain,  // why an FFT, or one option set on it, is or is not published, with no device
 };
 
 [[nodiscard]] const char* toString(TuneVerb verb);
@@ -54,6 +56,8 @@ struct TuneCommand {
   DuelSettings duel{};               // Duel.h
   Search search = Search::Model;
   StagedSettings staged{};           // Staged.h
+  ContestSettings contest{};         // Contenders.h: the contender table a status and the report show
+  ExplainQuery explain{};            // -tune explain: its fft= and KEY=VALUE options
   std::string tag{};       // part of the env: readings under another tag are another env's (DbEnv::tag)
   bool dashboard = false;  // display only: not part of the settings a run records
   u64 seed = 0;            // the draws' seed; 0 for one from the clock

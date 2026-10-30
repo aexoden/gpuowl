@@ -198,6 +198,29 @@ TEST(every_setting_is_accepted_where_it_belongs) {
   }
   CHECK(settingsWord(makeScope(parsed("search=staged").scope, {}), parsed("search=staged")).find("margin") ==
         std::string::npos);
+
+  // The contender table's settings, on a run and a status, recorded only where they are not the default.
+  CHECK(parsed("").contest == ContestSettings{});
+  CHECK(near(parsed("within=2%").contest.within, 0.02) && std::isinf(parsed("status,within=all").contest.within));
+  CHECK(parsed("top=3").contest.top == 3u && parsed("status,top=all").contest.top == SIZE_MAX);
+  for (const char* bad : {"within=0.05", "within=-1%", "top=-1", "top=many", "emit,top=3", "scope,within=2%"}) {
+    CHECK(!refusal(bad).empty());
+  }
+  CHECK(settingsWord(makeScope(parsed("").scope, {}), parsed("")).find("within") == std::string::npos);
+  for (const char* word : {"within=2%,top=all", "within=all", "top=0"}) {
+    TuneCommand const shown = parsed(word);
+    CHECK(parsed(settingsWord(makeScope(shown.scope, {}), shown).c_str()).contest == shown.contest);
+  }
+
+  // explain names an FFT, and may name an option set by its uppercase -use keys.
+  CHECK(parsed("explain,fft=512:15:256:001").verb == TuneVerb::Explain);
+  CHECK((parsed("explain,fft=512:15:256:001").explain == ExplainQuery{.fft = "512:15:256:001", .options = {}}));
+  CHECK(parsed("explain,fft=512:15:256,HOIST_W=1,LOADS=23003,workload=67M-72M").explain ==
+        (ExplainQuery{.fft = "512:15:256", .options = UseConfig{{"HOIST_W", "1"}, {"LOADS", "23003"}}}));
+  for (const char* bad : {"explain", "explain,HOIST_W=1", "explain,fft=512/15", "fft=512:15:256:001",
+                          "HOIST_W=1", "status,HOIST_W=1"}) {
+    CHECK(!refusal(bad).empty());
+  }
 }
 
 TEST(scope_settings_are_read_off_the_subcommand) {

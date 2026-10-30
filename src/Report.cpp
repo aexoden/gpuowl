@@ -46,6 +46,50 @@ std::string productionJson(const Line& line, const std::map<ConfigKey, Sustained
     ", \"stretches\": " + std::to_string(s->stretches) + ", \"iterations\": " + std::to_string(s->iters) + "}";
 }
 
+std::string spaceReadJson(const SpaceRead& read) {
+  return "{\"branchesRead\": " + std::to_string(read.branches) + ", \"branchesLegal\": " +
+    std::to_string(read.legal.legal) + ", \"branchesLegalIsExact\": " + (read.legal.complete ? "true" : "false") +
+    ", \"positionsCovered\": " + std::to_string(read.positions.covered) +
+    ", \"positionsTotal\": " + std::to_string(read.positions.total) + "}";
+}
+
+std::string contendersJson(const std::vector<KindContest>& table) {
+  std::string out = "  \"contenders\": [";
+  bool first = true;
+  for (const KindContest& kind : table) {
+    for (const Contest& c : kind.contests) {
+      char range[96];
+      std::snprintf(range, sizeof(range), "\"minExponent\": %" PRIu64 ", \"maxExponent\": %" PRIu64, c.lo, c.hi);
+      out += std::string{first ? "\n" : ",\n"} + "    {\"kind\": " + jsonString(toString(kind.kind)) + ", " + range +
+        ", \"weight\": " + number(c.weight) + ", \"line\": ";
+      first = false;
+      if (c.line) {
+        out += "{\"fft\": " + jsonString(c.line->subject.fft.spec()) +
+          ", \"regime\": " + jsonString(c.line->subject.regime.label()) +
+          ", \"options\": " + jsonString(configText(c.line->reading->options)) +
+          ", \"usPerIt\": " + number(c.line->cost()) + ", \"read\": " + spaceReadJson(c.lineRead) + "}";
+      } else {
+        out += "null";
+      }
+      out += ", \"rivals\": [";
+      for (size_t i = 0; i < c.rivals.size(); ++i) {
+        const Rival& r = c.rivals[i];
+        const Reading& reading = *r.standing.reading;
+        out += std::string{i ? ", " : ""} + "{\"fft\": " + jsonString(r.subject.fft.spec()) +
+          ", \"regime\": " + jsonString(r.subject.regime.label()) +
+          ", \"options\": " + jsonString(configText(reading.options)) + ", \"meanUsPerIt\": " + number(reading.mean) +
+          ", \"seUsPerIt\": " + number(reading.se) + ", \"calls\": " + std::to_string(reading.calls) +
+          ", \"ratio\": " + number(r.ratio) + ", \"ratioLo\": " + number(r.lo) + ", \"ratioHi\": " + number(r.hi) +
+          ", \"standing\": " + jsonString(toString(r.standing.standing)) +
+          ", \"why\": " + jsonString(whyText(r.standing, r.owed)) +
+          ", \"lostDuel\": " + (reading.beaten > 0 ? "true" : "false") + ", \"read\": " + spaceReadJson(r.read) + "}";
+      }
+      out += "]}";
+    }
+  }
+  return out + (first ? "],\n" : "\n  ],\n");
+}
+
 }  // namespace
 
 const Sustained* sustainedOn(const Line& line, const std::map<ConfigKey, Sustained>& production) {
@@ -144,6 +188,7 @@ std::string reportJson(const RunReport& r) {
     }
   }
   out += first ? "],\n" : "\n  ],\n";
+  if (r.contenders) { out += contendersJson(*r.contenders); }
 
   if (r.audit && r.audit->declared) {
     const AuditSummary& a = *r.audit;

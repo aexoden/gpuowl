@@ -76,6 +76,7 @@ struct LoopSettings {
   DuelSettings duel{};               // duels of a line's taker and its holder (Duel.h)
   Search search = Search::Model;     // what chooses the items no duty claims
   StagedSettings staged{};           // the staged search's (Staged.h)
+  ContestSettings contest{};         // the report's contender table (Contenders.h)
   u64 seed = 1;
   TailQueues tailQueues = TailQueues::Ntt;
   u32 regretEvery = 32;  // calls between estimates of the regret

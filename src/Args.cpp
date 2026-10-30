@@ -409,9 +409,14 @@ named "config.txt" in the prpll run directory.
                                              a duel [3%%]
                          duelEpsilon=<p>%% [0.3%%] a ratio known to be this close to 1 is even: the holder keeps it
                          duelPairs=<n> [6]   the most pairs of calls a duel takes before it is left undecided
+                         within=<p>%%|all     the contender table (status, tune-report.json): how much dearer than
+                                             a line a rival may read and still be shown [5%%]
+                         top=<n>|all         the contender table: the most rivals shown per line [5]
                          dashboard=1         a full-screen view of the run
-                     Verbs, which open no device: status (where tunedb.txt stands), emit (write the tune files it
-                     supports), scope (the exponents a run would tune for).
+                     Verbs, which open no device: status (where tunedb.txt stands, and each line's contenders: the
+                     sets that could take it, and why none has), emit (write the tune files it supports), scope (the
+                     exponents a run would tune for), explain,fft=<spec>[,KEY=VALUE...] (why each set read on an FFT,
+                     or its shape's every variant, or the one set named, is or is not published).
 -measure <fft>[,<setting>=<value>...] : whether this card runs as fast under sustained load as the tuner's short
                      calls read.  Times <fft> (with the -use settings production would give it) in calls as the tuner
                      makes them, then squares without a break until it settles, then for some minutes more, then in

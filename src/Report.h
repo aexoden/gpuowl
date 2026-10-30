@@ -6,6 +6,7 @@
 #pragma once
 
 #include "Audit.h"
+#include "Contenders.h"
 #include "Coverage.h"
 #include "Duel.h"
 #include "Explore.h"
@@ -37,6 +38,7 @@ struct RunReport {
   std::optional<AuditSummary> audit{};
   std::optional<DuelTally> duels{};
   const std::map<ConfigKey, Sustained>* production = nullptr;  // sustainedOf() the feedback beside the tune file
+  const std::vector<KindContest>* contenders = nullptr;          // of `publication`
 };
 
 // What production sustained running a published line's configuration; nullptr where it has not run it.
