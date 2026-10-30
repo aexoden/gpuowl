@@ -75,7 +75,7 @@ bool owes(const Publication& publication, const Subject& subject, const Standing
   const UseConfig& options = standing.reading->options;
   if (standing.standing == Standing::GateOwed) {
     return std::ranges::any_of(publication.owedGates, [&](const GateItem& g) {
-      return g.fft.spec() == subject.fft.spec() && g.options == options;
+      return g.fft.spec() == subject.fft.spec() && g.of == options;
     });
   }
   if (standing.standing == Standing::ShortOfCalls) {

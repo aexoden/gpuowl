@@ -30,7 +30,7 @@ std::string sideKey(const DuelSide& side) {
 
 // Whether the configuration's accuracy is settled as far as `exponent`, from the lowest exponent the candidate serves.
 bool reaches(const Candidate& c, const Readings& readings, const UseConfig& options, u64 exponent) {
-  Verdict const v = verdictOf(c.subject.fft, readings.roes(c.subject.fft, options), c.points.front().exponent);
+  Verdict const v = verdictFor(readings, c.subject.fft, options, c.points.front().exponent);
   return v.state != Accuracy::Owed && v.state != Accuracy::Rejected && v.reach >= exponent;
 }
 

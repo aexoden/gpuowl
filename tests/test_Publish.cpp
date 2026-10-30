@@ -390,3 +390,34 @@ TEST(only_instantaneous_power_sets_a_cost) {
   const Reading* const r = readings.find({.fft = fft, .kind = TestKind::PRP, .regime = regimeOf(fft, E)}, {});
   CHECK(r && r->mean < 901 && r->powerBound == 0 && std::abs(r->mjPerIt - 198) < 1e-9);
 }
+
+TEST(a_set_that_changes_the_rounding_owes_its_reference_reading_and_is_held_to_it) {
+  Fixture f;
+  UseConfig const moved{{"MM2_CHAIN", "1"}};
+  f.call("1K:13:256:202", moved, 2000);
+
+  Publication const own = f.published();
+  CHECK_EQ(own.owedGates.size(), size_t{1});
+  if (own.owedGates.empty()) { return; }
+  u64 const top = own.owedGates.front().exponent;
+  CHECK(own.owedGates.front().options == moved && own.owedGates.front().of == moved);
+
+  // Read at the table top, it owes its reference's reading there, which settles its own gate.
+  f.roe("1K:13:256:202", moved, top, 23.4);
+  Publication const reference = f.published();
+  CHECK_EQ(reference.owedGates.size(), size_t{1});
+  if (reference.owedGates.empty()) { return; }
+  CHECK(reference.owedGates.front().options.empty());
+  CHECK(reference.owedGates.front().of == moved);
+  CHECK_EQ(reference.owedGates.front().exponent, top);
+  CHECK(reference.of(TestKind::PRP)->lines.empty());
+
+  // 0.6 below its reference: no line at the table's reach, and a lower reading of its own is owed.
+  f.roe("1K:13:256:202", {}, top, 24.0);
+  Publication const cut = f.published();
+  CHECK(cut.of(TestKind::PRP)->lines.empty());
+  CHECK_EQ(cut.owedGates.size(), size_t{1});
+  if (cut.owedGates.empty()) { return; }
+  CHECK(cut.owedGates.front().options == moved);
+  CHECK(cut.owedGates.front().exponent < top);
+}

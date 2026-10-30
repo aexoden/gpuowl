@@ -42,7 +42,8 @@ struct Line {
 // A reading the gate owes before a line can be published: of `options` on `fft`, at `exponent`.
 struct GateItem {
   FFTConfig fft;
-  UseConfig options{};
+  UseConfig options{};  // the set to read: `of`, or its accuracy reference (Gate.h) where that reading is owed
+  UseConfig of{};       // the set whose gate the reading settles
   u64 exponent = 0;
   double weight = 0;  // of the grid points the line would serve, which orders the items
 };

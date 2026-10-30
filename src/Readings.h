@@ -121,11 +121,15 @@ public:
   // The run's powerHold= setting the readings were costed under.
   [[nodiscard]] double powerHold() const { return powerHold_; }
 
+  // The card the readings were canonicalized for.
+  [[nodiscard]] const Env& device() const { return device_; }
+
 private:
   std::map<ConfigKey, Reading> readings_;
   std::vector<Observation> observations_;
   double calibration_ = 1;
   double powerHold_ = POWER_HOLD;
+  Env device_;
   std::map<std::pair<std::string, std::string>, std::vector<RoeReading>> roes_;
   std::set<std::pair<ConfigKey, ConfigKey>> dueled_;  // the lesser key first
   std::set<std::pair<std::string, std::string>> died_;  // by spec and configText() of the canonical set

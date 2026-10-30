@@ -89,9 +89,8 @@ FftFront frontOf(const Subject& subject, const Candidate* c, const Readings& rea
       why->push_back({.reading = r, .standing = Standing::Outreached, .by = out.lines.back().reading});
       continue;
     }
-    std::vector<RoeReading> const roes = readings.roes(subject.fft, r->options);
     if (c) {
-      Verdict const v = verdictOf(subject.fft, roes, c->points.front().exponent);
+      Verdict const v = verdictFor(readings, subject.fft, r->options, c->points.front().exponent);
       if (v.state == Accuracy::Owed) {
         if (!out.owed) {
           out.owed = Line{.subject = subject, .candidate = c, .reading = r, .accuracy = v, .interval = *span};
@@ -100,7 +99,7 @@ FftFront frontOf(const Subject& subject, const Candidate* c, const Readings& rea
         continue;
       }
     }
-    Verdict const v = verdictOf(subject.fft, roes, span->lo);
+    Verdict const v = verdictFor(readings, subject.fft, r->options, span->lo);
     u64 const hi = std::min(v.reach, span->hi);
     if (v.state == Accuracy::Rejected || hi < span->lo || hi <= reached) {
       if (why) {
@@ -379,8 +378,11 @@ Publication publish(const RunScope& scope, const std::vector<std::vector<Candida
     };
     for (const Line& line : owed) {
       if (double const w = wouldServe(line.candidate, line.cost()); w > 0) {
-        out.owedGates.push_back(
-          {.fft = line.subject.fft, .options = line.reading->options, .exponent = line.accuracy.next, .weight = w});
+        out.owedGates.push_back({.fft = line.subject.fft,
+                                 .options = owedOptions(readings, line.subject.fft, line.reading->options, line.accuracy),
+                                 .of = line.reading->options,
+                                 .exponent = line.accuracy.next,
+                                 .weight = w});
       }
     }
     // A carried line the tune file holds is read by this build before anything else replaces it, wherever the run

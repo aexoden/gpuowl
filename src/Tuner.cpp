@@ -345,6 +345,8 @@ LoopResult runLoop(Device& device, TuneDB& db, u32 env, const Env& card, const R
       char z[32];
       snprintf(z, sizeof(z), "z %.2f", r.z);
       item.result = r.status != Status::Ok ? toString(r.status) : r.applicable ? z : "exact";
+      // The accuracy reference of a set that changes the rounding, read beside it (Gate.h).
+      if (g.options != g.of) { item.result += ", the reference of -use " + optionsText(g.of); }
       report(item, settings.watch);
       continue;
     }

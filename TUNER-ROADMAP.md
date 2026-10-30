@@ -73,11 +73,15 @@ At each sync, drop model2's copy of any fix upstream has merged and take upstrea
 - [x] A failed Gerbicz check during a soak goes through `checkedTwice` and is recorded as an error, as a failed call
       is (`80042c14`).
 - [x] LL soaks check their residue: their chunks are call-sized and end where the LL reference does (`80042c14`).
-- [ ] Port tune's accuracy reference rule: a set that moves a rounding-changing key must read within 0.5 Z of the same
-      set at default rounding, or its reach is cut (tune `Gate.cpp` `standardFor`, `accuracyReference`).
+- [x] Port tune's accuracy reference rule: a set that moves a rounding-changing key must read within 0.5 Z of the same
+      set at default rounding, read at the same exponent, or the gate's bisection cuts its reach. It is never trusted
+      where its reference is unsafe or hardly rounds while it rounds visibly. One verdict (`Gate.h` `verdictFor`)
+      serves publishing, the duels and the contender table.
 - [ ] Port `-tune accuracy` and the `roeStat` sample fingerprint; re-measure the option table's accuracy flags on
       current kernels (upstream `62117cea` changed FP32 rounding).
-- [ ] Share rounding readings between sets that round alike (tune `roundingOf`).
+- [ ] Share rounding readings between sets that round alike (tune `roundingOf`). Decided: only after the rounding
+      flags are re-measured on current kernels with `-tune accuracy` (next item); until then every set is read on
+      its own.
 - [ ] Publish an exclusion list of configurations that computed wrong answers, and have production honour it.
 - [ ] Re-gate lines carried from an earlier build when the build changed rounding.
 - [x] Hold a configuration that took the card down at every exponent and test kind, and withdraw it from publication
@@ -156,6 +160,8 @@ through restarts, and has no long apples-to-apples comparison yet.
 | Branches | Build on `model2`; `tune` and `model` decided later |
 | Power floor (`powerHold`) | Open: `-measure` on two cards showed it does not work right |
 | A configuration that took the card down | Held at every exponent and kind, and withdrawn; every failure logged in `failures/` |
+| Accuracy slack for sets that change rounding | 0.5 Z below the same set at default rounding, as tune |
+| Shared rounding readings | Not until `-tune accuracy` has re-measured the flags on current kernels |
 
 ## Review (2026-10-30)
 
