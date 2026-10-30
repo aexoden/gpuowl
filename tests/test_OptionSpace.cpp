@@ -150,8 +150,13 @@ TEST(known_keys) {
     CHECK(isKnownKey(key));
   }
   // Recognized so -use accepts them, but never offered for search.
-  for (const char* key : {"USE_REGISTER_BARSYNC", "LDSMUL_W", "LDSMUL_H", "WAVEFRONT", "TRY_SQRT2", "NO_ASM"}) {
+  for (const char* key : {"SLEEP_WAIT", "LDSMUL_W", "LDSMUL_H", "WAVEFRONT", "TRY_SQRT2", "NO_ASM"}) {
     CHECK(isKnownKey(key) && findOption(key)->kind == Kind::Fixed);
+    CHECK(!applicable(nvidia(900, true), "512:15:512:101", {}, key));
+  }
+  // Removed from the kernels by upstream bde9aa08: still recognized, never offered.
+  for (const char* key : {"ENABLE_BARSYNC", "USE_REGISTER_BARSYNC"}) {
+    CHECK(isKnownKey(key) && findOption(key)->kind == Kind::Deprecated);
     CHECK(!applicable(nvidia(900, true), "512:15:512:101", {}, key));
   }
   // Removed from the kernels by upstream 6cf0dcd, an environment variable, and misspellings.
@@ -423,8 +428,18 @@ TEST(placement_and_queue_gates) {
 
   CHECK(applicable(e, "512:15:512:101", {}, "FAST_BARRIER"));
   CHECK(!applicable(nvidia(806, true), "512:15:512:101", {}, "FAST_BARRIER"));
-  CHECK(!applicable(nvidia(806, false, true), "512:15:512:101", {}, "ENABLE_BARSYNC"));
-  CHECK(!applicable(nvidia(100), "512:15:512:101", {}, "ENABLE_BARSYNC"));
+  // ENABLE_SUBBARRIER: CUDA builds on nVidia with PTX 2.0, never OpenCL; 2 only where four sub-workgroups pair up.
+  CHECK(applicable(nvidia(806, true), "512:15:512:101", {}, "ENABLE_SUBBARRIER"));
+  CHECK(!applicable(nvidia(806), "512:15:512:101", {}, "ENABLE_SUBBARRIER"));
+  CHECK(!applicable(nvidia(806, true, true), "512:15:512:101", {}, "ENABLE_SUBBARRIER"));
+  CHECK(!applicable(nvidia(100, true), "512:15:512:101", {}, "ENABLE_SUBBARRIER"));
+  CHECK(!applicable(amd(), "512:15:512:101", {}, "ENABLE_SUBBARRIER"));
+  CHECK_EQ(valuesOf(nvidia(806, true), "512:15:512:101", {}, "ENABLE_SUBBARRIER"), string("0,1"));
+  CHECK_EQ(valuesOf(nvidia(806, true), "512:15:512:101", {{"WMUL", "4"}}, "ENABLE_SUBBARRIER"), string("0,1,2"));
+  // No sub-workgroups at all: WMUL 1 and a single-wide tail.
+  CHECK(inert(nvidia(806, true), "512:15:512:101", "ENABLE_SUBBARRIER", {{"WMUL", "1"}, {"TAIL_KERNELS", "1"}}));
+  CHECK(!inert(nvidia(806, true), "512:15:512:101", "ENABLE_SUBBARRIER", {{"WMUL", "1"}}));
+  CHECK(!inert(nvidia(806, true), "512:15:512:101", "ENABLE_SUBBARRIER", {{"TAIL_KERNELS", "1"}}));
   CHECK_EQ(defaultOf(amd(), "512:15:512:101", {}, "OLD_FENCE"), 0);
   CHECK_EQ(defaultOf(e, "512:15:512:101", {}, "OLD_FENCE"), 1);
   CHECK_EQ(defaultOf(amd(), "512:15:512:101", {}, "PAD"), 256);

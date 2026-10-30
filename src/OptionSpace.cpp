@@ -515,13 +515,27 @@ vector<Option> buildTable() {
                .applies = [](const Env& e, const FFTConfig&, const UseConfig&) { return e.isAmd || e.isNvidia; },
                .values = {0, 1},
                .defaultFn = [](const Env& e, const FFTConfig&, const UseConfig&) { return e.isAmd ? 0 : 1; }});
-  t.push_back({.key = "ENABLE_BARSYNC",
+  // LDSbar syncs only its own sub-workgroup rather than the block (base.cl bar(numWG, WG)), where a block holds several wider
+  // than a warp: carryFused with WMUL > 1, the double-wide tail.  2 differs from 1 only with four of them, in pairs.  CUDA
+  // alone: nVidia's OpenCL keeps the barrier id in a register, which upstream found slower on every card it tried.
+  t.push_back({.key = "ENABLE_SUBBARRIER",
                .scope = Scope::Device,
-               .group = Group::Queues,
-               .touches = KG_GLOBAL,
-               .applies = [](const Env& e, const FFTConfig&, const UseConfig&) { return e.hasPtx(200); },
-               .values = {0, 1},
-               .defaultValue = 0});
+               .group = Group::Cuda,
+               .touches = KG_CARRY | KG_TAIL,
+               .dependsOn = {"SHUFL_BYTES_W", "WMUL", "256RADIX8_W", "256RADIX8_H", "TAIL_KERNELS"},
+               .applies = [](const Env& e, const FFTConfig&, const UseConfig&) { return e.cudaBackend && e.hasPtx(200); },
+               .valuesFn =
+                 [](const Env& e, const FFTConfig& f, const UseConfig& d) {
+                   return effectiveWmul(e, f, d) == 4 ? vector<int>{0, 1, 2} : vector<int>{0, 1};
+                 },
+               .defaultValue = 0,
+               .inert =
+                 [](const Env& e, const FFTConfig& f, const UseConfig& d) {
+                   bool const width = effectiveWmul(e, f, d) > 1 && f.shape.width / radixW(f, d) > 32;
+                   bool const height = heightLdsBlocks(d) > 1 && f.shape.height / radixH(f, d) > 32;
+                   return !width && !height;
+                 },
+               .inertWhen = "WMUL 1 with a single-wide tail, or sub-workgroups no wider than a warp"});
   t.push_back({.key = "MULTI_Q",
                .group = Group::Queues,
                .touches = KG_GLOBAL,
@@ -910,7 +924,7 @@ vector<Option> buildTable() {
          "DISABLE_NEW_ONEPAIRSQ", "TEST_KERNEL",                      // Upstream A/B options
          "TRY_SHL30", "TRY_SHL31", "TRY_SQRT2",                       // GF61 experiments, correctness unverified
          "WAVEFRONT",                                                 // Set too high, bar() skips needed barriers
-         "USE_REGISTER_BARSYNC",   // Picks barsync()'s body, reached only through LDSMUL > 1
+         "SLEEP_WAIT",             // How the host waits on a full queue: CPU use, not the kernels; the user's own stays in force
          "LDSMUL_W", "LDSMUL_H",   // Shared LDS: slower where tried upstream, and unsafe with variant 2
          "ENABLE_FP32_VARIANT_2",  // Would widen the FP32 variant space
          "NO_INT128",              // For drivers without 128-bit integers; rusticl is detected without it
@@ -923,6 +937,9 @@ vector<Option> buildTable() {
   t.push_back({.key = "BIGLIT", .kind = Kind::Deprecated});
   t.push_back({.key = "NONTEMPORAL", .kind = Kind::Deprecated});
   t.push_back({.key = "MIDDLE_CHAIN", .kind = Kind::Deprecated});
+  // Upstream bde9aa08 removed both: bar(WG) is a full barrier above a warp, and barsync() always uses subBarrier.
+  t.push_back({.key = "ENABLE_BARSYNC", .kind = Kind::Deprecated});
+  t.push_back({.key = "USE_REGISTER_BARSYNC", .kind = Kind::Deprecated});
 
   return t;
 }
