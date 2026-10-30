@@ -24,7 +24,8 @@ commit that did it, so the next session can see what is and is not done.
       sub-workgroups wider than a warp); `ENABLE_BARSYNC` and `USE_REGISTER_BARSYNC` deprecated, as upstream removed
       both. The same two removed from the `-use` key list in `Gpu.cpp`. `ENABLE_SUBBARRIER` sits after `WMUL` and
       `TAIL_KERNELS` in the table (`40f804c3`), since a walk in table order must meet a key's parents first.
-- [ ] `make DEBUG=1 check` (GPU-free unit tests and source checkers) passes.
+- [x] `make DEBUG=1 check` (GPU-free unit tests and source checkers) passes: 260 tests, locally and in CI from
+      `40f804c3`.
 - [x] CUDA build compiles (checked without a toolkit, against NVIDIA's `cuda.h` and `nvrtc.h` from PyPI; not linked
       against a real `libcuda`).
 - [ ] CUDA build run on a real card (recipe below).
