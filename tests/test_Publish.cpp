@@ -403,7 +403,7 @@ TEST(a_set_that_changes_the_rounding_owes_its_reference_reading_and_is_held_to_i
   CHECK(own.owedGates.front().options == moved && own.owedGates.front().of == moved);
 
   // Read at the table top, it owes its reference's reading there, which settles its own gate.
-  f.roe("1K:13:256:202", moved, top, 23.4);
+  f.roe("1K:13:256:202", moved, top, 22.0);
   Publication const reference = f.published();
   CHECK_EQ(reference.owedGates.size(), size_t{1});
   if (reference.owedGates.empty()) { return; }
@@ -412,7 +412,7 @@ TEST(a_set_that_changes_the_rounding_owes_its_reference_reading_and_is_held_to_i
   CHECK_EQ(reference.owedGates.front().exponent, top);
   CHECK(reference.of(TestKind::PRP)->lines.empty());
 
-  // 0.6 below its reference: no line at the table's reach, and a lower reading of its own is owed.
+  // 8% below its reference: no line at the table's reach, and a lower reading of its own is owed.
   f.roe("1K:13:256:202", {}, top, 24.0);
   Publication const cut = f.published();
   CHECK(cut.of(TestKind::PRP)->lines.empty());

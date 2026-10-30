@@ -74,7 +74,7 @@ bool safe(enum FFT_TYPES type, const RoeReading& reading, const RoeReading* refe
   double const floor = minSafeZ(type);
   if (!reference) { return reading.z >= floor; }
   if (!reference->checkOk || reference->n <= 2 || reference->z < floor) { return false; }
-  return reading.z >= std::max(reference->z - ACCURACY_SLACK_Z, floor);
+  return reading.z >= std::max(reference->z * (1 - ACCURACY_SLACK), floor);
 }
 
 Verdict verdictOf(const FFTConfig& fft, std::span<const RoeReading> readings, u64 floor,

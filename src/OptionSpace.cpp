@@ -741,12 +741,13 @@ vector<Option> buildTable() {
                .values = {0, 1},
                .defaultValue = 1});
 
+  // Measured (-tune accuracy, Tesla P100, 2026-10-30): both values round otherwise than each other on every FFT read.
   t.push_back({.key = "256RADIX8_H",
                .scope = Scope::Variant,
                .group = Group::Height,
                .touches = KG_HEIGHT | KG_TAIL,
                .structural = true,
-               .accuracyImpact = AccuracyImpact::Suspected,
+               .accuracyImpact = AccuracyImpact::Yes,
                .applies = [](const Env&, const FFTConfig& f,
                              const UseConfig&) { return f.shape.height == 256 && (!f.FFT_FP64 || variant_H(f.variant) == 1); },
                .values = {0, 1},

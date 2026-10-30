@@ -73,10 +73,11 @@ At each sync, drop model2's copy of any fix upstream has merged and take upstrea
 - [x] A failed Gerbicz check during a soak goes through `checkedTwice` and is recorded as an error, as a failed call
       is (`80042c14`).
 - [x] LL soaks check their residue: their chunks are call-sized and end where the LL reference does (`80042c14`).
-- [x] Port tune's accuracy reference rule: a set that moves a rounding-changing key must read within 0.5 Z of the same
-      set at default rounding, read at the same exponent, or the gate's bisection cuts its reach. It is never trusted
-      where its reference is unsafe or hardly rounds while it rounds visibly. One verdict (`Gate.h` `verdictFor`)
-      serves publishing, the duels and the contender table.
+- [x] Port tune's accuracy reference rule: a set that moves a rounding-changing key must read within 7% of the z of
+      the same set at default rounding, read at the same exponent, or the gate's bisection cuts its reach (tune's
+      0.5 Z at first; see the slack item below). It is never trusted where its reference is unsafe or hardly rounds
+      while it rounds visibly. One verdict (`Gate.h` `verdictFor`) serves publishing, the duels and the contender
+      table.
 - [x] Port `-tune accuracy` and the `roeStat` sample fingerprint: `roe` rows carry the samples' fingerprint (an
       eleventh field; older rows still read), and `-tune accuracy[,fft=<spec>][,groups=<Group>+...]` reads every
       value of every key against the set it moved from, bit for bit, and says where the option table has a key
@@ -88,17 +89,40 @@ At each sync, drop model2's copy of any fix upstream has merged and take upstrea
     read, value by value, as the table has them. Defaults read z 38.80 (212) and 35.14 (202), max 0.2500 on both.
     What changes the rounding: `TABMUL_CHAIN32=1` (-18.36 Z), `TAIL_KERNELS` 0, 1 and 11 (worst -2.41 at 0),
     `TAIL_TRIGS32` 0 and 1 (worst -1.51 at 1).
-  - Tesla P100: running.
+  - Tesla P100 (CUDA), one FFT of each type in scope (1K:11:512 FP64, 2:1K:16:256 FP32+M61, 4:1K:8:256
+    FP32+M31+M61, 51:1K:16:256 FP64+M31), every variant, 2026-10-30: every key as the table has it, but for
+    `256RADIX8_H`, which the table had as suspected and which changes the rounding at both values; now `Yes`.
+    `TAIL_KERNELS` 1 and 11 read identical gaps at all five exponents on both cards, as `roundsAs` has it.
+  - Not yet read: `256RADIX8_W` (no width 256 swept), `FUSE_WEIGHT_BUTTERFLY` away from nVidia (its compiler fuses
+    it either way), and anything on an OpenCL build or an AMD card.
 - [x] `-tune accuracy,repeat=<n>`: every move that changed the rounding is read again beside its background at the
       primes just below, n exponents in all, and the report gives each move's gaps and each background's own z, with
       mean and sd. Progress lines give each new reading's distinct sample values and how many sit at the max.
-- [ ] Decide the slack against measured noise (see Known issues): read `repeat=5` on the A4000's FFT and on an FP64
-      FFT, then keep 0.5 Z or move to one of: a slack of about two standard deviations of the gap, a slack
-      proportional to the reference's z, or gating a set that changes the rounding on its mean gap over several
-      exponents.
-- [ ] Share rounding readings between sets that round alike (tune `roundingOf`). Decided: only after the rounding
-      flags are re-measured on current kernels with `-tune accuracy` (below); until then every set is read on its
-      own.
+- [x] Decide the slack against measured noise. `repeat=5`, 2026-10-30, gap mean and sd over five exponents:
+
+      | Card, FFT | Move | Mean | sd |
+      | --- | --- | --- | --- |
+      | A4000, 2:512:4:512:212 (z 37.8) | `TABMUL_CHAIN32=1` | -16.09 | 1.35 |
+      | | `TAIL_KERNELS=0` | -0.61 | 1.70 |
+      | | `TAIL_KERNELS=1`, `=11` | -0.55 | 1.68 |
+      | | `TAIL_TRIGS32=0` | -0.00 | 0.78 |
+      | | `TAIL_TRIGS32=1` | -0.66 | 0.85 |
+      | P100, 1K:11:512:212 (z 47.9) | `TABMUL_CHAIN=1` | -4.73 | 2.01 |
+      | | `TAIL_KERNELS=0` | +0.10 | 1.76 |
+      | | `TAIL_KERNELS=1`, `=11` | +0.03 | 1.77 |
+      | | `TAIL_TRIGS=0` | +0.59 | 1.62 |
+      | | `TAIL_TRIGS=1` | -0.44 | 1.67 |
+      | P100, 1K:11:512:000 (z 32.7) | `MM_CHAIN=1` | +6.55 | 0.77 |
+      | | `MM2_CHAIN=1` | -0.20 | 1.32 |
+      | | `MM2_CHAIN=2` | +0.67 | 1.48 |
+
+      The defaults' own z over the same exponents: sd 0.90 at z 37.8, 2.01 at z 47.9, 0.63 at z 32.7. One gap's sd
+      is 0.8 to 2.0 Z, about 3.5% of z, so 0.5 Z failed about a third of the sets that cost nothing. Decided: within
+      7% of the reference's z (about two sds at any z). `MM_CHAIN=1` is reliably more accurate, so it can make up
+      for another key's cost in the same set; tune's "MM2_CHAIN=1 costs 2.1" was most likely one noisy reading.
+- [ ] Share rounding readings between sets that round alike (tune `roundingOf`). Decided: after an OpenCL sweep
+      too (an OpenCL compiler may contract FMAs otherwise by code shape); the CUDA build's flags are now measured.
+- [ ] Run `-tune accuracy` on the OpenCL build (and an AMD card where one is to hand), with `repeat=5`.
 - [ ] Publish an exclusion list of configurations that computed wrong answers, and have production honour it.
 - [ ] Re-gate lines carried from an earlier build when the build changed rounding.
 - [x] Hold a configuration that took the card down at every exponent and test kind, and withdraw it from publication
@@ -165,19 +189,17 @@ through restarts, and has no long apples-to-apples comparison yet.
   moves the draws, so a change can turn the default seed red without making the search worse: sweep seeds
   (`SEED=<n> build-release/prpll-test the_loop_publishes_what`) before concluding either way.
 
-- The 0.5 Z accuracy slack may sit inside one reading's sampling noise. z is (0.5 - mean) / beta + 0.577, with beta
-  from the samples' sd; with n about 2150 Gumbel samples the sd's relative standard error is about sqrt(1.1 / n),
-  2.3%, so a single z carries about 2.3% of itself in noise: about 0.45 at z 20 (FP64 near the table's reach), 0.9 at
-  z 39 (the A4000's FP32+M61 at its top). Two roundings of the same data are correlated, so a gap's noise is somewhere
-  under 1.4 times that; `repeat=` measures it. On the FP32 hybrids the floor (6) is far below the top's z, so the
-  reference rule alone decides, and since a key that scales the errors costs more Z as the exponent falls and z
-  rises, a set that reads more than 0.5 below at the top tends to be rejected outright rather than lowered.
-- FP32 hybrid samples may be quantized: both A4000 variants' max read exactly 0.2500, which a continuous spread of
-  maxima would hardly do twice. uF is a float near nF * M61, so uF / M61 is resolved only to a power-of-two step that
-  grows with |nF| (nF is about 2^15 to 2^18 at 34.68 bpw on 2^21 words, a step of about 1/256 to 1/32), and each
-  iteration's largest error may then take one of a few values. The `levels` in `-tune accuracy`'s progress lines will
-  confirm or refute it. If it holds, z there is coarser than its digits suggest, and whether a Gumbel z is the right
-  measure for those types is a question for upstream.
+- One rounding reading's z carries sampling noise of about 2 to 4% of itself: z is (0.5 - mean) / beta + 0.577 with
+  beta from the samples' sd, whose relative standard error over n = 2150 Gumbel samples is about sqrt(1.1 / n),
+  2.3%, and the `repeat=` readings agree (above). A gap between two roundings is noisier still, as if they were
+  hardly correlated. The relative slack allows for it. Accuracy readings in general still take one reading per
+  exponent; at the floor that matters little, since z falls fast with the exponent there.
+- FP32 hybrid samples are quantized at the top: every FP32 hybrid's max read exactly 0.2500 or 0.3125 (5/16), six of
+  six (A4000 2:512:4:512 x2; P100 2:1K:16:256 and 4:1K:8:256 x2 each), while the FP64 and FP64+M31 maxima are
+  continuous. uF is a float near nF * M61, so uF / M61 is resolved only to a power-of-two step that grows with |nF|;
+  each iteration's largest error takes one of a few values, and z there counts how often the top ones come up, so it
+  is coarser than its digits suggest. The `levels` in `-tune accuracy`'s progress lines give the count. Whether a
+  Gumbel z is the right measure for those types is a question for upstream.
 
 ## Decisions
 
@@ -191,8 +213,8 @@ through restarts, and has no long apples-to-apples comparison yet.
 | Branches | Build on `model2`; `tune` and `model` decided later |
 | Power floor (`powerHold`) | Open: `-measure` on two cards showed it does not work right |
 | A configuration that took the card down | Held at every exponent and kind, and withdrawn; every failure logged in `failures/` |
-| Accuracy slack for sets that change rounding | 0.5 Z below the same set at default rounding, as tune; to be revisited against `repeat=` noise readings |
-| Shared rounding readings | Not until `-tune accuracy` has re-measured the flags on current kernels |
+| Accuracy slack for sets that change rounding | Within 7% of the z of the same set at default rounding (was 0.5 Z, as tune, until `repeat=` measured the noise) |
+| Shared rounding readings | After `-tune accuracy` has swept an OpenCL build too; the CUDA build's flags are measured |
 
 ## Review (2026-10-30)
 

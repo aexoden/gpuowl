@@ -22,10 +22,14 @@ namespace tune {
 // How close a lowered reach's safe and unsafe readings must be for it to be settled.
 inline constexpr double REACH_RESOLUTION = 0.01;
 
-// How far below its accuracy reference's reading a set that changes the rounding may read.  Two sets whose arithmetic is
-// the same read exactly the same z, so this is room for sampling a different rounding path, and no more: tune measured
-// MM2_CHAIN=1 costing 2.1 on a Tesla P100 at 512:8:512.
-inline constexpr double ACCURACY_SLACK_Z = 0.5;
+// How far below its accuracy reference's reading a set that changes the rounding may read, as a fraction of the
+// reference's z.  Two sets whose arithmetic is the same read exactly the same z; two that round otherwise read apart by
+// sampling noise as well as by what the arithmetic costs, and the noise grows with z.  `-tune accuracy,repeat=5` on a
+// Tesla P100 (FP64, 1K:11:512) and an RTX A4000 (FP32+M61, 2:512:4:512), 2026-10-30, read one gap's sd at 0.8 to 2.0
+// at z 33 to 48, about 3.5% of z, and TAIL_KERNELS, TAIL_TRIGS, TAIL_TRIGS32 and MM2_CHAIN costing nothing that
+// readings tell apart from it.  Two of those sds: a set that costs nothing fails about one time in 40, while
+// TABMUL_CHAIN32=1 (-43% there) and TABMUL_CHAIN=1 (about -10%) are held back.
+inline constexpr double ACCURACY_SLACK = 0.07;
 
 // The Gumbel z of the largest rounding error below which a reading is unsafe: the table's own reach reads about 24 on
 // FP64 FFTs and well above 6 on the FP32 hybrids.
@@ -59,7 +63,7 @@ struct Verdict {
 
 // Whether a reading is safe for an FFT of `type`.  A reading with too few rounding errors to say anything is taken as
 // safe: the arithmetic hardly rounds there.  `reference`, for a set that changes the rounding: its accuracy reference's
-// reading at the same exponent, which the set must read within ACCURACY_SLACK_Z of; it is never safe where that reading
+// reading at the same exponent, which the set must read within ACCURACY_SLACK of; it is never safe where that reading
 // is not, nor rounding visibly where the reference hardly rounds.
 [[nodiscard]] bool safe(enum FFT_TYPES type, const RoeReading& reading, const RoeReading* reference = nullptr);
 

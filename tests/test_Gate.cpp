@@ -92,12 +92,12 @@ TEST(a_set_held_to_its_reference_is_judged_beside_its_reading) {
   CHECK(second.state == Accuracy::Owed && second.owesReference);
   CHECK_EQ(second.next, top);
 
-  // Within ACCURACY_SLACK_Z of the reference: the table's reach.
+  // Within ACCURACY_SLACK of the reference: the table's reach.
   reference.push_back(at(top, 24.0));
   CHECK(verdictOf(fft, own, floor, &reference).state == Accuracy::Confirmed);
 
   // Further below it, though well above the floor: the reach is bisected down, its own reading owed first.
-  own = {at(top, 23.4)};
+  own = {at(top, 22.2)};
   Verdict const cut = verdictOf(fft, own, floor, &reference);
   CHECK(cut.state == Accuracy::Owed && !cut.owesReference);
   CHECK(cut.next > floor && cut.next < top);
@@ -108,8 +108,13 @@ TEST(a_set_is_never_safer_than_its_reference) {
   RoeReading const own = at(1, 25);
   RoeReading const ref = at(1, 24);
   CHECK(safe(FFT64, own, &ref));
-  CHECK(safe(FFT64, at(1, 23.5), &ref));
-  CHECK(!safe(FFT64, at(1, 23.4), &ref));
+  // 7% below 24 is 22.32.
+  CHECK(safe(FFT64, at(1, 22.4), &ref));
+  CHECK(!safe(FFT64, at(1, 22.2), &ref));
+  // The slack is a share of z: as wide in Z again at twice the z.
+  RoeReading const high = at(1, 48);
+  CHECK(safe(FFT64, at(1, 44.7), &high));
+  CHECK(!safe(FFT64, at(1, 44.6), &high));
   // Not where the reference itself is unsafe, failed its check, or hardly rounds while the set rounds visibly.
   RoeReading const unsafeRef = at(1, 19);
   CHECK(!safe(FFT64, own, &unsafeRef));

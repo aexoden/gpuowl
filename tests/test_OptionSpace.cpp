@@ -75,11 +75,12 @@ TEST(structural_and_accuracy_flags) {
                                "LDSPAD_W", "LDSPAD_H", "L2PERSIST",     "256RADIX8_W",   "256RADIX8_H"};
   for (const Option& o : allOptions()) { CHECK_EQ(o.structural, structural.contains(o.key)); }
 
-  // As measured: every value of every other key rounds bit-identically to the set it moves from.
-  const set<string> rounding{"MM_CHAIN",     "MM2_CHAIN",    "TAIL_KERNELS",  "TAIL_TRIGS",
-                             "TAIL_TRIGS32", "TABMUL_CHAIN", "TABMUL_CHAIN32"};
+  // As measured: every value of every other key rounds bit-identically to the set it moves from.  256RADIX8_W has not
+  // been read (no width 256 swept yet), nor FUSE_WEIGHT_BUTTERFLY away from nVidia, whose compiler fuses it either way.
+  const set<string> rounding{"MM_CHAIN",     "MM2_CHAIN",    "TAIL_KERNELS",   "TAIL_TRIGS",
+                             "TAIL_TRIGS32", "TABMUL_CHAIN", "TABMUL_CHAIN32", "256RADIX8_H"};
   for (const Option& o : allOptions()) {
-    if (o.key == "FUSE_WEIGHT_BUTTERFLY" || o.key == "256RADIX8_W" || o.key == "256RADIX8_H") {
+    if (o.key == "FUSE_WEIGHT_BUTTERFLY" || o.key == "256RADIX8_W") {
       CHECK(o.accuracyImpact == AccuracyImpact::Suspected);
     } else {
       CHECK_EQ(o.accuracyImpact == AccuracyImpact::Yes, rounding.contains(o.key));
