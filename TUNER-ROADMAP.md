@@ -31,7 +31,7 @@ commit that did it, so the next session can see what is and is not done.
 - [x] CUDA build run on a real card (recipe below), 2026-10-30, on a card with slow FP64: the proof verified, and
       all six PRP runs read `de62d6db1ad5092d` at 200000 iterations.
 - [x] OpenCL build run on the same card: the proof verified, the PRP residues matched.
-- [ ] A short `-tune` on each build (running).
+- [x] A short `-tune` on each build: both ran fine (2026-10-30).
 
 GPU validation recipe, on a cloud card with the CUDA toolkit in `/usr/local/cuda`:
 
