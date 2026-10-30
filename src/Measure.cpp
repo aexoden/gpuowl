@@ -215,6 +215,8 @@ RoeCheck roeCheck(GpuCommon shared, const Env& env, const FFTConfig& fft, const 
   out.n = roeSq.N;
   out.maxRoe = roeSq.max;
   out.fingerprint = roeSq.fingerprint;
+  out.levels = roeSq.levels;
+  out.atMax = roeSq.atMax;
   out.ran = gpu->args.flags;
   return out;
 }

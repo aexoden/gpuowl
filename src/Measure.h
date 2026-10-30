@@ -118,6 +118,8 @@ struct RoeCheck {
   u32 n = 0;     // rounding errors behind z
   double maxRoe = 0;
   u64 fingerprint = 0;  // of the rounding errors themselves (RoeInfo): equal only where the arithmetic is
+  u32 levels = 0;       // distinct values among them, and how many are the largest (RoeInfo)
+  u32 atMax = 0;
   u64 exponent = 0;
   UseConfig ran{};
   Status status = Status::Ok;  // why there is no reading, where there is none

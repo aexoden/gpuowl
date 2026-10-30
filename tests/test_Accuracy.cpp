@@ -16,6 +16,7 @@
 #include "test.h"
 
 #include <algorithm>
+#include <cmath>
 #include <map>
 #include <set>
 #include <unistd.h>
@@ -304,17 +305,65 @@ TEST(the_accuracy_command_is_parsed) {
   TuneCommand const all = parseTuneCommand("accuracy");
   CHECK(all.verb == TuneVerb::Accuracy);
   CHECK(all.accuracyFft.empty() && all.accuracyGroups.empty());
+  CHECK_EQ(all.accuracyRepeat, 1u);
 
-  TuneCommand const one = parseTuneCommand("accuracy,fft=1K:13:256:202,groups=Middle+Tail,probe=118063003");
+  TuneCommand const one = parseTuneCommand("accuracy,fft=1K:13:256:202,groups=Middle+Tail,probe=118063003,repeat=5");
   CHECK_EQ(one.accuracyFft, std::string{"1K:13:256:202"});
   CHECK((one.accuracyGroups == std::vector<Group>{Group::Middle, Group::Tail}));
   CHECK_EQ(one.scope.probe, u64{118'063'003});
+  CHECK_EQ(one.accuracyRepeat, 5u);
 
-  for (const char* bad : {"accuracy,groups=Nowhere", "accuracy,fft=not-an-fft", "groups=Middle"}) {
+  for (const char* bad : {"accuracy,groups=Nowhere", "accuracy,fft=not-an-fft", "groups=Middle", "accuracy,repeat=0",
+                          "accuracy,repeat=17", "repeat=3"}) {
     bool threw = false;
     try {
       (void)parseTuneCommand(bad);
     } catch (const std::string&) { threw = true; }
     if (!threw) { testing::fail(__FILE__, __LINE__, std::string{bad} + " was accepted"); }
   }
+}
+
+TEST(a_move_is_read_again_at_the_primes_just_below_the_sweep) {
+  static const Primes primes;
+  FFTConfig const fft = canonical(FFTConfig{"512:8:512:212"});
+  u64 const top = sweepExponent(fft);
+
+  std::vector<u64> const at = repeatExponents(fft, top, 4);
+  CHECK_EQ(at.size(), size_t{4});
+  CHECK_EQ(at.front(), top);
+  for (size_t i = 1; i < at.size(); ++i) {
+    CHECK(primes.isPrime(at[i]) && isEligible(fft, at[i]));
+    CHECK_EQ(primes.nextPrime(at[i]), at[i - 1]);
+  }
+  CHECK(repeatExponents(fft, top, 1) == std::vector<u64>{top});
+}
+
+TEST(only_a_move_that_changed_the_rounding_is_read_again_and_its_gaps_are_its_z_less_its_backgrounds) {
+  FFTConfig const family = canonical(FFTConfig{"512:8:512:212"});
+  Held held;
+  std::vector<SweepPoint> const plan = sweepPlan(nvidia(), family, allGroups(), held.lookup());
+  CHECK(repeatPlan(plan, held.lookup(), 3).empty());
+
+  const SweepPoint* const moved = find(plan, "TAIL_KERNELS=0");
+  CHECK(moved != nullptr);
+  if (!moved) { return; }
+  held.z[configText(moved->config)] = 23.0;
+  CHECK(repeatPlan(plan, held.lookup(), 1).empty());
+
+  std::vector<SweepPoint> const again = repeatPlan(plan, held.lookup(), 3);
+  std::vector<u64> const at = repeatExponents(moved->fft, moved->exponent, 3);
+  CHECK_EQ(again.size(), size_t{2});
+  for (size_t i = 0; i < again.size(); ++i) {
+    CHECK_EQ(again[i].text, moved->text);
+    CHECK_EQ(again[i].exponent, at[i + 1]);
+    CHECK(again[i].background == moved->background);
+  }
+
+  std::vector<double> const gaps = gapsOf(*moved, at, held.lookup());
+  CHECK_EQ(gaps.size(), size_t{3});
+  for (double const g : gaps) { CHECK(std::abs(g - (23.0 - 24.44)) < 1e-9); }
+
+  // A reading whose check failed has no gap.
+  held.failing.insert(Held::id(moved->fft, moved->config));
+  CHECK(gapsOf(*moved, at, held.lookup()).empty());
 }

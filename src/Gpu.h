@@ -97,6 +97,10 @@ public:
   double gumbelMiu{}, gumbelBeta{};
   // A hash of the samples themselves, so that two readings can be told apart exactly rather than by their statistics.
   u64 fingerprint{};
+  // How many distinct values the samples take, and how many of them are the largest: few levels mean the errors are
+  // a handful of ulps apart, and z then counts how often the top level comes up.
+  u32 levels{};
+  u32 atMax{};
 };
 
 struct Weights {

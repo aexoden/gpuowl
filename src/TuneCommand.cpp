@@ -180,6 +180,12 @@ TuneCommand parseTuneCommand(std::string_view text) {
         }
         out.accuracyGroups.push_back(*g);
       }
+    } else if (out.verb == TuneVerb::Accuracy && key == "repeat") {
+      std::optional<u32> const n = parseInt<u32>(value);
+      if (!n || *n < 1 || *n > 16) {
+        throw std::string{"-tune accuracy: repeat= takes a count of exponents from 1 to 16"};
+      }
+      out.accuracyRepeat = *n;
     } else if (out.verb == TuneVerb::Explain && std::isupper(u8(key.front()))) {
       // A -use option: tune settings are lowercase, option keys upper.
       if (!out.explain.options) { out.explain.options.emplace(); }

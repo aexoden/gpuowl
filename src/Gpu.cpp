@@ -762,6 +762,11 @@ RoeInfo roeStat(const vector<float>& roe) {
     for (u32 i = 0; i < 4; ++i) { fnv = (fnv ^ ((bits >> (8 * i)) & 0xff)) * 0x100000001b3ull; }
   }
   ret.fingerprint = fnv;
+
+  vector<float> sorted = roe;
+  std::ranges::sort(sorted);
+  ret.levels = u32(std::ranges::distance(sorted.begin(), std::ranges::unique(sorted).begin()));
+  ret.atMax = u32(std::ranges::count(roe, float(maxRoe)));
   return ret;
 }
 

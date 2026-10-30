@@ -419,9 +419,11 @@ named "config.txt" in the prpll run directory.
                      sets that could take it, and why none has), emit (write the tune files it supports), scope (the
                      exponents a run would tune for), explain,fft=<spec>[,KEY=VALUE...] (why each set read on an FFT,
                      or its shape's every variant, or the one set named, is or is not published).
-                     Verb on the device: accuracy[,fft=<spec>][,groups=<Group>+<Group>...] reads which -use values
-                     change the rounding -- every value of every key against the set it moved from, bit for bit, on
-                     <spec> or one FFT of each type in scope -- and says where the option table has it otherwise.
+                     Verb on the device: accuracy[,fft=<spec>][,groups=<Group>+<Group>...][,repeat=<n>] reads which
+                     -use values change the rounding -- every value of every key against the set it moved from, bit
+                     for bit, on <spec> or one FFT of each type in scope -- and says where the option table has it
+                     otherwise.  repeat=<n> reads each value that changes the rounding again beside the set it moved
+                     from at the primes just below, <n> exponents in all, to tell what it costs from sampling noise.
 -measure <fft>[,<setting>=<value>...] : whether this card runs as fast under sustained load as the tuner's short
                      calls read.  Times <fft> (with the -use settings production would give it) in calls as the tuner
                      makes them, then squares without a break until it settles, then for some minutes more, then in

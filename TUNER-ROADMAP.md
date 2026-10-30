@@ -84,6 +84,18 @@ At each sync, drop model2's copy of any fix upstream has merged and take upstrea
 - [ ] Run `-tune accuracy` on a card of each kind available (it reads one FFT of each type in scope, or the one
       `fft=` names), and correct the option table's `accuracyImpact`, `defaultRounding` and `roundsAs` from what it
       reports; upstream `62117cea` changed FP32 rounding since the flags were measured.
+  - RTX A4000 (CUDA), `fft=2:512:4:512` (FP32+M61, variants 212 and 202) at 72729143, 2026-10-30: all 44 keys
+    read, value by value, as the table has them. Defaults read z 38.80 (212) and 35.14 (202), max 0.2500 on both.
+    What changes the rounding: `TABMUL_CHAIN32=1` (-18.36 Z), `TAIL_KERNELS` 0, 1 and 11 (worst -2.41 at 0),
+    `TAIL_TRIGS32` 0 and 1 (worst -1.51 at 1).
+  - Tesla P100: running.
+- [x] `-tune accuracy,repeat=<n>`: every move that changed the rounding is read again beside its background at the
+      primes just below, n exponents in all, and the report gives each move's gaps and each background's own z, with
+      mean and sd. Progress lines give each new reading's distinct sample values and how many sit at the max.
+- [ ] Decide the slack against measured noise (see Known issues): read `repeat=5` on the A4000's FFT and on an FP64
+      FFT, then keep 0.5 Z or move to one of: a slack of about two standard deviations of the gap, a slack
+      proportional to the reference's z, or gating a set that changes the rounding on its mean gap over several
+      exponents.
 - [ ] Share rounding readings between sets that round alike (tune `roundingOf`). Decided: only after the rounding
       flags are re-measured on current kernels with `-tune accuracy` (below); until then every set is read on its
       own.
@@ -153,6 +165,20 @@ through restarts, and has no long apples-to-apples comparison yet.
   moves the draws, so a change can turn the default seed red without making the search worse: sweep seeds
   (`SEED=<n> build-release/prpll-test the_loop_publishes_what`) before concluding either way.
 
+- The 0.5 Z accuracy slack may sit inside one reading's sampling noise. z is (0.5 - mean) / beta + 0.577, with beta
+  from the samples' sd; with n about 2150 Gumbel samples the sd's relative standard error is about sqrt(1.1 / n),
+  2.3%, so a single z carries about 2.3% of itself in noise: about 0.45 at z 20 (FP64 near the table's reach), 0.9 at
+  z 39 (the A4000's FP32+M61 at its top). Two roundings of the same data are correlated, so a gap's noise is somewhere
+  under 1.4 times that; `repeat=` measures it. On the FP32 hybrids the floor (6) is far below the top's z, so the
+  reference rule alone decides, and since a key that scales the errors costs more Z as the exponent falls and z
+  rises, a set that reads more than 0.5 below at the top tends to be rejected outright rather than lowered.
+- FP32 hybrid samples may be quantized: both A4000 variants' max read exactly 0.2500, which a continuous spread of
+  maxima would hardly do twice. uF is a float near nF * M61, so uF / M61 is resolved only to a power-of-two step that
+  grows with |nF| (nF is about 2^15 to 2^18 at 34.68 bpw on 2^21 words, a step of about 1/256 to 1/32), and each
+  iteration's largest error may then take one of a few values. The `levels` in `-tune accuracy`'s progress lines will
+  confirm or refute it. If it holds, z there is coarser than its digits suggest, and whether a Gumbel z is the right
+  measure for those types is a question for upstream.
+
 ## Decisions
 
 | Question | Decision |
@@ -165,7 +191,7 @@ through restarts, and has no long apples-to-apples comparison yet.
 | Branches | Build on `model2`; `tune` and `model` decided later |
 | Power floor (`powerHold`) | Open: `-measure` on two cards showed it does not work right |
 | A configuration that took the card down | Held at every exponent and kind, and withdrawn; every failure logged in `failures/` |
-| Accuracy slack for sets that change rounding | 0.5 Z below the same set at default rounding, as tune |
+| Accuracy slack for sets that change rounding | 0.5 Z below the same set at default rounding, as tune; to be revisited against `repeat=` noise readings |
 | Shared rounding readings | Not until `-tune accuracy` has re-measured the flags on current kernels |
 
 ## Review (2026-10-30)

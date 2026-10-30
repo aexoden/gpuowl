@@ -120,12 +120,26 @@ struct KeyVerdict {
 // Pure.  One verdict per key the points move, in key order.
 [[nodiscard]] std::vector<KeyVerdict> keyVerdicts(const std::vector<SweepPoint>& points, const SweepLookup& readingOf);
 
+// The exponents a move is read at under repeat=`k`: the sweep's own, then the primes below it that `fft` runs, k in all
+// where there are that many.
+[[nodiscard]] std::vector<u64> repeatExponents(const FFTConfig& fft, u64 exponent, u32 k);
+
+// Pure.  Every move of `points` that read a different rounding from its background, at each further exponent of
+// repeatExponents(): read beside its background there, it tells what the move costs from what the sample does.
+[[nodiscard]] std::vector<SweepPoint> repeatPlan(const std::vector<SweepPoint>& points, const SweepLookup& readingOf,
+                                                 u32 k);
+
+// A move's z less its background's at each of `exponents` where both have read with a passing check.
+[[nodiscard]] std::vector<double> gapsOf(const SweepPoint& point, const std::vector<u64>& exponents,
+                                         const SweepLookup& readingOf);
+
 // Whether the option table has a move ("TAIL_KERNELS=0") changing the rounding; a COUPLED move it never marks.
 [[nodiscard]] bool tableChanges(const std::string& key, const std::string& move);
 
 // `-tune accuracy`: sweeps the FFT the command names, or else one FFT of each type that rounds -- the cheapest read at
 // the probe, else the cheapest by its prior -- recording every reading as the gate's own, and reports what each key
-// did against what the option table says of it.
+// did against what the option table says of it.  With repeat=, every move that changed the rounding is read again
+// beside its background further down, and the report gives the gaps and their spread.
 [[nodiscard]] RunOutcome runAccuracy(GpuCommon shared, const TuneCommand& command);
 
 }  // namespace tune

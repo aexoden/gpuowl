@@ -18,6 +18,7 @@
 
 #include <algorithm>
 #include <cinttypes>
+#include <cmath>
 #include <deque>
 #include <memory>
 #include <set>
@@ -55,6 +56,41 @@ namespace {
   char buf[48];
   snprintf(buf, sizeof(buf), "%s %+.2f", toString(c), own->z - bg->z);
   return buf;
+}
+
+// How a move read against its background, at its own exponent.
+[[nodiscard]] Change changeOf(const SweepPoint& p, const SweepLookup& readingOf) {
+  return compare(readingOf(p.fft, p.exponent, p.config), readingOf(p.fft, p.exponent, *p.background));
+}
+
+// How many distinct values a reading's samples took and how many were the largest, where it was just taken.
+[[nodiscard]] std::string levelsText(const RoeCheck& r) {
+  if (r.status != Status::Ok || !r.applicable || !r.n) { return {}; }
+  char buf[64];
+  snprintf(buf, sizeof(buf), " (%u levels, %u at max)", r.levels, r.atMax);
+  return buf;
+}
+
+// " +1.20 -0.35 ...: mean -0.40, sd 0.90" of a run of z or gaps; no sd under two values.
+[[nodiscard]] std::string spreadText(const std::vector<double>& xs, const char* format) {
+  std::string out;
+  char buf[48];
+  double sum = 0;
+  for (double const x : xs) {
+    snprintf(buf, sizeof(buf), format, x);
+    out += buf;
+    sum += x;
+  }
+  if (xs.empty()) { return out + " unread"; }
+  double const mean = sum / double(xs.size());
+  double squares = 0;
+  for (double const x : xs) { squares += (x - mean) * (x - mean); }
+  if (xs.size() < 2) {
+    snprintf(buf, sizeof(buf), ": mean %+.2f, sd -", mean);
+  } else {
+    snprintf(buf, sizeof(buf), ": mean %+.2f, sd %.2f", mean, std::sqrt(squares / double(xs.size() - 1)));
+  }
+  return out + buf;
 }
 
 [[nodiscard]] const char* impactText(std::optional<AccuracyImpact> impact) {
@@ -249,6 +285,40 @@ std::vector<KeyVerdict> keyVerdicts(const std::vector<SweepPoint>& points, const
   return out;
 }
 
+std::vector<u64> repeatExponents(const FFTConfig& fft, u64 exponent, u32 k) {
+  static const Primes primes;
+  std::vector<u64> out{exponent};
+  for (u64 e = primes.prevPrime(exponent); out.size() < k && e && isEligible(fft, e); e = primes.prevPrime(e)) {
+    out.push_back(e);
+  }
+  return out;
+}
+
+std::vector<SweepPoint> repeatPlan(const std::vector<SweepPoint>& points, const SweepLookup& readingOf, u32 k) {
+  std::vector<SweepPoint> out;
+  for (const SweepPoint& p : points) {
+    if (!p.background || changeOf(p, readingOf) != Change::Differs) { continue; }
+    for (u64 const e : repeatExponents(p.fft, p.exponent, k)) {
+      if (e == p.exponent) { continue; }
+      SweepPoint again = p;
+      again.exponent = e;
+      out.push_back(std::move(again));
+    }
+  }
+  return out;
+}
+
+std::vector<double> gapsOf(const SweepPoint& point, const std::vector<u64>& exponents, const SweepLookup& readingOf) {
+  std::vector<double> out;
+  if (!point.background) { return out; }
+  for (u64 const e : exponents) {
+    std::optional<SweepReading> const own = readingOf(point.fft, e, point.config);
+    std::optional<SweepReading> const bg = readingOf(point.fft, e, *point.background);
+    if (own && bg && own->checkOk && bg->checkOk) { out.push_back(own->z - bg->z); }
+  }
+  return out;
+}
+
 bool tableChanges(const std::string& key, const std::string& move) {
   const Option* const option = findOption(key);
   if (!option) { return false; }
@@ -309,12 +379,36 @@ RunOutcome runAccuracy(GpuCommon shared, const TuneCommand& command) {
       readingOf = sweepLookup(db, bench.envId(), card);
 
       std::optional<SweepReading> const got = readingOf(next->fft, next->exponent, next->config);
-      log("accuracy: [%zu/%zu] %-36s at %" PRIu64 ": %s %s\n", size_t(next - plan.begin()) + 1, plan.size(),
+      log("accuracy: [%zu/%zu] %-36s at %" PRIu64 ": %s%s %s\n", size_t(next - plan.begin()) + 1, plan.size(),
           pointName(*next).c_str(), next->exponent, got ? readingText(*got).c_str() : toString(r.status),
-          changeText(*next, readingOf).c_str());
+          levelsText(r).c_str(), changeText(*next, readingOf).c_str());
     }
     all.insert(all.end(), plan.begin(), plan.end());
     if (bench.stopped()) { break; }
+  }
+
+  // Each move that changed the rounding, read again beside its background a little further down: two roundings of the
+  // same data read apart by their samples as well as by their arithmetic, and only the spread tells which.
+  u32 const repeat = command.accuracyRepeat;
+  if (repeat > 1 && !bench.stopped()) {
+    std::vector<SweepPoint> const again = repeatPlan(all, readingOf, repeat);
+    std::set<std::string> tried;
+    for (size_t i = 0; i < again.size() && !bench.stopped(); ++i) {
+      const SweepPoint& p = again[i];
+      for (bool const own : {true, false}) {
+        const UseConfig& config = own ? p.config : *p.background;
+        std::string const id = p.fft.spec() + " " + std::to_string(p.exponent) + " " + configText(config);
+        if (readingOf(p.fft, p.exponent, config) || !tried.insert(id).second) { continue; }
+        RoeCheck const r = bench.roe(p.fft, config, p.exponent);
+        if (bench.stopped()) { break; }
+        readingOf = sweepLookup(db, bench.envId(), card);
+
+        std::optional<SweepReading> const got = readingOf(p.fft, p.exponent, config);
+        std::string const name = p.fft.spec() + " " + (own ? p.text : "beside " + p.text);
+        log("accuracy: again [%zu/%zu] %-36s at %" PRIu64 ": %s%s\n", i + 1, again.size(), name.c_str(), p.exponent,
+            got ? readingText(*got).c_str() : toString(r.status), levelsText(r).c_str());
+      }
+    }
   }
 
   log("accuracy: each variant at its defaults\n");
@@ -346,6 +440,30 @@ RunOutcome runAccuracy(GpuCommon shared, const TuneCommand& command) {
     if (!otherwise.empty()) { log("accuracy:     the table says otherwise of: %s\n", otherwise.c_str()); }
   }
   log("accuracy: %u key(s) read otherwise than the table has them, value by value\n", disagree);
+
+  if (repeat > 1) {
+    auto differs = [&](const SweepPoint& p) { return p.background && changeOf(p, readingOf) == Change::Differs; };
+    log("accuracy: each move that changes the rounding, at up to %u exponents (its z less its background's)\n", repeat);
+    for (const SweepPoint& p : all) {
+      if (!differs(p)) { continue; }
+      std::vector<double> const gaps = gapsOf(p, repeatExponents(p.fft, p.exponent, repeat), readingOf);
+      log("accuracy:   %-40s%s\n", pointName(p).c_str(), spreadText(gaps, " %+.2f").c_str());
+    }
+    log("accuracy: each background's own z at the same exponents: its spread is one reading's sampling noise\n");
+    std::set<std::string> shown;
+    for (const SweepPoint& p : all) {
+      if (!differs(p)) { continue; }
+      std::string const name = p.fft.spec() + " " + (p.background->empty() ? "defaults" : configText(*p.background));
+      if (!shown.insert(name).second) { continue; }
+      std::vector<double> zs;
+      for (u64 const e : repeatExponents(p.fft, p.exponent, repeat)) {
+        if (std::optional<SweepReading> const r = readingOf(p.fft, e, *p.background); r && r->checkOk) {
+          zs.push_back(r->z);
+        }
+      }
+      log("accuracy:   %-40s%s\n", name.c_str(), spreadText(zs, " %.2f").c_str());
+    }
+  }
 
   if (bench.deviceLost()) { return RunOutcome::DeviceLost; }
   bench.end();
