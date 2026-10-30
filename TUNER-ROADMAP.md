@@ -22,7 +22,8 @@ commit that did it, so the next session can see what is and is not done.
 - [x] Option table (`f74c2bae`): `SLEEP_WAIT` fixed (never searched; the user's own value stays in force while tuning);
       `ENABLE_SUBBARRIER` searched on CUDA builds on nVidia (values 0 and 1, and 2 at `WMUL=4`; inert without
       sub-workgroups wider than a warp); `ENABLE_BARSYNC` and `USE_REGISTER_BARSYNC` deprecated, as upstream removed
-      both. The same two removed from the `-use` key list in `Gpu.cpp`.
+      both. The same two removed from the `-use` key list in `Gpu.cpp`. `ENABLE_SUBBARRIER` sits after `WMUL` and
+      `TAIL_KERNELS` in the table (`40f804c3`), since a walk in table order must meet a key's parents first.
 - [ ] `make DEBUG=1 check` (GPU-free unit tests and source checkers) passes.
 - [x] CUDA build compiles (checked without a toolkit, against NVIDIA's `cuda.h` and `nvrtc.h` from PyPI; not linked
       against a real `libcuda`).
@@ -113,6 +114,15 @@ through restarts, and has no long apples-to-apples comparison yet.
 
 - [ ] Once production feedback exists per card class, keep the strategy and cost policy whose published costs sit
       closest to what production sustained.
+
+## Known issues
+
+- `the_loop_publishes_what_the_simulated_card_rewards` (`tests/test_Tuner.cpp`) depends on its seed: within its 80
+  items the model loop sometimes stops at a configuration 4.17% behind the planted optimum (650.3 against 624.3 us/it).
+  Release builds, seeds 1-8, 2026-10-30: `b61ecb40` reached the optimum on 6 of 8 (seeds 1 and 2 stopped short),
+  `40f804c3` on 7 of 8 (seed 5 stopped short). The default seed, 7, passes on both. Any change to the option table
+  moves the draws, so a change can turn the default seed red without making the search worse: sweep seeds
+  (`SEED=<n> build-release/prpll-test the_loop_publishes_what`) before concluding either way.
 
 ## Decisions
 
