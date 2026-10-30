@@ -100,7 +100,9 @@ public:
   // Every successful call, as the model learns from it.
   [[nodiscard]] const std::vector<Observation>& observations() const { return observations_; }
 
-  // The rounding-error readings of one FFT under one option set (kind-free: they are taken on the PRP kernels).
+  // The rounding-error readings of one FFT under one option set (kind-free: they are taken on the PRP kernels).  Where
+  // the card shares them (Gate.h sharesRounding), every passing reading of a set that rounds alike too, but at an
+  // exponent where the set's own check failed: that failure is its own.
   [[nodiscard]] std::vector<RoeReading> roes(const FFTConfig& fft, const UseConfig& options) const;
 
   [[nodiscard]] static ConfigKey keyOf(const Subject& subject, const UseConfig& options);
@@ -131,6 +133,9 @@ private:
   double powerHold_ = POWER_HOLD;
   Env device_;
   std::map<std::pair<std::string, std::string>, std::vector<RoeReading>> roes_;
+  // The passing readings again, by spec and configText() of roundingOf(), where the card shares them, each with the
+  // configText() of the set that read it.
+  std::map<std::pair<std::string, std::string>, std::vector<std::pair<std::string, RoeReading>>> roundings_;
   std::set<std::pair<ConfigKey, ConfigKey>> dueled_;  // the lesser key first
   std::set<std::pair<std::string, std::string>> died_;  // by spec and configText() of the canonical set
 };

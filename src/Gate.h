@@ -22,13 +22,15 @@ namespace tune {
 // How close a lowered reach's safe and unsafe readings must be for it to be settled.
 inline constexpr double REACH_RESOLUTION = 0.01;
 
-// How far below its accuracy reference's reading a set that changes the rounding may read, as a fraction of the
-// reference's z.  Two sets whose arithmetic is the same read exactly the same z; two that round otherwise read apart by
-// sampling noise as well as by what the arithmetic costs, and the noise grows with z.  `-tune accuracy,repeat=5` on a
-// Tesla P100 (FP64, 1K:11:512) and an RTX A4000 (FP32+M61, 2:512:4:512), 2026-10-30, read one gap's sd at 0.8 to 2.0
-// at z 33 to 48, about 3.5% of z, and TAIL_KERNELS, TAIL_TRIGS, TAIL_TRIGS32 and MM2_CHAIN costing nothing that
-// readings tell apart from it.  Two of those sds: a set that costs nothing fails about one time in 40, while
-// TABMUL_CHAIN32=1 (-43% there) and TABMUL_CHAIN=1 (about -10%) are held back.
+// How far below its accuracy reference's reading at the table top a set that changes the rounding may read, as a
+// fraction of that z: the set serves up to where it is that accurate, which is the accuracy the default rounding is
+// trusted with at the table's reach.  Two sets whose arithmetic is the same read exactly the same z; two that round
+// otherwise read apart by sampling noise as well as by what the arithmetic costs, and the noise grows with z.
+// `-tune accuracy,repeat=5` on a Tesla P100 (CUDA and OpenCL) and an RTX A4000, 2026-10-30, read one gap's sd at 0.1 to
+// 2.1 Z, up to about 4.5% of z, and TAIL_KERNELS, TAIL_TRIGS, TAIL_TRIGS32 and MM2_CHAIN costing nothing readings tell
+// apart from it: none of about 150 such gaps read further below than 6.2%.  A real cost is a little reach: z falls by
+// some 8 (FP64 at 18 bpw) to 20 (the FP32 hybrids at 34 bpw) per 1% of exponent near the top, so 256RADIX8_H=1
+// (-10 to -16%) or TABMUL_CHAIN32=1 (-30 to -43%) is as accurate as the default at the top within about half a percent.
 inline constexpr double ACCURACY_SLACK = 0.07;
 
 // The Gumbel z of the largest rounding error below which a reading is unsafe: the table's own reach reads about 24 on
@@ -58,18 +60,30 @@ struct Verdict {
 [[nodiscard]] bool movesAccuracy(const Env& env, const FFTConfig& fft, const UseConfig& options);
 
 // `options` with every key that changes the rounding at a value that rounds as its default does: the set one that moves
-// such a key is held to, read at the same exponents.  Canonical (canonicalConfig), as the readings key it.
+// such a key is held to, read at the table top.  Canonical (canonicalConfig), as the readings key it.
+
+// The keys of `options` held at a value that changes the rounding on `fft`, each spelled as the value whose arithmetic
+// it compiles (Option::roundingValue), and nothing else.  Two sets of one FFT with the same answer round alike, bit for
+// bit, so a rounding reading of one is a reading of the other.  That holds while every rounding key's default depends
+// on the FFT alone, as canonicalConfig() then drops the same defaults from both.
+[[nodiscard]] UseConfig roundingOf(const Env& env, const FFTConfig& fft, const UseConfig& options);
+
+// Whether a card's rounding readings serve every set that rounds alike (Readings::roes): where `-tune accuracy` has
+// shown the option table's accuracy flags to hold, on nVidia under CUDA and OpenCL (a Tesla P100 and an RTX A4000,
+// 2026-10-30).  Elsewhere every set is read on its own until a sweep there shows the same.
+[[nodiscard]] bool sharesRounding(const Env& env);
 [[nodiscard]] UseConfig accuracyReference(const Env& env, const FFTConfig& fft, const UseConfig& options);
 
 // Whether a reading is safe for an FFT of `type`.  A reading with too few rounding errors to say anything is taken as
 // safe: the arithmetic hardly rounds there.  `reference`, for a set that changes the rounding: its accuracy reference's
-// reading at the same exponent, which the set must read within ACCURACY_SLACK of; it is never safe where that reading
-// is not, nor rounding visibly where the reference hardly rounds.
+// reading at the table top, which the set must read within ACCURACY_SLACK of, and never below the floor.  Where that
+// reading failed its check or is below the floor itself, the floor alone holds; a set that rounds visibly where the
+// reference hardly rounds is never safe.
 [[nodiscard]] bool safe(enum FFT_TYPES type, const RoeReading& reading, const RoeReading* reference = nullptr);
 
 // `floor`: the lowest exponent the configuration would serve in the workload; a reach that settles below it rejects it.
-// `reference`, for a set that changes the rounding: its accuracy reference's readings.  A reading of the set counts once
-// the reference has been read at its exponent, which is owed until then, the highest first.
+// `reference`, for a set that changes the rounding: its accuracy reference's readings, of which the one at the table
+// top counts.  The set's own readings count once that one has been taken, which is owed after the set's first.
 [[nodiscard]] Verdict verdictOf(const FFTConfig& fft, std::span<const RoeReading> readings, u64 floor,
                                 const std::vector<RoeReading>* reference = nullptr);
 

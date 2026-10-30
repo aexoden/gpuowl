@@ -2,6 +2,8 @@
 
 #include "Readings.h"
 
+#include "Gate.h"
+
 #include <algorithm>
 #include <cmath>
 
@@ -277,8 +279,12 @@ Readings::Readings(const TuneDB& db, u32 env, const Env& device, double powerHol
     std::optional<FFTConfig> const fft = parseFft(row.fft);
     const UseConfig* const recorded = db.findCfg(row.cfg);
     if (!fft || !recorded) { continue; }
-    roes_[{fft->spec(), configText(canonicalConfig(device, *fft, *recorded))}].push_back(
-      {.exponent = row.exponent, .checkOk = row.checkOk, .z = row.z, .n = row.n});
+    RoeReading const reading{.exponent = row.exponent, .checkOk = row.checkOk, .z = row.z, .n = row.n};
+    std::string const set = configText(canonicalConfig(device, *fft, *recorded));
+    roes_[{fft->spec(), set}].push_back(reading);
+    if (row.checkOk && sharesRounding(device)) {
+      roundings_[{fft->spec(), configText(roundingOf(device, *fft, *recorded))}].emplace_back(set, reading);
+    }
   }
 }
 
@@ -307,8 +313,21 @@ const Reading* Readings::find(const Subject& subject, const UseConfig& options) 
 }
 
 std::vector<RoeReading> Readings::roes(const FFTConfig& fft, const UseConfig& options) const {
-  auto const it = roes_.find({fft.spec(), configText(options)});
-  return it == roes_.end() ? std::vector<RoeReading>{} : it->second;
+  std::string const set = configText(options);
+  auto const it = roes_.find({fft.spec(), set});
+  std::vector<RoeReading> out = it == roes_.end() ? std::vector<RoeReading>{} : it->second;
+  if (!sharesRounding(device_)) { return out; }
+
+  auto const alike = roundings_.find({fft.spec(), configText(roundingOf(device_, fft, options))});
+  if (alike == roundings_.end()) { return out; }
+  std::set<u64> failed;
+  for (const RoeReading& r : out) {
+    if (!r.checkOk) { failed.insert(r.exponent); }
+  }
+  for (const auto& [by, r] : alike->second) {
+    if (by != set && !failed.contains(r.exponent)) { out.push_back(r); }
+  }
+  return out;
 }
 
 }  // namespace tune

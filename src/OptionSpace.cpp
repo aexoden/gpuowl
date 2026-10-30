@@ -638,13 +638,14 @@ vector<Option> buildTable() {
      .defaultValue = 0});
 
   // Radix 8 rather than 4 at a width (height) of 256: a body of its own, with no variant 0 and variant 2 compiling as 1, so
-  // offered only at FP64's digit 1 and on the types whose digit chooses nothing.
+  // offered only at FP64's digit 1 and on the types whose digit chooses nothing.  Measured (-tune accuracy, RTX A4000,
+  // 2026-10-30): the two values round otherwise than each other (2:256:16:256:212).
   t.push_back({.key = "256RADIX8_W",
                .scope = Scope::Variant,
                .group = Group::Width,
                .touches = KG_WIDTH | KG_CARRY,
                .structural = true,
-               .accuracyImpact = AccuracyImpact::Suspected,
+               .accuracyImpact = AccuracyImpact::Yes,
                .applies = [](const Env&, const FFTConfig& f,
                              const UseConfig&) { return f.shape.width == 256 && (!f.FFT_FP64 || variant_W(f.variant) == 1); },
                .values = {0, 1},
@@ -741,7 +742,8 @@ vector<Option> buildTable() {
                .values = {0, 1},
                .defaultValue = 1});
 
-  // Measured (-tune accuracy, Tesla P100, 2026-10-30): both values round otherwise than each other on every FFT read.
+  // Measured (-tune accuracy, Tesla P100, CUDA and OpenCL, 2026-10-30): the two values round otherwise than each other
+  // on every FFT read.
   t.push_back({.key = "256RADIX8_H",
                .scope = Scope::Variant,
                .group = Group::Height,

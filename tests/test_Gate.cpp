@@ -78,12 +78,12 @@ TEST(a_set_that_changes_the_rounding_is_held_to_the_same_set_at_default_rounding
   CHECK(!movesAccuracy(nvidia(), canonical(FFTConfig{"1K:13:256:212"}), {{"MM2_CHAIN", "2"}}));
 }
 
-TEST(a_set_held_to_its_reference_is_judged_beside_its_reading) {
+TEST(a_set_held_to_its_reference_is_judged_against_its_reading_at_the_table_top) {
   FFTConfig const fft = canonical(FFTConfig{"1K:13:256:202"});
   u64 const floor = 60'000'000;
   std::vector<RoeReading> reference;
 
-  // Its own reading first, at the table top, then its reference's at the same exponent.
+  // Its own reading first, at the table top, then its reference's there.
   Verdict const first = verdictOf(fft, {}, floor, &reference);
   CHECK(first.state == Accuracy::Owed && !first.owesReference);
   u64 const top = first.next;
@@ -96,15 +96,25 @@ TEST(a_set_held_to_its_reference_is_judged_beside_its_reading) {
   reference.push_back(at(top, 24.0));
   CHECK(verdictOf(fft, own, floor, &reference).state == Accuracy::Confirmed);
 
-  // Further below it, though well above the floor: the reach is bisected down, its own reading owed first.
+  // Further below it, though well above the floor: the reach is bisected down, its own readings owed.
   own = {at(top, 22.2)};
   Verdict const cut = verdictOf(fft, own, floor, &reference);
   CHECK(cut.state == Accuracy::Owed && !cut.owesReference);
   CHECK(cut.next > floor && cut.next < top);
   CHECK(verdictOf(fft, own, floor).state == Accuracy::Confirmed);  // a set held to the floor alone passes there
+
+  // Lower down, as accurate as the reference is at the top: it serves there, with no reading of the reference owed
+  // beside it, and a reference reading taken there changes nothing.
+  own.push_back(at(cut.next, 23.0));
+  Verdict const lower = verdictOf(fft, own, floor, &reference);
+  CHECK(!lower.owesReference && lower.reach == cut.next);
+  CHECK(lower.state == Accuracy::Owed || lower.state == Accuracy::Lowered);
+  reference.push_back(at(cut.next, 40.0));
+  Verdict const again = verdictOf(fft, own, floor, &reference);
+  CHECK(again.state == lower.state && again.reach == lower.reach && again.next == lower.next);
 }
 
-TEST(a_set_is_never_safer_than_its_reference) {
+TEST(a_set_is_held_within_the_slack_of_its_reference_and_never_below_the_floor) {
   RoeReading const own = at(1, 25);
   RoeReading const ref = at(1, 24);
   CHECK(safe(FFT64, own, &ref));
@@ -115,11 +125,14 @@ TEST(a_set_is_never_safer_than_its_reference) {
   RoeReading const high = at(1, 48);
   CHECK(safe(FFT64, at(1, 44.7), &high));
   CHECK(!safe(FFT64, at(1, 44.6), &high));
-  // Not where the reference itself is unsafe, failed its check, or hardly rounds while the set rounds visibly.
+  // Where the reference reads below the floor, or failed its check, the floor alone holds.
   RoeReading const unsafeRef = at(1, 19);
-  CHECK(!safe(FFT64, own, &unsafeRef));
+  CHECK(safe(FFT64, own, &unsafeRef));
+  CHECK(!safe(FFT64, at(1, 19.9), &unsafeRef));
   RoeReading const failedRef = at(1, 24, false);
-  CHECK(!safe(FFT64, own, &failedRef));
+  CHECK(safe(FFT64, at(1, 20.1), &failedRef));
+  CHECK(!safe(FFT64, at(1, 19.9), &failedRef));
+  // Never where the reference hardly rounds while the set rounds visibly.
   RoeReading quietRef = at(1, 24);
   quietRef.n = 2;
   CHECK(!safe(FFT64, own, &quietRef));
@@ -130,4 +143,21 @@ TEST(a_set_is_never_safer_than_its_reference) {
   RoeReading quiet = at(1, 0);
   quiet.n = 1;
   CHECK(safe(FFT64, quiet, &unsafeRef));
+}
+
+TEST(sets_that_round_alike_have_one_rounding) {
+  FFTConfig const fft = canonical(FFTConfig{"1K:13:256:202"});
+  // Keys that do not change the rounding drop out, and a value is spelled as the one whose arithmetic it compiles.
+  CHECK(roundingOf(nvidia(), fft, {{"ZEROHACK_H", "0"}, {"WMUL", "1"}}).empty());
+  CHECK((roundingOf(nvidia(), fft, {{"TAIL_KERNELS", "11"}, {"WMUL", "1"}}) == UseConfig{{"TAIL_KERNELS", "1"}}));
+  CHECK(roundingOf(nvidia(), fft, {{"TAIL_KERNELS", "1"}}) == roundingOf(nvidia(), fft, {{"TAIL_KERNELS", "11"}}));
+  CHECK(roundingOf(nvidia(), fft, {{"TAIL_KERNELS", "0"}}) != roundingOf(nvidia(), fft, {{"TAIL_KERNELS", "1"}}));
+  // 13 compiles as 3, whose arithmetic is the default's.
+  CHECK(roundingOf(nvidia(), fft, {{"TAIL_KERNELS", "13"}}).empty());
+
+  // Shared where the flags were measured: nVidia, under CUDA and OpenCL alike.
+  CHECK(sharesRounding(nvidia()));
+  CHECK(sharesRounding(Env{.isNvidia = true}));
+  CHECK(!sharesRounding(Env{.isAmd = true}));
+  CHECK(!sharesRounding(Env{}));
 }

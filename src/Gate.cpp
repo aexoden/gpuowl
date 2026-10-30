@@ -33,6 +33,21 @@ bool movesAccuracy(const Env& env, const FFTConfig& fft, const UseConfig& option
   return false;
 }
 
+UseConfig roundingOf(const Env& env, const FFTConfig& fft, const UseConfig& options) {
+  UseConfig out = canonicalConfig(env, fft, options);
+  std::erase_if(out, [](const auto& kv) {
+    const Option* const o = findOption(kv.first);
+    return !o || !changesRounding(*o, kv.second);
+  });
+  // Spelled as the value whose arithmetic it compiles, so that two spellings of one rounding compare equal.
+  for (auto& [key, value] : out) {
+    if (std::optional<int> const v = parseInt<int>(value)) { value = std::to_string(findOption(key)->roundingValue(*v)); }
+  }
+  return out;
+}
+
+bool sharesRounding(const Env& env) { return env.isNvidia; }
+
 UseConfig accuracyReference(const Env& env, const FFTConfig& fft, const UseConfig& options) {
   UseConfig out = options;
   // Until nothing moves, since one key's default can turn another on.
@@ -72,8 +87,8 @@ bool safe(enum FFT_TYPES type, const RoeReading& reading, const RoeReading* refe
   if (!reading.checkOk) { return false; }
   if (reading.n <= 2) { return true; }
   double const floor = minSafeZ(type);
-  if (!reference) { return reading.z >= floor; }
-  if (!reference->checkOk || reference->n <= 2 || reference->z < floor) { return false; }
+  if (!reference || !reference->checkOk) { return reading.z >= floor; }
+  if (reference->n <= 2) { return false; }
   return reading.z >= std::max(reference->z * (1 - ACCURACY_SLACK), floor);
 }
 
@@ -81,32 +96,25 @@ Verdict verdictOf(const FFTConfig& fft, std::span<const RoeReading> readings, u6
                   const std::vector<RoeReading>* reference) {
   u64 const table = maxExp(fft);
   if (exactArithmetic(fft)) { return {.state = Accuracy::Exact, .reach = table}; }
-
-  // The reference's latest reading at an exponent, for a set held to one.
-  auto referenceAt = [&](u64 E) -> const RoeReading* {
-    const RoeReading* out = nullptr;
-    for (const RoeReading& r : *reference) {
-      if (r.exponent == E) { out = &r; }
-    }
-    return out;
-  };
-  // A reading of a set held to its reference counts once the reference has been read beside it.
-  auto judged = [&](const RoeReading& r) { return !reference || referenceAt(r.exponent); };
-  auto isSafe = [&](const RoeReading& r) {
-    return safe(fft.shape.fft_type, r, reference ? referenceAt(r.exponent) : nullptr);
-  };
-
   u64 const top = primeAtOrBelow(table);
-  u64 pass = 0;
-  u64 unjudged = 0;
-  for (const RoeReading& r : readings) {
-    if (!judged(r)) {
-      unjudged = std::max(unjudged, r.exponent);
-    } else if (isSafe(r)) {
-      pass = std::max(pass, r.exponent);
+
+  // For a set held to its reference, the reference's latest reading at the table top: how accurate the default
+  // rounding is where it is trusted furthest.  Owed once the set has a reading of its own.
+  const RoeReading* atTop = nullptr;
+  if (reference) {
+    for (const RoeReading& r : *reference) {
+      if (r.exponent == top) { atTop = &r; }
+    }
+    if (!atTop && !readings.empty()) {
+      return {.state = Accuracy::Owed, .reach = 0, .next = top, .owesReference = true};
     }
   }
-  if (unjudged) { return {.state = Accuracy::Owed, .reach = pass, .next = unjudged, .owesReference = true}; }
+  auto isSafe = [&](const RoeReading& r) { return safe(fft.shape.fft_type, r, atTop); };
+
+  u64 pass = 0;
+  for (const RoeReading& r : readings) {
+    if (isSafe(r)) { pass = std::max(pass, r.exponent); }
+  }
   if (pass >= top) { return {.state = Accuracy::Confirmed, .reach = table}; }
 
   // The lowest unsafe reading above the highest safe one: an unsafe reading below a safe one is noise in a reading

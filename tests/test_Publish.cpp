@@ -7,6 +7,7 @@
 #include "Report.h"
 
 #include <algorithm>
+#include <iterator>
 #include <optional>
 #include <string>
 
@@ -46,12 +47,12 @@ struct Fixture {
     }
   }
 
-  void roe(const char* spec, UseConfig options, u64 E, double z) {
+  void roe(const char* spec, UseConfig options, u64 E, double z, bool ok = true) {
     CHECK(db.add(RoeRow{.sess = sess,
                         .fft = spec,
                         .exponent = E,
                         .cfg = db.internCfg(options),
-                        .checkOk = true,
+                        .checkOk = ok,
                         .z = z,
                         .n = 9000,
                         .ts = 1}));
@@ -179,25 +180,29 @@ TEST(an_fft_has_a_line_for_each_reach_a_cheaper_set_falls_short_of) {
   u64 const top = f.top();
   // Read in the regime that runs up to the table top, above the long carry the run's own range is in.
   u64 const E = 100'000'000;
+  // The cheaper set rounds otherwise, so its readings are its own and it is held to the defaults' at the top.
+  UseConfig const cheaper{{"MM2_CHAIN", "1"}};
   f.call("1K:13:256:202", {}, 800, 2, E);
-  f.call("1K:13:256:202", {{"ZEROHACK_W", "0"}}, 780, 2, E);
+  f.call("1K:13:256:202", cheaper, 780, 2, E);
   f.roe("1K:13:256:202", {}, top, 24.4);
-  f.roe("1K:13:256:202", {{"ZEROHACK_W", "0"}}, top, 10);
+  f.roe("1K:13:256:202", cheaper, top, 10);
   u64 const lowered = top - top / 200;
-  f.roe("1K:13:256:202", {{"ZEROHACK_W", "0"}}, lowered, 24.4);
+  f.roe("1K:13:256:202", cheaper, lowered, 24.4);
 
   for (bool const outside : {false, true}) {
     if (outside) { f.moveAbove(); }
     Publication const p = f.published();
-    const std::vector<Line>& written = p.of(TestKind::PRP)->written;
+    // The regime they were read in; the set top() read is gated by the defaults' reading too, in its own regime.
+    std::vector<Line> written;
+    std::ranges::copy_if(p.of(TestKind::PRP)->written, std::back_inserter(written),
+                         [](const Line& l) { return l.subject.regime.label() == std::string{"short32"}; });
     CHECK_EQ(written.size(), size_t{2});
     if (written.size() != 2) { return; }
-    CHECK(written[0].reading->options == (UseConfig{{"ZEROHACK_W", "0"}}));
+    CHECK(written[0].reading->options == cheaper);
     CHECK_EQ(written[0].reach(), lowered);
     CHECK(written[1].reading->options.empty());
     CHECK(written[1].reach() > top);
     CHECK_EQ(written[0].lo(), written[1].lo());
-    CHECK_EQ(written[0].subject.regime.label(), std::string{"short32"});
   }
 }
 
@@ -306,8 +311,9 @@ TEST(an_earlier_builds_line_is_written_until_this_build_has_read_it) {
   if (both.empty()) { return; }
   CHECK(both.front().carried);
 
+  // Its gate is settled already: the set read above rounds as it does.
   f.call("1K:13:256:202", {}, 900);
-  f.roe("1K:13:256:202", {}, f.published(&carried).owedGates.at(0).exponent, 24.4);
+  CHECK(f.published(&carried).owedGates.empty());
   Publication const after = f.published(&carried);
   const std::vector<Line>& written = after.of(TestKind::PRP)->written;
   CHECK_EQ(written.size(), size_t{1});
@@ -420,4 +426,38 @@ TEST(a_set_that_changes_the_rounding_owes_its_reference_reading_and_is_held_to_i
   if (cut.owedGates.empty()) { return; }
   CHECK(cut.owedGates.front().options == moved);
   CHECK(cut.owedGates.front().exponent < top);
+
+  // Lower down it is judged against the reference's reading at the top, so what it owes next is its own reading.
+  f.roe("1K:13:256:202", moved, cut.owedGates.front().exponent, 30.0);
+  for (const GateItem& g : f.published().owedGates) { CHECK(g.options == moved); }
+}
+
+TEST(a_rounding_reading_serves_every_set_that_rounds_alike_where_the_card_shares_them) {
+  Fixture f;
+  u64 const top = f.top();
+  FFTConfig const fft = canonical(FFTConfig{"1K:13:256:202"});
+  UseConfig const read = canonicalConfig(nvidia(), fft, {{"WMUL", "1"}});
+  UseConfig const alike = canonicalConfig(nvidia(), fft, {{"ZEROHACK_H", "0"}});
+  UseConfig const otherwise = canonicalConfig(nvidia(), fft, {{"TAIL_KERNELS", "0"}});
+  f.roe("1K:13:256:202", read, top, 24.0);
+  (void)f.published();
+
+  // One set's reading is a reading of every set of the FFT that rounds as it does, and of no other.
+  CHECK_EQ(f.readings->roes(fft, alike).size(), size_t{1});
+  CHECK(f.readings->roes(fft, otherwise).empty());
+  CHECK(verdictFor(*f.readings, fft, alike, f.scope.lo).state == Accuracy::Confirmed);
+  CHECK(f.published().owedGates.empty() || f.published().owedGates.front().options != alike);
+
+  // A failed check is the set's own: neither lent to the sets that round alike nor outweighed by theirs.
+  f.roe("1K:13:256:202", alike, top, 24.0, false);
+  f.roe("1K:13:256:202", read, top - 2, 24.0, false);
+  (void)f.published();
+  std::vector<RoeReading> const own = f.readings->roes(fft, alike);
+  CHECK_EQ(own.size(), size_t{1});
+  CHECK(!own.empty() && !own.front().checkOk);
+  CHECK_EQ(f.readings->roes(fft, read).size(), size_t{2});
+
+  // Not on a card the flags have not been measured on: there every set is read on its own.
+  Readings const amd{f.db, f.env, Env{.isAmd = true}};
+  CHECK(amd.roes(fft, canonicalConfig(Env{.isAmd = true}, fft, {{"ZEROHACK_H", "1"}})).empty());
 }
