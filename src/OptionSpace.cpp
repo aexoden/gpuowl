@@ -515,27 +515,6 @@ vector<Option> buildTable() {
                .applies = [](const Env& e, const FFTConfig&, const UseConfig&) { return e.isAmd || e.isNvidia; },
                .values = {0, 1},
                .defaultFn = [](const Env& e, const FFTConfig&, const UseConfig&) { return e.isAmd ? 0 : 1; }});
-  // LDSbar syncs only its own sub-workgroup rather than the block (base.cl bar(numWG, WG)), where a block holds several wider
-  // than a warp: carryFused with WMUL > 1, the double-wide tail.  2 differs from 1 only with four of them, in pairs.  CUDA
-  // alone: nVidia's OpenCL keeps the barrier id in a register, which upstream found slower on every card it tried.
-  t.push_back({.key = "ENABLE_SUBBARRIER",
-               .scope = Scope::Device,
-               .group = Group::Cuda,
-               .touches = KG_CARRY | KG_TAIL,
-               .dependsOn = {"SHUFL_BYTES_W", "WMUL", "256RADIX8_W", "256RADIX8_H", "TAIL_KERNELS"},
-               .applies = [](const Env& e, const FFTConfig&, const UseConfig&) { return e.cudaBackend && e.hasPtx(200); },
-               .valuesFn =
-                 [](const Env& e, const FFTConfig& f, const UseConfig& d) {
-                   return effectiveWmul(e, f, d) == 4 ? vector<int>{0, 1, 2} : vector<int>{0, 1};
-                 },
-               .defaultValue = 0,
-               .inert =
-                 [](const Env& e, const FFTConfig& f, const UseConfig& d) {
-                   bool const width = effectiveWmul(e, f, d) > 1 && f.shape.width / radixW(f, d) > 32;
-                   bool const height = heightLdsBlocks(d) > 1 && f.shape.height / radixH(f, d) > 32;
-                   return !width && !height;
-                 },
-               .inertWhen = "WMUL 1 with a single-wide tail, or sub-workgroups no wider than a warp"});
   t.push_back({.key = "MULTI_Q",
                .group = Group::Queues,
                .touches = KG_GLOBAL,
@@ -917,6 +896,29 @@ vector<Option> buildTable() {
                              const UseConfig&) { return e.cudaBackend && e.pdlLaunch && e.hasPtx(900); },
                .values = {0, 1},
                .defaultValue = 0});
+
+  // LDSbar syncs only its own sub-workgroup rather than the block (base.cl bar(numWG, WG)), where a block holds several wider
+  // than a warp: carryFused with WMUL > 1, the double-wide tail.  2 differs from 1 only with four of them, in pairs.  CUDA
+  // alone: nVidia's OpenCL keeps the barrier id in a register, which upstream found slower on every card it tried.  After
+  // WMUL and TAIL_KERNELS, which its values and inertness read.
+  t.push_back({.key = "ENABLE_SUBBARRIER",
+               .scope = Scope::Device,
+               .group = Group::Cuda,
+               .touches = KG_CARRY | KG_TAIL,
+               .dependsOn = {"SHUFL_BYTES_W", "WMUL", "256RADIX8_W", "256RADIX8_H", "TAIL_KERNELS"},
+               .applies = [](const Env& e, const FFTConfig&, const UseConfig&) { return e.cudaBackend && e.hasPtx(200); },
+               .valuesFn =
+                 [](const Env& e, const FFTConfig& f, const UseConfig& d) {
+                   return effectiveWmul(e, f, d) == 4 ? vector<int>{0, 1, 2} : vector<int>{0, 1};
+                 },
+               .defaultValue = 0,
+               .inert =
+                 [](const Env& e, const FFTConfig& f, const UseConfig& d) {
+                   bool const width = effectiveWmul(e, f, d) > 1 && f.shape.width / radixW(f, d) > 32;
+                   bool const height = heightLdsBlocks(d) > 1 && f.shape.height / radixH(f, d) > 32;
+                   return !width && !height;
+                 },
+               .inertWhen = "WMUL 1 with a single-wide tail, or sub-workgroups no wider than a warp"});
 
   // Recognized but never searched keys.
   for (const char* key : {
