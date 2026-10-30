@@ -112,6 +112,18 @@ Readings::Readings(const TuneDB& db, u32 env, const Env& device, double powerHol
     }
   }
 
+  // What a process died holding is failed, at every exponent and kind: what took the device down once is never built or
+  // published again.
+  for (const TryRow& t : db.deaths()) {
+    std::optional<FFTConfig> const fft = parseFft(t.fft);
+    const UseConfig* const recorded = db.findCfg(t.cfg);
+    if (db.envOf(t.sess) != env || !fft || !recorded) { continue; }
+    died_.insert({fft->spec(), configText(canonicalConfig(device, *fft, *recorded))});
+  }
+  for (auto& [key, r] : readings_) {
+    if (died_.contains({key.fft, key.options})) { r.failed = true; }
+  }
+
   // Which builds spilled: by FFT, kind and canonical set, whatever the exponent.
   std::map<std::tuple<std::string, TestKind, std::string>, std::vector<std::string>> spilled;
   for (const SpillRow& row : db.spills()) {
@@ -267,6 +279,10 @@ Readings::Readings(const TuneDB& db, u32 env, const Env& device, double powerHol
     roes_[{fft->spec(), configText(canonicalConfig(device, *fft, *recorded))}].push_back(
       {.exponent = row.exponent, .checkOk = row.checkOk, .z = row.z, .n = row.n});
   }
+}
+
+bool Readings::died(const FFTConfig& fft, const UseConfig& options) const {
+  return died_.contains({fft.spec(), configText(options)});
 }
 
 bool Readings::dueled(const ConfigKey& a, const ConfigKey& b) const {

@@ -220,13 +220,23 @@ TEST(db_names_what_a_process_died_holding) {
 
   CHECK(f.db.add(attempt));
   CHECK_EQ(f.db.diedHolding().size(), size_t{1});
-  CHECK(f.db.diedOn(f.env, "512:15:512:202", TestKind::PRP, 67'513'549, f.cfg));
-  CHECK(!f.db.diedOn(f.env, "512:15:512:202", TestKind::LL, 67'513'549, f.cfg));
+  // The session this TuneDB began is running: its open attempt is the call in flight, not a death.
+  CHECK(f.db.deaths().empty());
+  CHECK(!f.db.diedOn(f.env, "512:15:512:202", f.cfg));
+  CHECK(f.db.openAttempt(f.sess) && f.db.openAttempt(f.sess)->ts == 1001);
 
-  // Read back, the open attempt is still open.
+  // Read back by another process, the open attempt is still open, and a death: the configuration is held at every
+  // exponent and kind, not only the PRP at 67513549 it died at.
   TuneDB back;
   CHECK(back.parse(f.db.text(), "died"));
   CHECK_EQ(back.diedHolding().size(), size_t{1});
+  CHECK_EQ(back.deaths().size(), size_t{1});
+  CHECK(back.diedOn(f.env, "512:15:512:202", f.cfg));
+  CHECK(!back.diedOn(f.env, "512:15:512:212", f.cfg));
+  CHECK(!back.diedOn(f.env, "512:15:512:202", back.internCfg({})));
+  // -tune status beside the run that holds the database: its newest session is still running.
+  back.markLive(f.sess);
+  CHECK(back.deaths().empty());
 
   CHECK(f.db.add(DoneRow{.sess = f.sess, .ts = 1002}));
   CHECK(f.db.diedHolding().empty());

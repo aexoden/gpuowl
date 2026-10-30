@@ -177,8 +177,10 @@ std::vector<Line> frontier(std::vector<Line> lines) {
   return out;
 }
 
-// Whether this build has settled the configuration a carried line stands for: read it MIN_CALLS times, or seen it fail.
+// Whether this build has settled the configuration a carried line stands for: read it MIN_CALLS times, or seen it fail --
+// a process dying while holding it among the failures, whether or not it read a cost first.
 bool settled(const Readings& readings, const Line& line) {
+  if (readings.died(line.subject.fft, line.reading->options)) { return true; }
   const Reading* const r = readings.find(line.subject, line.reading->options);
   return r && (r->failed || r->calls >= MIN_CALLS);
 }

@@ -732,6 +732,7 @@ u32 TuneDB::beginSession(u32 env, const std::string& anchor, u32 gen, const std:
                     .settings = settings};
   if (!append(formatRow(row))) { return 0; }
   sessions_.push_back(row);
+  live_.insert(row.id);
   return row.id;
 }
 
@@ -767,11 +768,21 @@ std::vector<TryRow> TuneDB::diedHolding() const {
   return out;
 }
 
-bool TuneDB::diedOn(u32 env, const std::string& fft, TestKind kind, u64 exponent, u32 cfg) const {
-  return std::ranges::any_of(open_, [&](const auto& entry) {
-    const TryRow& t = entry.second;
-    return t.fft == fft && t.kind == kind && t.exponent == exponent && t.cfg == cfg && envOf(t.sess) == env;
-  });
+std::vector<TryRow> TuneDB::deaths() const {
+  std::vector<TryRow> out;
+  for (const auto& [sess, row] : open_) {
+    if (!live_.contains(sess)) { out.push_back(row); }
+  }
+  return out;
+}
+
+const TryRow* TuneDB::openAttempt(u32 sess) const {
+  auto const it = open_.find(sess);
+  return it == open_.end() ? nullptr : &it->second;
+}
+
+bool TuneDB::diedOn(u32 env, const std::string& fft, u32 cfg) const {
+  return std::ranges::any_of(deaths(), [&](const TryRow& t) { return t.fft == fft && t.cfg == cfg && envOf(t.sess) == env; });
 }
 
 void TuneDB::clear() {

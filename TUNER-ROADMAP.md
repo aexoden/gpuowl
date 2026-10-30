@@ -70,9 +70,9 @@ At each sync, drop model2's copy of any fix upstream has merged and take upstrea
 
 ### 3. Correctness gaps
 
-- [ ] A failed Gerbicz check during a soak goes through `checkedTwice` and is recorded as an error (today
-      `classify()` files it as "unsupported" and nothing marks the configuration).
-- [ ] LL soaks check their residue (`timeItersLL` has no check).
+- [x] A failed Gerbicz check during a soak goes through `checkedTwice` and is recorded as an error, as a failed call
+      is (`80042c14`).
+- [x] LL soaks check their residue: their chunks are call-sized and end where the LL reference does (`80042c14`).
 - [ ] Port tune's accuracy reference rule: a set that moves a rounding-changing key must read within 0.5 Z of the same
       set at default rounding, or its reach is cut (tune `Gate.cpp` `standardFor`, `accuracyReference`).
 - [ ] Port `-tune accuracy` and the `roeStat` sample fingerprint; re-measure the option table's accuracy flags on
@@ -80,7 +80,17 @@ At each sync, drop model2's copy of any fix upstream has merged and take upstrea
 - [ ] Share rounding readings between sets that round alike (tune `roundingOf`).
 - [ ] Publish an exclusion list of configurations that computed wrong answers, and have production honour it.
 - [ ] Re-gate lines carried from an earlier build when the build changed rounding.
-- [ ] Hold a configuration that took the card down at every exponent, not only the (exponent, kind) it crashed at.
+- [x] Hold a configuration that took the card down at every exponent and test kind, and withdraw it from publication
+      (lines carried from earlier builds included), not only the (exponent, kind) it crashed at. A running process's
+      own open attempt is the call in flight, not a death; `-tune status` beside a run treats the newest session so.
+- [x] Failures go to `failures/` in the run directory: `failures/failures.log` holds one entry per configuration that
+      took the device down, computed a wrong answer or would not build, with the command line that reproduces it;
+      a failed build's log and the CUDA source and PTX dumps are saved beside it under unique names instead of
+      overwriting each other in the run directory. Each tune run, and `-tune status`, says how many configurations
+      are held out and points at the log; a run adds any entry the log lacks (a hard fault leaves no process to
+      write one).
+- [ ] A fault while only the heater runs (between calls) is not pinned on the configuration it heats: the heater
+      holds no attempt record, and any record the main thread writes meanwhile would close one.
 
 ### 4. Output format
 
@@ -110,7 +120,8 @@ through restarts, and has no long apples-to-apples comparison yet.
 
 ### 7. Smaller ports from tune
 
-- [ ] `-tune reset` (clear a configuration that crashed the card once a driver fixes it)
+- [ ] `-tune reset` (clear a configuration that crashed the card once a driver fixes it). More pressing now that a
+      death holds a configuration out everywhere: today the only way back is editing `tunedb.txt`.
 - [ ] Validate `-use` keys against the option table (OR it with upstream's list in `Gpu.cpp`)
 - [ ] `-options` flag (`dumpOptionSpace` exists)
 - [ ] Note when `config.txt` keys shadow published settings
@@ -144,6 +155,7 @@ through restarts, and has no long apples-to-apples comparison yet.
 | `ENABLE_SUBBARRIER` | Searched, on CUDA builds only |
 | Branches | Build on `model2`; `tune` and `model` decided later |
 | Power floor (`powerHold`) | Open: `-measure` on two cards showed it does not work right |
+| A configuration that took the card down | Held at every exponent and kind, and withdrawn; every failure logged in `failures/` |
 
 ## Review (2026-10-30)
 

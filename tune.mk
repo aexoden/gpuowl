@@ -39,7 +39,8 @@ TUNE_SRCS = \
   Duel.cpp \
   Staged.cpp \
   Contenders.cpp \
-  Feedback.cpp
+  Feedback.cpp \
+  Failures.cpp
 
 TESTSRCS = \
   test_main.cpp \
@@ -70,6 +71,7 @@ TESTSRCS = \
   test_Soak.cpp \
   test_Duel.cpp \
   test_Feedback.cpp \
+  test_Failures.cpp \
   test_Tuner.cpp \
   test_Dashboard.cpp
 

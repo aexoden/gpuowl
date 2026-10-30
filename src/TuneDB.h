@@ -398,14 +398,25 @@ public:
   // The `regs` record of one key of an FFT in `env`, the first written; nullptr where there is none.
   [[nodiscard]] const RegsRow* findRegs(u32 env, const std::string& fft, TestKind kind, const std::string& key) const;
 
-  // Every attempt a process died holding: open at the end of its session with nothing after it.
+  // Every attempt no record has answered: open at the end of its session with nothing after it.
   [[nodiscard]] std::vector<TryRow> diedHolding() const;
+
+  // The attempts a process died holding: diedHolding() but for the sessions still running -- those this TuneDB began,
+  // and any markLive() names -- whose open attempt is the call in flight.
+  [[nodiscard]] std::vector<TryRow> deaths() const;
+
+  // A session another process is running, as -tune status sees one holding the database.
+  void markLive(u32 sess) { live_.insert(sess); }
 
   // Whether session `sess` has an attempt no record has answered yet.
   [[nodiscard]] bool attemptOpen(u32 sess) const { return open_.contains(sess); }
 
-  // Whether a process died holding this configuration.
-  [[nodiscard]] bool diedOn(u32 env, const std::string& fft, TestKind kind, u64 exponent, u32 cfg) const;
+  // The attempt session `sess` has open; nullptr where it has none.
+  [[nodiscard]] const TryRow* openAttempt(u32 sess) const;
+
+  // Whether a process died holding this configuration (deaths()), at whatever exponent or test kind: what took the device
+  // down once is not built on it again.
+  [[nodiscard]] bool diedOn(u32 env, const std::string& fft, u32 cfg) const;
 
 private:
   // Writes `line` when attached; false, having said why, where it did not land.
@@ -446,6 +457,7 @@ private:
 
   // Per session, the attempt it has open, if any.
   std::map<u32, TryRow> open_;
+  std::set<u32> live_;  // sessions still running: begun here, or markLive()
 };
 
 [[nodiscard]] std::string formatRow(const DbEnv& row);

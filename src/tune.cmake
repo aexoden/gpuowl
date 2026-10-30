@@ -39,4 +39,5 @@ target_sources(prpll PRIVATE
   Staged.cpp
   Contenders.cpp
   Feedback.cpp
+  Failures.cpp
   )

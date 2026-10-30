@@ -5,6 +5,7 @@
 #include "timeutil.h"
 #include "Args.h"
 #include "File.h"
+#include "fs.h"
 
 #include <cassert>
 #include <cctype>
@@ -342,6 +343,16 @@ static bool isImportantKernel(const string& kernelName, const string& args) {
       && args.find("-DMUL3=1") == string::npos && args.find("-DLL=1") == string::npos;
 }
 
+// A failed build's options and log, in failures/ (fs.h): what reproduces it, beside the run's log that only quotes it.
+static void saveBuildFailure(const string& fileName, const char* stage, const string& error, const string& options,
+                             const string& buildLog) {
+  fs::path const path = failurePath(fileName + '-' + stage + ".log");
+  std::ofstream out{path};
+  if (!out) { return; }
+  out << fileName << ": " << stage << " failed: " << error << "\noptions: " << options << "\n\n" << buildLog << '\n';
+  log("The %s log of '%s' is saved in %s\n", stage, fileName.c_str(), path.string().c_str());
+}
+
 Program KernelCompiler::build(const string& fileName, const string& extraArgs, [[maybe_unused]] bool load) const {
   Program p1 = loadSource(context, "#include \""s + fileName + "\"\n");
   assert(p1);
@@ -358,9 +369,11 @@ Program KernelCompiler::build(const string& fileName, const string& extraArgs, [
                              u32(clSources.size())-1, (const cl_program*) (clSources.data()+1), getClFileNames().data()+1,
                              nullptr, nullptr);
 #endif
-  if (string const mes = getBuildLog(p1.get(), deviceId); !mes.empty()) { log("%s\n", mes.c_str()); }
+  string const compileLog = getBuildLog(p1.get(), deviceId);
+  if (!compileLog.empty()) { log("%s\n", compileLog.c_str()); }
   if (err != CL_SUCCESS) {
     log("Compiling '%s' error %s (args %s)\n", fileName.c_str(), errMes(err).c_str(), args.c_str());
+    saveBuildFailure(fileName, "compile", errMes(err), args, compileLog);
     return {};
   }
 #ifdef CUDA_BACKEND
@@ -372,9 +385,11 @@ Program KernelCompiler::build(const string& fileName, const string& extraArgs, [
   // The linker's diagnostics live on the linked program.  Asking p1 again instead says nothing about the link
   // -- and repeats the compile log that was already printed above.  A failed clLinkProgram may hand back no
   // program at all, and then there is nothing to query.
-  if (p2) { if (string const mes = getBuildLog(p2.get(), deviceId); !mes.empty()) { log("%s\n", mes.c_str()); } }
+  string const linkLog = p2 ? getBuildLog(p2.get(), deviceId) : string{};
+  if (!linkLog.empty()) { log("%s\n", linkLog.c_str()); }
   if (err != CL_SUCCESS) {
     log("Linking '%s' error %s (args %s)\n", fileName.c_str(), errMes(err).c_str(), linkArgs.c_str());
+    saveBuildFailure(fileName, "link", errMes(err), args + " | link: " + linkArgs, linkLog);
 #ifndef CUDA_BACKEND
     if (err == CL_INVALID_LINKER_OPTIONS && asmDump) {
       // Most likely an older runtime rejecting the -save-temps-all that main() appends to every link for -v 10.

@@ -2,6 +2,7 @@
 
 #include "fs.h"
 #include "File.h"
+#include "timeutil.h"
 
 #include <sstream>
 #include <thread>
@@ -72,4 +73,13 @@ bool deleteLine(const fs::path& path, const string& targetLine, u64 initialSize)
 
   fancyRename(tmp, path);
   return true;
+}
+
+fs::path failurePath(const string& name) {
+  std::error_code ec;
+  fs::create_directories(FAILURES_DIR, ec);
+  fs::path const base = fs::path{FAILURES_DIR} / (timeStr("%Y%m%d-%H%M%S") + '-' + name);
+  fs::path out = base;
+  for (u32 n = 2; fs::exists(out, ec); ++n) { out = fs::path{base.string() + '-' + std::to_string(n)}; }
+  return out;
 }

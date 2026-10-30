@@ -2,6 +2,8 @@
 
 #include "Measure.h"
 
+#include "Failures.h"
+
 #include "clwrap.h"
 #include "Context.h"
 #include "Gpu.h"
@@ -304,10 +306,16 @@ void Bench::coolDown() {
   }
 }
 
-std::string Bench::held(const FFTConfig& fft, TestKind kind, u64 exponent, const UseConfig& options) const {
+std::string Bench::deviceName() const {
+  const DbEnv* const env = db_.findEnv(envId_);
+  return env ? env->gpu : std::string{};
+}
+
+std::string Bench::held(const FFTConfig& fft, const UseConfig& options) const {
   u32 const cfg = db_.findCfgId(builtAs(env_, fft, options));
-  if (cfg && db_.diedOn(envId_, fft.spec(), kind, exponent, cfg)) {
-    return "an earlier process was holding it when the device went away";
+  if (cfg && db_.diedOn(envId_, fft.spec(), cfg)) {
+    return "an earlier process was holding it when the device went away (" + std::string{FAILURES_DIR} + '/' +
+           FAILURES_LOG + ")";
   }
   return {};
 }
@@ -331,6 +339,17 @@ void Bench::lost(const FFTConfig& fft, TestKind kind, u64 exponent, const UseCon
   if (deviceLost_) { return; }
   deviceLost_ = true;
   markContextLost("it did not survive what was being measured");
+  if (const TryRow* const t = db_.openAttempt(session_)) {
+    (void)recordFailure({.kind = FailureKind::DeviceLost,
+                         .fft = t->fft,
+                         .test = t->kind,
+                         .exponent = t->exponent,
+                         .options = db_.findCfg(t->cfg) ? configText(*db_.findCfg(t->cfg)) : configText(options),
+                         .device = deviceName(),
+                         .detail = what + " (during the " + during + ")",
+                         .at = t->ts,
+                         .id = failureId(*t)});
+  }
   log("measure: the device is no longer usable (%s) -- stopping.  It was lost during the %s of\n"
       "measure:   -fft %s -use %s (%s, E=%" PRIu64 ")\n"
       "measure:   which is recorded and will not be built again.\n",
@@ -352,6 +371,7 @@ Status Bench::failed(const FFTConfig& fft, TestKind kind, u64 exponent, const Us
 
   log("measure: %s during the %s of %s -use %s: %s\n", toString(f.status), during, fft.spec().c_str(),
       configText(options).c_str(), f.what.c_str());
+  lastFailure_ = f.what;
 
   // A kernel that faults can leave the context unusable while reporting something ordinary.  Asked now, the loss is
   // pinned on what caused it rather than on whatever the next call builds.
@@ -416,7 +436,7 @@ void Bench::raceAnchor() {
   std::vector<AnchorReading> readings;
   for (const AnchorSpec& c : candidates) {
     FFTConfig const fft{c.fft};
-    if (!held(fft, TestKind::PRP, c.exponent, {}).empty()) { continue; }
+    if (!held(fft, {}).empty()) { continue; }
 
     double us = recorded(c);
     if (!us) {
@@ -451,7 +471,7 @@ void Bench::keepAnchor() {
 
   // Held back like anything else: otherwise every generation the restart limit allows would rebuild an anchor that
   // takes the device down.
-  if (std::string const why = held(fft, TestKind::PRP, anchor_.exponent, {}); !why.empty()) {
+  if (std::string const why = held(fft, {}); !why.empty()) {
     log("measure: the drift anchor %s is not built again here: %s.  This session is unanchored.\n",
         anchor_.text().c_str(), why.c_str());
     unanchor();
@@ -537,7 +557,7 @@ Call Bench::runCall(const FFTConfig& fft, TestKind kind, u64 exponent, const Use
     return out;
   }
 
-  if (std::string const why = held(fft, kind, exponent, options); !why.empty()) {
+  if (std::string const why = held(fft, options); !why.empty()) {
     log("measure: %s -use %s is not built again here: %s\n", fft.spec().c_str(), configText(options).c_str(),
         why.c_str());
     out.status = Status::Unsupported;
@@ -571,6 +591,7 @@ Call Bench::runCall(const FFTConfig& fft, TestKind kind, u64 exponent, const Use
   if (stopped_ || !record) { return out; }
 
   auto again = [&] { return attempt(shared_, fft, kind, exponent, options, nBlocks, blockSize, heatSec); };
+  std::string wrongBy = "its Gerbicz check failed twice in a row";
   if (out.status == Status::Err) {
     log("measure: %s -use %s failed its check at %" PRIu64 "; reading it again, since one failure decides nothing\n",
         fft.spec().c_str(), configText(options).c_str(), exponent);
@@ -589,6 +610,10 @@ Call Bench::runCall(const FFTConfig& fft, TestKind kind, u64 exponent, const Use
     if (stopped_) { return out; }
     if (out.status == Status::Err) {
       log("measure: it read %016" PRIx64 " again: it computes LL wrongly, and is recorded as an error\n", out.res64);
+      char buf[160];
+      snprintf(buf, sizeof(buf), "LL residue %016" PRIx64 " twice after %" PRIu64 " iterations, where the reference is %016" PRIx64,
+               out.res64, out.iters, *reference);
+      wrongBy = buf;
     }
   }
 
@@ -600,20 +625,32 @@ Call Bench::runCall(const FFTConfig& fft, TestKind kind, u64 exponent, const Use
   // Keyed on what the kernels were built with.
   u32 const cfg = db_.internCfg(builtAs(env_, fft, out.ran.empty() ? options : out.ran));
   u64 const ts = now();
-  (void)db_.add(CallRow{.sess = session_,
-                        .fft = fft.spec(),
-                        .kind = kind,
-                        .exponent = exponent,
-                        .cfg = cfg,
-                        .status = out.status,
-                        .mean = out.core.stats.mean,
-                        .sd = out.core.stats.sd,
-                        .blocks = out.core.stats.n,
-                        .dropped = out.core.dropped,
-                        .drift = anchorState_.ratio,
-                        .buildSec = out.buildSec,
-                        .timedSec = out.timedSec,
-                        .ts = ts});
+  CallRow const row{.sess = session_,
+                    .fft = fft.spec(),
+                    .kind = kind,
+                    .exponent = exponent,
+                    .cfg = cfg,
+                    .status = out.status,
+                    .mean = out.core.stats.mean,
+                    .sd = out.core.stats.sd,
+                    .blocks = out.core.stats.n,
+                    .dropped = out.core.dropped,
+                    .drift = anchorState_.ratio,
+                    .buildSec = out.buildSec,
+                    .timedSec = out.timedSec,
+                    .ts = ts};
+  if (db_.add(row) && (out.status == Status::Err || out.status == Status::NoCompile)) {
+    bool const wrong = out.status == Status::Err;
+    (void)recordFailure({.kind = wrong ? FailureKind::Wrong : FailureKind::NoBuild,
+                         .fft = row.fft,
+                         .test = kind,
+                         .exponent = exponent,
+                         .options = configText(out.ran.empty() ? options : out.ran),
+                         .device = deviceName(),
+                         .detail = wrong ? wrongBy : lastFailure_ + "; any build log is in " + FAILURES_DIR + '/',
+                         .at = ts,
+                         .id = failureId(row)});
+  }
   if (out.power && !out.usPerIt.empty()) {
     double const iterations = double(out.usPerIt.size()) * blockSize;
     (void)db_.add(PowerRow{.sess = session_,
@@ -736,7 +773,7 @@ std::optional<u64> Bench::llReference(const FFTConfig& fft, u64 exponent, u32 nB
   if (unreferenced_.contains({exponent, iters})) { return {}; }
 
   auto read = [&](const FFTConfig& witness) -> std::optional<u64> {
-    if (stopped_ || !held(witness, TestKind::LL, exponent, {}).empty()) { return {}; }
+    if (stopped_ || !held(witness, {}).empty()) { return {}; }
     Call const c = attempt(shared_, witness, TestKind::LL, exponent, {}, nBlocks, blockSize);
     if (!c.ok()) { return {}; }
     if (!atBuiltInDefaults(env_, witness, c.ran)) {
@@ -794,7 +831,7 @@ std::vector<double> Bench::soak(const std::vector<SoakEntry>& entries, u64 expon
   for (size_t i = 0; i < entries.size(); ++i) {
     const SoakEntry& e = entries[i];
     cfgs[i] = db_.internCfg(builtAs(env_, e.fft, e.options));
-    if (std::string const why = held(e.fft, e.kind, exponent, e.options); !why.empty()) { continue; }
+    if (std::string const why = held(e.fft, e.options); !why.empty()) { continue; }
     if (e.kind == TestKind::LL && !references[i]) {
       log("measure: %s -use %s is not soaked: no LL reference at %" PRIu64 " to check it against\n", e.fft.spec().c_str(),
           configText(e.options).c_str(), exponent);
@@ -852,14 +889,26 @@ std::vector<double> Bench::soak(const std::vector<SoakEntry>& entries, u64 expon
       e.fft, e.kind, exponent, e.options, "soak");
     if (wrong) {
       log("measure: it failed again: it computes wrongly, and is recorded as an error\n");
-      (void)db_.add(CallRow{.sess = session_,
-                            .fft = e.fft.spec(),
-                            .kind = e.kind,
-                            .exponent = exponent,
-                            .cfg = cfgs[i],
-                            .status = Status::Err,
-                            .drift = anchorState_.ratio,
-                            .ts = now()});
+      CallRow const row{.sess = session_,
+                        .fft = e.fft.spec(),
+                        .kind = e.kind,
+                        .exponent = exponent,
+                        .cfg = cfgs[i],
+                        .status = Status::Err,
+                        .drift = anchorState_.ratio,
+                        .ts = now()};
+      if (db_.add(row)) {
+        (void)recordFailure({.kind = FailureKind::Wrong,
+                             .fft = row.fft,
+                             .test = e.kind,
+                             .exponent = exponent,
+                             .options = configText(e.options),
+                             .device = deviceName(),
+                             .detail = ll ? "its LL residue differed from the reference twice in a row during a soak"
+                                          : "its Gerbicz check failed twice in a row during a soak",
+                             .at = row.ts,
+                             .id = failureId(row)});
+      }
       gpus[i].reset();
       return {};
     }
@@ -913,7 +962,7 @@ RoeCheck Bench::roe(const FFTConfig& fft, const UseConfig& options, u64 exponent
   coolDown();
   if (stopped_) { return out; }
 
-  if (std::string const why = held(fft, TestKind::PRP, exponent, options); !why.empty()) {
+  if (std::string const why = held(fft, options); !why.empty()) {
     log("measure: %s -use %s is not built again here: %s\n", fft.spec().c_str(), configText(options).c_str(),
         why.c_str());
     out.status = Status::Unsupported;

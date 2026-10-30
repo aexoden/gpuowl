@@ -184,7 +184,7 @@ public:
                            u32 rounds);
 
   // Why the configuration is never built again here; empty where it may be.
-  [[nodiscard]] std::string held(const FFTConfig& fft, TestKind kind, u64 exponent, const UseConfig& options) const;
+  [[nodiscard]] std::string held(const FFTConfig& fft, const UseConfig& options) const;
 
   [[nodiscard]] u32 envId() const { return envId_; }
   [[nodiscard]] u32 session() const { return session_; }
@@ -263,6 +263,8 @@ private:
   bool warmed_ = false;
   bool stopped_ = false;
   bool deviceLost_ = false;
+  std::string lastFailure_;  // what the latest failure said (failed()), for the failure log
+  [[nodiscard]] std::string deviceName() const;  // the card, as its env names it
   bool cannotRecord_ = false;
 
   std::set<std::pair<u64, u64>> unreferenced_;  // (exponent, iterations) where no LL reference could be agreed

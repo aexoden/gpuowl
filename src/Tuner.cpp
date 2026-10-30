@@ -9,6 +9,7 @@
 #include "Dashboard.h"
 #include "Duel.h"
 #include "Explore.h"
+#include "Failures.h"
 #include "File.h"
 #include "fs.h"
 #include "GpuCommon.h"
@@ -138,7 +139,7 @@ StateReport stateOf(const Publication& publication, const Readings& readings, co
   for (const auto& [key, r] : readings.all()) {
     if (r.failed) { out.faults.push_back("failed: " + key.fft + " " + toString(key.kind) + " -use " + key.options); }
   }
-  for (const TryRow& t : db.diedHolding()) {
+  for (const TryRow& t : db.deaths()) {
     const UseConfig* const options = db.findCfg(t.cfg);
     out.faults.push_back("died holding: " + t.fft + " " + toString(t.kind) + " -use " +
                          (options ? configText(*options) : std::string{"?"}));
@@ -652,7 +653,7 @@ public:
   }
 
   [[nodiscard]] std::string held(const Candidate& candidate, const UseConfig& options) const override {
-    return bench_.held(candidate.subject.fft, candidate.subject.kind, candidate.timing, options);
+    return bench_.held(candidate.subject.fft, options);
   }
 
   void keepAnchor() override { bench_.keepAnchor(); }
@@ -719,6 +720,12 @@ RunOutcome runTune(GpuCommon shared, const TuneCommand& command) {
     return RunOutcome::Failed;
   }
 
+  // Every failure the env records goes in failures/failures.log, and the run says how many configurations it holds out,
+  // where a person reading the log sees it.
+  (void)recordMissingFailures(db, bench.envId());
+  std::string const heldOut = toString(failureTally(db, bench.envId()));
+  if (!heldOut.empty()) { log("tune: %s\n", heldOut.c_str()); }
+
   u64 const seed = command.seed ? command.seed : u64(std::chrono::steady_clock::now().time_since_epoch().count());
   BenchDevice device{bench};
 
@@ -767,6 +774,7 @@ RunOutcome runTune(GpuCommon shared, const TuneCommand& command) {
   if (command.budget > 0) {
     log("tune: %s of the %s budget used\n", durationText(result.elapsed).c_str(), durationText(command.budget).c_str());
   }
+  if (std::string const held = toString(failureTally(db, bench.envId())); !held.empty()) { log("tune: %s\n", held.c_str()); }
   return bench.deviceLost() ? RunOutcome::DeviceLost : RunOutcome::Ok;
 }
 
@@ -792,6 +800,10 @@ bool runOffline(const TuneCommand& command, const Args& args) {
     return false;
   }
   Env const card = env->toEnv();
+
+  // A run holding the database is still in its newest session, whose open attempt is the call in flight, not a death.
+  if (TuneDB::writerHolds(path) == true && !db.sessions().empty()) { db.markLive(db.sessions().back().id); }
+  if (std::string const held = toString(failureTally(db, env->id)); !held.empty()) { log("tune: %s\n", held.c_str()); }
 
   std::vector<std::vector<Candidate>> candidates;
   for (const Grid& g : scope->grids) { candidates.push_back(candidatesOf(card, *scope, g.kind)); }

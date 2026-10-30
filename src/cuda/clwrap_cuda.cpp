@@ -6,6 +6,7 @@
 #include "cudawrap.h"  // For NvrtcProgram::preprocessOpenCL and compile
 #include "../log.h"
 #include "../clwrap.h"  // For the CUDA-only helper declarations (cudaKernelResources etc.)
+#include "../fs.h"      // failurePath: failures/ rather than the run directory
 
 #include <cstdio>
 #include <cstring>
@@ -539,19 +540,17 @@ int clCompileProgram(cl_program prog, unsigned  /*nDevices*/, const cl_device_id
     prog->buildLog = e.what();
     prog->compiled = false;
     log("NVRTC COMPILE FAILED: %s\n", e.what());
-    // Dump the full preprocessed source for debugging
+    // Dump the full preprocessed source for debugging, in failures/ under a name of its own
     {
-      char fname[64];
-      static std::atomic<int> failCount{0};
-      snprintf(fname, sizeof(fname), "prpll_fail_%d.cu", failCount++);
-      FILE* f = fopen(fname, "w");
+      std::string const fname = failurePath("nvrtc-failed.cu").string();
+      FILE* f = fopen(fname.c_str(), "w");
       if (f) {
         fprintf(f, "// === FAILED Main source ===\n%s\n", processedSource.c_str());
         for (auto& [name, src] : nvrtcHeaders) {
           fprintf(f, "\n// === Header: %s (%zu bytes) ===\n%s\n", name.c_str(), src.size(), src.c_str());
         }
         fclose(f);
-        log("Dumped failed source to %s\n", fname);
+        log("Dumped failed source to %s\n", fname.c_str());
       }
     }
     return CL_COMPILE_PROGRAM_FAILURE;
@@ -612,13 +611,14 @@ cl_program clLinkProgram(cl_context ctx, unsigned  /*nDevices*/, const cl_device
     if (jitInfoLog[0]) log("JIT info log: %s\n", jitInfoLog);
     // Dump first 2000 chars of PTX for debugging
     log("PTX size: %zu bytes\n", linked->ptx.size());
-    // Dump full PTX to file
+    // Dump full PTX to file, in failures/ under a name of its own
     {
-      FILE* ptxFile = fopen("failed_ptx.ptx", "w");
+      std::string const fname = failurePath("link-failed.ptx").string();
+      FILE* ptxFile = fopen(fname.c_str(), "w");
       if (ptxFile) {
         fwrite(linked->ptx.c_str(), 1, linked->ptx.size(), ptxFile);
         fclose(ptxFile);
-        log("Dumped failed PTX to failed_ptx.ptx\n");
+        log("Dumped failed PTX to %s\n", fname.c_str());
       }
     }
     delete linked;
