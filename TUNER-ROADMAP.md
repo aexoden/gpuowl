@@ -28,8 +28,10 @@ commit that did it, so the next session can see what is and is not done.
       `40f804c3`.
 - [x] CUDA build compiles (checked without a toolkit, against NVIDIA's `cuda.h` and `nvrtc.h` from PyPI; not linked
       against a real `libcuda`).
-- [ ] CUDA build run on a real card (recipe below).
-- [ ] OpenCL build run on a real card (recipe below, with `build-release/prpll`).
+- [x] CUDA build run on a real card (recipe below), 2026-10-30, on a card with slow FP64: the proof verified, and
+      all six PRP runs read `de62d6db1ad5092d` at 200000 iterations.
+- [x] OpenCL build run on the same card: the proof verified, the PRP residues matched.
+- [ ] A short `-tune` on each build (running).
 
 GPU validation recipe, on a cloud card with the CUDA toolkit in `/usr/local/cuda`:
 
@@ -41,16 +43,18 @@ mkdir run && cd run
 # 512-wide NTT FFTs, so that WMUL=4 is allowed (from width 1024 up WMUL is capped at 2) and nothing needs FP64:
 # 2:512:4:512 is FP32+M61 (up to 72.7M), 1:512:4:512 is M31+M61 (up to 83.2M).
 P="-prp 57885161 -iters 200000 -log 20000"
+# Each run starts fresh: a PRP resumes from the savefiles in ./57885161/ otherwise.
 for F in 2:512:4:512 1:512:4:512; do
-  ../build-cuda/prpll $P -fft $F                               # Gerbicz-checked PRP; note the residues
-  ../build-cuda/prpll $P -fft $F -use ENABLE_SUBBARRIER=1
-  ../build-cuda/prpll $P -fft $F -use ENABLE_SUBBARRIER=2,WMUL=4
+  rm -rf 57885161; ../build-cuda/prpll $P -fft $F              # Gerbicz-checked PRP; note the residues
+  rm -rf 57885161; ../build-cuda/prpll $P -fft $F -use ENABLE_SUBBARRIER=1
+  rm -rf 57885161; ../build-cuda/prpll $P -fft $F -use ENABLE_SUBBARRIER=2,WMUL=4
 done
 ../build-cuda/prpll -tune budget=30m                           # a short tune on the new base
 ```
 
 A PRP residue does not depend on the FFT, so the residues at each log step must match across all six PRP runs, and
-no `EE` lines may appear. On a card with fast FP64, `-fft 512:8:512` adds the FP64 path.
+no `EE` lines may appear (`de62d6db1ad5092d` at 200000 iterations). On a card with fast FP64, `-fft 512:8:512` adds
+the FP64 path.
 
 ### 2. Shared fixes upstream (the user sends these)
 
